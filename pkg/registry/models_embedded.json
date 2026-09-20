@@ -1,0 +1,92 @@
+[
+  {
+    "model_name": "gpt-4o",
+    "max_context_window": 128000,
+    "max_output_tokens": 16384,
+    "input_price_per_m": 2.5,
+    "output_price_per_m": 10.0,
+    "supports_tool_use": true,
+    "supports_json_mode": true,
+    "tier_override": "flagship"
+  },
+  {
+    "model_name": "gpt-4o-mini",
+    "max_context_window": 128000,
+    "max_output_tokens": 16384,
+    "input_price_per_m": 0.15,
+    "output_price_per_m": 0.6,
+    "supports_tool_use": true,
+    "supports_json_mode": true,
+    "tier_override": "light"
+  },
+  {
+    "model_name": "gpt-4-turbo",
+    "max_context_window": 128000,
+    "max_output_tokens": 4096,
+    "input_price_per_m": 10.0,
+    "output_price_per_m": 30.0,
+    "supports_tool_use": true,
+    "supports_json_mode": true,
+    "tier_override": "flagship"
+  },
+  {
+    "model_name": "claude-3-5-sonnet-20241022",
+    "max_context_window": 200000,
+    "max_output_tokens": 8192,
+    "input_price_per_m": 3.0,
+    "output_price_per_m": 15.0,
+    "supports_tool_use": true,
+    "supports_json_mode": true,
+    "tier_override": "flagship"
+  },
+  {
+    "model_name": "claude-3-opus-20240229",
+    "max_context_window": 200000,
+    "max_output_tokens": 4096,
+    "input_price_per_m": 15.0,
+    "output_price_per_m": 75.0,
+    "supports_tool_use": true,
+    "supports_json_mode": false,
+    "tier_override": "flagship"
+  },
+  {
+    "model_name": "llama-3.1-8b-instruct",
+    "max_context_window": 128000,
+    "max_output_tokens": 4096,
+    "input_price_per_m": 0.0,
+    "output_price_per_m": 0.0,
+    "supports_tool_use": true,
+    "supports_json_mode": false,
+    "tier_override": "light"
+  },
+  {
+    "model_name": "llama-3.1-70b-instruct",
+    "max_context_window": 128000,
+    "max_output_tokens": 4096,
+    "input_price_per_m": 0.0,
+    "output_price_per_m": 0.0,
+    "supports_tool_use": true,
+    "supports_json_mode": false,
+    "tier_override": "standard"
+  },
+  {
+    "model_name": "gemma-2-9b-it",
+    "max_context_window": 8192,
+    "max_output_tokens": 4096,
+    "input_price_per_m": 0.0,
+    "output_price_per_m": 0.0,
+    "supports_tool_use": true,
+    "supports_json_mode": false,
+    "tier_override": "light"
+  },
+  {
+    "model_name": "gemma-4-e4b-it",
+    "max_context_window": 32768,
+    "max_output_tokens": 8192,
+    "input_price_per_m": 0.0,
+    "output_price_per_m": 0.0,
+    "supports_tool_use": true,
+    "supports_json_mode": false,
+    "tier_override": "standard"
+  }
+]
