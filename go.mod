@@ -1,6 +1,6 @@
 module github.com/daybeam/vortex
 
-go 1.25.5
+go 1.26.0
 
 require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
@@ -9,7 +9,7 @@ require (
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/seiflotfy/cuckoofilter v0.0.0-20240715131351-a2f2c23f1771
 	github.com/yuin/gopher-lua v1.1.2
-	golang.org/x/text v0.37.0
+	golang.org/x/text v0.42.0
 	modernc.org/sqlite v1.29.0
 )
 
