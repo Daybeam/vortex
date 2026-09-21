@@ -34,6 +34,10 @@ logs/
 outputs/
 tasks/
 .artifacts/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 
 # Internal maintainer docs (not for public repo)
 docs/BOUNDARY.md
