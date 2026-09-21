@@ -1,0 +1,44 @@
+{
+  "id": "test-generator",
+  "name": "Test Generator",
+  "capability": "test_generation",
+  "domain": "software",
+  "description": "Generates unit tests for Go functions by analyzing signatures, branches, and edge cases. Produces table-driven tests following Go conventions.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "source_file": {
+        "type": "string",
+        "description": "Path to the Go source file to test"
+      },
+      "function_name": {
+        "type": "string",
+        "description": "Specific function to generate tests for (optional — if omitted, tests all exported functions)"
+      },
+      "style": {
+        "type": "string",
+        "enum": ["table-driven", "subtests", "basic"],
+        "default": "table-driven",
+        "description": "Test style preference"
+      }
+    },
+    "required": ["source_file"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "test_code": {"type": "string", "description": "Generated Go test code"},
+      "test_file": {"type": "string", "description": "Recommended test file path"},
+      "coverage_notes": {"type": "string", "description": "Which branches/edge cases are covered"}
+    }
+  },
+  "token_estimate": 3000,
+  "requires": [],
+  "incompatible": [],
+  "implementations": {
+    "default": {
+      "system_prompt": "You are a Go test generation expert. Read the source file, identify all branches and edge cases, and generate table-driven tests following Go conventions. Cover happy paths, error paths, boundary values, and nil/empty inputs. Use t.Run subtests for clarity. Include comments explaining non-obvious test cases.",
+      "prompt_version": "1.0"
+    }
+  }
+}

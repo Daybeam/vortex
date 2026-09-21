@@ -1,0 +1,51 @@
+{
+  "id": "code-review",
+  "name": "Code Review",
+  "capability": "code_review",
+  "domain": "software",
+  "description": "Reviews code changes for quality, bugs, security issues, and style violations. Analyzes diffs and produces structured findings.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "diff": {
+        "type": "string",
+        "description": "Unified diff to review"
+      },
+      "focus": {
+        "type": "string",
+        "enum": ["bugs", "security", "style", "performance", "all"],
+        "default": "all",
+        "description": "Review focus area"
+      }
+    },
+    "required": ["diff"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "issues": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+            "file": {"type": "string"},
+            "line": {"type": "integer"},
+            "message": {"type": "string"},
+            "suggestion": {"type": "string"}
+          }
+        }
+      },
+      "summary": {"type": "string"}
+    }
+  },
+  "token_estimate": 2000,
+  "requires": [],
+  "incompatible": [],
+  "implementations": {
+    "default": {
+      "system_prompt": "You are a senior code reviewer. Analyze the diff for bugs, security issues, performance problems, and style violations. For each issue, provide severity, location, description, and a concrete fix suggestion. Be precise — avoid generic advice.",
+      "prompt_version": "1.0"
+    }
+  }
+}

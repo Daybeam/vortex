@@ -1,0 +1,148 @@
+{
+  "default_provider": "openai",
+  "default_embedding_provider": "openai",
+  "providers": {
+    "openai": {
+      "provider": "openai",
+      "model": "gpt-4o",
+      "embedding_model": "text-embedding-3-small",
+      "api_key_env": "OPENAI_API_KEY",
+      "pool_id": "openai",
+      "max_context_window": 128000,
+      "reserve_tokens": 4096,
+      "rate_limit": {
+        "requests_per_minute": 50,
+        "retry_wait_seconds": [1, 2, 5, 10]
+      }
+    },
+    "anthropic": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-20250514",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "pool_id": "anthropic",
+      "max_context_window": 200000,
+      "reserve_tokens": 4096
+    },
+    "gemini": {
+      "provider": "gemini",
+      "model": "gemini-flash-lite-latest",
+      "embedding_model": "gemini-embedding-2",
+      "api_key_env": "GEMINI_API_KEY",
+      "pool_id": "gemini"
+    },
+    "local": {
+      "provider": "ollama",
+      "model": "llama3.1",
+      "base_url": "http://localhost:11434/v1",
+      "pool_id": "local",
+      "max_context_window": 32768
+    }
+  },
+  "skills": [
+    {
+      "id": "code-review",
+      "name": "Code Review",
+      "capability": "code_review",
+      "domain": "software",
+      "description": "Reviews code changes for quality, bugs, and style violations",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "diff": {"type": "string", "description": "Unified diff to review"}
+        },
+        "required": ["diff"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "issues": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "token_estimate": 2000,
+      "implementations": {
+        "default": {
+          "system_prompt": "You are a code reviewer. Analyze the diff and report issues.",
+          "prompt_version": "1.0"
+        }
+      }
+    }
+  ],
+  "skills_dir": "skills",
+  "roles": [
+    {
+      "id": "architect",
+      "name": "Architect",
+      "base_capability": "system_design",
+      "bound_skills": ["code-review"],
+      "provider": "openai",
+      "model": "gpt-4o",
+      "instruction": "Design systems with scalability and maintainability in mind.",
+      "best_for": "architecture decisions, system design, tech stack selection",
+      "generatable": false
+    },
+    {
+      "id": "implementer",
+      "name": "Implementer",
+      "base_capability": "coding",
+      "bound_skills": [],
+      "provider": "openai",
+      "model": "gpt-4o",
+      "instruction": "Write clean, tested code. Follow existing conventions.",
+      "best_for": "feature implementation, bug fixes, refactoring",
+      "generatable": true
+    }
+  ],
+  "roles_dir": "roles",
+  "role_groups": [
+    {
+      "id": "review-panel",
+      "name": "Review Panel",
+      "description": "Multi-role code review with weighted voting",
+      "members": [
+        {"role_id": "architect", "weight": 1.0},
+        {"role_id": "implementer", "weight": 0.5}
+      ],
+      "policy": "voting",
+      "max_parallelism": 2
+    }
+  ],
+  "mcps": [
+    {
+      "id": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "trusted": true,
+      "provides": ["read_file", "write_file", "list_directory"]
+    },
+    {
+      "id": "remote-api",
+      "url": "https://api.example.com/mcp",
+      "trusted": false,
+      "auth_header_name": "Authorization",
+      "auth_header_prefix": "Bearer",
+      "api_key_env": "REMOTE_API_KEY",
+      "provides": ["query", "search"]
+    }
+  ],
+  "external_runtimes": {
+    "python_path": "python3",
+    "node_path": "node"
+  },
+  "system": {
+    "confidence_threshold": 0.7,
+    "max_decision_outcomes": 2000,
+    "max_context_keep": 100,
+    "max_tool_turns": 25,
+    "max_spawn_depth": 3,
+    "default_jit_ttl": 3600,
+    "sandboxed_memory_mb": 256,
+    "sandboxed_cpu_secs": 30,
+    "max_log_size_mb": 100,
+    "max_concurrent_steps": 10,
+    "output_dir": "outputs"
+  },
+  "enable_dynamic_role_gen": false,
+  "enable_ephemeral_role_gen": true,
+  "require_plan_review": false,
+  "swarm_mode_enabled": false
+}
