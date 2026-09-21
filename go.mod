@@ -6,7 +6,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/dop251/goja v0.0.0-20260911104922-fabc3b8078ad
 	github.com/google/uuid v1.6.0
-	github.com/mark3labs/mcp-go v0.54.0
+	github.com/mark3labs/mcp-go v1.1.0
 	github.com/seiflotfy/cuckoofilter v0.0.0-20240715131351-a2f2c23f1771
 	github.com/yuin/gopher-lua v1.1.2
 	golang.org/x/text v0.37.0
