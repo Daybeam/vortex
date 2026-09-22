@@ -343,6 +343,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 		DB:              s.DB,
 	}
 	app.InitArchive(outputBase)
+	defer app.StopArchive() // audit M12: stop pruning goroutine on shutdown
 	if err := app.SetupSubsystems(mcpServer); err != nil {
 		log.Fatalf("failed to init subsystems: %v", err)
 	}

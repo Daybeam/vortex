@@ -283,7 +283,10 @@ func (sm *ScheduleManager) applyAdaptiveRecovery(s *schemas.Schedule) {
 
 	// Query experience store for advice
 	roleID := s.TaskInputs[0].RoleID
-	advice := sm.expStore.QueryRoleAdvice(context.Background(), roleID)
+	// audit L9: bounded context prevents DB query from hanging on shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	advice := sm.expStore.QueryRoleAdvice(ctx, roleID)
 
 	if combos, ok := advice["recommended_skill_combos"].([][]string); ok && len(combos) > 0 {
 		// Attempt to use the first recommended skill combo for the primary step

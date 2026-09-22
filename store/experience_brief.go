@@ -109,7 +109,7 @@ func (es *ExperienceStore) RecordEnvironmentIssue(ctx context.Context, cmd strin
 // Intended for bulk re-embedding when the embedding model changes, but
 // as of 2026-09-06 has zero call sites in core/ or tools/. The function
 // was previously exposed via admin.reindex_memory (now consolidated
-// into orchestrator_invoke). It remains in the interface for future
+// into vortex_invoke). It remains in the interface for future
 // admin re-embedding tool wiring.
 func (es *ExperienceStore) Reindex(ctx context.Context, provider interfaces.Provider, modelID string) error {
 	es.Mu.Lock()
@@ -237,7 +237,10 @@ func (s *ExperienceStore) UpsertDecisionPrecedent(ctx context.Context, node *sch
 
 	// Async embedding if client available
 	if cli != nil && len(node.Embedding) == 0 && node.Reasoning != "" {
+		// audit M13: track with saveWg so WaitAsyncSaves drains this goroutine
+		s.saveWg.Add(1)
 		go func() {
+			defer s.saveWg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			emb, model, err := cli.EmbedWithModel(ctx, node.Reasoning)
