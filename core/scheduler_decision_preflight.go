@@ -109,7 +109,7 @@ func (s *DirectedEngine) applyStepFailurePolicy(graph *schemas.TaskGraph, step *
 	case "skip":
 		step.Status = schemas.StepSkipped
 	case "abort":
-		graph.Status = schemas.GraphFailed
+		s.setGraphStatus(graph, schemas.GraphFailed)
 	default:
 		return false
 	}

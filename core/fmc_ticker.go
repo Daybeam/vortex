@@ -38,6 +38,8 @@ type FMCBatchTicker struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	ctx      context.Context // audit M11: lifecycle ctx so runOnce cancels on Stop
+	cancel   context.CancelFunc
 }
 
 // NewFMCBatchTicker constructs a ticker. interval defaults to 6 hours if
@@ -50,6 +52,7 @@ func NewFMCBatchTicker(reg *config.Registry, runtimes config.ExternalRuntimes, e
 		interval = time.Duration(reg.System.FMCBatchIntervalHours) * time.Hour
 	}
 	reg.Mu.RUnlock()
+	ctx, cancel := context.WithCancel(context.Background()) // audit M11: lifecycle ctx
 	return &FMCBatchTicker{
 		reg:      reg,
 		runtimes: runtimes,
@@ -57,6 +60,8 @@ func NewFMCBatchTicker(reg *config.Registry, runtimes config.ExternalRuntimes, e
 		logger:   logger,
 		interval: interval,
 		stopCh:   make(chan struct{}),
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 }
 
@@ -76,7 +81,12 @@ func (t *FMCBatchTicker) Start() {
 // Stop ends the background loop. Safe to call multiple times or without a
 // prior Start.
 func (t *FMCBatchTicker) Stop() {
-	t.stopOnce.Do(func() { close(t.stopCh) })
+	t.stopOnce.Do(func() {
+		if t.cancel != nil {
+			t.cancel() // audit M11: cancel in-flight runOnce
+		}
+		close(t.stopCh)
+	})
 }
 
 func (t *FMCBatchTicker) loop() {
@@ -136,7 +146,7 @@ func (t *FMCBatchTicker) runOnce() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(t.ctx, 10*time.Minute) // audit M11: derive from lifecycle ctx
 	defer cancel()
 
 	n, err := concreteES.RunFMCBatch(ctx, provider, cfg.Model)

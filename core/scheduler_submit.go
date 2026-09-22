@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
-	"github.com/google/uuid"
 )
 
 func (s *DirectedEngine) validateTaskComplexity(inputs []schemas.StepInput) error {
@@ -295,40 +295,43 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 					// Audit gate. Only runs when the step completed OK and declared criteria.
 					if err == nil && result != nil && step.ExitCriteria != "" &&
 						(result.Output.Status == schemas.StatusOK || result.Output.Status == schemas.StatusPartial) {
-						if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
-							if step.AutoRefineCount < step.MaxAutoRefine {
-								step.AutoRefineCount++
-								step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Refining...", failType, reason))
-								s.logger.Log("EventStepRetrying", graph.TaskID, step.ID, map[string]any{
-									"reason": "exit_criteria_fail", "details": reason,
-									"refine_attempt": step.AutoRefineCount, "fail_type": failType,
+					if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
+						if step.AutoRefineCount < step.MaxAutoRefine {
+							step.AutoRefineCount++
+							step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Refining...", failType, reason))
+							s.logger.Log("EventStepRetrying", graph.TaskID, step.ID, map[string]any{
+								"reason": "exit_criteria_fail", "details": reason,
+								"refine_attempt": step.AutoRefineCount, "fail_type": failType,
+							})
+							// ── AntiPattern Injection (Module 2, Two-Tier Design) ──────────
+							// Query the AntiPatternStore for historical precedents matching
+							// this step's domain + the specific rejection reason, and inject
+							// them as a [PREVIOUS FAILURE ANTI-PATTERN] block. This gives the
+							// weak model curated "error-book" guidance on retry, reducing its
+							// secondary error rate. See core/antipattern_injection.go.
+							antiPatternBlock := s.buildAntiPatternGuidance(step.Task, reason)
+							if antiPatternBlock != "" {
+								s.logger.Log("EventAntiPatternInjected", graph.TaskID, step.ID, map[string]any{
+									"refine_attempt": step.AutoRefineCount,
+									"source":         "antipattern_store",
 								})
-								// ── AntiPattern Injection (Module 2, Two-Tier Design) ──────────
-								// Query the AntiPatternStore for historical precedents matching
-								// this step's domain + the specific rejection reason, and inject
-								// them as a [PREVIOUS FAILURE ANTI-PATTERN] block. This gives the
-								// weak model curated "error-book" guidance on retry, reducing its
-								// secondary error rate. See core/antipattern_injection.go.
-								antiPatternBlock := s.buildAntiPatternGuidance(step.Task, reason)
-								if antiPatternBlock != "" {
-									s.logger.Log("EventAntiPatternInjected", graph.TaskID, step.ID, map[string]any{
-										"refine_attempt": step.AutoRefineCount,
-										"source":         "antipattern_store",
-									})
-								}
-								// Compose the full recovery prompt: prior context + rejection +
-								// anti-pattern guidance. Single composition point keeps the
-								// retry-prompt shape consistent and testable.
-								spawnReq.AdditionalPromptContext = composeRecoveryPrompt(
-									spawnReq.AdditionalPromptContext, reason, antiPatternBlock,
-								)
-								continue // re-spawn with recovery context
 							}
-							// Refine budget exhausted → mark failed (audit rejected).
-							step.Status = schemas.StepFailed
-							step.LastError = store.SanitizeError(fmt.Sprintf("exit_criteria failed after %d refine attempts: %s", step.AutoRefineCount, reason))
-							graph.Status = schemas.GraphFailed
-							break
+							// Compose the full recovery prompt: prior context + rejection +
+							// anti-pattern guidance. Single composition point keeps the
+							// retry-prompt shape consistent and testable.
+							spawnReq.AdditionalPromptContext = composeRecoveryPrompt(
+								spawnReq.AdditionalPromptContext, reason, antiPatternBlock,
+							)
+							continue // re-spawn with recovery context
+						}
+						// Refine budget exhausted → mark failed (audit rejected).
+						// Race fix: protect step/graph status with Mu.
+						s.Mu.Lock()
+						step.Status = schemas.StepFailed
+						step.LastError = store.SanitizeError(fmt.Sprintf("exit_criteria failed after %d refine attempts: %s", step.AutoRefineCount, reason))
+						graph.Status = schemas.GraphFailed
+						s.Mu.Unlock()
+						break
 						}
 						// Audit passed → fall through to success path below.
 					}

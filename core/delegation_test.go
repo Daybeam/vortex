@@ -76,21 +76,25 @@ func TestEngine_CognitiveHandover(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
+		ready := graph != nil && (graph.Status == schemas.GraphBlocked || graph.Status == schemas.GraphPendingReview)
 		engine.Mu.RUnlock()
-		if graph != nil && (graph.Status == schemas.GraphBlocked || graph.Status == schemas.GraphPendingReview) {
+		if ready {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	engine.Mu.RLock()
 	if graph == nil || (graph.Status != schemas.GraphBlocked && graph.Status != schemas.GraphPendingReview) {
+		engine.Mu.RUnlock()
 		t.Fatalf("Expected graph to be blocked or pending_review, got %v", graph.Status)
 	}
-
 	if len(graph.PendingDecisions) == 0 {
+		engine.Mu.RUnlock()
 		t.Fatalf("Expected a pending decision")
 	}
 	dec := graph.PendingDecisions[0]
+	engine.Mu.RUnlock()
 	if dec.Type != schemas.DecisionDelegationRequired {
 		t.Errorf("Expected decision type delegation, got %v", dec.Type)
 	}
@@ -111,15 +115,19 @@ func TestEngine_CognitiveHandover(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
+		completed := graph != nil && graph.Status == schemas.GraphCompleted
 		engine.Mu.RUnlock()
-		if graph.Status == schemas.GraphCompleted {
+		if completed {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if graph.Status != schemas.GraphCompleted {
-		t.Errorf("Expected graph to be completed, got %v", graph.Status)
+	engine.Mu.RLock()
+	finalStatus := graph.Status
+	engine.Mu.RUnlock()
+	if finalStatus != schemas.GraphCompleted {
+		t.Errorf("Expected graph to be completed, got %v", finalStatus)
 	}
 
 	// Check result

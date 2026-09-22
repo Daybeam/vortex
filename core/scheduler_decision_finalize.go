@@ -28,8 +28,11 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 			break
 		}
 	}
+	// Determine final status, then atomically set it via setGraphStatus
+	// (prevents data race with run()'s reader).
+	var finalStatus schemas.GraphStatus
 	if !allOK {
-		graph.Status = schemas.GraphFailed
+		finalStatus = schemas.GraphFailed
 	} else {
 		allSkipped := true
 		for _, step := range graph.Steps {
@@ -39,11 +42,12 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 			}
 		}
 		if allSkipped && len(graph.Steps) > 0 {
-			graph.Status = schemas.GraphCompletedWithSkips
+			finalStatus = schemas.GraphCompletedWithSkips
 		} else {
-			graph.Status = schemas.GraphCompleted
+			finalStatus = schemas.GraphCompleted
 		}
 	}
+	s.setGraphStatus(graph, finalStatus)
 
 	s.persistGraph(graph)
 

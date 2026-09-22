@@ -22,6 +22,7 @@ type MCPClient struct {
 	stdin          io.WriteCloser
 	scanner        *bufio.Scanner
 	stderrBuf      bytes.Buffer
+	stderrMu       sync.Mutex
 	writeMu        sync.Mutex
 	pending        sync.Map // map[string]chan rpcResponse, keyed by request id
 	nextID         atomic.Int64
@@ -137,8 +138,21 @@ func NewMCPClient(command string, args []string, dir string, env map[string]stri
 	// Allow up to 1MB per line for large tool responses
 	c.scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
-	// Capture stderr in a buffer
-	go io.Copy(&c.stderrBuf, stderr)
+	// Capture stderr in a buffer (thread-safe via stderrMu)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := stderr.Read(buf)
+			if n > 0 {
+				c.stderrMu.Lock()
+				c.stderrBuf.Write(buf[:n])
+				c.stderrMu.Unlock()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 
 	// FIX (2026-06-30, re-applying the 2026-06-24 readLoop/sync.Map fix
 	// that had silently regressed back to the old per-call-goroutine
@@ -159,6 +173,13 @@ func NewMCPClient(command string, args []string, dir string, env map[string]stri
 	go c.readLoop()
 
 	return c, nil
+}
+
+// stderrString returns the accumulated stderr output in a thread-safe manner.
+func (c *MCPClient) stderrString() string {
+	c.stderrMu.Lock()
+	defer c.stderrMu.Unlock()
+	return c.stderrBuf.String()
 }
 
 func (c *MCPClient) readLoop() {
@@ -187,9 +208,9 @@ func (c *MCPClient) readLoop() {
 
 	err := c.scanner.Err()
 	if err == nil {
-		err = fmt.Errorf("MCP server closed stdout unexpectedly (stderr: %s)", c.stderrBuf.String())
+		err = fmt.Errorf("MCP server closed stdout unexpectedly (stderr: %s)", c.stderrString())
 	} else {
-		err = fmt.Errorf("read from stdout: %w (stderr: %s)", err, c.stderrBuf.String())
+		err = fmt.Errorf("read from stdout: %w (stderr: %s)", err, c.stderrString())
 	}
 	c.readErr.Store(err)
 
@@ -215,7 +236,7 @@ func (c *MCPClient) SendRequest(ctx context.Context, method string, params any) 
 		if v := c.readErr.Load(); v != nil {
 			return nil, v.(error)
 		}
-		return nil, fmt.Errorf("MCP client closed (stderr: %s)", c.stderrBuf.String())
+		return nil, fmt.Errorf("MCP client closed (stderr: %s)", c.stderrString())
 	default:
 	}
 
@@ -246,7 +267,7 @@ func (c *MCPClient) SendRequest(ctx context.Context, method string, params any) 
 	_, werr := c.stdin.Write(append(data, '\n'))
 	c.writeMu.Unlock()
 	if werr != nil {
-		return nil, fmt.Errorf("write to stdin: %w (stderr: %s)", werr, c.stderrBuf.String())
+		return nil, fmt.Errorf("write to stdin: %w (stderr: %s)", werr, c.stderrString())
 	}
 
 	var line []byte
@@ -260,9 +281,9 @@ func (c *MCPClient) SendRequest(ctx context.Context, method string, params any) 
 		if v := c.readErr.Load(); v != nil {
 			return nil, v.(error)
 		}
-		return nil, fmt.Errorf("MCP client closed while waiting for response (stderr: %s)", c.stderrBuf.String())
+		return nil, fmt.Errorf("MCP client closed while waiting for response (stderr: %s)", c.stderrString())
 	case <-ctx.Done():
-		return nil, fmt.Errorf("MCP request timed out or cancelled: %w (stderr: %s)", ctx.Err(), c.stderrBuf.String())
+		return nil, fmt.Errorf("MCP request timed out or cancelled: %w (stderr: %s)", ctx.Err(), c.stderrString())
 	}
 
 	var resp struct {
@@ -352,7 +373,7 @@ func (c *MCPClient) Initialize(ctx context.Context, protocolVersion string) erro
 	_, err = c.stdin.Write(append(data, '\n'))
 	c.writeMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("write initialized notification failed: %w (stderr: %s)", err, c.stderrBuf.String())
+		return fmt.Errorf("write initialized notification failed: %w (stderr: %s)", err, c.stderrString())
 	}
 
 	c.initialized.Store(true)

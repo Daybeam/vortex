@@ -30,12 +30,15 @@ func (s *DirectedEngine) handleOutput(
 	taskID := graph.TaskID
 	output := result.Output
 	conf := output.Confidence
+	s.Mu.Lock()
 	step.Confidence = &conf
 	step.MissingCtx = output.MissingContext
 	step.StatesVisited = result.StatesVisited // PGPO (ADDED 2026-09-08)
+	s.Mu.Unlock()
 
 	switch {
 	case output.Status == schemas.StatusOK && conf >= s.registry.System.ConfidenceThreshold:
+		s.Mu.Lock()
 		step.Status = schemas.StepOK
 		// FIX (2026-07-03): a step that failed once and then succeeded on
 		// retry previously kept showing the stale error from the earlier
@@ -45,6 +48,7 @@ func (s *DirectedEngine) handleOutput(
 		// here since this step's current, authoritative status is success.
 		step.LastError = ""
 		step.ResultRef = result.Ref
+		s.Mu.Unlock()
 		s.logger.LogWithConfidence(EventStepCompleted, taskID, step.ID, conf, nil)
 		s.publishEvent(taskID, step.ID, EventStepCompleted, map[string]any{"confidence": conf})
 
@@ -136,6 +140,7 @@ func (s *DirectedEngine) handleOutput(
 			summary, _ := output.Result["summary"].(string)
 			format, _ := output.Result["format"].(string)
 			sizeBytes, _ := output.Result["size_bytes"].(float64)
+			s.Mu.Lock()
 			graph.OutputFiles = append(graph.OutputFiles, schemas.OutputFile{
 				StepID:    step.ID,
 				Path:      ref,
@@ -146,6 +151,7 @@ func (s *DirectedEngine) handleOutput(
 				Deliver:   step.Deliver, // ADDED 2026-08-30
 				CreatedAt: time.Now(),
 			})
+			s.Mu.Unlock()
 		}
 
 		// --- Side-loading Optimization ---
@@ -155,16 +161,20 @@ func (s *DirectedEngine) handleOutput(
 		if err == nil && assetFile != nil {
 			// Asset was side-loaded
 			assetFile.Summary = "Side-loaded large JSON result"
+			s.Mu.Lock()
 			graph.OutputFiles = append(graph.OutputFiles, *assetFile)
 
 			// Replace step result with a lightweight reference
 			step.ResultRef = assetFile.Path
+			s.Mu.Unlock()
 			// Optional: Clear heavy data from memory if needed
 		}
 		// ---------------------------------
 
 	case output.Status == schemas.StatusDelegationRequired:
+		s.Mu.Lock()
 		step.Status = schemas.StepBlocked
+		s.Mu.Unlock()
 		s.addDecision(graph, step, schemas.DecisionDelegationRequired, map[string]any{
 			"prompt":  output.Result, // Contains system_prompt and user_prompt from Spawner
 			"role_id": step.RoleID,
@@ -244,10 +254,12 @@ func (s *DirectedEngine) handleOutput(
 		fallback := graph.FallbackFor(step.ID)
 		if fallback != nil && fallback.Status == schemas.StepPending {
 			// Mark the current step as failed-with-fallback (not blocked)
+			s.Mu.Lock()
 			step.Status = schemas.StepFailed
 			step.LastError = fmt.Sprintf("%s: confidence %.2f, root cause: %s", output.Status, conf, string(cause))
 			// Activate the fallback step
 			fallback.Status = schemas.StepPending // already pending, but explicit
+			s.Mu.Unlock()
 			s.logger.Log(EventFallbackActivated, taskID, step.ID, map[string]any{
 				"fallback_step": fallback.ID,
 				"root_cause":    string(cause),
@@ -257,7 +269,9 @@ func (s *DirectedEngine) handleOutput(
 		}
 
 		// No fallback available — proceed with decision blocking as before
+		s.Mu.Lock()
 		step.Status = schemas.StepBlocked
+		s.Mu.Unlock()
 		s.publishEvent(taskID, step.ID, EventStepFailed, map[string]any{"root_cause": string(cause), "blocked": true})
 
 		if s.SignalField != nil {
