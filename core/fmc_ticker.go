@@ -82,7 +82,9 @@ func (t *FMCBatchTicker) Start() {
 // prior Start.
 func (t *FMCBatchTicker) Stop() {
 	t.stopOnce.Do(func() {
-		t.cancel() // audit M11: cancel in-flight runOnce
+		if t.cancel != nil {
+			t.cancel() // audit M11: cancel in-flight runOnce
+		}
 		close(t.stopCh)
 	})
 }

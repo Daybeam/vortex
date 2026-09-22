@@ -390,8 +390,10 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 		}
 		artifacts = append(artifacts, ac)
 	}
-	graph.Artifacts = artifacts
 
+	// Don't mutate graph.Artifacts — persistGraph may be called concurrently
+	// from multiple step goroutines. Artifacts are written to artifacts.json
+	// separately below.
 	data, err := json.MarshalIndent(graph, "", "  ")
 	if err == nil && !graph.IsSmartRouted {
 		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {

@@ -69,26 +69,33 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
+		blocked := graph != nil && graph.Status == schemas.GraphBlocked
 		engine.Mu.RUnlock()
-		if graph != nil && graph.Status == schemas.GraphBlocked {
+		if blocked {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	engine.Mu.RLock()
 	if graph == nil {
+		engine.Mu.RUnlock()
 		t.Fatalf("graph not found")
 	}
 	if graph.Status != schemas.GraphBlocked {
+		engine.Mu.RUnlock()
 		t.Fatalf("expected graph blocked, got %v", graph.Status)
 	}
 	if !graph.IsSmartRouted {
+		engine.Mu.RUnlock()
 		t.Errorf("expected smart-routed graph")
 	}
 	if len(graph.PendingDecisions) == 0 {
+		engine.Mu.RUnlock()
 		t.Fatalf("expected pending decision")
 	}
 	dec := graph.PendingDecisions[0]
+	engine.Mu.RUnlock()
 	if dec.Type != schemas.DecisionDelegationRequired {
 		t.Errorf("expected delegation decision, got %v", dec.Type)
 	}
@@ -118,14 +125,18 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
+		completed := graph != nil && graph.Status == schemas.GraphCompleted
 		engine.Mu.RUnlock()
-		if graph.Status == schemas.GraphCompleted {
+		if completed {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if graph.Status != schemas.GraphCompleted {
+	engine.Mu.RLock()
+	finalStatus := graph.Status
+	engine.Mu.RUnlock()
+	if finalStatus != schemas.GraphCompleted {
 		t.Errorf("expected graph completed, got %v", graph.Status)
 	}
 
@@ -183,23 +194,29 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
+		blocked := graph != nil && graph.Status == schemas.GraphBlocked
 		engine.Mu.RUnlock()
-		if graph != nil && graph.Status == schemas.GraphBlocked {
+		if blocked {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	engine.Mu.RLock()
 	if graph == nil {
+		engine.Mu.RUnlock()
 		t.Fatalf("graph not found")
 	}
 	if graph.Status != schemas.GraphBlocked {
+		engine.Mu.RUnlock()
 		t.Fatalf("expected graph blocked, got %v", graph.Status)
 	}
 	if len(graph.PendingDecisions) == 0 {
+		engine.Mu.RUnlock()
 		t.Fatalf("expected pending decision")
 	}
 	dec := graph.PendingDecisions[0]
+	engine.Mu.RUnlock()
 	if dec.Type != schemas.DecisionDelegationRequired {
 		t.Errorf("expected delegation decision, got %v", dec.Type)
 	}
@@ -218,17 +235,24 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
+		hasPending := graph != nil && len(graph.PendingDecisions) > 0
 		engine.Mu.RUnlock()
-		if graph != nil && len(graph.PendingDecisions) > 0 {
+		if hasPending {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if graph == nil || len(graph.PendingDecisions) == 0 {
+	engine.Mu.RLock()
+	noPending := graph == nil || len(graph.PendingDecisions) == 0
+	var dec2 *schemas.Decision
+	if !noPending {
+		dec2 = graph.PendingDecisions[0]
+	}
+	engine.Mu.RUnlock()
+	if noPending {
 		t.Fatalf("expected second delegation decision after fulfilling first")
 	}
-	dec2 := graph.PendingDecisions[0]
 	if dec2.Type != schemas.DecisionDelegationRequired {
 		t.Errorf("expected second delegation decision, got %v", dec2.Type)
 	}
@@ -280,12 +304,16 @@ func waitForBlocked(t *testing.T, engine *DirectedEngine, taskID string) *schema
 	for i := 0; i < 30; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
+		blocked := graph != nil && graph.Status == schemas.GraphBlocked && len(graph.PendingDecisions) > 0
 		engine.Mu.RUnlock()
-		if graph != nil && graph.Status == schemas.GraphBlocked && len(graph.PendingDecisions) > 0 {
+		if blocked {
 			return graph
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	engine.Mu.RLock()
+	graph = engine.graphs[taskID]
+	engine.Mu.RUnlock()
 	if graph == nil {
 		t.Fatalf("graph %q not found", taskID)
 	}
@@ -443,17 +471,25 @@ func TestDelegationMode_ParallelIndependentSteps(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
+		completed := graph != nil && graph.Status == schemas.GraphCompleted
+		pendingCount := 0
+		var firstDec *schemas.Decision
+		if !completed && graph != nil {
+			pendingCount = len(graph.PendingDecisions)
+			if pendingCount > 0 {
+				firstDec = graph.PendingDecisions[0]
+			}
+		}
 		engine.Mu.RUnlock()
-		if graph.Status == schemas.GraphCompleted {
+		if completed {
 			break
 		}
-		if len(graph.PendingDecisions) == 0 {
+		if pendingCount == 0 {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		dec := graph.PendingDecisions[0]
 		fulfillment := `{"status":"ok","confidence":0.9,"result":{"answer":"done"},"capability":"text"}`
-		if err := engine.FulfillStep(taskID, dec.ID, fulfillment); err != nil {
+		if err := engine.FulfillStep(taskID, firstDec.ID, fulfillment); err != nil {
 			t.Fatalf("FulfillStep failed: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)

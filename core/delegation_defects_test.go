@@ -141,15 +141,19 @@ func TestFulfillDelegation_UnblocksStep(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
+		completed := graph != nil && graph.Status == schemas.GraphCompleted
 		engine.Mu.RUnlock()
-		if graph.Status == schemas.GraphCompleted {
+		if completed {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if graph.Status != schemas.GraphCompleted {
-		t.Errorf("expected graph completed, got %v", graph.Status)
+	engine.Mu.RLock()
+	finalStatus := graph.Status
+	engine.Mu.RUnlock()
+	if finalStatus != schemas.GraphCompleted {
+		t.Errorf("expected graph completed, got %v", finalStatus)
 	}
 }
 
@@ -569,13 +573,14 @@ func TestFulfillDelegation_ClearsPendingDecision(t *testing.T) {
 
 	engine.Mu.RLock()
 	graph = engine.graphs[taskID]
-	engine.Mu.RUnlock()
-
 	for _, dec := range graph.PendingDecisions {
 		if dec.StepID == "step_1" && dec.Type == schemas.DecisionDelegationRequired {
+			engine.Mu.RUnlock()
 			t.Error("expected delegation decision to be cleared after fulfillment")
+			return
 		}
 	}
+	engine.Mu.RUnlock()
 }
 
 // Ensure context import is used

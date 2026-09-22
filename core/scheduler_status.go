@@ -63,10 +63,12 @@ func (s *DirectedEngine) GetStatus(taskID string, view ...string) (map[string]an
 
 	s.Mu.RLock()
 	graph := s.graphs[taskID]
-	s.Mu.RUnlock()
 	if graph != nil {
-		return graph.ToStatusDictView(v), true
+		result := graph.ToStatusDictView(v)
+		s.Mu.RUnlock()
+		return result, true
 	}
+	s.Mu.RUnlock()
 
 	// Fallback: the graph may be owned by another process (Master/Proxy split) or
 	// may have been lost to a restart. Without this, callers see "not found" for
