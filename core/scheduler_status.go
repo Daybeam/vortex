@@ -289,10 +289,10 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 
 	// Phase 3: re-acquire lock, re-validate, and update graph.
 	s.Mu.Lock()
-	defer s.Mu.Unlock()
 
 	graph = s.getOrReloadGraphLocked(taskID)
 	if graph == nil {
+		s.Mu.Unlock()
 		return fmt.Errorf("task %q not found after DB write", taskID)
 	}
 
@@ -306,11 +306,13 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 		}
 	}
 	if dec == nil {
+		s.Mu.Unlock()
 		return fmt.Errorf("decision %q was removed by another operation", decisionID)
 	}
 
 	step = graph.Steps[dec.StepID]
 	if step == nil {
+		s.Mu.Unlock()
 		return fmt.Errorf("step %q not found after DB write", dec.StepID)
 	}
 
@@ -340,6 +342,7 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 		}
 	}
 
+	s.Mu.Unlock()
 	s.persistGraph(graph)
 	return nil
 }

@@ -183,7 +183,7 @@ func (s *DirectedEngine) foldNode(taskID, nodeID string) {
 		node.Status = schemas.NodeAbandoned
 		s.logger.Log("EventNodeFoldingFailed", taskID, "", map[string]any{"node_id": nodeID, "error": err.Error()})
 	}
-	s.persistGraph(graph)
+	s.persistGraphLocked(graph)
 }
 
 // archiveStep ingests a MemoryItem into the ContextArchive after step completion.

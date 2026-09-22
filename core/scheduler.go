@@ -330,6 +330,14 @@ func (s *DirectedEngine) detectReadDeps(graph *schemas.TaskGraph, stepID string,
 }
 
 func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	s.persistGraphLocked(graph)
+}
+
+// persistGraphLocked does the actual persist work. Caller MUST hold s.Mu.Lock().
+// Use persistGraph (without "Locked") when the caller does not hold the lock.
+func (s *DirectedEngine) persistGraphLocked(graph *schemas.TaskGraph) {
 	outDir := filepath.Join(s.outputBase, graph.TaskID)
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		log.Printf("WARN: persistGraph: failed to create output dir %s: %v", outDir, err)
@@ -391,9 +399,9 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 		artifacts = append(artifacts, ac)
 	}
 
-	// Don't mutate graph.Artifacts — persistGraph may be called concurrently
-	// from multiple step goroutines. Artifacts are written to artifacts.json
-	// separately below.
+	// Marshal the graph. Safe because caller holds s.Mu.Lock() — no concurrent
+	// step goroutine can write to graph fields while we read them.
+	graph.Artifacts = artifacts
 	data, err := json.MarshalIndent(graph, "", "  ")
 	if err == nil && !graph.IsSmartRouted {
 		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {
@@ -413,18 +421,11 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 	// Mirror task-level lifecycle state into the registry. Doing it here covers
 	// every state transition that already checkpoints via persistGraph, so status
 	// stays queryable from processes that do not own the in-memory graph.
-	s.persistTaskState(graph)
-}
-
-// persistTaskState writes task-level lifecycle state so a task stays queryable
-// outside the process that owns it. No-op when no registry is configured.
-func (s *DirectedEngine) persistTaskState(graph *schemas.TaskGraph) {
-	if s.TaskRegistry == nil || graph == nil {
-		return
-	}
-	if data, err := json.Marshal(graph.ToStatusDict()); err == nil {
-		if serr := s.TaskRegistry.SaveTask(s.lifecycleCtx, graph.TaskID, string(graph.Status), data); serr != nil {
-			log.Printf("WARN: persistTaskState: failed to save task state for %s: %v", graph.TaskID, serr)
+	if s.TaskRegistry != nil {
+		if data, err := json.Marshal(graph.ToStatusDict()); err == nil {
+			if serr := s.TaskRegistry.SaveTask(s.lifecycleCtx, graph.TaskID, string(graph.Status), data); serr != nil {
+				log.Printf("WARN: persistTaskState: failed to save task state for %s: %v", graph.TaskID, serr)
+			}
 		}
 	}
 }
@@ -531,16 +532,15 @@ func (s *DirectedEngine) GetNotifyChan() chan struct{} {
 
 func (s *DirectedEngine) CancelTask(taskID string) error {
 	s.Mu.Lock()
+	defer s.Mu.Unlock()
 	cancel, ok := s.cancelFuncs[taskID]
 	graph, ok2 := s.graphs[taskID]
 	if !ok || !ok2 {
-		s.Mu.Unlock()
 		return fmt.Errorf("task %q not found or already terminal", taskID)
 	}
 	cancel()
 	graph.Status = schemas.GraphCancelled
-	s.persistGraph(graph) // audit H7: persist cancelled state to prevent zombie tasks on restart
-	s.Mu.Unlock()
+	s.persistGraphLocked(graph) // audit H7: persist cancelled state to prevent zombie tasks on restart
 	return nil
 }
 

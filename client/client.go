@@ -179,7 +179,7 @@ func NewMCPClient(command string, args []string, dir string, env map[string]stri
 func (c *MCPClient) stderrString() string {
 	c.stderrMu.Lock()
 	defer c.stderrMu.Unlock()
-	return c.stderrString()
+	return c.stderrBuf.String()
 }
 
 func (c *MCPClient) readLoop() {
