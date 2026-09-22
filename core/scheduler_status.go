@@ -196,10 +196,31 @@ func (s *DirectedEngine) GetManifest(taskID string) (map[string]any, bool) {
 
 func (s *DirectedEngine) ListGraphs() []map[string]any {
 	s.Mu.RLock()
-	defer s.Mu.RUnlock()
+	seen := make(map[string]bool, len(s.graphs))
 	out := make([]map[string]any, 0, len(s.graphs))
-	for _, g := range s.graphs {
+	for id, g := range s.graphs {
 		out = append(out, g.ToStatusDict())
+		seen[id] = true
+	}
+	s.Mu.RUnlock()
+
+	// Also include persisted tasks from disk that aren't in memory (e.g. after restart).
+	entries, err := os.ReadDir(s.outputBase)
+	if err != nil {
+		return out
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || seen[entry.Name()] {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.outputBase, entry.Name(), "manifest.json"))
+		if err != nil {
+			continue
+		}
+		var g schemas.TaskGraph
+		if json.Unmarshal(data, &g) == nil {
+			out = append(out, g.ToStatusDict())
+		}
 	}
 	return out
 }
