@@ -33,4 +33,4 @@ jobs:
       - name: Secret scan
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.24.2
-          gitleaks detect --source . --no-banner
+          gitleaks detect --source . --no-banner --config gitleaks.toml
