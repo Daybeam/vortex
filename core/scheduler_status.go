@@ -140,6 +140,24 @@ func (s *DirectedEngine) WaitTask(ctx context.Context, taskID string, timeout ti
 	}
 }
 
+// setGraphStatus atomically updates graph.Status under Mu.Lock.
+// Use this instead of direct field assignment to prevent data races
+// between run()'s reader (RLock) and step-goroutine writers.
+func (s *DirectedEngine) setGraphStatus(graph *schemas.TaskGraph, status schemas.GraphStatus) {
+	s.Mu.Lock()
+	graph.Status = status
+	s.Mu.Unlock()
+}
+
+// setStepAndGraphStatus atomically updates both step.Status and graph.Status.
+// Use this when a failure blocks both the step and the graph simultaneously.
+func (s *DirectedEngine) setStepAndGraphStatus(step *schemas.Step, stepStatus schemas.StepStatus, graph *schemas.TaskGraph, graphStatus schemas.GraphStatus) {
+	s.Mu.Lock()
+	step.Status = stepStatus
+	graph.Status = graphStatus
+	s.Mu.Unlock()
+}
+
 func (s *DirectedEngine) broadcastDone(taskID string) {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
@@ -430,24 +448,24 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 					step.AdditionalPromptContext = feedback
 				}
 			}
-		case "approve":
-			step.Status = schemas.StepOK
-		case "reject":
-			step.Status = schemas.StepFailed
-			step.LastError = "human_rejected"
-		case "confirm_abort":
-			// Cost governance (ADDED 2026-09-14): user confirmed Main Agent's
-			// autonomous abort request. Cancel the task graph.
-			graph.Status = schemas.GraphFailed
-			graph.BudgetPaused = true
-			if s.cancelFuncs != nil {
-				if cancel, ok := s.cancelFuncs[taskID]; ok {
-					cancel()
-				}
+	case "approve":
+		step.Status = schemas.StepOK
+	case "reject":
+		step.Status = schemas.StepFailed
+		step.LastError = "human_rejected"
+	case "confirm_abort":
+		// Cost governance (ADDED 2026-09-14): user confirmed Main Agent's
+		// autonomous abort request. Cancel the task graph.
+		graph.Status = schemas.GraphFailed
+		graph.BudgetPaused = true
+		if s.cancelFuncs != nil {
+			if cancel, ok := s.cancelFuncs[taskID]; ok {
+				cancel()
 			}
-		case "continue":
-			// Cost governance: user rejected the abort request, resume execution.
-			step.Status = schemas.StepPending
+		}
+	case "continue":
+		// Cost governance: user rejected the abort request, resume execution.
+		step.Status = schemas.StepPending
 		case "modify_and_resume":
 			step.Status = schemas.StepPending
 			if payload != "" {

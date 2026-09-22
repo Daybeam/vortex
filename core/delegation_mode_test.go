@@ -485,20 +485,29 @@ func TestDelegationMode_DependencyChain(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		engine.Mu.RLock()
 		graph := engine.graphs[taskID]
-		engine.Mu.RUnlock()
 		if graph == nil {
+			engine.Mu.RUnlock()
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		if graph.Status == schemas.GraphCompleted {
+		// Race fix: hold RLock while reading graph.Status and graph.PendingDecisions
+		// so we don't race with addDecision/finalize writes (now under Mu.Lock).
+		status := graph.Status
+		pendingCount := len(graph.PendingDecisions)
+		var firstDec *schemas.Decision
+		if pendingCount > 0 {
+			firstDec = graph.PendingDecisions[0]
+		}
+		engine.Mu.RUnlock()
+
+		if status == schemas.GraphCompleted {
 			break
 		}
-		if len(graph.PendingDecisions) > 0 {
-			dec := graph.PendingDecisions[0]
-			seen = append(seen, dec.StepID)
+		if pendingCount > 0 {
+			seen = append(seen, firstDec.StepID)
 			fulfillment := `{"status":"ok","confidence":0.9,"result":{"answer":"ok"},"capability":"text"}`
-			if err := engine.FulfillStep(taskID, dec.ID, fulfillment); err != nil {
-				t.Fatalf("FulfillStep failed at %s: %v", dec.StepID, err)
+			if err := engine.FulfillStep(taskID, firstDec.ID, fulfillment); err != nil {
+				t.Fatalf("FulfillStep failed at %s: %v", firstDec.StepID, err)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/daybeam/vortex/pkg/types"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
-	"github.com/google/uuid"
 )
 
 func (s *DirectedEngine) runInterceptors(step *schemas.Step, output *SpawnResult) {
@@ -79,11 +79,9 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 						"upstream":    insufficient.UpstreamIDs,
 						"upstream_st": insufficient.UpstreamStatuses,
 					},
-					[]string{"rerun_upstream", "skip", "abort"})
-				s.Mu.Lock()
-				graph.Status = schemas.GraphBlocked
-				s.Mu.Unlock()
-				s.persistGraph(graph)
+				[]string{"rerun_upstream", "skip", "abort"})
+			s.setGraphStatus(graph, schemas.GraphBlocked)
+			s.persistGraph(graph)
 				s.Broadcast()
 				continue
 			}
@@ -172,7 +170,7 @@ func (s *DirectedEngine) GetAllReadySteps() []ReadyStepPair {
 // As of 2026-09-06, all step claiming is handled internally by
 // DirectedEngine.run and executeStep; this method is exposed on the public
 // interface but has no external callers. It remains for potential
-// distributed task scheduling where multiple Vortex instances
+// distributed task scheduling where multiple Orchestrator instances
 // coordinate step ownership.
 func (s *DirectedEngine) ClaimStep(taskID, stepID string) bool {
 	s.Mu.Lock()
@@ -522,10 +520,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 							resolvedInputs[arg] = val
 
 							// ── Coordination Edge (arXiv:2608.16801) ──
-							payloadSize := int64(0)
-							if b, e := json.Marshal(val); e == nil {
-								payloadSize = int64(len(b))
-							}
+							payloadSize := int64(0); if b, e := json.Marshal(val); e == nil { payloadSize = int64(len(b)) }
 							s.recordCoordinationEdge(graph, parts[0], step.ID, "mapping", payloadSize)
 						}
 					}
@@ -535,10 +530,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 						resolvedInputs[arg] = val
 
 						// ── Coordination Edge (arXiv:2608.16801) ──
-						payloadSize := int64(0)
-						if b, e := json.Marshal(val); e == nil {
-							payloadSize = int64(len(b))
-						}
+						payloadSize := int64(0); if b, e := json.Marshal(val); e == nil { payloadSize = int64(len(b)) }
 						s.recordCoordinationEdge(graph, "global_workspace", step.ID, "shared_vfs", payloadSize)
 					}
 				}
@@ -552,10 +544,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				parts := strings.SplitN(ref, ":", 2)
 				if len(parts) == 2 {
 					if res, err := s.taskStore.Get(ctx, taskID, parts[0]); err == nil && res.Data != nil {
-						payloadSize := int64(0)
-						if b, e := json.Marshal(res.Data); e == nil {
-							payloadSize = int64(len(b))
-						}
+						payloadSize := int64(0); if b, e := json.Marshal(res.Data); e == nil { payloadSize = int64(len(b)) }
 						s.recordCoordinationEdge(graph, parts[0], step.ID, "reference", payloadSize)
 					}
 				}
@@ -638,16 +627,16 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				step.Status = schemas.StepBlocked
 				step.LastError = err.Error()
 				s.logger.Log(EventDecisionRequired, taskID, step.ID, map[string]any{
-					"reason":      "max_tool_turns_exhausted",
-					"error":       err.Error(),
-					"retry_count": step.RetryCount,
-					"resume_hint": "choice 'retry' re-spawns this step from scratch; choose 'refine_and_retry' to inject additional_prompt_context carrying the partial progress",
+					"reason":       "max_tool_turns_exhausted",
+					"error":        err.Error(),
+					"retry_count":  step.RetryCount,
+					"resume_hint":  "choice 'retry' re-spawns this step from scratch; choose 'refine_and_retry' to inject additional_prompt_context carrying the partial progress",
 				})
 				s.addDecision(graph, step, schemas.DecisionMaxTurnsExhausted, map[string]any{
-					"error":           err.Error(),
-					"retry_count":     step.RetryCount,
-					"action_required": "Step exhausted its tool-turn budget before producing a final answer. Choose an option to proceed.",
-					"partial_context": "Prior tool interactions are recorded in this step's trace. Use refine_and_retry with feedback to carry that context forward.",
+					"error":            err.Error(),
+					"retry_count":      step.RetryCount,
+					"action_required":  "Step exhausted its tool-turn budget before producing a final answer. Choose an option to proceed.",
+					"partial_context":  "Prior tool interactions are recorded in this step's trace. Use refine_and_retry with feedback to carry that context forward.",
 				}, []string{"resume_more_turns", "refine_and_retry", "escalate_model", "retry", "skip", "abort"})
 				return
 			}
@@ -748,9 +737,8 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"error": err.Error(),
 					"role":  step.RoleID,
 				})
-				// CRITICAL: Update both step and graph status to ensure complete stop
-				step.Status = schemas.StepBlocked
-				graph.Status = schemas.GraphBlocked
+			// CRITICAL: Update both step and graph status to ensure complete stop
+			s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphBlocked)
 
 				// ACAIS: Deposit critical signal for role missing
 				if s.SignalField != nil {
@@ -791,11 +779,11 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
 					"error": err.Error(),
 					"role":  step.RoleID,
-				})
-				step.Status = schemas.StepBlocked
-				graph.Status = schemas.GraphBlocked
+			})
+			// Race fix: protect graph.Status with Mu.
+			s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphBlocked)
 
-				s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
+			s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 					"error":           "Infrastructure failure: " + err.Error(),
 					"action_required": "Please register the missing skill or remove it from the role's bound_skills",
 				}, []string{"create_skill", "retry", "skip", "abort"})
@@ -915,11 +903,11 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					graph.ContextTree[newNodeID] = newNode
 					graph.CurrentNodeID = newNodeID
 
-					// Async Embedding of new intent
-					s.goBackground(func() { s.updateNodeEmbedding(graph.TaskID, newNodeID, newNode.Intent) })
+				// Async Embedding of new intent
+				s.goBackground(func() { s.updateNodeEmbedding(graph.TaskID, newNodeID, newNode.Intent) })
 
-					// Async Folding of previous node
-					s.goBackground(func() { s.foldNode(graph.TaskID, currNode.ID) })
+				// Async Folding of previous node
+				s.goBackground(func() { s.foldNode(graph.TaskID, currNode.ID) })
 				}
 			}
 		}

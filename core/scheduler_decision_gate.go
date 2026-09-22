@@ -77,8 +77,13 @@ func (s *DirectedEngine) addDecision(
 			return
 		}
 	}
+	// Race fix: protect graph.Status and graph.PendingDecisions with Mu.
+	// Must unlock before broadcastDone (line 87) which takes Mu.Lock —
+	// sync.RWMutex is not reentrant.
+	s.Mu.Lock()
 	graph.PendingDecisions = append(graph.PendingDecisions, dec)
 	graph.Status = schemas.GraphBlocked
+	s.Mu.Unlock()
 
 	// Persist the blocked state immediately to prevent restart loops
 	s.persistGraph(graph)
