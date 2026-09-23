@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -128,11 +130,16 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 				wg.Done()
 				return
 			}
-			go func(st *schemas.Step) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				s.executeStep(ctx, graph, st)
-			}(step)
+		go func(st *schemas.Step) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("PANIC in executeStep %s: %v\n%s", st.ID, r, debug.Stack())
+				}
+			}()
+			s.executeStep(ctx, graph, st)
+		}(step)
 		}
 
 		// Use a channel to wait for WaitGroup in a non-blocking way

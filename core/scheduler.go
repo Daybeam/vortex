@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -242,6 +243,11 @@ func (s *DirectedEngine) goBackground(fn func()) {
 	s.bgWg.Add(1)
 	go func() {
 		defer s.bgWg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("PANIC in background goroutine: %v\n%s", r, debug.Stack())
+			}
+		}()
 		fn()
 	}()
 }

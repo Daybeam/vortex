@@ -242,6 +242,18 @@ func (st *ChatSessionStore) Get(id string) *ChatSession {
 	return s
 }
 
+// ListSessions returns recent sessions from the backend (DB). If no backend
+// is configured, returns nil.
+func (st *ChatSessionStore) ListSessions(ctx context.Context, limit int) ([]store.ChatSessionRow, error) {
+	st.mu.Lock()
+	backend := st.backend
+	st.mu.Unlock()
+	if backend == nil {
+		return nil, nil
+	}
+	return backend.ListSessions(ctx, limit)
+}
+
 // chatSessionData is the on-disk format for tree-based sessions.
 type chatSessionData struct {
 	Messages     map[string]*ChatMessage `json:"messages"`

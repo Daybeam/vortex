@@ -46,13 +46,16 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 				logger.Log("EventEphemeralRoleGeneration", req.TaskID, req.StepID, map[string]any{
 					"message": fmt.Sprintf("Role %s not found, attempting ephemeral (session-scoped) generation", req.RoleID),
 				})
-				role, skill, err := generator.GenerateRoleObjects(ctx, req.TaskID, req.StepID, req.RoleID, req.Task)
-				if err != nil {
-					logger.Log("EventEphemeralRoleGenerationFailed", req.TaskID, req.StepID, map[string]any{
-						"error": err.Error(),
-					})
-					return nil, fmt.Errorf("role %q not found and ephemeral generation failed: %w", req.RoleID, err)
+			role, skill, err := generator.GenerateRoleObjects(ctx, req.TaskID, req.StepID, req.RoleID, req.Task)
+			if err != nil {
+				logger.Log("EventEphemeralRoleGenerationFailed", req.TaskID, req.StepID, map[string]any{
+					"error": err.Error(),
+				})
+				if tryDefaultRoleFallback(registry, logger, req, err) {
+					break
 				}
+				return nil, fmt.Errorf("role %q not found and ephemeral generation failed: %w", req.RoleID, err)
+			}
 				req.Hub.Graph.SetSessionRole(req.RoleID, role)
 				if skill != nil {
 					req.Hub.Graph.SetSessionSkill(skill.ID, skill)
@@ -65,16 +68,21 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 					"message": fmt.Sprintf("Role %s not found, attempting dynamic generation", req.RoleID),
 				})
 				// Use the actual task description to make the role more accurate
-				_, err := generator.GetOrCreateRole(ctx, req.TaskID, req.StepID, req.RoleID, req.Task, "code")
-				if err != nil {
-					logger.Log("EventAutoRoleGenerationFailed", req.TaskID, req.StepID, map[string]any{
-						"error": err.Error(),
-					})
-					return nil, fmt.Errorf("role %q not found and dynamic generation failed: %w", req.RoleID, err)
+			_, err := generator.GetOrCreateRole(ctx, req.TaskID, req.StepID, req.RoleID, req.Task, "code")
+			if err != nil {
+				logger.Log("EventAutoRoleGenerationFailed", req.TaskID, req.StepID, map[string]any{
+					"error": err.Error(),
+				})
+				if tryDefaultRoleFallback(registry, logger, req, err) {
+					break
 				}
-			default:
+				return nil, fmt.Errorf("role %q not found and dynamic generation failed: %w", req.RoleID, err)
+			}
+		default:
+			if !tryDefaultRoleFallback(registry, logger, req, fmt.Errorf("dynamic generation is disabled")) {
 				return nil, fmt.Errorf("role %q not found and dynamic generation is disabled", req.RoleID)
 			}
+		}
 		}
 
 		logger.Log(EventStepStarted, req.TaskID, req.StepID, map[string]any{
@@ -100,6 +108,32 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 
 		return res, err
 	}
+}
+
+// tryDefaultRoleFallback attempts to fall back to the built-in
+// "orchestrator_default" role when dynamic/ephemeral role generation fails
+// (e.g. no cookbook source configured, weak model, network error). This
+// preserves orchestrator value (interceptors, context assembly, loop guard,
+// Sieve Guardian) instead of surfacing a hard error that forces the caller
+// to fall back to raw LLM with zero orchestrator benefit.
+//
+// Returns true if the fallback succeeded (caller should break/continue),
+// false if no default role is available (caller should return the error).
+func tryDefaultRoleFallback(registry *config.Registry, logger *Logger, req *SpawnRequest, genErr error) bool {
+	defaultRole := registry.Roles["orchestrator_default"]
+	if defaultRole == nil {
+		return false
+	}
+	logger.Log("EventRoleFallbackToDefault", req.TaskID, req.StepID, map[string]any{
+		"original_role_id": req.RoleID,
+		"error":            genErr.Error(),
+	})
+	if req.Hub != nil && req.Hub.Graph != nil {
+		req.Hub.Graph.SetSessionRole(req.RoleID, defaultRole)
+	} else {
+		req.RoleID = "orchestrator_default"
+	}
+	return true
 }
 
 // HealthCheckInterceptor verifies that local MCP commands exist before execution.

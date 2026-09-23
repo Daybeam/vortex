@@ -120,7 +120,7 @@ type trialState struct {
 }
 
 func NewGrayscaleController(trialRate float64, promotionThreshold int) *GrayscaleController {
-	if trialRate <= 0 {
+	if trialRate < 0 {
 		trialRate = 0.05
 	}
 	if promotionThreshold <= 0 {
