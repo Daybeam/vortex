@@ -571,11 +571,19 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 	app.register(s, mcp.NewTool("orchestrator_get_logs",
 		mcp.WithDescription("Retrieve execution logs for a specific task."),
 		mcp.WithString("task_id", mcp.Required()),
+		mcp.WithNumber("limit", mcp.Description("Max events to return (default: 50, most recent first)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := strArg(req.Params.Arguments, "task_id")
 		events, err := app.Logger.ReadTaskLogs(id)
 		if err != nil {
 			return errResult(err.Error())
+		}
+		limit := intArg(req.Params.Arguments, "limit", 50)
+		if limit <= 0 {
+			limit = 50
+		}
+		if len(events) > limit {
+			events = events[len(events)-limit:]
 		}
 		return jsonOK(events)
 	})

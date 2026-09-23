@@ -268,6 +268,22 @@ func (r *Registry) loadLocked() error {
 		r.Roles[role.ID] = role
 		keepRoles[role.ID] = true
 	}
+
+	if r.Roles["orchestrator_default"] == nil {
+		r.Roles["orchestrator_default"] = &Role{
+			ID:                  "orchestrator_default",
+			Name:                "Orchestrator Default",
+			BaseCapability:      "general",
+			Instruction:         "You are the orchestration dispatcher. A specific role could not be generated for this task. Analyze the task, select the most relevant available tools and skills, and execute directly. Delegate sub-tasks to available roles when applicable. Prioritize tool-based execution over raw reasoning.",
+			BoundSkills:         []string{},
+			BoundMCPBindings:    []MCPBinding{},
+			AllowDynamicSkills:  true,
+			AllowDynamicMCPs:    true,
+			MaxAdditionalSkills: 10,
+			Metadata:            map[string]string{"builtin": "true"},
+		}
+	}
+	keepRoles["orchestrator_default"] = true
 	pruneStale(r.Roles, keepRoles)
 
 	// Prompt Governance (§4.1): config-time validation of Role.Instruction

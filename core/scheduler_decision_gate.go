@@ -8,7 +8,23 @@ import (
 
 // scheduler_decision_gate.go — Phase 4: Decision gate and autonomous abort.
 // Extracted from scheduler_decision.go per GOD_CLASS_REFLECTION_EXECUTION_PLAN.md.
-// Contains: addDecision, RequestAutonomousAbort, maybeBlock.
+// Contains: addDecision, RequestAutonomousAbort, maybeBlock,
+// handleDelegationRequired, handleDefaultFailure.
+
+func (s *DirectedEngine) handleDelegationRequired(graph *schemas.TaskGraph, step *schemas.Step, output schemas.SubagentOutput) {
+	s.Mu.Lock()
+	step.Status = schemas.StepBlocked
+	s.Mu.Unlock()
+	s.addDecision(graph, step, schemas.DecisionDelegationRequired, map[string]any{
+		"prompt":  output.Result,
+		"role_id": step.RoleID,
+	}, []string{"fulfill", "skip", "abort"})
+}
+
+func (s *DirectedEngine) handleDefaultFailure(graph *schemas.TaskGraph, step *schemas.Step) {
+	step.Status = schemas.StepFailed
+	s.maybeBlock(graph, step)
+}
 
 func (s *DirectedEngine) maybeBlock(graph *schemas.TaskGraph, step *schemas.Step) {
 	fallback := graph.FallbackFor(step.ID)

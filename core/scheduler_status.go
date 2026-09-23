@@ -89,11 +89,12 @@ func (s *DirectedEngine) GetStatus(taskID string, view ...string) (map[string]an
 		"source":     "persisted",
 	}
 	if len(graphJSON) > 0 && v == "full" {
-		var decoded map[string]any
-		if err := json.Unmarshal(graphJSON, &decoded); err == nil {
-			for k, v := range decoded {
+		var g schemas.TaskGraph
+		if err := json.Unmarshal(graphJSON, &g); err == nil {
+			sanitized := g.ToStatusDictView(v)
+			for k, val := range sanitized {
 				if _, exists := status[k]; !exists {
-					status[k] = v
+					status[k] = val
 				}
 			}
 		}

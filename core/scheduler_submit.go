@@ -231,10 +231,10 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		s.doneChans[taskID] = make(chan struct{})
 		s.Mu.Unlock()
 
-		// s.persistGraph(graph) // Disabled for Smart Routing Fast-Path to skip manifest.json
+		s.persistGraph(graph) // Re-enabled: needed for task visibility after restart (loadGraphs)
 		s.Broadcast()
 
-		hub := NewContextHub(s.registry, nil, s.expStore)
+		hub := NewContextHub(s.registry, graph, s.expStore)
 
 		spawnReq := &SpawnRequest{
 			TaskID:                   taskID,

@@ -823,12 +823,16 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 	// Sanitize DecisionHistory for status reports (hide heavy embeddings)
 	sanitizedHistory := make(map[string]map[string]any)
 	for id, node := range g.DecisionHistory {
+		reasoning := node.Reasoning
+		if len(reasoning) > 200 {
+			reasoning = reasoning[:200] + "..."
+		}
 		sanitizedHistory[id] = map[string]any{
 			"id":        node.ID,
 			"step_id":   node.StepID,
 			"turn":      node.Turn,
 			"type":      node.Type,
-			"reasoning": node.Reasoning,
+			"reasoning": reasoning,
 			"action":    node.Action,
 			"outcome":   node.Outcome,
 			"causes":    node.Causes,
