@@ -409,7 +409,7 @@ func (s *DirectedEngine) persistGraphLocked(graph *schemas.TaskGraph) {
 	// step goroutine can write to graph fields while we read them.
 	graph.Artifacts = artifacts
 	data, err := json.MarshalIndent(graph, "", "  ")
-	if err == nil && !graph.IsSmartRouted {
+	if err == nil {
 		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {
 			log.Printf("WARN: persistGraph: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
 		}

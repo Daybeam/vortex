@@ -354,8 +354,9 @@ func TestGrayscaleController_ShouldTrial(t *testing.T) {
 	}
 
 	gc2 := NewGrayscaleController(0.0, 10)
-	if gc2.ShouldTrial("cand_4") {
-		t.Error("with trialRate=0.0, ShouldTrial should return false for new candidate")
+	gc2.RecordOutcome("cand_archived", false)
+	if gc2.ShouldTrial("cand_archived") {
+		t.Error("archived candidate should never trial")
 	}
 }
 
@@ -406,5 +407,59 @@ func TestSetCrossFamilyVerifier_SetsFields(t *testing.T) {
 	}
 	if rs.crossFamilyResolver() != "test_provider" {
 		t.Error("expected resolver to return 'test_provider'")
+	}
+}
+
+func TestMapCauseToMutation(t *testing.T) {
+	fixable := map[string]string{
+		"context_deficit":        "rewrite",
+		"generative_uncertainty": "rewrite",
+		"contract_violation":     "rewrite",
+		"capability_required":    "toolchain",
+		"missing_dependency":     "toolchain",
+		"rate_limit":             "perturbation",
+	}
+	for cause, expectedType := range fixable {
+		mutType, ok := mapCauseToMutation(cause)
+		if !ok {
+			t.Errorf("cause %q should be fixable", cause)
+		}
+		if mutType != expectedType {
+			t.Errorf("cause %q: expected mutType %q, got %q", cause, expectedType, mutType)
+		}
+	}
+
+	unfixable := []string{"bad_request", "auth_permission", "role_missing", "cost_overrun", "transient", ""}
+	for _, cause := range unfixable {
+		_, ok := mapCauseToMutation(cause)
+		if ok {
+			t.Errorf("cause %q should be unfixable", cause)
+		}
+	}
+}
+
+func TestExtractRootCause(t *testing.T) {
+	history := []AgentEvent{
+		{EventType: "step_start", Payload: map[string]any{}},
+		{EventType: "tool_call", Payload: map[string]any{}},
+	}
+	if cause := extractRootCause(history); cause != "" {
+		t.Errorf("expected empty cause, got %q", cause)
+	}
+
+	history = []AgentEvent{
+		{EventType: "step_start", Payload: map[string]any{}},
+		{EventType: "step_failed", Payload: map[string]any{"root_cause": "context_deficit"}},
+	}
+	if cause := extractRootCause(history); cause != "context_deficit" {
+		t.Errorf("expected 'context_deficit', got %q", cause)
+	}
+
+	history = []AgentEvent{
+		{EventType: "step_failed", Payload: map[string]any{"root_cause": "rate_limit"}},
+		{EventType: "step_failed", Payload: map[string]any{"root_cause": "capability_required"}},
+	}
+	if cause := extractRootCause(history); cause != "capability_required" {
+		t.Errorf("expected 'capability_required' (last), got %q", cause)
 	}
 }

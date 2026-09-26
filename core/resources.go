@@ -254,9 +254,20 @@ func (l *ResourceLoader) FetchCookbook(ctx context.Context, source, taskHint str
 // Persistence helpers (ADDED 2026-07-14)
 
 func (l *ResourceLoader) loadCookbookFromDisk(source, taskHint string) (string, error) {
-	safeName := fmt.Sprintf("%x", sha256.Sum256([]byte(source+"::"+taskHint)))
-	path := filepath.Join(l.cacheDir, safeName+".txt")
-	data, err := os.ReadFile(path)
+	key := fmt.Sprintf("%x", sha256.Sum256([]byte(source+"::"+taskHint)))
+
+	ptrPath := filepath.Join(l.cacheDir, key+".ptr")
+	if contentHash, err := os.ReadFile(ptrPath); err == nil {
+		contentPath := filepath.Join(l.cacheDir, string(contentHash)+".txt")
+		data, err := os.ReadFile(contentPath)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+
+	legacyPath := filepath.Join(l.cacheDir, key+".txt")
+	data, err := os.ReadFile(legacyPath)
 	if err != nil {
 		return "", err
 	}
@@ -267,9 +278,18 @@ func (l *ResourceLoader) saveCookbookToDisk(source, taskHint, content string) er
 	if err := os.MkdirAll(l.cacheDir, 0755); err != nil {
 		return err
 	}
-	safeName := fmt.Sprintf("%x", sha256.Sum256([]byte(source+"::"+taskHint)))
-	path := filepath.Join(l.cacheDir, safeName+".txt")
-	return os.WriteFile(path, []byte(content), 0644)
+	key := fmt.Sprintf("%x", sha256.Sum256([]byte(source+"::"+taskHint)))
+	contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+
+	contentPath := filepath.Join(l.cacheDir, contentHash+".txt")
+	if _, err := os.Stat(contentPath); os.IsNotExist(err) {
+		if err := os.WriteFile(contentPath, []byte(content), 0644); err != nil {
+			return err
+		}
+	}
+
+	ptrPath := filepath.Join(l.cacheDir, key+".ptr")
+	return os.WriteFile(ptrPath, []byte(contentHash), 0644)
 }
 
 // parseGitHubRepoSource recognizes two repo-shaped source syntaxes:
