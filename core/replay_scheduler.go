@@ -148,7 +148,7 @@ func (g *GrayscaleController) ShouldTrial(candidateID string) bool {
 		return st.promoted
 	}
 	st.trialAttempts++
-	return rand.Float64() < g.trialRate
+	return rand.Float64() <= g.trialRate
 }
 
 // RecordOutcome updates the consecutive success/failure count for a candidate.
@@ -340,6 +340,36 @@ func perturbParams(args map[string]any) map[string]any {
 	return result
 }
 
+// extractRootCause reads the root_cause field from the last step_failed
+// event in the task history. Returns "" if not found (e.g. older tasks
+// logged before root_cause was added to event payloads).
+func extractRootCause(history []AgentEvent) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].EventType == "step_failed" || history[i].EventType == string(EventStepFailed) {
+			if cause, ok := history[i].Payload["root_cause"].(string); ok && cause != "" {
+				return cause
+			}
+		}
+	}
+	return ""
+}
+
+// mapCauseToMutation maps a FailureClass (from core/failure_classify.go) to
+// the appropriate mutation type. Returns (mutationType, fixable).
+// Unfixable failures return ("", false) and are skipped by RunReplayCycle.
+func mapCauseToMutation(cause string) (mutType string, fixable bool) {
+	switch FailureClass(cause) {
+	case FailureClassContextDeficit, FailureClassGenerativeUncertainty, FailureClassContractViolation:
+		return "rewrite", true
+	case FailureClassCapabilityRequired, FailureClassMissingDependency:
+		return "toolchain", true
+	case FailureClassRateLimit:
+		return "perturbation", true
+	default:
+		return "", false
+	}
+}
+
 // RunReplayCycle executes one full cycle: scan → fork → mutate → verify → write-back.
 func (rs *replayScheduler) RunReplayCycle(ctx context.Context) error {
 	log.Printf("[ReplayScheduler] starting replay cycle...")
@@ -356,11 +386,23 @@ func (rs *replayScheduler) RunReplayCycle(ctx context.Context) error {
 
 	totalMutations := 0
 	totalVerified := 0
+	skipped := 0
 
 	for _, taskID := range taskIDs {
 		history, err := rs.replayer.LoadHistory(taskID)
 		if err != nil || len(history) == 0 {
 			continue
+		}
+
+		cause := extractRootCause(history)
+		mutType, fixable := mapCauseToMutation(cause)
+		if !fixable {
+			if cause == "" {
+				mutType = ""
+			} else {
+				skipped++
+				continue
+			}
 		}
 
 		failedStepID := findFailedStep(history)
@@ -378,6 +420,16 @@ func (rs *replayScheduler) RunReplayCycle(ctx context.Context) error {
 			continue
 		}
 
+		if mutType != "" {
+			filtered := variants[:0]
+			for _, v := range variants {
+				if v.Type == mutType {
+					filtered = append(filtered, v)
+				}
+			}
+			variants = filtered
+		}
+
 		for _, v := range variants {
 			totalMutations++
 			record := rs.processMutation(ctx, taskID, failedStepID, v)
@@ -388,7 +440,7 @@ func (rs *replayScheduler) RunReplayCycle(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("[ReplayScheduler] cycle complete: %d tasks, %d mutations, %d verified", len(taskIDs), totalMutations, totalVerified)
+	log.Printf("[ReplayScheduler] cycle complete: %d tasks, %d skipped, %d mutations, %d verified", len(taskIDs), skipped, totalMutations, totalVerified)
 	return nil
 }
 

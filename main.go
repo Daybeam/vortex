@@ -286,8 +286,17 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	}
 	defer scheduler.Stop() // drain background goroutines on exit
 
+	// ── Global Event Logger (trajectory capture) ─────────────────────────
+	gel, gelErr := core.NewGlobalEventLogger(logDir)
+	if gelErr != nil {
+		log.Printf("[event-log] failed to init GlobalEventLogger: %v (continuing without)", gelErr)
+	} else {
+		gel.HookEventBus(core.DefaultBus)
+		defer gel.Close()
+	}
+
 	// ── Offline Replay Scheduler (self-optimization) ──────────────────────
-	if s.DB != nil && getenv("VORTEX_REPLAY_ENABLED", "") != "" {
+	if s.DB != nil && getenv("VORTEX_REPLAY_ENABLED", "1") != "" {
 		replayer := core.NewReplayer(filepath.Join(logDir, "global_trajectory.jsonl"))
 		if expStore, ok := s.Experience.(*store.ExperienceStore); ok {
 			replaySched := core.NewReplayScheduler(replayer, nil, expStore, s.DB, nil)

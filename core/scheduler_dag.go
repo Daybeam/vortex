@@ -613,8 +613,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			// Check for Dynamic Escalation (Fork) signal
 			if strings.Contains(err.Error(), "DYNAMIC_ESCALATION_REQUIRED") {
 				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
-					"error":  "Dynamic Escalation Required",
-					"reason": err.Error(),
+					"error":      "Dynamic Escalation Required",
+					"reason":     err.Error(),
+					"root_cause": string(classifyError(err)),
 				})
 				step.Status = schemas.StepBlocked
 				s.addDecision(graph, step, schemas.DecisionDelegationRequired, map[string]any{
@@ -695,8 +696,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			var br *providers.BadRequestError
 			if errors.As(err, &br) {
 				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
-					"error":   "Bad Request - triggering graceful degradation",
-					"details": br.Msg,
+					"error":      "Bad Request - triggering graceful degradation",
+					"details":    br.Msg,
+					"root_cause": string(FailureClassBadRequest),
 				})
 				step.Status = schemas.StepSkipped
 				step.LastError = store.SanitizeError("degraded: " + br.Msg)
@@ -711,8 +713,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			// Circuit Breaker: Fail fast on authentication/permission errors
 			if strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), "PERMISSION_DENIED") || strings.Contains(err.Error(), "HTTP 401") {
 				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
-					"error":   "Circuit Breaker triggered: Auth failure",
-					"details": err.Error(),
+					"error":      "Circuit Breaker triggered: Auth failure",
+					"details":    err.Error(),
+					"root_cause": string(FailureClassAuthPermission),
 				})
 				break
 			}
@@ -720,8 +723,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			// Pre-flight health check circuit breaker
 			if strings.Contains(err.Error(), "missing dependency:") {
 				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
-					"error":   "Environment check failed",
-					"details": err.Error(),
+					"error":      "Environment check failed",
+					"details":    err.Error(),
+					"root_cause": string(FailureClassMissingDependency),
 				})
 				step.Status = schemas.StepBlocked
 				// FIX (2026-07-24): honor a step-level FailurePolicy override for
@@ -784,8 +788,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			// Permanent Error Check: Skill Not Found
 			if strings.Contains(err.Error(), "skill \"") && strings.Contains(err.Error(), "\" not found") {
 				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
-					"error": err.Error(),
-					"role":  step.RoleID,
+					"error":      err.Error(),
+					"role":       step.RoleID,
+					"root_cause": string(FailureClassRoleMissing),
 			})
 			// Race fix: protect graph.Status with Mu.
 			s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphBlocked)
@@ -826,8 +831,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 
 		if valid, reason := s.sieve.Inspect(outputText, requiredSchema); !valid {
 			s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
-				"error":  "Sieve Guardian intercepted",
-				"reason": reason,
+				"error":      "Sieve Guardian intercepted",
+				"reason":     reason,
+				"root_cause": string(FailureClassContractViolation),
 			})
 			step.LastError = store.SanitizeError("sieve_intercepted: " + reason)
 			step.RetryCount++
@@ -970,6 +976,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 	step.Status = schemas.StepFailed
 	s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
 		"last_error": step.LastError,
+		"root_cause": string(classifyError(errors.New(step.LastError))),
 	})
 
 	// ── StagedWorkspace post-step snapshot + rollback (failure, WIRED 2026-08-21) ──

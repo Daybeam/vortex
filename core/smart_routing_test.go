@@ -49,7 +49,8 @@ func buildSmartRoutingEngine(t *testing.T, requireReview bool) (*DirectedEngine,
 
 // TestSmartRouting_SingleStepNoDeps_BypassesDAG verifies that a single-step
 // task with no dependencies is routed directly through spawner.Spawn,
-// bypassing full DAG construction (no graph entry, no manifest.json).
+// bypassing full DAG construction. A minimal graph entry and manifest.json
+// are created for observability and task history visibility after restart.
 func TestSmartRouting_SingleStepNoDeps_BypassesDAG(t *testing.T) {
 	engine, tmpDir := buildSmartRoutingEngine(t, false)
 	defer engine.Stop()
@@ -83,8 +84,8 @@ func TestSmartRouting_SingleStepNoDeps_BypassesDAG(t *testing.T) {
 	}
 
 	manifestPath := filepath.Join(tmpDir, taskID, "manifest.json")
-	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
-		t.Error("Smart-routed task should NOT write manifest.json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Errorf("Smart-routed task should write manifest.json for task history visibility: %v", err)
 	}
 }
 
