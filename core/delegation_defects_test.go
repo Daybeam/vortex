@@ -424,6 +424,7 @@ func TestSubmitWithSessionIR_SetsTimeoutAndTokenBudget(t *testing.T) {
 		nil, nil, nil, "", "", "",
 		120,   // timeout = 120 seconds
 		50000, // token_budget = 50000
+		"",    // ownerID
 	)
 	if err != nil {
 		t.Fatalf("SubmitWithSessionIR failed: %v", err)
@@ -454,6 +455,7 @@ func TestSubmitWithSessionIR_ZeroTimeoutUsesDefault(t *testing.T) {
 		nil, nil, nil, "", "", "",
 		0, // timeout = 0 (use default)
 		0, // token_budget = 0 (use default)
+		"", // ownerID
 	)
 	if err != nil {
 		t.Fatalf("SubmitWithSessionIR failed: %v", err)

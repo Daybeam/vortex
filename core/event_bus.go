@@ -74,8 +74,11 @@ func (b *EventBus) SubscribeWithCancel(eventType string, handler EventHandler) (
 // Delivery is synchronous to ensure ordering for state-tracking plugins.
 func (b *EventBus) Publish(event AgentEvent) {
 	b.mu.RLock()
-	handlers := b.subscribers[event.EventType]
-	allHandlers := b.subscribers["*"]
+	// audit C-1: slice header copy still shares backing array with subscribers,
+	// racing with SubscribeWithCancel's tombstone write (subs[idx] = nil).
+	// Deep-copy elements under RLock so iteration is safe after unlock.
+	handlers := append([]EventHandler(nil), b.subscribers[event.EventType]...)
+	allHandlers := append([]EventHandler(nil), b.subscribers["*"]...)
 	b.mu.RUnlock()
 
 	// Execute specific handlers (skip tombstoned nil entries — audit H5)

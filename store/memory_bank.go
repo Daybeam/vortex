@@ -14,6 +14,18 @@ type MemoryBank struct {
 	ProductContext string        `json:"product_context"`
 	Progress       Progress      `json:"progress"`
 	SystemPatterns []string      `json:"system_patterns"`
+	UserProfile    UserProfile   `json:"user_profile"`
+}
+
+// UserProfile captures user preferences, expertise, and interaction patterns.
+// The ChatHarness injects this into the system prompt so the gateway agent can
+// disambiguate vague intents and delegate precisely. Maintained externally
+// (REST API or config file); the ChatHarness only loads and injects it.
+type UserProfile struct {
+	Preferences        []string `json:"preferences"`         // e.g. "prefers Python", "uses React"
+	Expertise          []string `json:"expertise"`           // e.g. "backend", "data science"
+	PastDelegations    []string `json:"past_delegations"`    // summaries of past delegated tasks
+	CommunicationStyle string   `json:"communication_style"` // e.g. "concise", "detailed"
 }
 
 type ActiveContext struct {
@@ -48,6 +60,40 @@ func NewMemoryBankStore(baseDir string, backend IMemoryBankBackend) *MemoryBankS
 	}
 }
 
+// SaveUserProfile writes the user profile to userProfile.md in the memory-bank directory.
+func (s *MemoryBankStore) SaveUserProfile(up UserProfile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var b strings.Builder
+	if len(up.Preferences) > 0 {
+		b.WriteString("## Preferences\n")
+		for _, p := range up.Preferences {
+			b.WriteString("- " + p + "\n")
+		}
+	}
+	if len(up.Expertise) > 0 {
+		b.WriteString("## Expertise\n")
+		for _, e := range up.Expertise {
+			b.WriteString("- " + e + "\n")
+		}
+	}
+	if len(up.PastDelegations) > 0 {
+		b.WriteString("## Past Delegations\n")
+		for _, d := range up.PastDelegations {
+			b.WriteString("- " + d + "\n")
+		}
+	}
+	if up.CommunicationStyle != "" {
+		b.WriteString("## Communication Style\n" + up.CommunicationStyle + "\n")
+	}
+
+	if err := os.MkdirAll(s.baseDir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.baseDir, "userProfile.md"), []byte(b.String()), 0644)
+}
+
 func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -57,6 +103,7 @@ func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 		Decisions:      []Decision{},
 		Progress:       Progress{Done: []string{}, Current: []string{}, Next: []string{}},
 		SystemPatterns: []string{},
+		UserProfile:    UserProfile{Preferences: []string{}, Expertise: []string{}, PastDelegations: []string{}},
 	}
 
 	// 1. activeContext.md
@@ -101,6 +148,15 @@ func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 		mb.SystemPatterns = parseList(content)
 		if s.backend != nil {
 			s.backend.SaveItem(context.Background(), "system_patterns", "raw", content, nil)
+		}
+	}
+
+	// 6. userProfile.md
+	if data, err := os.ReadFile(filepath.Join(s.baseDir, "userProfile.md")); err == nil {
+		content := string(data)
+		mb.UserProfile = parseUserProfile(content)
+		if s.backend != nil {
+			s.backend.SaveItem(context.Background(), "user_profile", "raw", content, nil)
 		}
 	}
 
@@ -190,4 +246,34 @@ func parseList(content string) []string {
 		}
 	}
 	return list
+}
+
+// parseUserProfile parses a markdown file with sections:
+// ## Preferences, ## Expertise, ## Past Delegations, ## Communication Style.
+func parseUserProfile(content string) UserProfile {
+	up := UserProfile{Preferences: []string{}, Expertise: []string{}, PastDelegations: []string{}}
+	currentSection := ""
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "## ") {
+			currentSection = strings.ToLower(strings.TrimSpace(line[3:]))
+			continue
+		}
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+			item := strings.TrimSpace(line[2:])
+			switch currentSection {
+			case "preferences":
+				up.Preferences = append(up.Preferences, item)
+			case "expertise":
+				up.Expertise = append(up.Expertise, item)
+			case "past delegations", "past_delegations":
+				up.PastDelegations = append(up.PastDelegations, item)
+			}
+			continue
+		}
+		if currentSection == "communication style" && line != "" {
+			up.CommunicationStyle = line
+		}
+	}
+	return up
 }

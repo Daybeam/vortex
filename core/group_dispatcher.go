@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
-	"github.com/google/uuid"
 )
 
 // GroupDispatcher expands a RoleGroup into a TaskGraph and submits it to the
@@ -53,7 +53,7 @@ func (gd *GroupDispatcher) DispatchGroup(
 		return "", fmt.Errorf("expanding group %q: %w", groupID, err)
 	}
 
-	return gd.engine.SubmitWithSessionIR(inputs, sessionRoles, sessionSkills, sessionProviders, mainProviderID, "", "", 0, 0)
+	return gd.engine.SubmitWithSessionIR(inputs, sessionRoles, sessionSkills, sessionProviders, mainProviderID, "", "", 0, 0, "")
 }
 
 // expandGroup converts a RoleGroup + task string into a concrete []StepInput

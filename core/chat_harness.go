@@ -126,6 +126,20 @@ func (h *ChatHarness) buildSystem(query, taskID string) string {
 			if len(mb.ActiveContext.Goals) > 0 {
 				b.WriteString("Goals: " + strings.Join(mb.ActiveContext.Goals, "; ") + "\n")
 			}
+			// User profile injection — helps the gateway agent disambiguate
+			// vague intents and delegate precisely based on user expertise/preferences.
+			if len(mb.UserProfile.Expertise) > 0 || len(mb.UserProfile.Preferences) > 0 || mb.UserProfile.CommunicationStyle != "" {
+				b.WriteString("\n## User Profile\n")
+				if len(mb.UserProfile.Expertise) > 0 {
+					b.WriteString("Expertise: " + strings.Join(mb.UserProfile.Expertise, ", ") + "\n")
+				}
+				if len(mb.UserProfile.Preferences) > 0 {
+					b.WriteString("Preferences: " + strings.Join(mb.UserProfile.Preferences, ", ") + "\n")
+				}
+				if mb.UserProfile.CommunicationStyle != "" {
+					b.WriteString("Communication style: " + mb.UserProfile.CommunicationStyle + "\n")
+				}
+			}
 		}
 	}
 	return b.String()

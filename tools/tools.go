@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
 	ci "github.com/daybeam/vortex/pkg/codeintel/tools"
 	"github.com/daybeam/vortex/store"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 )
 
 // authTierKeyType is the unexported context key type for the caller's auth tier.
@@ -28,6 +28,82 @@ type authTokenKeyType struct{}
 // AuthTokenKey is the context key used to propagate the actual token used for auth.
 var AuthTokenKey = authTokenKeyType{}
 
+// authOwnerKeyType is the unexported context key type for the caller's owner ID.
+type authOwnerKeyType struct{}
+
+// AuthOwnerKey is the context key used to propagate the caller's resolved OwnerID.
+// When APIKeys is not configured, this is "" and all ownership checks are no-ops.
+var AuthOwnerKey = authOwnerKeyType{}
+
+// CallerOwnerID extracts the OwnerID from a context. Returns "" if unset.
+func CallerOwnerID(ctx context.Context) string {
+	if v, ok := ctx.Value(AuthOwnerKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// CallerIdentity returns the effective caller identity for ownership checks.
+// It composes the per-key OwnerID with the per-connection MCP SessionID
+// (from the SSE/StreamableHTTP transport) to produce a composite identity.
+// This lets a single API key distinguish concurrent SSE sessions:
+//   - Both OwnerID and SessionID present → "owner:sessionID" (per-connection isolation)
+//   - Only OwnerID present → "owner" (per-key isolation, Phase 1 behavior)
+//   - Only SessionID present → "sessionID" (per-connection, no key)
+//   - Neither present → "" (no isolation, backward compat)
+func CallerIdentity(ctx context.Context) string {
+	owner := CallerOwnerID(ctx)
+	if cs := server.ClientSessionFromContext(ctx); cs != nil {
+		return composeIdentity(owner, cs.SessionID())
+	}
+	return owner
+}
+
+// composeIdentity combines a per-key OwnerID with a per-connection SessionID.
+// Exported for testing.
+func composeIdentity(ownerID, sessionID string) string {
+	if sessionID != "" {
+		if ownerID != "" {
+			return ownerID + ":" + sessionID
+		}
+		return sessionID
+	}
+	return ownerID
+}
+
+// CheckTaskOwnership returns true if the caller may access a task with the
+// given owner. Admin tier always passes. Empty task owner always passes
+// (backward compat with single-operator deployments). Otherwise the caller's
+// OwnerID must match the task's OwnerID.
+func CheckTaskOwnership(ctx context.Context, taskOwner string) bool {
+	tier, _ := ctx.Value(AuthTierKey).(string)
+	if tier == TierAdmin {
+		return true
+	}
+	if taskOwner == "" {
+		return true
+	}
+	return taskOwner == CallerIdentity(ctx)
+}
+
+// DenyIfNotOwner checks task ownership and logs a cross_owner_denied audit
+// event if access is denied. Returns true if the caller should be denied
+// (handler should return "not found"). Centralizes the guard+log pattern
+// for the 5 task-scoped tool handlers.
+func DenyIfNotOwner(ctx context.Context, app *App, taskID string) bool {
+	owner := app.Scheduler.GetTaskOwner(taskID)
+	if !CheckTaskOwnership(ctx, owner) {
+		if app.Logger != nil {
+			app.Logger.Log("cross_owner_denied", taskID, "", map[string]any{
+				"caller_identity": CallerIdentity(ctx),
+				"task_owner":      owner,
+			})
+		}
+		return true
+	}
+	return false
+}
+
 const (
 	// TierAdmin grants access to all tools including privileged subsystems.
 	TierAdmin = "admin"
@@ -37,26 +113,26 @@ const (
 
 // App holds all dependencies injected into tool handlers.
 type App struct {
-	Registry          *config.Registry
-	Scheduler         *core.DirectedEngine
-	TaskStore         store.ITaskStore
-	ExpStore          store.IExperienceStore
-	Schedule          *core.ScheduleManager
-	SStore            *store.ScheduleStore
-	JIT               *core.JITManager
-	Logger            *core.Logger
-	CodeIntel         *ci.Handler
-	Navigator         *core.CapabilityNavigator
-	ConfigPath        string
-	Tier              string
-	ResourceLoader    *core.ResourceLoader
-	IntentRouter      *core.IntentRouter
-	EmbedClient       core.EmbeddingClient
-	MemoryBankStore   *store.MemoryBankStore
-	Archive           *core.ContextArchive
-	Promoter          *Promoter // Optional usage-driven hot-promoter for invoke actions
-	SOPManager        *core.SOPManager
-	DB                *sql.DB
+	Registry        *config.Registry
+	Scheduler       *core.DirectedEngine
+	TaskStore       store.ITaskStore
+	ExpStore        store.IExperienceStore
+	Schedule        *core.ScheduleManager
+	SStore          *store.ScheduleStore
+	JIT             *core.JITManager
+	Logger          *core.Logger
+	CodeIntel       *ci.Handler
+	Navigator       *core.CapabilityNavigator
+	ConfigPath      string
+	Tier            string
+	ResourceLoader  *core.ResourceLoader
+	IntentRouter    *core.IntentRouter
+	EmbedClient     core.EmbeddingClient
+	MemoryBankStore *store.MemoryBankStore
+	Archive         *core.ContextArchive
+	Promoter        *Promoter // Optional usage-driven hot-promoter for invoke actions
+	SOPManager      *core.SOPManager
+	DB              *sql.DB
 	editionSubsystems []EditionSubsystem
 	archiveStop       chan struct{} // stops the TTL pruning goroutine (audit: was goroutine leak)
 }

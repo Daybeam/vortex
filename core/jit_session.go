@@ -113,6 +113,8 @@ type JITSessionManager struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*JITSession
+	stopCh   chan struct{}    // audit R-3: stop TTL goroutines on CloseAll
+	stopOnce sync.Once        // audit R-3: safe close of stopCh
 }
 
 // NewJITSessionManager constructs a manager. scriptsDir is the project's
@@ -123,6 +125,7 @@ func NewJITSessionManager(reg *config.Registry, scriptsDir string) *JITSessionMa
 		registry:   reg,
 		scriptPath: filepath.Join(scriptsDir, "jit", "repl_server.py"),
 		sessions:   make(map[string]*JITSession),
+		stopCh:     make(chan struct{}), // audit R-3
 	}
 }
 
@@ -195,8 +198,14 @@ func (m *JITSessionManager) GetOrCreateSession(sessionID, lang string, ttl time.
 
 	// TTL cleanup, mirroring JITManager.RegisterTool's own goroutine pattern.
 	go func() {
-		time.Sleep(ttl)
-		m.CloseSession(sessionID)
+		timer := time.NewTimer(ttl)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			m.CloseSession(sessionID)
+		case <-m.stopCh: // audit R-3: exit promptly on shutdown
+			return
+		}
 	}()
 
 	return sess, nil
@@ -225,6 +234,7 @@ func (m *JITSessionManager) CloseAll() {
 	if m == nil {
 		return
 	}
+	m.stopOnce.Do(func() { close(m.stopCh) }) // audit R-3: stop all TTL goroutines
 	m.mu.Lock()
 	sessions := make([]*JITSession, 0, len(m.sessions))
 	for id, sess := range m.sessions {

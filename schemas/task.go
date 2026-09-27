@@ -15,15 +15,15 @@ import (
 type StepStatus string
 
 const (
-	StepPending    StepStatus = "pending"
-	StepRunning    StepStatus = "running"
-	StepOK         StepStatus = "ok"
-	StepPartial    StepStatus = "partial"
-	StepFailed     StepStatus = "failed"
-	StepBlocked    StepStatus = "blocked"
-	StepSkipped    StepStatus = "skipped"
+	StepPending StepStatus = "pending"
+	StepRunning StepStatus = "running"
+	StepOK      StepStatus = "ok"
+	StepPartial StepStatus = "partial"
+	StepFailed  StepStatus = "failed"
+	StepBlocked StepStatus = "blocked"
+	StepSkipped StepStatus = "skipped"
 	StepDeprecated StepStatus = "deprecated" // ADDED (2026-09-07): DAG surgery - Dead-end node
-	StepSuspended  StepStatus = "suspended"  // ADDED (2026-09-11): async task suspended, awaiting external signal
+	StepSuspended StepStatus = "suspended"   // ADDED (2026-09-11): async task suspended, awaiting external signal
 )
 
 // GraphStatus represents the overall task graph lifecycle.
@@ -37,22 +37,23 @@ const (
 	GraphCompletedWithSkips GraphStatus = "completed_with_skips"
 	GraphFailed             GraphStatus = "failed"
 	GraphCancelled          GraphStatus = "cancelled"
+	GraphSuspended          GraphStatus = "suspended" // Control plane: human-initiated pause, resumable
 )
 
 // DecisionType categorises why a step was blocked.
 type DecisionType string
 
 const (
-	DecisionStepFailed               DecisionType = "step_failed"
-	DecisionCapabilityRequired       DecisionType = "capability_required"
-	DecisionLowConfidence            DecisionType = "low_confidence"
-	DecisionEnvironmentMissing       DecisionType = "environment_missing"
-	DecisionDelegationRequired       DecisionType = "delegation"
-	DecisionUpstreamInsufficient     DecisionType = "upstream_insufficient" // ADDED (2026-08-27): upstream artifact missing or insufficient
-	DecisionBudgetExhausted          DecisionType = "budget_exhausted"      // ADDED (2026-08-30): token budget exceeded
-	DecisionMaxTurnsExhausted        DecisionType = "max_turns_exhausted"   // ADDED (2026-09-07): tool-turn budget exceeded; resumable
-	DecisionRewriteDAG               DecisionType = "rewrite_dag"           // ADDED (2026-09-07): Dynamic DAG surgery
-	DecisionHumanApprovalRequired    DecisionType = "human_approval_required"
+	DecisionStepFailed         DecisionType = "step_failed"
+	DecisionCapabilityRequired DecisionType = "capability_required"
+	DecisionLowConfidence      DecisionType = "low_confidence"
+	DecisionEnvironmentMissing DecisionType = "environment_missing"
+	DecisionDelegationRequired    DecisionType = "delegation"
+	DecisionUpstreamInsufficient DecisionType = "upstream_insufficient" // ADDED (2026-08-27): upstream artifact missing or insufficient
+	DecisionBudgetExhausted      DecisionType = "budget_exhausted"      // ADDED (2026-08-30): token budget exceeded
+	DecisionMaxTurnsExhausted    DecisionType = "max_turns_exhausted"   // ADDED (2026-09-07): tool-turn budget exceeded; resumable
+	DecisionRewriteDAG           DecisionType = "rewrite_dag"           // ADDED (2026-09-07): Dynamic DAG surgery
+	DecisionHumanApprovalRequired DecisionType = "human_approval_required"
 	DecisionAutonomousAbortRequested DecisionType = "autonomous_abort_requested" // ADDED (2026-09-14): cost governance — Main Agent requests abort, user decides
 )
 
@@ -256,11 +257,11 @@ type FailurePolicy struct {
 
 // Step is one node in the task graph.
 type Step struct {
-	ID        string    `json:"id"`
-	RoleID    string    `json:"role_id"`
-	Task      string    `json:"task"`
-	DependsOn []string  `json:"depends_on"`
-	ReadDeps  []ReadDep `json:"read_deps,omitempty"`
+	ID        string   `json:"id"`
+	RoleID    string   `json:"role_id"`
+	Task      string   `json:"task"`
+	DependsOn []string `json:"depends_on"`
+	ReadDeps []ReadDep `json:"read_deps,omitempty"`
 
 	AdditionalSkills         []string            `json:"additional_skills"`
 	AdditionalMCPs           []string            `json:"additional_mcps"`
@@ -301,23 +302,23 @@ type Step struct {
 	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
 
 	// Runtime state — mutated by scheduler
-	Status     StepStatus `json:"status"`
-	RetryCount int        `json:"retry_count"`
-	MaxRetries int        `json:"max_retries"`
+	Status       StepStatus `json:"status"`
+	RetryCount   int        `json:"retry_count"`
+	MaxRetries   int        `json:"max_retries"`
 	// TurnsBudgetBonus is extra tool-turn budget granted to a step on top of
 	// maxTurns, accumulated by repeated "resume_more_turns" decisions. It is how
 	// a step genuinely resumes with more room instead of re-running the same
 	// capped loop and hitting the wall again. ADDED (2026-09-07).
-	TurnsBudgetBonus int       `json:"turns_budget_bonus,omitempty"`
-	LastError        string    `json:"last_error,omitempty"`
-	TriggerError     string    `json:"trigger_error,omitempty"` // First error that led to successful retry (ADDED 2026-08-16)
-	ResultRef        string    `json:"result_ref,omitempty"`
-	Confidence       *float64  `json:"confidence,omitempty"`
-	MissingCtx       []string  `json:"missing_context,omitempty"`
-	ProviderID       string    `json:"provider_id,omitempty"` // Effective Provider ID
-	ModelID          string    `json:"model_id,omitempty"`    // Effective Model ID
-	Metadata         *Metadata `json:"metadata,omitempty"`
-	LastWorkedOn     time.Time `json:"last_worked_on,omitempty"`
+	TurnsBudgetBonus int    `json:"turns_budget_bonus,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
+	TriggerError string     `json:"trigger_error,omitempty"` // First error that led to successful retry (ADDED 2026-08-16)
+	ResultRef    string     `json:"result_ref,omitempty"`
+	Confidence   *float64   `json:"confidence,omitempty"`
+	MissingCtx   []string   `json:"missing_context,omitempty"`
+	ProviderID   string     `json:"provider_id,omitempty"` // Effective Provider ID
+	ModelID      string     `json:"model_id,omitempty"`    // Effective Model ID
+	Metadata     *Metadata  `json:"metadata,omitempty"`
+	LastWorkedOn time.Time  `json:"last_worked_on,omitempty"`
 	// GroupID records which RoleGroup expanded into this step (observability only).
 	GroupID string `json:"group_id,omitempty"`
 
@@ -406,9 +407,9 @@ type DecisionNode struct {
 // so downstream consumers can read structured facts instead of guessing from text.
 type ArtifactContract struct {
 	Path        string    `json:"path"`
-	SourceRefs  []string  `json:"source_refs,omitempty"` // upstream evidence/step refs
+	SourceRefs  []string  `json:"source_refs,omitempty"`  // upstream evidence/step refs
 	SHA256      string    `json:"sha256,omitempty"`
-	Status      string    `json:"status"` // draft|validated|published
+	Status      string    `json:"status"`                 // draft|validated|published
 	Format      string    `json:"format,omitempty"`
 	SizeBytes   int       `json:"size_bytes,omitempty"`
 	GeneratedAt time.Time `json:"generated_at"`
@@ -418,7 +419,7 @@ type ArtifactContract struct {
 	DeliveryStatus string `json:"delivery_status,omitempty"`
 
 	// ─── Artifact Constraint Shield (arXiv:2608.24569) ───────────────────
-	RequiredFields []string          `json:"required_fields,omitempty"`
+	RequiredFields []string       `json:"required_fields,omitempty"`
 	TypeSchema     map[string]string `json:"type_schema,omitempty"` // field -> type (string, number, array, object)
 }
 
@@ -426,9 +427,9 @@ type ArtifactContract struct {
 // One step's trace may reveal that it read a file produced by another step,
 // forming an AGENT -> FILE -> AGENT edge in the coordination graph.
 type ReadDep struct {
-	StepID       string `json:"step_id"`                 // upstream step that produced the file
-	FilePath     string `json:"file_path"`               // path of the file that was read
-	Evidence     string `json:"evidence"`                // trace entry that triggered the detection (e.g. "tool:read_file arg:path")
+	StepID       string `json:"step_id"`             // upstream step that produced the file
+	FilePath     string `json:"file_path"`           // path of the file that was read
+	Evidence     string `json:"evidence"`            // trace entry that triggered the detection (e.g. "tool:read_file arg:path")
 	SourceSHA256 string `json:"source_sha256,omitempty"` // content hash at time of read (StagedWorkspace only)
 	SnapshotID   string `json:"snapshot_id,omitempty"`   // workspace snapshot ID (StagedWorkspace only)
 }
@@ -480,16 +481,16 @@ type ContextNode struct {
 // ─── TaskGraph ────────────────────────────────────────────────────────────
 
 type TaskGraph struct {
-	TaskID            string             `json:"task_id"`
-	TraceID           string             `json:"trace_id,omitempty"`
-	Steps             map[string]*Step   `json:"steps"`
-	Status            GraphStatus        `json:"status"`
-	PendingDecisions  []*Decision        `json:"pending_decisions"`
-	OutputFiles       []OutputFile       `json:"output_files"`
+	TaskID            string           `json:"task_id"`
+	TraceID           string           `json:"trace_id,omitempty"`
+	Steps             map[string]*Step `json:"steps"`
+	Status            GraphStatus      `json:"status"`
+	PendingDecisions  []*Decision      `json:"pending_decisions"`
+	OutputFiles       []OutputFile     `json:"output_files"`
 	Artifacts         []ArtifactContract `json:"artifacts,omitempty"`
-	OverallConfidence *float64           `json:"overall_confidence,omitempty"`
-	CreatedAt         time.Time          `json:"created_at"`
-	CompletedAt       *time.Time         `json:"completed_at,omitempty"`
+	OverallConfidence *float64         `json:"overall_confidence,omitempty"`
+	CreatedAt         time.Time        `json:"created_at"`
+	CompletedAt       *time.Time       `json:"completed_at,omitempty"`
 
 	// Tree-based context management
 	ContextTree   map[string]*ContextNode `json:"context_tree,omitempty"`
@@ -531,8 +532,14 @@ type TaskGraph struct {
 	// Session-level workspace binding (ADDED 2026-09-19).
 	// See docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2 ②.
 	// When SessionID is empty, behavior is identical to legacy (backward compatible).
-	SessionID     string `json:"session_id,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
 	WorkspaceRoot string `json:"workspace_root,omitempty"`
+
+	// OwnerID is set at submission time from the caller's resolved identity
+	// (tools.AuthOwnerKey). When empty (no APIKeys configured), all ownership
+	// checks are no-ops — backward compatible with single-operator deployments.
+	// See docs/architecture-task-ownership.md §2.3.
+	OwnerID string `json:"owner_id,omitempty"`
 
 	IsSmartRouted bool `json:"is_smart_routed,omitempty"`
 
@@ -560,11 +567,11 @@ type TaskGraph struct {
 
 // CoordinationEdge represents a directed flow of information between steps/agents.
 type CoordinationEdge struct {
-	SourceID  string  `json:"source"`  // Step ID that produced the data
-	TargetID  string  `json:"target"`  // Step ID that consumed the data
-	Type      string  `json:"type"`    // mapping | reference | shared_vfs
-	Payload   int64   `json:"payload"` // Estimated size in bytes/tokens
-	Timestamp float64 `json:"ts"`      // Unix nano timestamp
+	SourceID  string  `json:"source"`    // Step ID that produced the data
+	TargetID  string  `json:"target"`    // Step ID that consumed the data
+	Type      string  `json:"type"`      // mapping | reference | shared_vfs
+	Payload   int64   `json:"payload"`   // Estimated size in bytes/tokens
+	Timestamp float64 `json:"ts"`        // Unix nano timestamp
 }
 
 // GetSessionRole returns the raw stored value for a session-scoped role (either
@@ -912,7 +919,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 		"session_roles":       g.SessionRoles,
 		"session_skills":      g.SessionSkills,
 		"coordination_edges":  g.CoordinationEdges,
-		"decision_history":    sanitizedHistory,
+		"decision_history":   sanitizedHistory,
 		"context_tree":        sanitizedTree,
 		"current_node_id":     g.CurrentNodeID,
 	}

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daybeam/vortex/store"
 	"github.com/google/uuid"
+	"github.com/daybeam/vortex/store"
 )
 
 const (
@@ -29,10 +29,10 @@ type ChatSession struct {
 	ActiveLeafID string                  `json:"active_leaf_id,omitempty"`
 	CreatedAt    time.Time               `json:"created_at"`
 
-	mu         sync.Mutex
-	events     []ChatEvent
-	nextSeq    int64
-	seenMsg    map[string]bool
+	mu        sync.Mutex
+	events    []ChatEvent
+	nextSeq   int64
+	seenMsg   map[string]bool
 	lastAccess time.Time
 }
 
@@ -256,16 +256,23 @@ func (st *ChatSessionStore) ListSessions(ctx context.Context, limit int) ([]stor
 
 // chatSessionData is the on-disk format for tree-based sessions.
 type chatSessionData struct {
-	Messages     map[string]*ChatMessage `json:"messages"`
-	RootID       string                  `json:"root_id,omitempty"`
-	ActiveLeafID string                  `json:"active_leaf_id,omitempty"`
+	Messages      map[string]*ChatMessage `json:"messages"`
+	RootID        string                  `json:"root_id,omitempty"`
+	ActiveLeafID  string                  `json:"active_leaf_id,omitempty"`
 }
 
 // Persist writes the session's tree to <dir>/<id>.json and/or SQLite backend.
 func (st *ChatSessionStore) Persist(s *ChatSession) error {
 	s.mu.Lock()
+	// audit C-6: deep-copy messages map under lock. data.Messages = s.Messages
+	// copies only the map header (same backing map), so post-unlock iteration
+	// races with concurrent AppendUserMessage/AppendMessage map writes.
+	msgCopy := make(map[string]*ChatMessage, len(s.Messages))
+	for k, v := range s.Messages {
+		msgCopy[k] = v
+	}
 	data := chatSessionData{
-		Messages:     s.Messages,
+		Messages:     msgCopy,
 		RootID:       s.RootID,
 		ActiveLeafID: s.ActiveLeafID,
 	}

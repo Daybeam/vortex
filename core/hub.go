@@ -24,6 +24,12 @@ type ContextHub struct {
 	Graph    *schemas.TaskGraph
 	Exp      store.IExperienceStore // ADDED (2026-08-16): Support JIT/Generated skills
 
+	// GraphMu points to the owning DirectedEngine's Mu. The Spawner writes
+	// Graph.DecisionHistory through the hub, and persistGraph marshals the
+	// graph under the same mutex. Without this pointer, the Spawner used its
+	// own s.Mu (a different mutex) — a data race (audit C-2).
+	GraphMu *sync.RWMutex
+
 	// OnUnknownMCP is called when ResolveFinalMCPs encounters an MCP ID not
 	// in the static registry. If the callback returns a non-nil MCPDef, it
 	// is registered in DynamicMCPs and the binding proceeds. If nil, the
@@ -37,15 +43,15 @@ type ContextHub struct {
 	// via orchestrator_discover). 429/rate-limit errors are EXCLUDED — they auto-recover.
 	circuitMu      sync.Mutex
 	circuitBroken  map[string]int // poolID → consecutive non-429 failure count
-	circuitMaxFail int            // threshold before a provider is dead
+	circuitMaxFail int           // threshold before a provider is dead
 }
 
 func NewContextHub(reg *config.Registry, graph *schemas.TaskGraph, exp store.IExperienceStore) *ContextHub {
 	return &ContextHub{
-		Registry:       reg,
-		Graph:          graph,
-		Exp:            exp,
-		circuitBroken:  make(map[string]int),
+		Registry: reg,
+		Graph:    graph,
+		Exp:      exp,
+		circuitBroken: make(map[string]int),
 		circuitMaxFail: 3,
 	}
 }
@@ -587,6 +593,7 @@ func (h *ContextHub) EmbedWithFallback(ctx context.Context, text string) ([]floa
 	}
 	return nil, "", fmt.Errorf("no embedding providers configured")
 }
+
 
 // HubEmbeddingClient wraps ContextHub to satisfy the core.EmbeddingClient
 // interface used by IntentRouter. It delegates to EmbedWithFallback, which

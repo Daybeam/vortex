@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,24 +18,30 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
+// maxFileReadBytes caps fs.read at 1 MiB — config/data files, not API responses.
+const maxFileReadBytes = 1 << 20
+
 // ScriptProvider adapts a Lua script into the Provider interface.
 // The Lua script must define a global `provider` table with `name` (string)
 // and `complete` (function) fields.
 type ScriptProvider struct {
-	cfg        *config.ProviderConfig
-	client     *http.Client
-	scriptPath string
-	mu         sync.RWMutex
-	vm         *lua.LState
-	lastLoaded time.Time
+	cfg          *config.ProviderConfig
+	client       *http.Client
+	scriptPath   string
+	workspaceRoot string // if set, Lua scripts get fs.read access scoped to this dir
+	mu           sync.RWMutex
+	vm           *lua.LState
+	lastLoaded   time.Time
 }
 
 // NewScriptProvider creates a new ScriptProvider by loading the given Lua script.
 func NewScriptProvider(cfg *config.ProviderConfig, scriptPath string) (*ScriptProvider, error) {
+	workspaceRoot, _ := cfg.Extra["workspace_root"].(string)
 	sp := &ScriptProvider{
-		cfg:        cfg,
-		client:     &http.Client{Timeout: 120 * time.Second},
-		scriptPath: scriptPath,
+		cfg:          cfg,
+		client:       &http.Client{Timeout: 120 * time.Second},
+		scriptPath:   scriptPath,
+		workspaceRoot: workspaceRoot,
 	}
 	if err := sp.loadScript(); err != nil {
 		return nil, fmt.Errorf("load script %s: %w", scriptPath, err)
@@ -225,6 +233,14 @@ func (sp *ScriptProvider) registerBridge(vm *lua.LState) {
 	// ── env(name) ?string ─────────────────────────────────────────────
 	vm.SetGlobal("env", vm.NewFunction(func(L *lua.LState) int {
 		name := L.CheckString(1)
+		// audit S-M5: reject secret env vars to prevent exfiltration via Lua scripts.
+		upper := strings.ToUpper(name)
+		if strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") ||
+			strings.Contains(upper, "TOKEN") || strings.Contains(upper, "PASSWORD") ||
+			strings.Contains(upper, "CREDENTIAL") {
+			L.Push(lua.LString(""))
+			return 1
+		}
 		L.Push(lua.LString(os.Getenv(name)))
 		return 1
 	}))
@@ -321,6 +337,40 @@ func (sp *ScriptProvider) registerBridge(vm *lua.LState) {
 		return 0
 	}))
 	vm.SetGlobal("log", logMod)
+
+	// ── fs.read(relativePath) ?(content, err) ─────────────────────────
+	// Only available if workspace_root is configured (zero-trust default).
+	// Path is containment-checked against workspace_root to prevent traversal.
+	if sp.workspaceRoot != "" {
+		fsMod := vm.NewTable()
+		vm.SetField(fsMod, "read", vm.NewFunction(func(L *lua.LState) int {
+			filename := L.CheckString(1)
+
+			// Containment check: resolve and verify path stays within workspaceRoot
+			absPath := filepath.Join(sp.workspaceRoot, filename)
+			rel, err := filepath.Rel(sp.workspaceRoot, absPath)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				L.Push(lua.LNil)
+				L.Push(lua.LString("path escapes workspace root"))
+				return 2
+			}
+
+			data, err := os.ReadFile(absPath)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			if len(data) > maxFileReadBytes {
+				data = data[:maxFileReadBytes]
+			}
+
+			L.Push(lua.LString(string(data)))
+			L.Push(lua.LNil)
+			return 2
+		}))
+		vm.SetGlobal("fs", fsMod)
+	}
 }
 
 // ─── Lua ?Go value conversion ───────────────────────────────────────────

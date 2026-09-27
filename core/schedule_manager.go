@@ -176,7 +176,7 @@ func (sm *ScheduleManager) trigger(s *schemas.Schedule) {
 
 	// Submit to scheduler
 	taskID, err := sm.scheduler.Submit(s.TaskInputs)
-
+	
 	sm.Mu.Lock()
 	defer sm.Mu.Unlock()
 
@@ -206,13 +206,14 @@ func (sm *ScheduleManager) trigger(s *schemas.Schedule) {
 		}()
 		go func() {
 			defer sm.wg.Done()
+			defer cancel() // audit R-1: unblock the cancel-propagator goroutine when monitor exits
 			sm.monitorTask(ctx, taskID, s.ID)
 		}()
 	}
 
 	// Calculate next run
 	s.NextRun = sm.calculateNextRun(s)
-
+	
 	// Check MaxRuns
 	if s.MaxRuns > 0 && s.RunCount >= s.MaxRuns {
 		s.Status = schemas.ScheduleCompleted
@@ -287,11 +288,11 @@ func (sm *ScheduleManager) applyAdaptiveRecovery(s *schemas.Schedule) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	advice := sm.expStore.QueryRoleAdvice(ctx, roleID)
-
+	
 	if combos, ok := advice["recommended_skill_combos"].([][]string); ok && len(combos) > 0 {
 		// Attempt to use the first recommended skill combo for the primary step
 		s.TaskInputs[0].AdditionalSkills = combos[0]
-
+		
 		sm.logger.Log("schedule_adaptive_recovery", "", "", map[string]any{
 			"schedule_id": s.ID,
 			"new_skills":  combos[0],

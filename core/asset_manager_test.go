@@ -2,10 +2,10 @@ package core
 
 import (
 	"context"
-	"github.com/daybeam/vortex/store"
 	"os"
 	"path/filepath"
 	"testing"
+	"github.com/daybeam/vortex/store"
 )
 
 type mockTaskStoreForAssets struct {
@@ -18,6 +18,16 @@ func (m *mockTaskStoreForAssets) Get(ctx context.Context, taskID, stepID string)
 		return &store.StepResult{}, nil
 	}
 	return nil, os.ErrNotExist
+}
+
+func (m *mockTaskStoreForAssets) GetBatch(ctx context.Context, taskID string, stepIDs []string) (map[string]*store.StepResult, error) {
+	result := make(map[string]*store.StepResult)
+	for _, sid := range stepIDs {
+		if r, err := m.Get(ctx, taskID, sid); err == nil {
+			result[sid] = r
+		}
+	}
+	return result, nil
 }
 
 func TestAssetManager_Handle(t *testing.T) {

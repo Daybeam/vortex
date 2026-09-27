@@ -124,22 +124,30 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 				break
 			}
 			wg.Add(1)
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Done()
+			// audit C-10: wait for in-flight goroutines with grace period before
+			// returning, so previously launched steps can bail out cleanly.
+			wd := make(chan struct{})
+			go func() { wg.Wait(); close(wd) }()
 			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				wg.Done()
-				return
+			case <-wd:
+			case <-time.After(5 * time.Second):
 			}
-		go func(st *schemas.Step) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("PANIC in executeStep %s: %v\n%s", st.ID, r, debug.Stack())
-				}
-			}()
-			s.executeStep(ctx, graph, st)
-		}(step)
+			return
+		}
+			go func(st *schemas.Step) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("PANIC in executeStep %s: %v\n%s", st.ID, r, debug.Stack())
+					}
+				}()
+				s.executeStep(ctx, graph, st)
+			}(step)
 		}
 
 		// Use a channel to wait for WaitGroup in a non-blocking way
@@ -277,6 +285,21 @@ func (s *DirectedEngine) ClaimTask(stepID string) bool {
 
 	step.Status = schemas.StepRunning
 	return true
+}
+
+func (s *DirectedEngine) ReleaseTask(stepID string) {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
+	for _, g := range s.graphs {
+		if g.Status != schemas.GraphRunning {
+			continue
+		}
+		if step, ok := g.Steps[stepID]; ok && step.Status == schemas.StepRunning {
+			step.Status = schemas.StepPending
+			return
+		}
+	}
 }
 
 func (s *DirectedEngine) ExecuteTask(ctx context.Context, stepID string) (*schemas.SubagentOutput, error) {
@@ -505,14 +528,13 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			}
 			s.Mu.RUnlock()
 
-			// Phase 2: Outside lock, pre-fetch step results from DB
-			// (audit: was DB I/O under RLock, blocking all graph mutations)
-			stepResults := make(map[string]*store.StepResult)
-			for sid := range neededSteps {
-				if res, err := s.taskStore.Get(ctx, taskID, sid); err == nil {
-					stepResults[sid] = res
-				}
-			}
+		// Phase 2: Outside lock, pre-fetch step results from DB
+		// (audit P-H1: was N+1 queries — now batched via GetBatch)
+		neededStepIDs := make([]string, 0, len(neededSteps))
+		for sid := range neededSteps {
+			neededStepIDs = append(neededStepIDs, sid)
+		}
+		stepResults, _ := s.taskStore.GetBatch(ctx, taskID, neededStepIDs) // audit P-H1: single batch query replaces N
 
 			// Phase 3: Under RLock, build resolvedInputs + record coordination edges
 			s.Mu.RLock()
@@ -545,18 +567,27 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			s.Mu.RUnlock()
 		}
 
-		// ── Coordination Edge for ContextRefs (arXiv:2608.16801) ──
-		if len(step.ContextRefs) > 0 {
-			for _, ref := range step.ContextRefs {
-				parts := strings.SplitN(ref, ":", 2)
-				if len(parts) == 2 {
-					if res, err := s.taskStore.Get(ctx, taskID, parts[0]); err == nil && res.Data != nil {
-						payloadSize := int64(0); if b, e := json.Marshal(res.Data); e == nil { payloadSize = int64(len(b)) }
-						s.recordCoordinationEdge(graph, parts[0], step.ID, "reference", payloadSize)
-					}
+	// ── Coordination Edge for ContextRefs (arXiv:2608.16801) ──
+	if len(step.ContextRefs) > 0 {
+		// audit P-H2: batch-fetch all referenced step results in one query.
+		refStepIDs := make([]string, 0, len(step.ContextRefs))
+		for _, ref := range step.ContextRefs {
+			parts := strings.SplitN(ref, ":", 2)
+			if len(parts) == 2 {
+				refStepIDs = append(refStepIDs, parts[0])
+			}
+		}
+		refResults, _ := s.taskStore.GetBatch(ctx, taskID, refStepIDs)
+		for _, ref := range step.ContextRefs {
+			parts := strings.SplitN(ref, ":", 2)
+			if len(parts) == 2 {
+				if res := refResults[parts[0]]; res != nil && res.Data != nil {
+					payloadSize := int64(0); if b, e := json.Marshal(res.Data); e == nil { payloadSize = int64(len(b)) }
+					s.recordCoordinationEdge(graph, parts[0], step.ID, "reference", payloadSize)
 				}
 			}
 		}
+	}
 
 		// ── Phase 0.8: Tracing & Spans ─────────────────────────────
 		traceID := graph.TraceID
@@ -566,6 +597,8 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		spanID := NewSpanID()
 		ctx = ContextWithTrace(ctx, traceID, spanID)
 
+		hub := NewContextHub(s.registry, graph, s.expStore)
+		hub.GraphMu = &s.Mu // audit C-2: share engine mutex so Spawner's DecisionHistory writes race-free with persistGraph
 		result, err := s.spawner.Spawn(ctx, &SpawnRequest{
 			TaskID:                   taskID,
 			StepID:                   step.ID,
@@ -587,7 +620,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			Metadata: map[string]any{
 				"context_tree_path": treeHistory,
 			},
-			Hub:                     NewContextHub(s.registry, graph, s.expStore),
+			Hub:                     hub,
 			InputMapping:            resolvedInputs,
 			Isolation:               step.Isolation,
 			AdditionalPromptContext: step.AdditionalPromptContext,
@@ -617,7 +650,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"reason":     err.Error(),
 					"root_cause": string(classifyError(err)),
 				})
-				step.Status = schemas.StepBlocked
+				s.Mu.Lock()
+				step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write
+				s.Mu.Unlock()
 				s.addDecision(graph, step, schemas.DecisionDelegationRequired, map[string]any{
 					"error":           "Context overflow: task too complex for single model.",
 					"action_required": "Please split this step into smaller sub-tasks.",
@@ -700,8 +735,10 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"details":    br.Msg,
 					"root_cause": string(FailureClassBadRequest),
 				})
-				step.Status = schemas.StepSkipped
+				s.Mu.Lock()
+				step.Status = schemas.StepSkipped // audit C-3: protect 2-word string write
 				step.LastError = store.SanitizeError("degraded: " + br.Msg)
+				s.Mu.Unlock()
 				return
 			}
 
@@ -727,7 +764,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"details":    err.Error(),
 					"root_cause": string(FailureClassMissingDependency),
 				})
-				step.Status = schemas.StepBlocked
+				s.Mu.Lock()
+				step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write
+				s.Mu.Unlock()
 				// FIX (2026-07-24): honor a step-level FailurePolicy override for
 				// this failure class, if the caller declared one -- see
 				// schemas/task.go's FailurePolicy type. A nil FailurePolicy (the
@@ -933,8 +972,10 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
 				if step.AutoRefineCount < step.MaxAutoRefine {
 					step.AutoRefineCount++
-					step.Status = schemas.StepPending
+					s.Mu.Lock()
+					step.Status = schemas.StepPending // audit C-3: protect 2-word string write
 					step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Retrying...", failType, reason))
+					s.Mu.Unlock()
 					s.logger.Log(EventStepRetrying, taskID, step.ID, map[string]any{
 						"reason": "exit_criteria_fail", "details": reason, "refine_attempt": step.AutoRefineCount, "fail_type": failType,
 					})
@@ -958,7 +999,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					step.Task = fmt.Sprintf("%s\n\n[REFINEMENT REQUIRED]\nYour previous output failed verification.\nFailure Category: %s\nReason: %s\nAdvice: %s", step.Task, failType, reason, recoveryAdvice)
 					continue
 				} else {
-					step.Status = schemas.StepBlocked
+					s.Mu.Lock()
+					step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write
+					s.Mu.Unlock()
 					s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 						"error":  "Failed exit criteria after max refinements",
 						"reason": reason,
@@ -973,7 +1016,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 	}
 
 	// Exhausted retries
-	step.Status = schemas.StepFailed
+	s.Mu.Lock()
+	step.Status = schemas.StepFailed // audit C-3: protect 2-word string write
+	s.Mu.Unlock()
 	s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
 		"last_error": step.LastError,
 		"root_cause": string(classifyError(errors.New(step.LastError))),

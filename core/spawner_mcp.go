@@ -312,6 +312,10 @@ func (s *Spawner) DirectExecute(ctx context.Context, mcpID, toolName string, arg
 	}
 
 	if mcpDef.Command != "" {
+		// Validate arguments against the tool's JSON Schema before dispatching.
+		if err := validateToolArgs(mcpDef, toolName, args); err != nil {
+			return nil, err
+		}
 		cli, err := s.mcpMgr.ensureMCPClient(ctx, mcpDef, "direct_execute")
 		if err != nil {
 			return nil, err

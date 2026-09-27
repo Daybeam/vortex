@@ -135,17 +135,19 @@ func isRetryableError(err error) bool {
 	return false
 }
 
+// stateChangingTools is a package-level set to avoid per-call map allocation (audit P-H8).
+var stateChangingTools = map[string]bool{
+	"click":          true,
+	"type":           true,
+	"navigate":       true,
+	"press_key":      true,
+	"scroll":         true,
+	"set_cookie":     true,
+	"execute_script": true,
+}
+
 func isStateChangingTool(name string) bool {
-	stateTools := map[string]bool{
-		"click":          true,
-		"type":           true,
-		"navigate":       true,
-		"press_key":      true,
-		"scroll":         true,
-		"set_cookie":     true,
-		"execute_script": true,
-	}
-	return stateTools[name]
+	return stateChangingTools[name]
 }
 
 func containsTool(tools []string, target string) bool {

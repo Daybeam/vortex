@@ -55,6 +55,17 @@ func (s *DirectedEngine) ApprovePlan(taskID string) error {
 
 // ─── Poll ─────────────────────────────────────────────────────────────────
 
+// GetTaskOwner returns the OwnerID of a task, or "" if not found.
+// Used by tool handlers for ownership guard checks.
+func (s *DirectedEngine) GetTaskOwner(taskID string) string {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	if graph, ok := s.graphs[taskID]; ok {
+		return graph.OwnerID
+	}
+	return ""
+}
+
 func (s *DirectedEngine) GetStatus(taskID string, view ...string) (map[string]any, bool) {
 	v := "summary"
 	if len(view) > 0 {

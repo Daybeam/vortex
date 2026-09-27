@@ -487,10 +487,10 @@ type SystemSettings struct {
 	StagingRetentionHours     int             `json:"staging_retention_hours,omitempty"`
 	// MaxConcurrentSteps caps the number of steps that may execute in parallel
 	// within a single task graph (audit finding M4). Defaults to 10 if unset.
-	MaxConcurrentSteps      int           `json:"max_concurrent_steps,omitempty"`
-	MaxTaskChars            int           `json:"max_task_chars,omitempty"`
-	ToolRepetitionThreshold int           `json:"tool_repetition_threshold,omitempty"`
-	Sandbox                 SandboxConfig `json:"sandbox,omitempty"`
+	MaxConcurrentSteps        int             `json:"max_concurrent_steps,omitempty"`
+	MaxTaskChars              int             `json:"max_task_chars,omitempty"`
+	ToolRepetitionThreshold   int             `json:"tool_repetition_threshold,omitempty"`
+	Sandbox                   SandboxConfig   `json:"sandbox,omitempty"`
 	// EnableAutoRepair controls the VDA self-healing path in HealthCheckInterceptor.
 	// When false (default), missing MCP dependencies are logged and degraded
 	// without executing any local fix scripts. When true, the interceptor will
@@ -508,12 +508,26 @@ type SystemSettings struct {
 	FMCWeakModel string `json:"fmc_weak_model,omitempty"`
 	// FMCBatchIntervalHours controls how often the FMC batch ticker runs.
 	// Defaults to 6 hours if unset/zero, matching the design doc's guidance.
-	FMCBatchIntervalHours int                `json:"fmc_batch_interval_hours,omitempty"`
+	FMCBatchIntervalHours int             `json:"fmc_batch_interval_hours,omitempty"`
 	Notifications         NotificationConfig `json:"notifications,omitempty"`
-	Retention             RetentionSettings  `json:"retention,omitempty"`
+	Retention             RetentionSettings `json:"retention,omitempty"`
 	// OutputDir overrides the default "outputs" directory for task output.
 	// When empty (the default), "outputs" is used. Relative to project root.
-	OutputDir string `json:"output_dir,omitempty"`
+	OutputDir              string           `json:"output_dir,omitempty"`
+
+	// APIKeys enables named-key authentication with per-key owner identity.
+	// When empty (the default), behavior is identical to legacy env-var keys:
+	// every caller resolves to OwnerID="" and all ownership checks are no-ops.
+	APIKeys []NamedAPIKey `json:"api_keys,omitempty"`
+}
+
+// NamedAPIKey pairs a bearer token with an owner identity and tier.
+// When APIKeys is configured, tieredBearerAuth resolves the presented token
+// against this list and propagates OwnerID via tools.AuthOwnerKey.
+type NamedAPIKey struct {
+	Key     string `json:"key"`
+	OwnerID string `json:"owner_id"`
+	Tier    string `json:"tier"` // "admin" | "public"
 }
 
 // OutputDirOrDefault returns the configured output directory or "outputs" if unset.

@@ -16,13 +16,17 @@ import (
 // Contains: finalize, deliverArtifacts, reflect.
 
 func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
+	// audit C-5/C-8: protect graph field writes + map iteration from concurrent
+	// MutateGraphTopology (which adds steps under Mu.Lock) and persistGraph
+	// (which marshals the graph under Mu.Lock).
+	s.Mu.Lock()
 	conf := graph.ComputeConfidence()
-	graph.OverallConfidence = &conf
+	graph.OverallConfidence = &conf // audit C-8
 	now := time.Now()
-	graph.CompletedAt = &now
+	graph.CompletedAt = &now // audit C-8
 
 	allOK := true
-	for _, step := range graph.Steps {
+	for _, step := range graph.Steps { // audit C-5: iterate under Lock
 		if step.Status == schemas.StepFailed || step.Status == schemas.StepBlocked {
 			allOK = false
 			break
@@ -35,7 +39,7 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 		finalStatus = schemas.GraphFailed
 	} else {
 		allSkipped := true
-		for _, step := range graph.Steps {
+		for _, step := range graph.Steps { // audit C-5
 			if step.Status != schemas.StepSkipped {
 				allSkipped = false
 				break
@@ -47,6 +51,7 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 			finalStatus = schemas.GraphCompleted
 		}
 	}
+	s.Mu.Unlock()
 	s.setGraphStatus(graph, finalStatus)
 
 	s.persistGraph(graph)

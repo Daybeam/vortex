@@ -167,6 +167,7 @@ func runExec(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBas
 
 	sf := core.NewSignalField(0.95, 10*time.Second)
 	scheduler := core.NewDirectedEngine(reg, ts, es, jitMgr, logger, sf, outputBase, tmpBase, loader)
+	scheduler.SetMemoryBankStore(mbStore)
 
 	// Wire capability-aware routing: Pareto frontier selection + IRT theta
 	// turn budgeting + model registry for context-window fallback.
@@ -275,6 +276,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
 	scheduler := core.NewDirectedEngine(reg, ts, es, jitMgr, logger, sf, outputBase, tmpBase, loader)
+	scheduler.SetMemoryBankStore(mbStore)
 	scheduler.JITSessions = core.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.TaskRegistry = s.TaskRegistry
 	scheduler.Sessions = core.NewSessionManager(reg.System.Sandbox.AllowedWorkspaces, 0)

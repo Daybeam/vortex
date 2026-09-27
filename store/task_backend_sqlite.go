@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/daybeam/vortex/schemas"
 )
@@ -41,6 +42,46 @@ func (b *SQLiteTaskBackend) Load(ctx context.Context, taskID, stepID string) ([]
 		return nil, fmt.Errorf("step not found: %s/%s", taskID, stepID)
 	}
 	return data, err
+}
+
+// LoadBatch fetches multiple step results in a single SQL query (audit P-H1-H4).
+// Uses `SELECT ... WHERE step_id IN (?,?,...)` instead of N separate queries.
+// SQLite default host-parameter limit is 999; callers with >900 stepIDs should chunk.
+func (b *SQLiteTaskBackend) LoadBatch(ctx context.Context, taskID string, stepIDs []string) (map[string][]byte, error) {
+	if len(stepIDs) == 0 {
+		return make(map[string][]byte), nil
+	}
+
+	// Build dynamic IN clause: (?, ?, ?, ...)
+	placeholders := make([]string, len(stepIDs))
+	args := make([]any, 0, len(stepIDs)+1)
+	args = append(args, taskID)
+	for i, sid := range stepIDs {
+		placeholders[i] = "?"
+		args = append(args, sid)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT step_id, result_json FROM task_steps
+		WHERE task_id = ? AND step_id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	rows, err := b.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][]byte, len(stepIDs))
+	for rows.Next() {
+		var stepID string
+		var data []byte
+		if err := rows.Scan(&stepID, &data); err != nil {
+			return nil, err
+		}
+		result[stepID] = data
+	}
+	return result, rows.Err()
 }
 
 func (b *SQLiteTaskBackend) Delete(ctx context.Context, taskID string) (int, error) {
