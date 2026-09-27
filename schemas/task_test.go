@@ -1,5 +1,5 @@
-//go:build test
-// +build test
+// fixes audit T-H19: removed //go:build test tag so these tests run by
+// default with `go test ./...` instead of requiring `-tags test`.
 
 package schemas
 
@@ -23,12 +23,8 @@ func TestTaskGraph_ReadySteps(t *testing.T) {
 
 	found2, found4 := false, false
 	for _, s := range ready {
-		if s.ID == "step2" {
-			found2 = true
-		}
-		if s.ID == "step4" {
-			found4 = true
-		}
+		if s.ID == "step2" { found2 = true }
+		if s.ID == "step4" { found4 = true }
 	}
 	if !found2 || !found4 {
 		t.Errorf("ready steps did not contain expected IDs")

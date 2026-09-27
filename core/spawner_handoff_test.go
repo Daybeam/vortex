@@ -26,7 +26,9 @@ func (m *mockTaskStoreForHandoff) ClearTask(ctx context.Context, taskID string) 
 func (m *mockTaskStoreForHandoff) Claim(ctx context.Context, taskID, stepID string) (bool, error)                   { return true, nil }
 
 // buildTestSpawnerForHandoff constructs a minimal Spawner pre-wired with an
-// AssetManager and the given ref-based handoff threshold.
+// AssetManager, Logger, and ContextHub so that the production method
+// applyRefBasedHandoff can be called directly (T-C08 fix: previously the
+// test reimplemented the production logic, which could drift silently).
 func buildTestSpawnerForHandoff(t *testing.T, threshold int) (*Spawner, string) {
 	t.Helper()
 	tmpDir, err := os.MkdirTemp("", "anticliff_handoff")
@@ -34,48 +36,41 @@ func buildTestSpawnerForHandoff(t *testing.T, threshold int) (*Spawner, string) 
 		t.Fatal(err)
 	}
 
+	logger, err := NewLogger(filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { logger.Close() })
+
 	am := NewAssetManager(tmpDir, 1, nil)
 	sp := &Spawner{
 		assets:                   am,
 		refBasedHandoffThreshold: threshold,
+		logger:                   logger,
 	}
 	return sp, tmpDir
 }
 
-// invokeContextInjection reproduces the exact upstream-context injection
-// branch from spawner.go's doSpawn. Returns the flattened user text.
+// invokeContextInjection calls the PRODUCTION method applyRefBasedHandoff
+// (spawner_utils.go:382) instead of reimplementing it. This ensures the
+// test actually exercises the production code path (T-C08 fix).
 func invokeContextInjection(t *testing.T, sp *Spawner, taskID, stepID string, upstreamCtx map[string]any) string {
 	t.Helper()
-	if len(upstreamCtx) == 0 {
-		return "task: do something"
+	// Build a minimal Hub if the spawner doesn't have one wired via registry.
+	// For handoff tests, we use an empty registry so resolveCandidateConfig
+	// returns a virtual "host" provider with MaxContextWindow=0.
+	reg := &config.Registry{
+		Providers: make(map[string]*config.ProviderConfig),
 	}
+	hub := NewContextHub(reg, nil, nil)
 
-	ctxBytes, _ := json.Marshal(upstreamCtx)
-	ctxLen := len(ctxBytes)
-
-	userText := "task: do something"
-
-	effectiveThreshold := sp.GetEffectiveHandoffThreshold(nil)
-
-	if sp.assets != nil && effectiveThreshold > 0 && ctxLen > effectiveThreshold {
-		file, err := sp.assets.Handle(taskID, stepID, ctxBytes, "json", "upstream_context")
-		if err == nil && file != nil {
-			refPointer := map[string]any{
-				"ref":     file.Path,
-				"size":    ctxLen,
-				"summary": "Upstream context side-loaded (adaptive model threshold); use read_file to inspect.",
-				"step":    stepID,
-				"task":    taskID,
-			}
-			ptrBytes, _ := json.Marshal(refPointer)
-			userText = "task: do something\n\n### Upstream Context (ref-based)\n" + string(ptrBytes)
-		} else {
-			userText = "task: do something\n\n### Upstream Context\n" + string(ctxBytes)
-		}
-	} else {
-		userText = "task: do something\n\n### Upstream Context\n" + string(ctxBytes)
+	req := &SpawnRequest{
+		TaskID: taskID,
+		StepID: stepID,
+		Task:   "task: do something",
+		Hub:    hub,
 	}
-	return userText
+	return sp.applyRefBasedHandoff(context.Background(), req, nil, "task: do something", upstreamCtx)
 }
 
 func buildLargeUpstreamContext(nKB int) map[string]any {

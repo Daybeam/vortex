@@ -1,6 +1,3 @@
-//go:build test
-// +build test
-
 package core
 
 import (
@@ -11,26 +8,26 @@ import (
 	"github.com/daybeam/vortex/config"
 )
 
-func TestSpawner_PruneSkills(t *testing.T) {
-	t.Skip("pruneSkills moved to SkillRouter")
-}
+// TestSpawner_PruneSkills removed (fixes audit T-C20): pruneSkills moved to
+// SkillRouter. The skip-only stub provided zero coverage. If pruneSkills
+// behavior needs testing, add tests in skill_router_test.go.
 
 func TestSpawner_FailFast_MissingCapabilities(t *testing.T) {
 	reg := &config.Registry{
 		Roles: map[string]*config.Role{
 			"strict_role": {
-				ID:          "strict_role",
-				Requires:    []string{"pdf.extract", "fragment.search"},
+				ID: "strict_role",
+				Requires: []string{"pdf.extract", "fragment.search"},
 				Generatable: false,
 			},
 			"generatable_role": {
-				ID:          "generatable_role",
-				Requires:    []string{"pdf.extract"},
+				ID: "generatable_role",
+				Requires: []string{"pdf.extract"},
 				Generatable: true,
 			},
 		},
 		Skills: map[string]*config.Skill{},
-		MCPs:   map[string]*config.MCPDef{},
+		MCPs: map[string]*config.MCPDef{},
 	}
 	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
 	s := &Spawner{
@@ -47,7 +44,7 @@ func TestSpawner_FailFast_MissingCapabilities(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Blocked") {
 		t.Errorf("expected Blocked error for strict_role, got %v", err)
 	}
-
+	
 	// Test dynamic escalation failure
 	req2 := &SpawnRequest{RoleID: "generatable_role", TaskID: "t1", StepID: "s2", Hub: hub}
 	_, err = s.doSpawn(ctx, req2)

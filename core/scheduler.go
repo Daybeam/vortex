@@ -20,6 +20,22 @@ import (
 	"github.com/daybeam/vortex/store"
 )
 
+// recordHashCacheEntry stores a hash in the cache with eviction. Extracted so
+// tests can call the real production path instead of inlining the logic
+// (fixes audit T-C04). Safe to clear on eviction because the cache is only
+// an optimization — cleared entries will be re-hashed on next access.
+func (s *DirectedEngine) recordHashCacheEntry(path, hash string) {
+	s.hashCacheMu.Lock()
+	defer s.hashCacheMu.Unlock()
+	if s.hashCache == nil {
+		s.hashCache = make(map[string]string)
+	}
+	if len(s.hashCache) >= s.maxHashCacheEntries {
+		s.hashCache = make(map[string]string)
+	}
+	s.hashCache[path] = hash
+}
+
 // DirectedEngine owns all task graphs and drives execution.
 // Go advantage: each task graph runs in its own goroutine.
 // No asyncio event loop — the language runtime handles concurrency.
@@ -336,24 +352,51 @@ func (s *DirectedEngine) detectReadDeps(graph *schemas.TaskGraph, stepID string,
 }
 
 func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
+	// P-H5 fix: marshal under lock, write to disk outside lock.
+	// This unblocks concurrent graph ops that were serializing on
+	// file I/O (10-100ms per persist) after every step state change.
 	s.Mu.Lock()
-	defer s.Mu.Unlock()
-	s.persistGraphLocked(graph)
-}
-
-// persistGraphLocked does the actual persist work. Caller MUST hold s.Mu.Lock().
-// Use persistGraph (without "Locked") when the caller does not hold the lock.
-func (s *DirectedEngine) persistGraphLocked(graph *schemas.TaskGraph) {
 	outDir := filepath.Join(s.outputBase, graph.TaskID)
+	artifacts := s.buildArtifactsLocked(graph)
+	graph.Artifacts = artifacts
+	manifestData, _ := json.MarshalIndent(graph, "", "  ")
+	var artifactsData []byte
+	if len(artifacts) > 0 {
+		artifactsData, _ = json.MarshalIndent(artifacts, "", "  ")
+	}
+	var statusData []byte
+	var statusStr string
+	if s.TaskRegistry != nil {
+		statusData, _ = json.Marshal(graph.ToStatusDict())
+		statusStr = string(graph.Status)
+	}
+	s.Mu.Unlock()
+
+	// File I/O outside lock (P-H5)
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		log.Printf("WARN: persistGraph: failed to create output dir %s: %v", outDir, err)
 	}
+	if len(manifestData) > 0 {
+		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), manifestData, 0644); werr != nil {
+			log.Printf("WARN: persistGraph: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
+		}
+	}
+	if len(artifactsData) > 0 {
+		if werr := os.WriteFile(filepath.Join(outDir, "artifacts.json"), artifactsData, 0644); werr != nil {
+			log.Printf("WARN: persistGraph: failed to write artifacts.json for task %s: %v", graph.TaskID, werr)
+		}
+	}
+	if s.TaskRegistry != nil && len(statusData) > 0 {
+		if serr := s.TaskRegistry.SaveTask(s.lifecycleCtx, graph.TaskID, statusStr, statusData); serr != nil {
+			log.Printf("WARN: persistTaskState: failed to save task state for %s: %v", graph.TaskID, serr)
+		}
+	}
+}
 
-	// Artifact delivery contract (ADDED 2026-08-17)
-	// For each primary output file that exists on disk, compute SHA-256 and
-	// provenance (upstream step refs), then write artifacts.json alongside
-	// manifest.json. Downstream consumers read structured facts (status,
-	// sources, integrity) instead of guessing from natural-language text.
+// buildArtifactsLocked builds the artifact contract list from graph.OutputFiles.
+// Caller MUST hold s.Mu.Lock() (reads graph fields). Extracted from
+// persistGraphLocked to allow marshal-under-lock + write-outside-lock (P-H5).
+func (s *DirectedEngine) buildArtifactsLocked(graph *schemas.TaskGraph) []schemas.ArtifactContract {
 	artifacts := make([]schemas.ArtifactContract, 0, len(graph.OutputFiles))
 	for _, of := range graph.OutputFiles {
 		if !of.IsPrimary {
@@ -367,8 +410,7 @@ func (s *DirectedEngine) persistGraphLocked(graph *schemas.TaskGraph) {
 			GeneratedAt: of.CreatedAt,
 			OwnerStep:   of.StepID,
 		}
-		// SHA-256 of the on-disk artifact (cached to avoid re-hashing on
-		// every persistGraph call — output files are write-once).
+		// SHA-256 of the on-disk artifact (cached to avoid re-hashing).
 		s.hashCacheMu.Lock()
 		if s.hashCache == nil {
 			s.hashCache = make(map[string]string)
@@ -384,15 +426,7 @@ func (s *DirectedEngine) persistGraphLocked(graph *schemas.TaskGraph) {
 			}
 			f.Close()
 			ac.SHA256 = fmt.Sprintf("%x", h.Sum(nil))
-			s.hashCacheMu.Lock()
-			// Evict entire cache if it has grown too large (unbounded growth
-			// protection for long-running servers). Safe because the cache is
-			// only an optimization — cleared entries will be re-hashed on next access.
-			if len(s.hashCache) >= s.maxHashCacheEntries {
-				s.hashCache = make(map[string]string)
-			}
-			s.hashCache[of.Path] = ac.SHA256
-			s.hashCacheMu.Unlock()
+			s.recordHashCacheEntry(of.Path, ac.SHA256)
 		}
 		// Provenance: source steps that fed this step
 		if owner, ok := graph.Steps[of.StepID]; ok {
@@ -404,9 +438,22 @@ func (s *DirectedEngine) persistGraphLocked(graph *schemas.TaskGraph) {
 		}
 		artifacts = append(artifacts, ac)
 	}
+	return artifacts
+}
 
-	// Marshal the graph. Safe because caller holds s.Mu.Lock() — no concurrent
-	// step goroutine can write to graph fields while we read them.
+// persistGraphLocked does the actual persist work. Caller MUST hold s.Mu.Lock().
+// Use persistGraph (without "Locked") when the caller does not hold the lock.
+// Note: persistGraph (the hot path) now does file I/O outside the lock (P-H5 fix).
+// This method is only for rare cancel/error paths where the caller already holds the lock.
+func (s *DirectedEngine) persistGraphLocked(graph *schemas.TaskGraph) {
+	outDir := filepath.Join(s.outputBase, graph.TaskID)
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		log.Printf("WARN: persistGraph: failed to create output dir %s: %v", outDir, err)
+	}
+
+	artifacts := s.buildArtifactsLocked(graph)
+
+	// Marshal the graph. Safe because caller holds s.Mu.Lock().
 	graph.Artifacts = artifacts
 	data, err := json.MarshalIndent(graph, "", "  ")
 	if err == nil {
@@ -424,9 +471,7 @@ func (s *DirectedEngine) persistGraphLocked(graph *schemas.TaskGraph) {
 		}
 	}
 
-	// Mirror task-level lifecycle state into the registry. Doing it here covers
-	// every state transition that already checkpoints via persistGraph, so status
-	// stays queryable from processes that do not own the in-memory graph.
+	// Mirror task-level lifecycle state into the registry.
 	if s.TaskRegistry != nil {
 		if data, err := json.Marshal(graph.ToStatusDict()); err == nil {
 			if serr := s.TaskRegistry.SaveTask(s.lifecycleCtx, graph.TaskID, string(graph.Status), data); serr != nil {

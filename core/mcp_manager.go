@@ -35,6 +35,11 @@ type MCPConnectionManager struct {
 	httpClient         *http.Client // shared for connection pooling (audit H4)
 }
 
+// maxMCPCacheSize caps the process/session caches to prevent unbounded growth
+// on long-running servers with dynamic MCPs (P-H9 fix). Entries are best-effort
+// caches — eviction causes re-connection on next access, not data loss.
+const maxMCPCacheSize = 128
+
 func NewMCPConnectionManager(registry *config.Registry, logger *Logger) *MCPConnectionManager {
 	return &MCPConnectionManager{
 		processCache:       make(map[string]*client.MCPClient),
@@ -184,6 +189,13 @@ func (m *MCPConnectionManager) ensureRemoteMCPSession(ctx context.Context, mcp *
 	m.mu.Lock()
 	if m.remoteSessionCache == nil {
 		m.remoteSessionCache = make(map[string]string)
+	}
+	// P-H9: evict stale entry if cache is full
+	if len(m.remoteSessionCache) >= maxMCPCacheSize {
+		for k := range m.remoteSessionCache {
+			delete(m.remoteSessionCache, k)
+			break
+		}
 	}
 	m.remoteSessionCache[mcp.ID] = sid
 	m.mu.Unlock()
@@ -498,6 +510,14 @@ func (m *MCPConnectionManager) ensureMCPClient(ctx context.Context, mcp *config.
 			newCli.Close()
 			cli = existing
 		} else {
+			// P-H9: evict stale entry if cache is full
+			if len(m.processCache) >= maxMCPCacheSize {
+				for k, v := range m.processCache {
+					v.Close()
+					delete(m.processCache, k)
+					break
+				}
+			}
 			m.processCache[mcp.ID] = newCli
 			cli = newCli
 		}

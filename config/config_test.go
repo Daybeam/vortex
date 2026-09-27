@@ -1,5 +1,5 @@
-//go:build test
-// +build test
+// fixes audit T-H19: removed //go:build test tag so these tests run by
+// default with `go test ./...` instead of requiring `-tags test`.
 
 package config
 

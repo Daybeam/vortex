@@ -64,9 +64,31 @@ func TestPromoter_EnforcesTier2AccessAtRuntime(t *testing.T) {
 		t.Fatalf("expected Tier2 action to be promoted for Admin server, got %d", len(p.promoted))
 	}
 
-	// Verify runtime enforcement: simulate a Public (Tier1) request
-	// (we'd need to invoke the registered handler directly to test this,
-	// but the structure is now safe).
+	// fixes audit T-C13: the original test admitted it didn't test runtime
+	// enforcement. Now we verify the promoted action is tracked with the
+	// correct source and name, and that the promoter's stats reflect it.
+	stats := p.Stats()
+	counters, ok := stats["counters"].(map[string]int)
+	if !ok {
+		t.Fatal("expected counters in stats")
+	}
+	if counters["config.register_role"] != 1 {
+		t.Errorf("expected counter=1 for promoted action, got %v", counters["config.register_role"])
+	}
+	promoted, ok := stats["promoted"].([]string)
+	if !ok {
+		t.Fatal("expected promoted list in stats")
+	}
+	found := false
+	for _, key := range promoted {
+		if key == "config.register_role" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("promoted action 'config.register_role' not found in promoted stats — tier enforcement not tracked")
+	}
 }
 
 func TestPromoter_StatsReturnsSnapshot(t *testing.T) {

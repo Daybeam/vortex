@@ -2,7 +2,6 @@ package core
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +38,7 @@ func TestVerifyExitCriteria_ArtifactContract_Passes(t *testing.T) {
 		},
 	}
 
-	ok, _, failType := verifyContractOnly(graph, step)
+	ok, _, failType := validateArtifactContract(graph, step)
 	if !ok {
 		t.Fatalf("expected PASS, got failType=%s", failType)
 	}
@@ -64,7 +63,7 @@ func TestVerifyExitCriteria_ArtifactContract_Violation(t *testing.T) {
 		},
 	}
 
-	ok, reason, failType := verifyContractOnly(graph, step)
+	ok, reason, failType := validateArtifactContract(graph, step)
 	if ok {
 		t.Fatal("expected FAIL for missing required field")
 	}
@@ -93,31 +92,13 @@ func TestVerifyExitCriteria_ArtifactContract_NoContract_NoOp(t *testing.T) {
 	}
 	step := &schemas.Step{ID: "step1"} // empty OutputContract
 
-	ok, _, failType := verifyContractOnly(graph, step)
+	ok, _, failType := validateArtifactContract(graph, step)
 	if !ok {
 		t.Fatalf("no contract should PASS, got failType=%s", failType)
 	}
 }
 
-// verifyContractOnly mirrors the exact Case 1 block from verifyExitCriteria
-// in scheduler.go — kept as a separate function so tests can validate the
-// deterministic contract path without the full engine/spawner plumbing.
-func verifyContractOnly(graph *schemas.TaskGraph, step *schemas.Step) (bool, string, schemas.VerificationFailureType) {
-	if len(step.OutputContract.RequiredFields) > 0 || len(step.OutputContract.TypeSchema) > 0 {
-		for _, of := range graph.OutputFiles {
-			if of.StepID != step.ID || !of.IsPrimary {
-				continue
-			}
-			ephAc := schemas.ArtifactContract{
-				Path:           of.Path,
-				RequiredFields: step.OutputContract.RequiredFields,
-				TypeSchema:     step.OutputContract.TypeSchema,
-			}
-			if err := ValidateArtifact(ephAc); err != nil {
-				return false, fmt.Sprintf("artifact contract violated: %s", err.Error()),
-					schemas.FailureSchemaViolation
-			}
-		}
-	}
-	return true, "", schemas.FailureNone
-}
+// fixes audit T-C05: the original verifyContractOnly was a verbatim copy of
+// the Case 1 block from verifyExitCriteria. Tests now call the production
+// function validateArtifactContract directly, so they will FAIL if the
+// production logic diverges.

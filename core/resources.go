@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -72,7 +74,47 @@ func (l *ResourceLoader) SetCache(dir string, enabled bool) {
 	l.cacheEnabled = enabled
 }
 
+// validateFetchURL checks that a URL is safe to fetch (SSRF protection).
+// Blocks: non-HTTPS schemes (except localhost), private/link-local IPs,
+// cloud metadata endpoints (169.254.169.254).
+func validateFetchURL(source string) error {
+	u, err := url.Parse(source)
+	if err != nil {
+		return err
+	}
+	// Only allow https; allow http only for localhost (dev convenience).
+	if u.Scheme != "https" {
+		if u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1") {
+			// allowed for local dev
+		} else {
+			return fmt.Errorf("scheme %q not allowed (use https)", u.Scheme)
+		}
+	}
+	// Resolve hostname and check for private/link-local IPs.
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("empty hostname")
+	}
+	// Skip IP check for localhost (already handled above).
+	if host == "localhost" || host == "127.0.0.1" {
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		// If we can't resolve, let the HTTP client try (it may use a proxy).
+		return nil
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			return fmt.Errorf("hostname %s resolves to blocked IP %s (private/loopback/link-local)", host, ip)
+		}
+	}
+	return nil
+}
+
 // Fetch content from a URL or local file path.
+// audit S-H1: validates URLs to prevent SSRF (blocks private IPs, metadata
+// services, and non-HTTPS schemes).
 func (l *ResourceLoader) Fetch(ctx context.Context, source string) (string, error) {
 	l.Mu.RLock()
 	if val, ok := l.cache[source]; ok {
@@ -88,7 +130,10 @@ func (l *ResourceLoader) Fetch(ctx context.Context, source string) (string, erro
 	if _, err := os.Stat(source); err == nil {
 		content, err = os.ReadFile(source)
 	} else {
-		// Handle URL
+		// Handle URL — validate against SSRF before fetching
+		if err := validateFetchURL(source); err != nil {
+			return "", fmt.Errorf("resource URL rejected (SSRF protection): %w", err)
+		}
 		req, err := http.NewRequestWithContext(ctx, "GET", source, nil)
 		if err != nil {
 			return "", err
@@ -256,6 +301,7 @@ func (l *ResourceLoader) FetchCookbook(ctx context.Context, source, taskHint str
 func (l *ResourceLoader) loadCookbookFromDisk(source, taskHint string) (string, error) {
 	key := fmt.Sprintf("%x", sha256.Sum256([]byte(source+"::"+taskHint)))
 
+	// Content-addressed path: key.ptr → contentHash → contentHash.txt
 	ptrPath := filepath.Join(l.cacheDir, key+".ptr")
 	if contentHash, err := os.ReadFile(ptrPath); err == nil {
 		contentPath := filepath.Join(l.cacheDir, string(contentHash)+".txt")
@@ -266,6 +312,7 @@ func (l *ResourceLoader) loadCookbookFromDisk(source, taskHint string) (string, 
 		return string(data), nil
 	}
 
+	// Fallback: legacy direct key.txt (backward compat with old cache)
 	legacyPath := filepath.Join(l.cacheDir, key+".txt")
 	data, err := os.ReadFile(legacyPath)
 	if err != nil {
@@ -281,6 +328,7 @@ func (l *ResourceLoader) saveCookbookToDisk(source, taskHint, content string) er
 	key := fmt.Sprintf("%x", sha256.Sum256([]byte(source+"::"+taskHint)))
 	contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 
+	// Write content file (deduped — same content = same file, written once)
 	contentPath := filepath.Join(l.cacheDir, contentHash+".txt")
 	if _, err := os.Stat(contentPath); os.IsNotExist(err) {
 		if err := os.WriteFile(contentPath, []byte(content), 0644); err != nil {
@@ -288,6 +336,7 @@ func (l *ResourceLoader) saveCookbookToDisk(source, taskHint, content string) er
 		}
 	}
 
+	// Write pointer file (tiny — maps key → contentHash)
 	ptrPath := filepath.Join(l.cacheDir, key+".ptr")
 	return os.WriteFile(ptrPath, []byte(contentHash), 0644)
 }

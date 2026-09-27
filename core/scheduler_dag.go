@@ -536,30 +536,49 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		}
 		stepResults, _ := s.taskStore.GetBatch(ctx, taskID, neededStepIDs) // audit P-H1: single batch query replaces N
 
-			// Phase 3: Under RLock, build resolvedInputs + record coordination edges
-			s.Mu.RLock()
+			// P-H7 fix: pre-compute payload sizes outside RLock to avoid
+			// json.Marshal allocations in the hot loop under lock.
+			type mappingEntry struct {
+				arg         string
+				val         any
+				sourceStep  string
+				edgeType    string
+				payloadSize int64
+			}
+			var mappings []mappingEntry
 			for arg, path := range step.InputMapping {
-				// Path format: step_id.field or just key (from GlobalWorkspace)
 				parts := strings.SplitN(path, ".", 2)
 				if len(parts) == 2 {
-					// From another step's result (using pre-fetched data)
 					if res, ok := stepResults[parts[0]]; ok && res.Data != nil {
 						if m, ok := res.Data.(map[string]any); ok {
 							val := m[parts[1]]
-							resolvedInputs[arg] = val
-
-							// ── Coordination Edge (arXiv:2608.16801) ──
-							payloadSize := int64(0); if b, e := json.Marshal(val); e == nil { payloadSize = int64(len(b)) }
-							s.recordCoordinationEdge(graph, parts[0], step.ID, "mapping", payloadSize)
+							payloadSize := int64(0)
+							if b, e := json.Marshal(val); e == nil {
+								payloadSize = int64(len(b))
+							}
+							mappings = append(mappings, mappingEntry{arg, val, parts[0], "mapping", payloadSize})
 						}
 					}
-				} else {
-					// From GlobalWorkspace
+				}
+			}
+
+			// Phase 3: Under RLock, set resolvedInputs + record coordination edges
+			s.Mu.RLock()
+			for _, me := range mappings {
+				resolvedInputs[me.arg] = me.val
+				s.recordCoordinationEdge(graph, me.sourceStep, step.ID, me.edgeType, me.payloadSize)
+			}
+			// GlobalWorkspace reads need the lock; sizes computed here are
+			// for less-common shared-vfs edges (not the hot mapping path).
+			for arg, path := range step.InputMapping {
+				parts := strings.SplitN(path, ".", 2)
+				if len(parts) != 2 {
 					if val, ok := graph.GlobalWorkspace[path]; ok {
 						resolvedInputs[arg] = val
-
-						// ── Coordination Edge (arXiv:2608.16801) ──
-						payloadSize := int64(0); if b, e := json.Marshal(val); e == nil { payloadSize = int64(len(b)) }
+						payloadSize := int64(0)
+						if b, e := json.Marshal(val); e == nil {
+							payloadSize = int64(len(b))
+						}
 						s.recordCoordinationEdge(graph, "global_workspace", step.ID, "shared_vfs", payloadSize)
 					}
 				}

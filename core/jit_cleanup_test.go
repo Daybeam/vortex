@@ -89,6 +89,8 @@ func TestJITManager_CleanupRunsWhenNotClosed(t *testing.T) {
 	}
 
 	if !cleanupRan.Load() {
-		t.Log("cleanup did not run within 200ms — may be timing issue, not a failure")
+		// fixes audit T-C12: original used t.Log, so the test could never
+		// fail even if cleanup was broken. Now uses t.Errorf.
+		t.Errorf("cleanup did not run within 200ms — cleanup goroutine may be broken")
 	}
 }

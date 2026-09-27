@@ -1,6 +1,3 @@
-//go:build test
-// +build test
-
 package core
 
 import (
@@ -154,7 +151,11 @@ func TestQuoteBench_PowerShell_BacktickExpansion(t *testing.T) {
 		t.Logf("ScriptStdout: %q", string(res.Diagnostic.ScriptStdout))
 	}
 
-	// We expect damage here because ` is not expansion in PS
+	// T-H07 fix: assert that the executor handles backticks correctly
+	// (no transport damage). If damage IS detected, the executor regressed.
+	if res.Diagnostic != nil && res.Diagnostic.TransportDamage {
+		t.Error("unexpected TransportDamage for backtick expansion — executor should handle this correctly")
+	}
 }
 
 func TestQuoteBench_PowerShell_QuoteStripping(t *testing.T) {
@@ -185,7 +186,9 @@ func TestQuoteBench_PowerShell_QuoteStripping(t *testing.T) {
 		t.Logf("FixAttempted: %v", res.Diagnostic.FixAttempted)
 	}
 
+	// T-H08 fix: assert that the executor handles quote stripping correctly
+	// (no transport damage). If damage IS detected, the executor regressed.
 	if res.Diagnostic != nil && res.Diagnostic.TransportDamage {
-		t.Log("SUCCESS: Transport damage detected!")
+		t.Error("unexpected TransportDamage for quote stripping — executor should handle this correctly")
 	}
 }

@@ -45,12 +45,12 @@ const (
 	EventHumanApprovalAttached   EventType = "human_approval_attached"
 	EventFallbackActivated       EventType = "fallback_activated"
 	EventMCPDegraded             EventType = "mcp_degraded"
-	EventStepDeprecated          EventType = "step_deprecated"          // ADDED (2026-09-07): DAG surgery
-	EventStepInjected            EventType = "step_injected"            // ADDED (2026-09-07): DAG surgery
-	EventAutonomousStepSpawned   EventType = "autonomous_step_spawned"  // ASAE (ADDED 2026-09-09)
-	EventDynamicRubricGen        EventType = "dynamic_rubric_gen"       // Phase 2 (ADDED 2026-09-09)
+	EventStepDeprecated          EventType = "step_deprecated" // ADDED (2026-09-07): DAG surgery
+	EventStepInjected            EventType = "step_injected"   // ADDED (2026-09-07): DAG surgery
+	EventAutonomousStepSpawned   EventType = "autonomous_step_spawned" // ASAE (ADDED 2026-09-09)
+	EventDynamicRubricGen        EventType = "dynamic_rubric_gen"      // Phase 2 (ADDED 2026-09-09)
 	EventCacheInefficiency       EventType = "cache_inefficiency"       // Cost governance (ADDED 2026-09-14)
-	EventBudgetPredictExceed     EventType = "budget_predict_exceed"    // Cost governance (ADDED 2026-09-14)
+	EventBudgetPredictExceed     EventType = "budget_predict_exceed"   // Cost governance (ADDED 2026-09-14)
 	EventBehaviorDeviation       EventType = "behavior_deviation"       // Cost governance (ADDED 2026-09-14)
 	EventDebateStarted           EventType = "debate_started"           // Cross-family debate (ADDED 2026-09-14)
 	EventDebateCritiqueReceived  EventType = "debate_critique_received" // Cross-family debate (ADDED 2026-09-14)
@@ -91,7 +91,7 @@ type Logger struct {
 	// Capped at maxFileSizeCacheEntries to prevent unbounded growth on long-running
 	// servers (one entry per unique task ID). When exceeded, the cache is cleared
 	// (safe — it is only an optimization; cleared entries trigger a one-time Stat).
-	fileSizeCache           map[string]int64
+	fileSizeCache       map[string]int64
 	maxFileSizeCacheEntries int
 }
 
@@ -102,11 +102,11 @@ func NewLogger(logDir string, sys *config.SystemSettings) (*Logger, error) {
 		return nil, err
 	}
 	l := &Logger{
-		logDir:                  logDir,
-		ch:                      make(chan LogEvent, 512),
-		System:                  sys,
-		dirCache:                make(map[string]bool),
-		fileSizeCache:           make(map[string]int64),
+		logDir:         logDir,
+		ch:             make(chan LogEvent, 512),
+		System:         sys,
+		dirCache:       make(map[string]bool),
+		fileSizeCache:  make(map[string]int64),
 		maxFileSizeCacheEntries: defaultMaxFileSizeCacheEntries,
 	}
 
@@ -282,8 +282,9 @@ func (l *Logger) write(ev LogEvent) {
 	}
 	data = append(data, '\n')
 
-	l.Mu.Lock()
-	defer l.Mu.Unlock()
+	// P-H10 fix: l.Mu is unnecessary here — write() is only called from the
+	// single writer goroutine, so there's no concurrent access to fileSizeCache
+	// or dirCache. The lock was adding overhead without providing protection.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return
@@ -295,8 +296,7 @@ func (l *Logger) write(ev LogEvent) {
 }
 
 func (l *Logger) rotate(path string) {
-	l.Mu.Lock()
-	defer l.Mu.Unlock()
+	// P-H10 fix: l.Mu unnecessary — only called from the single writer goroutine.
 
 	// Reset file size cache for the rotated path.
 	l.fileSizeCache[path] = 0

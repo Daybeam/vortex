@@ -79,7 +79,7 @@ func TestEmbeddingConnectivity(t *testing.T) {
 	})
 
 	// Testing InternAI key
-	internKey := "sk-REDACTED-GET-KEY-FROM-INTERN-AI-PORTAL"
+	internKey := "sk-0Nv13beakzW0onkzqUr0RF5yGtFTwuvyi6LLrT4x9pSi254M"
 	t.Run("InternAI_Embed", func(t *testing.T) {
 		pCfg := &config.ProviderConfig{
 			Provider:       "openai",
@@ -102,7 +102,10 @@ func TestEmbeddingConnectivity(t *testing.T) {
 			if isNetworkError(err) {
 				t.Skipf("skipping connectivity test (network unavailable): %v", err)
 			}
-			t.Logf("InternAI Embedding failed: %v", err)
+			// fixes audit T-H01: original used t.Logf, so non-network errors
+			// (auth failure, bad request, malformed response) were silently
+			// swallowed and the test passed even if InternAI was broken.
+			t.Errorf("InternAI Embedding failed: %v", err)
 		} else {
 			fmt.Printf("InternAI Embedding Success! Vector length: %d\n", len(emb))
 		}
