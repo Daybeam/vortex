@@ -89,8 +89,11 @@ func TestRecordCapabilityOutcome_SkipsWhenStoreNil(t *testing.T) {
 func TestRouteProvider_FallsBackToNextWhenNoLookup(t *testing.T) {
 	s := &Spawner{}
 	slot, err := s.routeProvider("nonexistent-pool", "refactor")
-	if err == nil && slot != nil {
-		t.Logf("Next() returned a slot (pool has providers) — fine")
+	if err == nil && slot == nil {
+		t.Fatal("routeProvider returned (nil, nil) for nonexistent pool — expected error or valid slot")
+	}
+	if slot != nil && slot.ID == "" {
+		t.Errorf("routeProvider returned slot with empty ID")
 	}
 }
 

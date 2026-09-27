@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,13 +107,15 @@ func TestExecuteStep_BudgetNotExceeded_ProceedsPastPrecheck(t *testing.T) {
 	graph.Steps[step.ID] = step
 
 	done := make(chan struct{})
+	var panicVal any
 	go func() {
 		defer func() {
 			// A nil s.spawner will panic once execution reaches s.spawner.Spawn(...)
-			// further down executeStep -- that is expected and outside this test's
+			// further down executeStep — that is expected and outside this test's
 			// scope (we only care whether the budget pre-check itself let execution
-			// through). Recover so the panic doesn't fail the whole test binary.
-			_ = recover()
+			// through). Capture the panic to verify it's the expected nil-pointer
+			// dereference, not an unrelated regression panic.
+			panicVal = recover()
 			close(done)
 		}()
 		engine.executeStep(context.Background(), graph, step)
@@ -121,6 +125,15 @@ func TestExecuteStep_BudgetNotExceeded_ProceedsPastPrecheck(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("executeStep did not return within 5s")
+	}
+
+	// If executeStep panicked, it must be the expected nil-pointer dereference
+	// from the unset spawner — not some other bug.
+	if panicVal != nil {
+		msg := fmt.Sprintf("%v", panicVal)
+		if !strings.Contains(msg, "nil pointer") {
+			t.Fatalf("unexpected panic (not nil-pointer dereference): %v", panicVal)
+		}
 	}
 
 	if len(graph.PendingDecisions) != 0 {

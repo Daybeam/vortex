@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daybeam/vortex/core"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/daybeam/vortex/core"
 )
 
 func TestHandleAdminDeployFile(t *testing.T) {
@@ -115,10 +115,18 @@ func TestHandleAdminDeployFile(t *testing.T) {
 				},
 			},
 		}
-		initRes, _ := HandleAdminDeployInit(context.Background(), app, initReq)
+		initRes, err := HandleAdminDeployInit(context.Background(), app, initReq)
+		if err != nil {
+			t.Fatalf("HandleAdminDeployInit: %v", err)
+		}
 		var initData map[string]any
-		json.Unmarshal([]byte(initRes.Content[0].(mcp.TextContent).Text), &initData)
-		sessionID := initData["session_id"].(string)
+		if err := json.Unmarshal([]byte(initRes.Content[0].(mcp.TextContent).Text), &initData); err != nil {
+			t.Fatalf("unmarshal init response: %v", err)
+		}
+		sessionID, ok := initData["session_id"].(string)
+		if !ok {
+			t.Fatalf("expected session_id string in init response, got %T: %v", initData["session_id"], initData["session_id"])
+		}
 
 		// 2. Push chunks
 		push1 := mcp.CallToolRequest{
@@ -130,7 +138,10 @@ func TestHandleAdminDeployFile(t *testing.T) {
 				},
 			},
 		}
-		HandleAdminDeployPush(context.Background(), app, push1)
+		pushRes1, err := HandleAdminDeployPush(context.Background(), app, push1)
+		if err != nil || pushRes1.IsError {
+			t.Fatalf("push chunk 1 failed: err=%v, res=%+v", err, pushRes1)
+		}
 
 		push2 := mcp.CallToolRequest{
 			Params: mcp.CallToolParams{
@@ -141,7 +152,10 @@ func TestHandleAdminDeployFile(t *testing.T) {
 				},
 			},
 		}
-		HandleAdminDeployPush(context.Background(), app, push2)
+		pushRes2, err := HandleAdminDeployPush(context.Background(), app, push2)
+		if err != nil || pushRes2.IsError {
+			t.Fatalf("push chunk 2 failed: err=%v, res=%+v", err, pushRes2)
+		}
 
 		// 3. Commit
 		commitReq := mcp.CallToolRequest{
@@ -232,7 +246,9 @@ func TestHandleAdminSuspendUI(t *testing.T) {
 	}
 
 	var resData map[string]any
-	json.Unmarshal([]byte(res.Content[0].(mcp.TextContent).Text), &resData)
+	if err := json.Unmarshal([]byte(res.Content[0].(mcp.TextContent).Text), &resData); err != nil {
+		t.Fatalf("unmarshal suspend response: %v", err)
+	}
 
 	if resData["status"] != "suspending" {
 		t.Errorf("expected status 'suspending', got %v", resData["status"])

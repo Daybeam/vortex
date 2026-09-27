@@ -293,7 +293,10 @@ func TestRegistry_CommitOps_AddRole(t *testing.T) {
 	os.Setenv("VORTEX_WAL_ENABLED", "true")
 	defer os.Unsetenv("VORTEX_WAL_ENABLED")
 
-	reg, _ := NewRegistry(configPath)
+	reg, err := NewRegistry(configPath)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
 
 	role := Role{ID: "new-role", Name: "New Role"}
 	roleJSON, _ := json.Marshal(role)
@@ -310,7 +313,10 @@ func TestRegistry_CommitOps_AddRole(t *testing.T) {
 	}
 
 	// Verify it survives restart
-	reg2, _ := NewRegistry(configPath)
+	reg2, err := NewRegistry(configPath)
+	if err != nil {
+		t.Fatalf("NewRegistry #2: %v", err)
+	}
 	if reg2.Roles["new-role"] == nil || reg2.Roles["new-role"].Name != "New Role" {
 		t.Errorf("Role not correctly replayed from WAL: %+v", reg2.Roles["new-role"])
 	}
@@ -324,18 +330,30 @@ func TestRegistry_Rollback(t *testing.T) {
 	os.Setenv("VORTEX_WAL_ENABLED", "true")
 	defer os.Unsetenv("VORTEX_WAL_ENABLED")
 
-	reg, _ := NewRegistry(configPath)
+	reg, err := NewRegistry(configPath)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
 
 	// Commit 1
 	ops1 := []PatchOp{{Op: OpReplace, Path: "/default_provider", Value: json.RawMessage(`"p2"`)}}
 	reg.CommitOps(ops1, "a1", "t1")
 
 	// Get Commit ID
-	f, _ := os.Open(configPath + ".wal")
+	f, err := os.Open(configPath + ".wal")
+	if err != nil {
+		t.Fatalf("open WAL: %v", err)
+	}
 	var commit Commit
-	json.NewDecoder(f).Decode(&commit)
+	if err := json.NewDecoder(f).Decode(&commit); err != nil {
+		f.Close()
+		t.Fatalf("decode WAL commit: %v", err)
+	}
 	c1ID := commit.ID
 	f.Close()
+	if c1ID == "" {
+		t.Fatal("expected non-empty commit ID from WAL")
+	}
 
 	// Commit 2
 	ops2 := []PatchOp{{Op: OpReplace, Path: "/default_provider", Value: json.RawMessage(`"p3"`)}}
@@ -374,7 +392,10 @@ func TestCompaction_SnapshotRotation(t *testing.T) {
 	os.Setenv("VORTEX_WAL_ENABLED", "true")
 	defer os.Unsetenv("VORTEX_WAL_ENABLED")
 
-	reg, _ := NewRegistry(configPath)
+	reg, err := NewRegistry(configPath)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
 	archiveDir := filepath.Join(tmpDir, "config_archive")
 
 	// Trigger 12 compactions
