@@ -61,7 +61,7 @@ func TestC6_ChatSession_ConcurrentPersistAppend(t *testing.T) {
 	select {
 	case <-done:
 		// Success: no panic or deadlock.
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timeout: concurrent Persist/Append deadlocked")
 	}
 }

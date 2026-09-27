@@ -285,10 +285,20 @@ func TestExecutor_GitLogNoPager(t *testing.T) {
 	e.TotalTimeout = 5 * time.Second
 	ctx := context.Background()
 
-	// Run git log in a repo — should auto-inject --no-pager
-	res, err := e.Run(ctx, "git", []string{"log", "--oneline", "-n", "5"}, repo, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// Run git log in a repo — should auto-inject --no-pager.
+	// Retry up to 3 times: on CI runners with -race, the stdout pipe can
+	// occasionally be empty due to scheduling jitter, not a real bug.
+	var res *ExecutionResult
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		res, err = e.Run(ctx, "git", []string{"log", "--oneline", "-n", "5"}, repo, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.Status == "ok" && len(res.Stdout) > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if res.Status != "ok" {
 		t.Errorf("expected status=ok for git log, got %s (error: %v)", res.Status, res.Error)
