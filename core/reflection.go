@@ -26,7 +26,14 @@ type ReflectionEngine struct {
 	registry  *config.Registry
 	jit       *JITManager
 	logger    *Logger
-	wg        sync.WaitGroup // audit M7: track inner goroutines
+	mbStore   *store.MemoryBankStore // optional: for user profile extraction
+	wg        sync.WaitGroup          // audit M7: track inner goroutines
+}
+
+// SetMemoryBankStore wires the MemoryBankStore for user profile extraction.
+// Called after construction to avoid changing NewDirectedEngine's signature.
+func (re *ReflectionEngine) SetMemoryBankStore(mb *store.MemoryBankStore) {
+	re.mbStore = mb
 }
 
 // Wait blocks until all in-flight inner goroutines (hybrid merge,
@@ -85,6 +92,15 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 		taskType = "unknown"
 	}
 
+	// audit P-H3: batch-fetch all OK step traces in one query instead of N.
+	okStepIDs := make([]string, 0, len(graph.Steps))
+	for _, step := range graph.Steps {
+		if step.Status == schemas.StepOK {
+			okStepIDs = append(okStepIDs, step.ID)
+		}
+	}
+	stepResultBatch, _ := re.taskStore.GetBatch(ctx, graph.TaskID, okStepIDs)
+
 	for _, step := range graph.Steps {
 		if step.Status == schemas.StepPending || step.Status == schemas.StepRunning {
 			continue
@@ -104,10 +120,10 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 			conf = *step.Confidence
 		}
 
-		// Retrieve trace from TaskStore
+		// Retrieve trace from TaskStore (audit P-H3: use batch-fetched results)
 		var trace []store.ToolInteraction
 		if step.Status == schemas.StepOK {
-			if res, _ := re.taskStore.Get(ctx, graph.TaskID, step.ID); res != nil {
+			if res := stepResultBatch[step.ID]; res != nil {
 				trace = res.Trace
 			}
 		}
@@ -174,7 +190,7 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 			TaskType:       taskType,
 			Task:           step.Task,
 			Trace:          trace,
-			LastError:      step.TriggerError,  // Pass the triggering signal (ADDED 2026-08-16)
+			LastError:      step.TriggerError, // Pass the triggering signal (ADDED 2026-08-16)
 			StatesVisited:  step.StatesVisited, // PGPO (ADDED 2026-09-08)
 			Embedding:      step.Embedding,
 			EmbeddingModel: step.EmbeddingModel,
@@ -279,6 +295,10 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 	}()
 
 	// 4. Update Adaptive Routing Weights
+	// audit P-C3: bound concurrent crystallization goroutines to prevent goroutine
+	// storms + provider rate limit exhaustion under multi-task load.
+	const maxConcurrentCrystallize = 3
+	crystSem := make(chan struct{}, maxConcurrentCrystallize)
 	for _, rec := range records {
 		success := rec.Status == string(schemas.StepOK)
 		// We use confidence as the base score for the skill
@@ -296,16 +316,25 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 				// Bounded context so crystallization can't hang forever.
 				// FIX (audit C2): derive from lifecycleCtx so shutdown cancels this.
 				// FIX (audit M7): track with wg so Stop() waits for it.
-				re.wg.Add(1)
-				go func(r store.StepRecord) {
-					defer re.wg.Done()
-					gctx, gcancel := context.WithTimeout(lifecycleCtx, 5*time.Minute)
-					defer gcancel()
-					re.CrystallizeStepToSkill(gctx, r)
-				}(rec)
+				select {
+				case crystSem <- struct{}{}:
+					re.wg.Add(1)
+					go func(r store.StepRecord) {
+						defer re.wg.Done()
+						defer func() { <-crystSem }()
+						gctx, gcancel := context.WithTimeout(lifecycleCtx, 5*time.Minute)
+						defer gcancel()
+						re.CrystallizeStepToSkill(gctx, r)
+					}(rec)
+				default:
+					// audit P-C3: at concurrency limit — skip, picked up next reflection cycle
+				}
 			}
 		}
 	}
+
+	// 6. Extract user profile signals (heuristic, no LLM call).
+	re.extractUserProfile(ctx, graph)
 }
 
 func (re *ReflectionEngine) isNovelTask(ctx context.Context, task string) bool {
@@ -476,10 +505,10 @@ func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability,
 		UsageCount:    0,
 		SuccessRate:   1.0,
 		LastUsed:      time.Now(),
-		OS:            runtime.GOOS,          // Environment Fingerprint (ADDED 2026-08-16)
-		Arch:          runtime.GOARCH,        // Environment Fingerprint (ADDED 2026-08-16)
-		Shell:         env.GetShellVersion(), // Environment Fingerprint (ADDED 2026-08-20)
-		FailureSignal: failureSignal,         // Trigger-driven retrieval (ADDED 2026-08-16)
+		OS:            runtime.GOOS,           // Environment Fingerprint (ADDED 2026-08-16)
+		Arch:          runtime.GOARCH,         // Environment Fingerprint (ADDED 2026-08-16)
+		Shell:         env.GetShellVersion(),  // Environment Fingerprint (ADDED 2026-08-20)
+		FailureSignal: failureSignal,          // Trigger-driven retrieval (ADDED 2026-08-16)
 	})
 }
 
@@ -742,8 +771,8 @@ func (re *ReflectionEngine) ScanAndPromoteCompoundSkills(ctx context.Context) {
 		// online controller can adapt based on intermediate results.
 		if re.isOutcomeDependent(ctx, c.ToolA) {
 			re.logger.Log("EventCompoundSkillSkippedOutcomeDependent", "", "", map[string]any{
-				"tool_a":   c.ToolA,
-				"tool_b":   c.ToolB,
+				"tool_a": c.ToolA,
+				"tool_b": c.ToolB,
 				"co_count": c.CoCount,
 			})
 			continue
@@ -794,4 +823,79 @@ func (re *ReflectionEngine) ScanAndPromoteCompoundSkills(ctx context.Context) {
 			"success_rate": c.SuccessRate(),
 		})
 	}
+}
+
+// extractUserProfile analyzes a completed task graph and merges user profile
+// findings into the MemoryBank. Uses heuristics — no LLM call needed.
+//
+// Extracted signals:
+//   - Expertise: from role.BaseCapability of completed steps
+//   - Preferences: from tool usage patterns (e.g. execute_code language)
+//   - Past Delegations: from step task descriptions (capped at 10)
+//
+// Merge strategy: load existing profile, add only new items (dedup),
+// cap each list at 10, save. Safe to call concurrently (MemoryBankStore
+// has its own mutex).
+func (re *ReflectionEngine) extractUserProfile(ctx context.Context, graph *schemas.TaskGraph) {
+	if re.mbStore == nil {
+		return
+	}
+
+	// Load existing profile.
+	mb, err := re.mbStore.Load()
+	if err != nil || mb == nil {
+		return
+	}
+	up := mb.UserProfile
+
+	// Extract expertise from role capabilities.
+	for _, step := range graph.Steps {
+		if step.Status != schemas.StepOK && step.Status != schemas.StepPartial {
+			continue
+		}
+		if step.RoleID != "" {
+			if role := re.registry.Roles[step.RoleID]; role != nil && role.BaseCapability != "" {
+				up.Expertise = appendUnique(up.Expertise, role.BaseCapability, 10)
+			}
+		}
+		// Extract preferences from task description keywords.
+		taskLower := strings.ToLower(step.Task)
+		if strings.Contains(taskLower, "python") {
+			up.Preferences = appendUnique(up.Preferences, "prefers Python", 10)
+		}
+		if strings.Contains(taskLower, "javascript") || strings.Contains(taskLower, "node") {
+			up.Preferences = appendUnique(up.Preferences, "uses JavaScript", 10)
+		}
+		if strings.Contains(taskLower, "react") {
+			up.Preferences = appendUnique(up.Preferences, "uses React", 10)
+		}
+		// Extract past delegation summary from task description.
+		if step.Task != "" {
+			summary := step.Task
+			if len(summary) > 80 {
+				summary = summary[:77] + "..."
+			}
+			up.PastDelegations = appendUnique(up.PastDelegations, summary, 10)
+		}
+	}
+
+	// Only save if something changed.
+	if len(up.Expertise) != len(mb.UserProfile.Expertise) ||
+		len(up.Preferences) != len(mb.UserProfile.Preferences) ||
+		len(up.PastDelegations) != len(mb.UserProfile.PastDelegations) {
+		_ = re.mbStore.SaveUserProfile(up)
+	}
+}
+
+// appendUnique appends item to list if not already present, capping at maxItems.
+func appendUnique(list []string, item string, maxItems int) []string {
+	for _, existing := range list {
+		if existing == item {
+			return list
+		}
+	}
+	if len(list) >= maxItems {
+		return list
+	}
+	return append(list, item)
 }

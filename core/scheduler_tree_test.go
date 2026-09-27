@@ -2,21 +2,27 @@ package core
 
 import (
 	"context"
-	"github.com/daybeam/vortex/config"
-	"github.com/daybeam/vortex/schemas"
-	"github.com/daybeam/vortex/store"
 	"os"
 	"strings"
 	"testing"
 	"time"
+	"github.com/daybeam/vortex/schemas"
+	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/store"
 )
 
 type mockTaskStore struct {
 	store.ITaskStore
 }
-
 func (m *mockTaskStore) Get(ctx context.Context, taskID, stepID string) (*store.StepResult, error) {
 	return &store.StepResult{Data: "mock result"}, nil
+}
+func (m *mockTaskStore) GetBatch(ctx context.Context, taskID string, stepIDs []string) (map[string]*store.StepResult, error) {
+	result := make(map[string]*store.StepResult)
+	for _, sid := range stepIDs {
+		result[sid] = &store.StepResult{Data: "mock result"}
+	}
+	return result, nil
 }
 func (m *mockTaskStore) Set(ctx context.Context, taskID, stepID string, res *store.StepResult) error {
 	return nil
@@ -24,9 +30,9 @@ func (m *mockTaskStore) Set(ctx context.Context, taskID, stepID string, res *sto
 
 func TestDirectedEngine_ContextTreeBranching(t *testing.T) {
 	reg := &config.Registry{
-		Roles:  make(map[string]*config.Role),
+		Roles: make(map[string]*config.Role),
 		Skills: make(map[string]*config.Skill),
-		MCPs:   make(map[string]*config.MCPDef),
+		MCPs: make(map[string]*config.MCPDef),
 	}
 	reg.Roles["test-role"] = &config.Role{ID: "test-role", BaseCapability: "test"}
 
@@ -71,9 +77,9 @@ func TestDirectedEngine_ContextTreeBranching(t *testing.T) {
 	// Mock a result that triggers a branch
 	result := &SpawnResult{
 		Output: schemas.SubagentOutput{
-			Status:      schemas.StatusOK,
-			Confidence:  0.9,
-			Result:      map[string]any{"data": "done"},
+			Status:     schemas.StatusOK,
+			Confidence: 0.9,
+			Result:     map[string]any{"data": "done"},
 			Assumptions: []string{"start new task"}, // Trigger for branching
 		},
 	}
@@ -124,9 +130,9 @@ func TestSpawner_BuildSystemPrompt_WithTree(t *testing.T) {
 				"status":  schemas.NodeResolved,
 			},
 			{
-				"id":     "branch1",
-				"intent": "Feature Work",
-				"status": schemas.NodeActive,
+				"id":      "branch1",
+				"intent":  "Feature Work",
+				"status":  schemas.NodeActive,
 			},
 		},
 	}

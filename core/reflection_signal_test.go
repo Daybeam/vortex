@@ -84,13 +84,21 @@ func (m *mockSignalTaskStore) Get(ctx context.Context, taskID, stepID string) (*
 	return m.results[taskID+stepID], nil
 }
 
+func (m *mockSignalTaskStore) GetBatch(ctx context.Context, taskID string, stepIDs []string) (map[string]*store.StepResult, error) {
+	result := make(map[string]*store.StepResult)
+	for _, sid := range stepIDs {
+		if r, err := m.Get(ctx, taskID, sid); err == nil && r != nil {
+			result[sid] = r
+		}
+	}
+	return result, nil
+}
+
 func (m *mockSignalTaskStore) GetByRef(ctx context.Context, ref string) (*store.StepResult, error) {
 	return nil, nil
 }
 
-func (m *mockSignalTaskStore) ClearTask(ctx context.Context, taskID string) (int, error) {
-	return 0, nil
-}
+func (m *mockSignalTaskStore) ClearTask(ctx context.Context, taskID string) (int, error) { return 0, nil }
 func (m *mockSignalTaskStore) Claim(ctx context.Context, taskID, stepID string) (bool, error) {
 	return true, nil
 }

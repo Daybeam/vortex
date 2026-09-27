@@ -143,6 +143,8 @@ func (s *DirectedEngine) foldNode(taskID, nodeID string) {
 	s.logger.Log("EventNodeFoldingStarted", taskID, "", map[string]any{"node_id": nodeID})
 
 	// Collect all step tasks and results for this node
+	// audit P-H4: batch-fetch all step results in one query instead of N.
+	stepResults, _ := s.taskStore.GetBatch(s.lifecycleCtx, taskID, node.StepIDs)
 	var content strings.Builder
 	for _, sid := range node.StepIDs {
 		step := graph.Steps[sid]
@@ -150,7 +152,7 @@ func (s *DirectedEngine) foldNode(taskID, nodeID string) {
 			continue
 		}
 		fmt.Fprintf(&content, "Step %s: %s\n", sid, step.Task)
-		if res, err := s.taskStore.Get(s.lifecycleCtx, taskID, sid); err == nil {
+		if res := stepResults[sid]; res != nil {
 			fmt.Fprintf(&content, "Result: %v\n", res.Data)
 		}
 	}

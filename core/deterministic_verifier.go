@@ -21,8 +21,8 @@ type DeterministicVerifier interface {
 // deterministicVerifiers is the registry of all hard-check verifiers.
 // Keyed by check.Type. Extend by adding new implementations before init.
 var deterministicVerifiers = map[string]DeterministicVerifier{
-	"file_exists":  &FileExistsVerifier{},
-	"command_pass": &CommandPassVerifier{},
+	"file_exists":   &FileExistsVerifier{},
+	"command_pass":  &CommandPassVerifier{},
 }
 
 // FileExistsVerifier checks that a file exists and is non-empty.
@@ -57,6 +57,16 @@ func (v *CommandPassVerifier) Verify(ctx context.Context, workdir string, criter
 	cmdStr, _ := criteria["command"].(string)
 	if cmdStr == "" {
 		return false, "missing 'command' parameter", nil
+	}
+
+	// audit S-C1: reject shell metacharacters to prevent command injection.
+	// The command originates from task graph exit criteria (LLM/user-controlled).
+	// Allow only simple commands — no chaining, pipes, redirects, or substitution.
+	for _, ch := range cmdStr {
+		if ch == ';' || ch == '|' || ch == '&' || ch == '$' || ch == '`' ||
+			ch == '>' || ch == '<' || ch == '\n' || ch == '\r' {
+			return false, fmt.Sprintf("command rejected: contains shell metacharacter %q (audit S-C1)", ch), nil
+		}
 	}
 
 	var cmd *exec.Cmd

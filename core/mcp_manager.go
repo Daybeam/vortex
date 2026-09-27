@@ -359,6 +359,12 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 }
 
 func (m *MCPConnectionManager) callRemoteMCPTool(ctx context.Context, mcp *config.MCPDef, toolName string, arguments map[string]any) (any, error) {
+	// Validate arguments against the tool's JSON Schema before dispatching.
+	// Prevents wasted round-trips and gives clear 400-style errors.
+	if err := validateToolArgs(mcp, toolName, arguments); err != nil {
+		return nil, fmt.Errorf("callRemoteMCPTool: %w", err)
+	}
+
 	resolvedURL, err := resolveMCPURL(mcp)
 	if err != nil {
 		return nil, fmt.Errorf("callRemoteMCPTool: %w", err)
@@ -497,6 +503,14 @@ func (m *MCPConnectionManager) ensureMCPClient(ctx context.Context, mcp *config.
 		}
 		m.mu.Unlock()
 	}
+
+	// audit C-7: serialize Initialize per MCP ID to prevent concurrent init race.
+	// Two goroutines can both see !IsInitialized() and both call Initialize();
+	// if one fails it deletes+closes the client while the other still uses it.
+	lockIface, _ := m.handshakeLocks.LoadOrStore(mcp.ID, &sync.Mutex{})
+	hsLock := lockIface.(*sync.Mutex)
+	hsLock.Lock()
+	defer hsLock.Unlock()
 
 	if !cli.IsInitialized() {
 		initCtx, cancel := context.WithTimeout(ctx, 15*time.Second)

@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
-	pkg_interfaces "github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/schemas"
+	pkg_interfaces "github.com/daybeam/vortex/pkg/interfaces"
 )
 
 // ITaskBackend defines the low-level persistence operations.
@@ -32,10 +32,21 @@ type TaskRegistry interface {
 type ITaskStore interface {
 	Set(ctx context.Context, taskID, stepID string, result *StepResult) error
 	Get(ctx context.Context, taskID, stepID string) (*StepResult, error)
+	// GetBatch fetches multiple step results in a single call (audit P-H1-H4).
+	// Replaces N+1 query patterns at 4 call sites. Returns a map keyed by stepID;
+	// missing steps are simply absent from the map (not an error).
+	GetBatch(ctx context.Context, taskID string, stepIDs []string) (map[string]*StepResult, error)
 	GetByRef(ctx context.Context, ref string) (*StepResult, error)
 	ClearTask(ctx context.Context, taskID string) (int, error)
 	// Claim atomically attempts to mark a step as running. Returns true if successful.
 	Claim(ctx context.Context, taskID, stepID string) (bool, error)
+}
+
+// batchLoader is an optional interface that ITaskBackend implementations can
+// satisfy to provide true batch loading (single SQL query instead of N).
+// TaskStore.GetBatch uses type assertion to detect this capability.
+type batchLoader interface {
+	LoadBatch(ctx context.Context, taskID string, stepIDs []string) (map[string][]byte, error)
 }
 
 // IEmbeddingClient defines a simple interface for vector embeddings.
@@ -174,3 +185,4 @@ type ChatSessionRow struct {
 	ActiveLeafID string
 	CreatedAt    time.Time
 }
+

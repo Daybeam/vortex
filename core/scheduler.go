@@ -593,3 +593,67 @@ func (s *DirectedEngine) recordCoordinationEdge(graph *schemas.TaskGraph, source
 func (e *DirectedEngine) GetCrossFamilyVerifier(providerID string) string {
 	return e.walker.GetCrossFamilyVerifier(providerID)
 }
+
+// SetMemoryBankStore wires the MemoryBankStore into the ReflectionEngine
+// for automatic user profile extraction. Called after construction.
+func (s *DirectedEngine) SetMemoryBankStore(mb *store.MemoryBankStore) {
+	if s.reflection != nil {
+		s.reflection.SetMemoryBankStore(mb)
+	}
+}
+
+// SuspendTask pauses a running task by cancelling its execution context and
+// transitioning the graph to GraphSuspended. Unlike CancelTask, the task can
+// be resumed later via ResumeSuspendedTask. This is a Control Plane operation
+// (human/system-facing), NOT exposed as an LLM-facing MCP tool.
+func (s *DirectedEngine) SuspendTask(taskID string) error {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	cancel, ok := s.cancelFuncs[taskID]
+	graph, ok2 := s.graphs[taskID]
+	if !ok || !ok2 {
+		return fmt.Errorf("task %q not found or already terminal", taskID)
+	}
+	if graph.Status != schemas.GraphRunning {
+		return fmt.Errorf("task %q is not running (status: %s)", taskID, graph.Status)
+	}
+	cancel()
+	graph.Status = schemas.GraphSuspended
+	s.persistGraphLocked(graph)
+	s.logger.Log("EventTaskSuspended", taskID, "", map[string]any{})
+	return nil
+}
+
+// ResumeSuspendedTask resumes a previously suspended task by re-initializing
+// its execution context and respawning the scheduler loop from pending steps.
+// This is a Control Plane operation (human/system-facing).
+func (s *DirectedEngine) ResumeSuspendedTask(taskID string) error {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	graph, ok := s.graphs[taskID]
+	if !ok {
+		return fmt.Errorf("task %q not found", taskID)
+	}
+	if graph.Status != schemas.GraphSuspended {
+		return fmt.Errorf("task %q is not suspended (status: %s)", taskID, graph.Status)
+	}
+
+	for _, step := range graph.Steps {
+		if step.Status == schemas.StepRunning {
+			step.Status = schemas.StepPending
+		}
+	}
+	graph.Status = schemas.GraphRunning
+	s.persistGraphLocked(graph)
+
+	ctx, cancel := context.WithCancel(s.lifecycleCtx)
+	s.cancelFuncs[graph.TaskID] = cancel
+	if _, ok := s.doneChans[graph.TaskID]; !ok {
+		s.doneChans[graph.TaskID] = make(chan struct{})
+	}
+	if !s.UseSwarm {
+		s.goBackground(func() { s.run(ctx, graph.TaskID) })
+	}
+	s.logger.Log("EventTaskResumed", taskID, "", map[string]any{})
+	return nil
+}

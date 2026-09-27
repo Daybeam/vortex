@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daybeam/vortex/core"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/daybeam/vortex/core"
 )
 
 type deploySession struct {
@@ -185,6 +185,13 @@ func HandleAdminDeployFile(ctx context.Context, app *App, req mcp.CallToolReques
 
 	if path == "" || reason == "" {
 		return errResult("path and _reason are required")
+	}
+
+	// audit S-C2: reject path traversal even when deploy write is enabled.
+	// Prevents overwriting system files (e.g. /etc/cron.d/, authorized_keys).
+	pSlash := filepath.ToSlash(path)
+	if strings.Contains(pSlash, "../") || strings.Contains(pSlash, "/..") || pSlash == ".." {
+		return errResult("path traversal rejected (audit S-C2): path must not contain '..' segments")
 	}
 
 	var data []byte

@@ -234,6 +234,7 @@ func runGopherLua(ctx context.Context, code string) (*EmbeddedRunResult, error) 
 		}
 		return res, nil
 	case <-ctx.Done():
+		<-outCh // audit R-4: wait for goroutine before L.Close() runs (use-after-close race)
 		return &EmbeddedRunResult{
 			Stdout:  stdout.String(),
 			Stderr:  stderr.String(),

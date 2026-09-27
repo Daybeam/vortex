@@ -35,27 +35,27 @@ const (
 
 // Spawner builds subagent prompts, calls the provider, and parses output.
 type Spawner struct {
-	registry          *config.Registry
-	taskStore         store.ITaskStore
-	expStore          store.IExperienceStore
-	logger            *Logger
-	mcpMgr            *MCPConnectionManager
-	Mu                sync.Mutex
-	interceptors      []Interceptor
-	contextProviders  []ContextProvider
-	outputBase        string
-	ResourceLoader    *ResourceLoader
-	processor         *OutputProcessor
-	toolRouter        *ToolRouter
-	skillRouter       *SkillRouter
-	verifierRegistry  map[string]Verifier
-	constraintAdapter *ConstraintAdapter
-	sieve             *Sieve
-	contextManager    *ContextManager
-	CaSKG             *CaSKGManager
-	watchdog          *GatewayWatchdog
-	healer            *Healer
-	pa                *PromptAssembler
+	registry     *config.Registry
+	taskStore    store.ITaskStore
+	expStore     store.IExperienceStore
+	logger       *Logger
+	mcpMgr       *MCPConnectionManager
+	Mu           sync.Mutex
+	interceptors []Interceptor
+	contextProviders []ContextProvider
+	outputBase         string
+	ResourceLoader     *ResourceLoader
+	processor          *OutputProcessor
+	toolRouter         *ToolRouter
+	skillRouter        *SkillRouter
+	verifierRegistry   map[string]Verifier
+	constraintAdapter  *ConstraintAdapter
+	sieve              *Sieve
+	contextManager     *ContextManager
+	CaSKG              *CaSKGManager
+	watchdog           *GatewayWatchdog
+	healer             *Healer
+	pa                 *PromptAssembler
 
 	assets                   *AssetManager
 	refBasedHandoffThreshold int
@@ -85,14 +85,14 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 	caskg.HookEventBus(DefaultBus)
 
 	spawner := &Spawner{
-		registry:         reg,
-		taskStore:        ts,
-		expStore:         es,
-		logger:           logger,
-		ResourceLoader:   loader,
-		mcpMgr:           NewMCPConnectionManager(reg, logger),
-		verifierRegistry: make(map[string]Verifier),
-		interceptors:     interceptors,
+		registry:           reg,
+		taskStore:          ts,
+		expStore:           es,
+		logger:             logger,
+		ResourceLoader:     loader,
+		mcpMgr:             NewMCPConnectionManager(reg, logger),
+		verifierRegistry:   make(map[string]Verifier),
+		interceptors:       interceptors,
 		contextProviders: []ContextProvider{
 			&TimeProvider{},
 		},
@@ -105,11 +105,11 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		sieve:             newSieveFromConfig(reg.System),
 		contextManager:    NewContextManager(reg),
 		watchdog:          NewGatewayWatchdog(reg),
-		healer:            NewHealer(),
-		pa:                NewPromptAssembler(es, loader, reg, logger),
-		irtEstimator:      NewIRTBudgetEstimator(50),
-		cacheSentinel:     NewCacheSentinel(),
-		allowedWorkspaces: reg.System.Sandbox.AllowedWorkspaces,
+		healer:             NewHealer(),
+		pa:                 NewPromptAssembler(es, loader, reg, logger),
+		irtEstimator:       NewIRTBudgetEstimator(50),
+		cacheSentinel:      NewCacheSentinel(),
+		allowedWorkspaces:  reg.System.Sandbox.AllowedWorkspaces,
 	}
 
 	// Priority 6: Wire up embedding client for Experience Store
@@ -229,6 +229,9 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// Ensure Hub exists (safety fallback)
 	if req.Hub == nil {
 		req.Hub = NewContextHub(s.registry, nil, s.expStore)
+	}
+	if req.Hub.GraphMu == nil {
+		req.Hub.GraphMu = &sync.RWMutex{} // audit C-2: fallback — Graph is nil here, mutex unused
 	}
 
 	role := req.Hub.GetRole(req.RoleID)
@@ -437,9 +440,9 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				}
 			}
 
-			var provider providers.Provider
+		var provider providers.Provider
 
-			slot, err := s.routeProvider(providers.PoolIDFor(pCfg), role.BaseCapability)
+		slot, err := s.routeProvider(providers.PoolIDFor(pCfg), role.BaseCapability)
 			if err == nil {
 				provider = slot.Provider
 			} else {
@@ -531,9 +534,9 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				"candidate_idx":     candIdx,
 			})
 
-			if os.Getenv("VORTEX_DEBUG") != "" {
-				fmt.Fprintf(os.Stderr, "[DEBUG] Calling Provider %s for Task %s Turn %d (candidate %d)\n", pCfg.Model, req.TaskID, turn, candIdx)
-			}
+		if os.Getenv("VORTEX_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "[DEBUG] Calling Provider %s for Task %s Turn %d (candidate %d)\n", pCfg.Model, req.TaskID, turn, candIdx)
+		}
 
 			// --- Sieve Context Management (SOP 3.0) ---
 			reqSieve := &schemas.CompleteRequest{
@@ -617,7 +620,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 						"failed_model":    pCfg.Model,
 						"error":           "empty_response_zero_tokens",
 						"prompt_tokens":   resp.PromptTokens,
-						"next_candidate": func() string {
+						"next_candidate":  func() string {
 							if candIdx < len(candidateConfigs)-1 {
 								return candidateConfigs[candIdx+1].providerID
 							}
@@ -731,13 +734,13 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 					node.Causes = append(node.Causes, k)
 				}
 
-				s.Mu.Lock()
+				req.Hub.GraphMu.Lock()
 				if req.Hub.Graph.DecisionHistory == nil {
 					req.Hub.Graph.DecisionHistory = make(map[string]*schemas.DecisionNode)
 				}
 				req.Hub.Graph.DecisionHistory[turnDecisionID] = node
 				decisionIDs = append(decisionIDs, turnDecisionID)
-				s.Mu.Unlock()
+				req.Hub.GraphMu.Unlock() // audit C-2: use engine mutex, not Spawner's s.Mu
 
 				// Priority 6: Learn from the new decision
 				if s.expStore != nil {
@@ -800,11 +803,11 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 
 			// ── Priority 5: Update Decision Outcome (Final) ──────────────────
 			if turnDecisionID != "" && req.Hub != nil && req.Hub.Graph != nil {
-				s.Mu.Lock()
+				req.Hub.GraphMu.Lock()
 				if node, ok := req.Hub.Graph.DecisionHistory[turnDecisionID]; ok {
 					node.Outcome = string(output.Status)
 				}
-				s.Mu.Unlock()
+				req.Hub.GraphMu.Unlock() // audit C-2: use engine mutex, not Spawner's s.Mu
 			}
 
 			s.taskStoreSet(ctx, req.TaskID, req.StepID, &store.StepResult{
@@ -821,14 +824,14 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				CreatedAt:      time.Now(),
 			})
 
-			return &SpawnResult{
-				Output:        output,
-				ProviderID:    effectiveProviderID,
-				ModelID:       effectiveModelID,
-				Ref:           req.TaskID + ":" + req.StepID,
-				StatesVisited: statesVisited,
-				TurnsUsed:     turn + 1,
-			}, nil
+		return &SpawnResult{
+			Output:        output,
+			ProviderID:    effectiveProviderID,
+			ModelID:       effectiveModelID,
+			Ref:           req.TaskID + ":" + req.StepID,
+			StatesVisited: statesVisited,
+			TurnsUsed:     turn + 1,
+		}, nil
 		}
 
 		// Handle Tool Calls
@@ -876,24 +879,24 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 			interaction := store.ToolInteraction{
 				ToolName:  call.Name,
 				Arguments: copyToolCallArguments(call.Arguments, turnDecisionID),
-			}
+		}
 
-			reason := "鏈煡 (LLM 鏈彁渚?"
+			reason := "tool call (LLM initiated)" // audit C-15: replaced mojibake string literal
 			if r, ok := call.Arguments["_reason"].(string); ok && r != "" {
 				reason = r
 				delete(call.Arguments, "_reason")
 			}
 
-			if mcpDef == nil {
-				toolFailCount[call.Name]++
-				res := toolFailFeedback(call.Name, fmt.Sprintf("MCP server %s not found for tool %s", mcpID, call.Name), toolFailCount[call.Name])
-				interaction.Result = res
-				trace = append(trace, interaction)
+		if mcpDef == nil {
+			toolFailCount[call.Name]++
+			res := toolFailFeedback(call.Name, fmt.Sprintf("MCP server %s not found for tool %s", mcpID, call.Name), toolFailCount[call.Name])
+			interaction.Result = res
+			trace = append(trace, interaction)
 
-				env := s.processor.Wrap(call.Name, res, "error", "orchestrator", reason)
-				toolResults = append(toolResults, env.ToMarkdown(call.Name))
-				continue
-			}
+			env := s.processor.Wrap(call.Name, res, "error", "orchestrator", reason)
+			toolResults = append(toolResults, env.ToMarkdown(call.Name))
+			continue
+		}
 
 			if isStateChangingTool(call.Name) {
 				needsVerification = true
@@ -965,15 +968,15 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				}
 				cancelTool()
 
-				if execErr != nil {
-					toolFailCount[call.Name]++
-					resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing tool %s: %v", call.Name, execErr), toolFailCount[call.Name])
-					interaction.Result = resErr
-					env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
-					toolResults = append(toolResults, env.ToMarkdown(call.Name))
-				} else {
-					toolFailCount[call.Name] = 0
-					interaction.Result = finalRes
+			if execErr != nil {
+				toolFailCount[call.Name]++
+				resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing tool %s: %v", call.Name, execErr), toolFailCount[call.Name])
+				interaction.Result = resErr
+				env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
+				toolResults = append(toolResults, env.ToMarkdown(call.Name))
+			} else {
+				toolFailCount[call.Name] = 0
+				interaction.Result = finalRes
 					if att, ok := finalRes.(schemas.SubagentOutput); ok {
 						turnAttachments = append(turnAttachments, att.Attachments...)
 					}
@@ -997,15 +1000,15 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				finalRes, execErr := s.mcpMgr.callRemoteMCPTool(toolCtx, mcpDef, call.Name, call.Arguments)
 				cancelTool()
 
-				if execErr != nil {
-					toolFailCount[call.Name]++
-					resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing remote tool %s: %v", call.Name, execErr), toolFailCount[call.Name])
-					interaction.Result = resErr
-					env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
-					toolResults = append(toolResults, env.ToMarkdown(call.Name))
-				} else {
-					toolFailCount[call.Name] = 0
-					interaction.Result = finalRes
+			if execErr != nil {
+				toolFailCount[call.Name]++
+				resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing remote tool %s: %v", call.Name, execErr), toolFailCount[call.Name])
+				interaction.Result = resErr
+				env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
+				toolResults = append(toolResults, env.ToMarkdown(call.Name))
+			} else {
+				toolFailCount[call.Name] = 0
+				interaction.Result = finalRes
 					status := "ok"
 					if m, ok := finalRes.(map[string]any); ok {
 						if s, ok := m["status"].(string); ok {
@@ -1022,13 +1025,13 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 					}
 					toolResults = append(toolResults, md)
 				}
-			} else {
-				toolFailCount[call.Name]++
-				res := toolFailFeedback(call.Name, fmt.Sprintf("MCP %s has neither a local command nor a remote URL configured for tool %s", mcpDef.ID, call.Name), toolFailCount[call.Name])
-				interaction.Result = res
-				env := s.processor.Wrap(call.Name, res, "error", "orchestrator:cloud", reason)
-				toolResults = append(toolResults, env.ToMarkdown(call.Name))
-			}
+		} else {
+			toolFailCount[call.Name]++
+			res := toolFailFeedback(call.Name, fmt.Sprintf("MCP %s has neither a local command nor a remote URL configured for tool %s", mcpDef.ID, call.Name), toolFailCount[call.Name])
+			interaction.Result = res
+			env := s.processor.Wrap(call.Name, res, "error", "orchestrator:cloud", reason)
+			toolResults = append(toolResults, env.ToMarkdown(call.Name))
+		}
 			trace = append(trace, interaction)
 
 			// ── PGPO: State Observation Loop (ADDED 2026-09-08) ──

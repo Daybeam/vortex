@@ -20,17 +20,17 @@ type ToolInteraction struct {
 }
 
 type StepResult struct {
-	Data           any                  `json:"data"`
-	Confidence     float64              `json:"confidence"`
-	MissingContext []string             `json:"missing_context"`
-	Capability     string               `json:"capability"`
-	ProviderID     string               `json:"provider_id,omitempty"`
-	ModelID        string               `json:"model_id,omitempty"`
+	Data           any               `json:"data"`
+	Confidence     float64           `json:"confidence"`
+	MissingContext []string          `json:"missing_context"`
+	Capability     string            `json:"capability"`
+	ProviderID     string            `json:"provider_id,omitempty"`
+	ModelID        string            `json:"model_id,omitempty"`
 	Attachments    []schemas.Attachment `json:"attachments"`
-	Trace          []ToolInteraction    `json:"trace"`
-	DecisionIDs    []string             `json:"decision_ids,omitempty"`   // Link to structured decisions
-	StatesVisited  []string             `json:"states_visited,omitempty"` // PGPO: Visited environment states (ADDED 2026-09-08)
-	CreatedAt      time.Time            `json:"created_at"`
+	Trace          []ToolInteraction `json:"trace"`
+	DecisionIDs    []string          `json:"decision_ids,omitempty"` // Link to structured decisions
+	StatesVisited  []string          `json:"states_visited,omitempty"` // PGPO: Visited environment states (ADDED 2026-09-08)
+	CreatedAt      time.Time         `json:"created_at"`
 }
 
 // FileTaskBackend implements ITaskBackend using the local filesystem.
@@ -105,6 +105,47 @@ func (ts *TaskStore) Get(ctx context.Context, taskID, stepID string) (*StepResul
 		return nil, err
 	}
 	return &res, nil
+}
+
+// GetBatch fetches multiple step results in a single call (audit P-H1-H4).
+// If the backend supports batchLoader, uses a single SQL query; otherwise
+// falls back to N sequential Load calls (still under a single RLock).
+func (ts *TaskStore) GetBatch(ctx context.Context, taskID string, stepIDs []string) (map[string]*StepResult, error) {
+	ts.Mu.RLock()
+	defer ts.Mu.RUnlock()
+
+	result := make(map[string]*StepResult, len(stepIDs))
+	if len(stepIDs) == 0 {
+		return result, nil
+	}
+
+	// Fast path: backend supports true batch loading (e.g. SQLiteTaskBackend).
+	if bl, ok := ts.backend.(batchLoader); ok {
+		batch, err := bl.LoadBatch(ctx, taskID, stepIDs)
+		if err != nil {
+			return nil, err
+		}
+		for sid, data := range batch {
+			var res StepResult
+			if json.Unmarshal(data, &res) == nil {
+				result[sid] = &res
+			}
+		}
+		return result, nil
+	}
+
+	// Fallback: loop over Load (still under single RLock — better than N separate Get calls).
+	for _, sid := range stepIDs {
+		data, err := ts.backend.Load(ctx, taskID, sid)
+		if err != nil {
+			continue
+		}
+		var res StepResult
+		if json.Unmarshal(data, &res) == nil {
+			result[sid] = &res
+		}
+	}
+	return result, nil
 }
 
 func (ts *TaskStore) GetByRef(ctx context.Context, ref string) (*StepResult, error) {

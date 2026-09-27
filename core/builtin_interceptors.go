@@ -27,25 +27,25 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 			_, roleExists = registry.Roles[req.RoleID]
 		}
 
-		if !roleExists {
-			// FIX (2026-08-06): If both RoleID and Task are empty, we cannot generate a role.
-			// Fail early with a clear error to prevent recursive/meaningless attempts and
-			// "role "" not found" downstream failures.
-			if req.RoleID == "" && req.Task == "" {
-				return nil, fmt.Errorf("Blocked: both role_id and task are empty, cannot resolve or generate a role for step %s", req.StepID)
-			}
+	if !roleExists {
+		// FIX (2026-08-06): If both RoleID and Task are empty, we cannot generate a role.
+		// Fail early with a clear error to prevent recursive/meaningless attempts and
+		// "role "" not found" downstream failures.
+		if req.RoleID == "" && req.Task == "" {
+			return nil, fmt.Errorf("Blocked: both role_id and task are empty, cannot resolve or generate a role for step %s", req.StepID)
+		}
 
-			switch {
-			case registry.EnableEphemeralRoleGen && req.Hub != nil:
-				// Ephemeral path (ADDED 2026-07-30): generate a role scoped to this
-				// task only. Uses RoleGenerator.GenerateRoleObjects, which -- unlike
-				// GetOrCreateRole below -- never touches the shared registry or
-				// calls Persist(). The result is stored in req.Hub.Graph's session
-				// IR (mutex-guarded, safe under DirectedEngine's concurrent-step
-				// execution), exactly like a caller-supplied session_roles entry.
-				logger.Log("EventEphemeralRoleGeneration", req.TaskID, req.StepID, map[string]any{
-					"message": fmt.Sprintf("Role %s not found, attempting ephemeral (session-scoped) generation", req.RoleID),
-				})
+		switch {
+		case registry.EnableEphemeralRoleGen && req.Hub != nil:
+			// Ephemeral path (ADDED 2026-07-30): generate a role scoped to this
+			// task only. Uses RoleGenerator.GenerateRoleObjects, which -- unlike
+			// GetOrCreateRole below -- never touches the shared registry or
+			// calls Persist(). The result is stored in req.Hub.Graph's session
+			// IR (mutex-guarded, safe under DirectedEngine's concurrent-step
+			// execution), exactly like a caller-supplied session_roles entry.
+			logger.Log("EventEphemeralRoleGeneration", req.TaskID, req.StepID, map[string]any{
+				"message": fmt.Sprintf("Role %s not found, attempting ephemeral (session-scoped) generation", req.RoleID),
+			})
 			role, skill, err := generator.GenerateRoleObjects(ctx, req.TaskID, req.StepID, req.RoleID, req.Task)
 			if err != nil {
 				logger.Log("EventEphemeralRoleGenerationFailed", req.TaskID, req.StepID, map[string]any{
@@ -56,18 +56,18 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 				}
 				return nil, fmt.Errorf("role %q not found and ephemeral generation failed: %w", req.RoleID, err)
 			}
-				req.Hub.Graph.SetSessionRole(req.RoleID, role)
-				if skill != nil {
-					req.Hub.Graph.SetSessionSkill(skill.ID, skill)
-				}
-				logger.Log("EventEphemeralRoleGenerated", req.TaskID, req.StepID, map[string]any{
-					"role_id": req.RoleID,
-				})
-			case registry.EnableDynamicRoleGen:
-				logger.Log("EventAutoRoleGeneration", req.TaskID, req.StepID, map[string]any{
-					"message": fmt.Sprintf("Role %s not found, attempting dynamic generation", req.RoleID),
-				})
-				// Use the actual task description to make the role more accurate
+			req.Hub.Graph.SetSessionRole(req.RoleID, role)
+			if skill != nil {
+				req.Hub.Graph.SetSessionSkill(skill.ID, skill)
+			}
+			logger.Log("EventEphemeralRoleGenerated", req.TaskID, req.StepID, map[string]any{
+				"role_id": req.RoleID,
+			})
+		case registry.EnableDynamicRoleGen:
+			logger.Log("EventAutoRoleGeneration", req.TaskID, req.StepID, map[string]any{
+				"message": fmt.Sprintf("Role %s not found, attempting dynamic generation", req.RoleID),
+			})
+			// Use the actual task description to make the role more accurate
 			_, err := generator.GetOrCreateRole(ctx, req.TaskID, req.StepID, req.RoleID, req.Task, "code")
 			if err != nil {
 				logger.Log("EventAutoRoleGenerationFailed", req.TaskID, req.StepID, map[string]any{
@@ -83,7 +83,7 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 				return nil, fmt.Errorf("role %q not found and dynamic generation is disabled", req.RoleID)
 			}
 		}
-		}
+	}
 
 		logger.Log(EventStepStarted, req.TaskID, req.StepID, map[string]any{
 			"message": fmt.Sprintf("Interceptor: Optimizing prompt and preparing context for role %s (Step %s)", req.RoleID, req.StepID),
@@ -161,9 +161,11 @@ func HealthCheckInterceptor(registry *config.Registry, logger *Logger) Intercept
 						// shell scripts in the routine task path must be opt-in.
 						if registry.System.EnableAutoRepair {
 							// VDA Self-healing attempt: check for fix script in scripts/fix/
-							fixScript := filepath.Join("scripts", "fix", fmt.Sprintf("fix_%s.bat", cmdName))
+							// audit S-H5: sanitize cmdName to prevent path traversal in fix script path
+							safeCmdName := filepath.Base(cmdName)
+							fixScript := filepath.Join("scripts", "fix", fmt.Sprintf("fix_%s.bat", safeCmdName))
 							if runtime.GOOS != "windows" {
-								fixScript = filepath.Join("scripts", "fix", fmt.Sprintf("fix_%s.sh", cmdName))
+								fixScript = filepath.Join("scripts", "fix", fmt.Sprintf("fix_%s.sh", safeCmdName))
 							}
 
 							if _, ferr := os.Stat(fixScript); ferr == nil {
@@ -192,7 +194,7 @@ func HealthCheckInterceptor(registry *config.Registry, logger *Logger) Intercept
 									logger.Log("EventEnvironmentRepairFailed", req.TaskID, req.StepID, map[string]any{
 										"dependency": cmdName,
 										"error":      rerr.Error(),
-										"output":     string(rout),
+										"output":      string(rout),
 									})
 								}
 							}

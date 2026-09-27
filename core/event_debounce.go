@@ -35,7 +35,10 @@ func SubscribeBatched(bus *EventBus, eventType string, batchSize int, window tim
 	ingest := make(chan AgentEvent, 64)
 	stopChan := make(chan struct{})
 
-	bus.Subscribe(eventType, func(e AgentEvent) error {
+	// audit R-2: use SubscribeWithCancel so stop() can remove the handler from
+	// the EventBus. Subscribe alone leaves the handler closure in subscribers
+	// forever, and every Publish invokes the dead closure (capturing ingest chan).
+	unsubscribe := bus.SubscribeWithCancel(eventType, func(e AgentEvent) error {
 		select {
 		case ingest <- e:
 		default:
@@ -99,7 +102,7 @@ func SubscribeBatched(bus *EventBus, eventType string, batchSize int, window tim
 	// stop closes stopChan, causing the goroutine to flush and exit, which closes out.
 	var stopOnce sync.Once
 	stop := func() {
-		stopOnce.Do(func() { close(stopChan) })
+		stopOnce.Do(func() { close(stopChan); unsubscribe() }) // audit R-2: also remove handler from EventBus
 	}
 	return out, stop
 }

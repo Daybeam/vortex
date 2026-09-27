@@ -2,8 +2,8 @@ package core
 
 import (
 	"fmt"
-	"github.com/daybeam/vortex/schemas"
 	"time"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // SurgeryData contains parameters for dynamic topology mutation.
@@ -79,20 +79,11 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 		// If a pending step loses its last blocker, it may now be ready
 		if step.Status == schemas.StepPending {
 			if len(step.DependsOn) == 0 {
-				// Check if all remaining deps are satisfied
-				allReady := true
-				for _, dep := range step.DependsOn {
-					depStep := graph.Steps[dep]
-					if depStep == nil || (depStep.Status != schemas.StepOK && depStep.Status != schemas.StepSkipped && depStep.Status != schemas.StepDeprecated) {
-						allReady = false
-						break
-					}
-				}
-				if allReady {
-					s.logger.Log("dep_cleanup_unblocked", taskID, step.ID, map[string]any{
-						"removed_dep": data.DeprecatedStepID,
-					})
-				}
+				// audit C-11: removed dead inner loop (iterated empty slice, allReady always true).
+				// No remaining deps = step is trivially unblocked.
+				s.logger.Log("dep_cleanup_unblocked", taskID, step.ID, map[string]any{
+					"removed_dep": data.DeprecatedStepID,
+				})
 			}
 		}
 	}
@@ -127,15 +118,9 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 			MaxSpawnDepth:    inp.MaxSpawnDepth,
 			LastWorkedOn:     time.Now(),
 		}
-		if newStep.AdditionalSkills == nil {
-			newStep.AdditionalSkills = []string{}
-		}
-		if newStep.AdditionalMCPs == nil {
-			newStep.AdditionalMCPs = []string{}
-		}
-		if newStep.ContextRefs == nil {
-			newStep.ContextRefs = map[string]string{}
-		}
+		if newStep.AdditionalSkills == nil { newStep.AdditionalSkills = []string{} }
+		if newStep.AdditionalMCPs == nil { newStep.AdditionalMCPs = []string{} }
+		if newStep.ContextRefs == nil { newStep.ContextRefs = map[string]string{} }
 
 		graph.Steps[inp.ID] = newStep
 

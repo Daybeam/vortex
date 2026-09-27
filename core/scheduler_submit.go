@@ -95,10 +95,10 @@ func sliceContains(slice []string, item string) bool {
 }
 
 func (s *DirectedEngine) Submit(inputs []schemas.StepInput) (string, error) {
-	return s.SubmitWithSessionIR(inputs, nil, nil, nil, "", "", "", 0, 0)
+	return s.SubmitWithSessionIR(inputs, nil, nil, nil, "", "", "", 0, 0, "")
 }
 
-func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles []*config.Role, skills []*config.Skill, providers []*config.ProviderConfig, mainProviderID string, sessionID string, workspaceRoot string, timeoutSecs int, tokenBudget int64) (string, error) {
+func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles []*config.Role, skills []*config.Skill, providers []*config.ProviderConfig, mainProviderID string, sessionID string, workspaceRoot string, timeoutSecs int, tokenBudget int64, ownerID string) (string, error) {
 	// ── Session-to-Workspace Binding (D1) ───────────────────────────────
 	// Validate workspaceRoot against the AllowedWorkspaces whitelist before
 	// accepting any work. Nil-safe: when s.Sessions is nil (tests, backward
@@ -201,6 +201,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			GlobalWorkspace:  map[string]any{},
 			IsSmartRouted:    true,
 			SessionID:        sessionID,
+			OwnerID:          ownerID,
 			WorkspaceRoot:    workspaceRoot,
 			TimeoutSecs:      timeoutSecs,
 			TokenBudget:      tokenBudget,
@@ -477,6 +478,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		MainProviderID:   mainProviderID,
 		GlobalWorkspace:  make(map[string]any),
 		SessionID:        sessionID,
+		OwnerID:          ownerID,
 		WorkspaceRoot:    workspaceRoot,
 		TimeoutSecs:      timeoutSecs,
 		TokenBudget:      tokenBudget,

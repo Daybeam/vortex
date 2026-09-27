@@ -80,7 +80,11 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 	if es.persistInFlight.CompareAndSwap(false, true) {
 		go func() {
 			defer es.persistInFlight.Store(false)
-			es.PersistAll(ctx)
+			// audit C-14: use detached context — caller's ctx may be cancelled
+			// before persist runs, causing silent experience data loss.
+			persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			es.PersistAll(persistCtx)
 		}()
 	}
 	return nil
@@ -279,6 +283,7 @@ func (es *ExperienceStore) updateSkillAffinities(rec *StepRecord) {
 }
 
 func (es *ExperienceStore) updateStatePotentialsLocked(ctx context.Context, rec *StepRecord, success bool) {
+	var toSave []*StatePotential // audit P-C1: batch saves to avoid goroutine storm
 	for _, stateHash := range rec.StatesVisited {
 		sp := es.StatePotentials[stateHash]
 		if sp == nil {
@@ -302,14 +307,19 @@ func (es *ExperienceStore) updateStatePotentialsLocked(ctx context.Context, rec 
 		sp.LastUpdated = time.Now()
 
 		if es.backend != nil {
-			// audit H10: track with saveWg so shutdown waits for this;
-			// use caller's ctx so save cancels on shutdown.
-			es.saveWg.Add(1)
-			go func(ctx context.Context, sp *StatePotential) {
-				defer es.saveWg.Done()
-				es.backend.SaveStatePotential(ctx, sp)
-			}(ctx, sp)
+			toSave = append(toSave, sp)
 		}
+	}
+	// audit P-C1: single goroutine saves all state potentials sequentially
+	// (SQLite is single-writer anyway) — replaces N goroutines with 1.
+	if len(toSave) > 0 {
+		es.saveWg.Add(1)
+		go func(ctx context.Context, pots []*StatePotential) {
+			defer es.saveWg.Done()
+			for _, sp := range pots {
+				es.backend.SaveStatePotential(ctx, sp)
+			}
+		}(ctx, toSave)
 	}
 }
 
@@ -317,6 +327,7 @@ func (es *ExperienceStore) updateStatePotentialsLocked(ctx context.Context, rec 
 // records and upserts them into the tool_cooccurrence table. Caller MUST hold es.Mu.
 // ADDED (2026-09-13) — see docs/COMPOUND_SKILLS_DESIGN.md
 func (es *ExperienceStore) trackCooccurrencesLocked(ctx context.Context, records []StepRecord) {
+	var toSave []*CooccurrenceEntry // audit P-C2: batch saves to avoid goroutine storm
 	for i := 0; i < len(records)-1; i++ {
 		toolA := records[i].Capability
 		toolB := records[i+1].Capability
@@ -335,14 +346,19 @@ func (es *ExperienceStore) trackCooccurrencesLocked(ctx context.Context, records
 			entry.SuccessCount = 1
 		}
 		if es.backend != nil {
-			// audit H10: track with saveWg so shutdown waits for this;
-			// use caller's ctx so save cancels on shutdown.
-			es.saveWg.Add(1)
-			go func(ctx context.Context, entry *CooccurrenceEntry) {
-				defer es.saveWg.Done()
-				es.backend.SaveCooccurrence(ctx, entry)
-			}(ctx, entry)
+			toSave = append(toSave, entry)
 		}
+	}
+	// audit P-C2: single goroutine saves all co-occurrence entries sequentially
+	// (SQLite is single-writer anyway) — replaces N goroutines with 1.
+	if len(toSave) > 0 {
+		es.saveWg.Add(1)
+		go func(ctx context.Context, entries []*CooccurrenceEntry) {
+			defer es.saveWg.Done()
+			for _, entry := range entries {
+				es.backend.SaveCooccurrence(ctx, entry)
+			}
+		}(ctx, toSave)
 	}
 }
 

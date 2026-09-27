@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 )
 
 // Helper functions from tools.go
@@ -90,8 +90,8 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithNumber("token_budget", mcp.Description("Per-task token budget cap. Overrides the global default. 0 = use system default.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, _ := req.Params.Arguments.(map[string]any)
-		sessionRoles := parseSessionRoles(args["session_roles"])
-		sessionSkills := parseSessionSkills(args["session_skills"])
+				sessionRoles := parseSessionRoles(args["session_roles"])
+				sessionSkills := parseSessionSkills(args["session_skills"])
 		sessionID := strArg(args, "session_id")
 		workspaceRoot := strArg(args, "workspace_root")
 		timeoutSecs := intArg(args, "timeout", 0)
@@ -181,11 +181,11 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 					si.AdditionalMCPs = matchedMCPs
 					si.RoleID = matchedRole
 					autoMatched = map[string]any{
-						"triggered":     true,
-						"intent":        taskStr,
-						"bound_mcps":    matchedMCPs,
+						"triggered":    true,
+						"intent":       taskStr,
+						"bound_mcps":   matchedMCPs,
 						"assigned_role": matchedRole,
-						"reason":        reason,
+						"reason":       reason,
 					}
 					app.Logger.Log("EventAutoDiscovered", "", "s1", map[string]any{
 						"intent": taskStr, "mcps": matchedMCPs, "role": matchedRole,
@@ -293,10 +293,10 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				}
 
 				augmentedInputs = append(augmentedInputs, schemas.StepInput{
-					ID:        auditID,
-					RoleID:    "auditor",
-					DependsOn: []string{orig.ID},
-					Task:      auditTask,
+					ID:         auditID,
+					RoleID:     "auditor",
+					DependsOn:  []string{orig.ID},
+					Task:       auditTask,
 				})
 			case schemas.RiskTierModerate:
 				notif["hint"] = "consider adding exit_criteria for structured verification"
@@ -355,7 +355,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			}
 		}
 
-		id, err := app.Scheduler.SubmitWithSessionIR(inputs, sessionRoles, sessionSkills, nil, "", sessionID, workspaceRoot, timeoutSecs, tokenBudget)
+		id, err := app.Scheduler.SubmitWithSessionIR(inputs, sessionRoles, sessionSkills, nil, "", sessionID, workspaceRoot, timeoutSecs, tokenBudget, CallerIdentity(ctx))
 		if err != nil {
 			return errResult(err.Error())
 		}
@@ -380,11 +380,11 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		}
 
 		return jsonOK(map[string]any{
-			"task_id":           id,
-			"complexity_hint":   hint,
-			"step_count":        stepCount,
-			"auto_matched":      autoMatched,
-			"adaptive_verifier": policyNotifications,
+			"task_id":                id,
+			"complexity_hint":        hint,
+			"step_count":             stepCount,
+			"auto_matched":           autoMatched,
+			"adaptive_verifier":      policyNotifications,
 		})
 	})
 
@@ -394,6 +394,9 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithNumber("timeout", mcp.Description("Seconds")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := strArg(req.Params.Arguments, "task_id")
+		if DenyIfNotOwner(ctx, app, id) {
+			return errResult("not found")
+		}
 		timeout := time.Duration(intArg(req.Params.Arguments, "timeout", 30)) * time.Second
 		status, ok := app.Scheduler.WaitTask(ctx, id, timeout)
 		if !ok {
@@ -408,6 +411,9 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithString("view", mcp.Description("summary (default) or full")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := strArg(req.Params.Arguments, "task_id")
+		if DenyIfNotOwner(ctx, app, id) {
+			return errResult("not found")
+		}
 		view := strArg(req.Params.Arguments, "view")
 		if view == "" {
 			view = "summary"
@@ -450,18 +456,18 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 
 	if app.Archive != nil {
 		app.register(s, mcp.NewTool("orchestrator_context_search",
-			mcp.WithDescription("Searches Vortex's hot-data memory (persisted ContextTree nodes and GlobalWorkspace results). Returns either RRF-ranked top-k or a Kruskal-optimized non-redundant evidence forest. Single-task scope: task_scope is required and limits results to the specified task only."),
+			mcp.WithDescription("Searches the Orchestrator's hot-data memory (persisted ContextTree nodes and GlobalWorkspace results). Returns either RRF-ranked top-k or a Kruskal-optimized non-redundant evidence forest. Single-task scope: task_scope is required and limits results to the specified task only."),
 			mcp.WithString("query", mcp.Required()),
 			mcp.WithNumber("k", mcp.Description("Number of results (default: 10)")),
 			mcp.WithString("mode", mcp.Description("Search mode: rrf | forest (default: forest)")),
 			mcp.WithNumber("redundancy", mcp.Description("Redundancy threshold for forest mode (default: 0.85)")),
 			mcp.WithString("task_scope", mcp.Required(), mcp.Description("Task ID to limit search scope. Required — cross-task search is not allowed in open-core edition.")),
 		), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			// orchestrator_context_search: active when ContextArchive is initialized.
-			// Single-task scope enforced: task_scope is required and must be non-empty.
-			// Cross-task search requires enterprise isolation layer (SessionID/OwnerRole).
-			// See docs/completed/2026-09-13/CONTEXT_ARCHIVE_ACTIVATION_DESIGN.md.
-			if app.Archive == nil {
+	// orchestrator_context_search: active when ContextArchive is initialized.
+	// Single-task scope enforced: task_scope is required and must be non-empty.
+	// Cross-task search requires enterprise isolation layer (SessionID/OwnerRole).
+	// See docs/completed/2026-09-13/CONTEXT_ARCHIVE_ACTIVATION_DESIGN.md.
+	if app.Archive == nil {
 				return errResult("Context archive not initialized")
 			}
 			query := strArg(req.Params.Arguments, "query")
@@ -477,6 +483,9 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			taskScope := strArg(req.Params.Arguments, "task_scope")
 			if taskScope == "" {
 				return errResult("task_scope is required — cross-task search is not allowed in open-core edition")
+			}
+			if DenyIfNotOwner(ctx, app, taskScope) {
+				return errResult("not found")
 			}
 			if app.Scheduler != nil && !app.Scheduler.TaskKnown(taskScope) {
 				return errResult("task_scope does not match any known task — cross-task search is not allowed")
@@ -511,6 +520,9 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithObject("human_approval", mcp.Description("Optional. Attach a structured human-review trail. Fields: enabled (bool), evidence_text (string), evidence_ref (string, e.g. @session:... or a URL). All fields optional; only effective when provided.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tid := strArg(req.Params.Arguments, "task_id")
+		if DenyIfNotOwner(ctx, app, tid) {
+			return errResult("not found")
+		}
 		did := strArg(req.Params.Arguments, "decision_id")
 		choice := strArg(req.Params.Arguments, "choice")
 		output := strArg(req.Params.Arguments, "output")
@@ -529,9 +541,9 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		if app.Tier == TierPublic {
 			switch choice {
 			case "skip", "abort", "retry", "refine_and_retry", "fulfill", "resume_more_turns":
-			default:
-				return errResult(fmt.Sprintf("choice %q requires admin tier (public tier allows skip|abort|retry|refine_and_retry|fulfill|resume_more_turns)", choice))
-			}
+					default:
+						return errResult(fmt.Sprintf("choice %q requires admin tier (public tier allows skip|abort|retry|refine_and_retry|fulfill|resume_more_turns)", choice))
+					}
 		}
 
 		// Route: fulfill path if output provided, or if choice explicitly says "fulfill"
@@ -574,6 +586,9 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithNumber("limit", mcp.Description("Max events to return (default: 50, most recent first)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := strArg(req.Params.Arguments, "task_id")
+		if DenyIfNotOwner(ctx, app, id) {
+			return errResult("not found")
+		}
 		events, err := app.Logger.ReadTaskLogs(id)
 		if err != nil {
 			return errResult(err.Error())

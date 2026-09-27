@@ -22,24 +22,29 @@ func (s *DirectedEngine) handleDelegationRequired(graph *schemas.TaskGraph, step
 }
 
 func (s *DirectedEngine) handleDefaultFailure(graph *schemas.TaskGraph, step *schemas.Step) {
-	step.Status = schemas.StepFailed
+	s.Mu.Lock()
+	step.Status = schemas.StepFailed // audit C-9: protect 2-word string write
+	s.Mu.Unlock()
 	s.maybeBlock(graph, step)
 }
 
 func (s *DirectedEngine) maybeBlock(graph *schemas.TaskGraph, step *schemas.Step) {
+	s.Mu.Lock()
 	fallback := graph.FallbackFor(step.ID)
 	if fallback != nil {
-		fallback.Status = schemas.StepPending
+		fallback.Status = schemas.StepPending // audit C-9
+		s.Mu.Unlock()
 		return
 	}
-	// Block any dependents
+	// Block any dependents — iterate graph.Steps under Lock (MutateGraphTopology can add entries)
 	for _, other := range graph.Steps {
 		for _, dep := range other.DependsOn {
 			if dep == step.ID && other.Status == schemas.StepPending {
-				other.Status = schemas.StepBlocked
+				other.Status = schemas.StepBlocked // audit C-9
 			}
 		}
 	}
+	s.Mu.Unlock() // release before addDecision which takes its own Lock
 	s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 		"last_error":  step.LastError,
 		"retry_count": step.RetryCount,
@@ -127,11 +132,12 @@ func (s *DirectedEngine) addDecision(
 func (s *DirectedEngine) RequestAutonomousAbort(taskID, stepID string, failureClass FailureClass, reason string) {
 	s.Mu.RLock()
 	graph := s.graphs[taskID]
-	s.Mu.RUnlock()
 	if graph == nil {
+		s.Mu.RUnlock()
 		return
 	}
-	step := graph.Steps[stepID]
+	step := graph.Steps[stepID] // audit C-4: map read must be under RLock (MutateGraphTopology can add steps)
+	s.Mu.RUnlock()
 	if step == nil {
 		return
 	}
