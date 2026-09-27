@@ -5,4 +5,5 @@ useDefault = true
 paths = [
   '''config/prompt_budget_test\.go''',
   '''core/security_test\.go''',
+  '''core/embed_test\.go''',
 ]
