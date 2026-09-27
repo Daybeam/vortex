@@ -21,6 +21,11 @@ import (
 // ── Package-level compiled regex (PB-3: avoid recompiling per turn) ────────
 var thoughtRe = regexp.MustCompile("(?s)<thought>(.*?)</thought>")
 
+// ToolCallReasonLLMInitiated is the default reason string for LLM-initiated
+// tool calls. Extracted as a constant so tests can reference the production
+// value instead of a local literal (fixes audit T-C03 / C-15).
+const ToolCallReasonLLMInitiated = "tool call (LLM initiated)"
+
 // ── Error Sentinels ────────────────────────────────────────────────────────
 //
 // Sentinel errors the scheduler inspects via strings.Contains, mirroring the
@@ -881,7 +886,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				Arguments: copyToolCallArguments(call.Arguments, turnDecisionID),
 		}
 
-			reason := "tool call (LLM initiated)" // audit C-15: replaced mojibake string literal
+			reason := ToolCallReasonLLMInitiated // audit C-15: replaced mojibake string literal
 			if r, ok := call.Arguments["_reason"].(string); ok && r != "" {
 				reason = r
 				delete(call.Arguments, "_reason")

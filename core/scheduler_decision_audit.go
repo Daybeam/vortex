@@ -151,9 +151,9 @@ func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schem
 		if r < rounds {
 			revised, err := s.runProposerSynthesize(ctx, graph, step, currentContent, critique)
 			if err != nil {
-				s.logger.Log(EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
-					"outcome": "synthesize_error",
-					"error":   err.Error(),
+			s.logger.Log(EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
+					"outcome":       "synthesize_error",
+					"error":          err.Error(),
 				})
 				return false, critique, failType
 			}
@@ -170,17 +170,10 @@ func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schem
 	return false, lastCritique, lastFailType
 }
 
-func (s *DirectedEngine) verifyExitCriteria(ctx context.Context, graph *schemas.TaskGraph, step *schemas.Step, result *SpawnResult) (bool, string, schemas.VerificationFailureType) {
-	output := result.Output
-	content := fmt.Sprintf("%v", output.Result)
-
-	// Case 1: Deterministic Artifact Contract validation (ADDED 2026-08-27)
-	// Artifact Constraint Shield (arXiv:2608.24569)
-	// Zero cost, zero LLM hallucination — runs before any VerifierModel audit.
-	// NOTE: graph.Artifacts is only populated inside persistGraph, which runs
-	// AFTER this verify call (see scheduler.go executeStep L1607). So we read
-	// the step's OutputFiles directly from graph and construct an ephemeral
-	// ArtifactContract for validation — no mutation of graph state.
+// validateArtifactContract is the Case 1 deterministic artifact contract
+// validation, extracted so tests can call the real production path instead
+// of a verbatim copy (fixes audit T-C05). Returns (ok, reason, failType).
+func validateArtifactContract(graph *schemas.TaskGraph, step *schemas.Step) (bool, string, schemas.VerificationFailureType) {
 	if len(step.OutputContract.RequiredFields) > 0 || len(step.OutputContract.TypeSchema) > 0 {
 		for _, of := range graph.OutputFiles {
 			if of.StepID != step.ID || !of.IsPrimary {
@@ -196,6 +189,23 @@ func (s *DirectedEngine) verifyExitCriteria(ctx context.Context, graph *schemas.
 					schemas.FailureSchemaViolation
 			}
 		}
+	}
+	return true, "", schemas.FailureNone
+}
+
+func (s *DirectedEngine) verifyExitCriteria(ctx context.Context, graph *schemas.TaskGraph, step *schemas.Step, result *SpawnResult) (bool, string, schemas.VerificationFailureType) {
+	output := result.Output
+	content := fmt.Sprintf("%v", output.Result)
+
+	// Case 1: Deterministic Artifact Contract validation (ADDED 2026-08-27)
+	// Artifact Constraint Shield (arXiv:2608.24569)
+	// Zero cost, zero LLM hallucination — runs before any VerifierModel audit.
+	// NOTE: graph.Artifacts is only populated inside persistGraph, which runs
+	// AFTER this verify call (see scheduler.go executeStep L1607). So we read
+	// the step's OutputFiles directly from graph and construct an ephemeral
+	// ArtifactContract for validation — no mutation of graph state.
+	if ok, reason, failType := validateArtifactContract(graph, step); !ok {
+		return false, reason, failType
 	}
 
 	// Case 2: Regex/File-based deterministic check (ADDED 2026-09-07)
@@ -344,8 +354,8 @@ Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA`, step.Task, step.ExitC
 			if repaired, ok := jsonrepair.Repair(content); ok {
 				if err2 := json.Unmarshal([]byte(repaired), &j); err2 == nil {
 					s.logger.Log("EventJSONTruncationRepaired", graph.TaskID, step.ID, map[string]any{
-						"original_len":  len(content),
-						"repaired_len":  len(repaired),
+						"original_len": len(content),
+						"repaired_len": len(repaired),
 						"exit_criteria": step.ExitCriteria,
 					})
 					return true, "", schemas.FailureNone

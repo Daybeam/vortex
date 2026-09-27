@@ -14,10 +14,11 @@ import (
 // potential JSON encoding failures downstream.
 // After the fix, the string is "tool call (LLM initiated)" — pure ASCII.
 //
-// Reproduction: verify the reason string is valid UTF-8 and contains no
-// non-ASCII characters.
+// fixes audit T-C03: the original test compared two identical local literals
+// and never referenced production code. Now it checks the production constant
+// ToolCallReasonLLMInitiated, so it will FAIL if the constant reverts to mojibake.
 func TestC15_SpawnerReasonString_NoMojibake(t *testing.T) {
-	reason := "tool call (LLM initiated)"
+	reason := ToolCallReasonLLMInitiated // reference production, not a local literal
 
 	// Must be valid UTF-8.
 	if !utf8.ValidString(reason) {
@@ -32,7 +33,7 @@ func TestC15_SpawnerReasonString_NoMojibake(t *testing.T) {
 	}
 
 	// Must match the expected value exactly.
-	expected := "tool call (LLM initiated)"
+	const expected = "tool call (LLM initiated)"
 	if reason != expected {
 		t.Errorf("reason string mismatch: got %q, want %q", reason, expected)
 	}

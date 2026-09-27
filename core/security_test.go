@@ -1,8 +1,8 @@
 package core
 
 import (
-	"strings"
 	"testing"
+	"strings"
 )
 
 func TestScrubSecrets(t *testing.T) {
@@ -18,9 +18,19 @@ func TestScrubSecrets(t *testing.T) {
 
 	for _, tc := range tests {
 		got := ScrubSecrets(tc.input)
-		// Relaxed check due to the way split handles parts
-		if !strings.Contains(got, "[REDACTED]") && tc.input != tc.expected {
-			t.Errorf("ScrubSecrets(%q) = %q; want redacted", tc.input, got)
+		// T-H09 fix: previously the assertion was relaxed — it skipped when
+		// tc.input == tc.expected, meaning a secret that ScrubSecrets failed
+		// to redact would pass if the input happened to equal the expected.
+		// Now we check each case properly: if expected contains [REDACTED],
+		// assert the output does too; otherwise assert exact equality.
+		if strings.Contains(tc.expected, "[REDACTED]") {
+			if !strings.Contains(got, "[REDACTED]") {
+				t.Errorf("ScrubSecrets(%q) = %q; want redacted output", tc.input, got)
+			}
+		} else {
+			if got != tc.expected {
+				t.Errorf("ScrubSecrets(%q) = %q; want %q", tc.input, got, tc.expected)
+			}
 		}
 	}
 }

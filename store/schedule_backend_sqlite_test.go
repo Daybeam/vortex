@@ -25,10 +25,10 @@ func TestSQLiteScheduleBackend(t *testing.T) {
 	ctx := context.Background()
 
 	s := &schemas.Schedule{
-		ID:       "sched_1",
-		Name:     "Daily Backup",
-		Type:     schemas.ScheduleCron,
-		Status:   schemas.ScheduleActive,
+		ID:     "sched_1",
+		Name:   "Daily Backup",
+		Type:   schemas.ScheduleCron,
+		Status: schemas.ScheduleActive,
 		CronExpr: "0 0 * * *",
 		TaskInputs: []schemas.StepInput{
 			{Task: "backup all data"},
@@ -64,7 +64,12 @@ func TestSQLiteScheduleBackend(t *testing.T) {
 	if err := backend.Delete(ctx, s.ID); err != nil {
 		t.Errorf("Delete failed: %v", err)
 	}
-	list, _ = backend.LoadAll(ctx)
+	// fixes audit T-C19: original swallowed LoadAll error — if LoadAll
+	// failed, list was nil, len(nil)==0, and the assertion passed trivially.
+	list, err = backend.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll after delete failed: %v", err)
+	}
 	if len(list) != 0 {
 		t.Errorf("Delete failed to remove item")
 	}

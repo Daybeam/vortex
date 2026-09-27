@@ -27,14 +27,16 @@ func TestPromptWarehouse_Integration(t *testing.T) {
 
 	spawner := NewSpawner(reg, ts, es, logger, NewResourceLoader(), "outputs")
 
-	// Basic check that spawner can be initialized
+	// fixes audit T-C24: the original test only checked spawner != nil.
+	// Now we verify the spawner was wired with the registry's providers.
 	if spawner == nil {
 		t.Fatal("failed to initialize spawner")
 	}
+	if spawner.registry == nil {
+		t.Fatal("spawner registry not wired — integration incomplete")
+	}
+	if spawner.registry.DefaultProvider != reg.DefaultProvider {
+		t.Errorf("spawner registry mismatch: got %q, want %q",
+			spawner.registry.DefaultProvider, reg.DefaultProvider)
+	}
 }
-
-/*
-func TestPromptWarehouse_HotReloadIntegration(t *testing.T) {
-    // Legacy test for removed PromptRef/PromptDir functionality
-}
-*/

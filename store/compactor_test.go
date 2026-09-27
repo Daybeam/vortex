@@ -93,15 +93,23 @@ func TestRunCompaction_PruneOldTasksByDays(t *testing.T) {
 	}
 
 	var count int
-	db.QueryRow("SELECT COUNT(*) FROM tasks WHERE task_id = 'old_task'").Scan(&count)
+	// fixes audit T-C17: original swallowed Scan errors — if Scan failed,
+	// count stayed 0 and the assertion passed trivially.
+	if err := db.QueryRow("SELECT COUNT(*) FROM tasks WHERE task_id = 'old_task'").Scan(&count); err != nil {
+		t.Fatalf("query old task count: %v", err)
+	}
 	if count != 0 {
 		t.Error("old task should have been pruned")
 	}
-	db.QueryRow("SELECT COUNT(*) FROM tasks WHERE task_id = 'fresh_task'").Scan(&count)
+	if err := db.QueryRow("SELECT COUNT(*) FROM tasks WHERE task_id = 'fresh_task'").Scan(&count); err != nil {
+		t.Fatalf("query fresh task count: %v", err)
+	}
 	if count != 1 {
 		t.Error("fresh task should remain")
 	}
-	db.QueryRow("SELECT COUNT(*) FROM task_steps WHERE task_id = 'old_task'").Scan(&count)
+	if err := db.QueryRow("SELECT COUNT(*) FROM task_steps WHERE task_id = 'old_task'").Scan(&count); err != nil {
+		t.Fatalf("query orphaned steps count: %v", err)
+	}
 	if count != 0 {
 		t.Error("orphaned task_steps should have been cascade-deleted")
 	}
@@ -126,7 +134,10 @@ func TestRunCompaction_FIFOPruneExcessTasks(t *testing.T) {
 	}
 
 	var count int
-	db.QueryRow("SELECT COUNT(*) FROM tasks WHERE status = 'completed'").Scan(&count)
+	// fixes audit T-C17: check Scan error.
+	if err := db.QueryRow("SELECT COUNT(*) FROM tasks WHERE status = 'completed'").Scan(&count); err != nil {
+		t.Fatalf("query completed count: %v", err)
+	}
 	if count != 2 {
 		t.Errorf("expected 2 tasks after FIFO prune, got %d", count)
 	}
@@ -147,11 +158,16 @@ func TestRunCompaction_KeepsRunningTasks(t *testing.T) {
 	}
 
 	var count int
-	db.QueryRow("SELECT COUNT(*) FROM tasks WHERE task_id = 'old_running'").Scan(&count)
+	// fixes audit T-C17: check Scan errors.
+	if err := db.QueryRow("SELECT COUNT(*) FROM tasks WHERE task_id = 'old_running'").Scan(&count); err != nil {
+		t.Fatalf("query running task count: %v", err)
+	}
 	if count != 1 {
 		t.Error("running task should NOT be pruned regardless of age")
 	}
-	db.QueryRow("SELECT COUNT(*) FROM tasks WHERE task_id = 'old_completed'").Scan(&count)
+	if err := db.QueryRow("SELECT COUNT(*) FROM tasks WHERE task_id = 'old_completed'").Scan(&count); err != nil {
+		t.Fatalf("query completed task count: %v", err)
+	}
 	if count != 0 {
 		t.Error("old completed task should be pruned")
 	}
