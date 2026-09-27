@@ -9,7 +9,10 @@ import (
 
 func TestExperienceStore_EnvironmentFingerprinting(t *testing.T) {
 	dir := t.TempDir()
-	es, _ := NewExperienceStore(dir, nil, nil, nil, nil)
+	es, err := NewExperienceStore(dir, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewExperienceStore: %v", err)
+	}
 
 	// 1. Add a skill for a DIFFERENT OS
 	otherOS := "linux"
@@ -56,7 +59,10 @@ func TestExperienceStore_EnvironmentFingerprinting(t *testing.T) {
 
 func TestExperienceStore_TemporalDecay(t *testing.T) {
 	dir := t.TempDir()
-	es, _ := NewExperienceStore(dir, nil, nil, nil, nil)
+	es, err := NewExperienceStore(dir, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewExperienceStore: %v", err)
+	}
 
 	// Add an old skill
 	oldID := "skill_old"
@@ -98,7 +104,10 @@ func TestExperienceStore_TemporalDecay(t *testing.T) {
 
 func TestExperienceStore_SignalDrivenRetrieval(t *testing.T) {
 	dir := t.TempDir()
-	es, _ := NewExperienceStore(dir, nil, nil, nil, nil)
+	es, err := NewExperienceStore(dir, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewExperienceStore: %v", err)
+	}
 
 	signal := "Access Denied: Permission Error"
 	es.AddGeneratedSkill(context.Background(), &GeneratedSkill{

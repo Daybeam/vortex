@@ -62,11 +62,20 @@ func TestRecordOutcome_IncrementalUpdate(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	_ = store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 4.0, 1000.0, 0.01)
-	_ = store.RecordOutcome(ctx, "gpt-4o", "refactor", false, 8.0, 2000.0, 0.02)
-	_ = store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 6.0, 1500.0, 0.015)
+	if err := store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 4.0, 1000.0, 0.01); err != nil {
+		t.Fatalf("RecordOutcome #1: %v", err)
+	}
+	if err := store.RecordOutcome(ctx, "gpt-4o", "refactor", false, 8.0, 2000.0, 0.02); err != nil {
+		t.Fatalf("RecordOutcome #2: %v", err)
+	}
+	if err := store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 6.0, 1500.0, 0.015); err != nil {
+		t.Fatalf("RecordOutcome #3: %v", err)
+	}
 
-	p, _ := store.GetProfile(ctx, "gpt-4o", "refactor")
+	p, err := store.GetProfile(ctx, "gpt-4o", "refactor")
+	if err != nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
 	if p.TotalRuns != 3 {
 		t.Errorf("TotalRuns = %d, want 3", p.TotalRuns)
 	}
@@ -101,9 +110,15 @@ func TestGetProfilesForModel(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	_ = store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 5.0, 1000.0, 0.01)
-	_ = store.RecordOutcome(ctx, "gpt-4o", "analysis", true, 3.0, 800.0, 0.005)
-	_ = store.RecordOutcome(ctx, "claude-3-5-sonnet", "refactor", true, 4.0, 1200.0, 0.02)
+	if err := store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 5.0, 1000.0, 0.01); err != nil {
+		t.Fatalf("RecordOutcome #1: %v", err)
+	}
+	if err := store.RecordOutcome(ctx, "gpt-4o", "analysis", true, 3.0, 800.0, 0.005); err != nil {
+		t.Fatalf("RecordOutcome #2: %v", err)
+	}
+	if err := store.RecordOutcome(ctx, "claude-3-5-sonnet", "refactor", true, 4.0, 1200.0, 0.02); err != nil {
+		t.Fatalf("RecordOutcome #3: %v", err)
+	}
 
 	profiles, err := store.GetProfilesForModel(ctx, "gpt-4o")
 	if err != nil {
@@ -119,8 +134,12 @@ func TestGetAllProfiles(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	_ = store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 5.0, 1000.0, 0.01)
-	_ = store.RecordOutcome(ctx, "claude-3-5-sonnet", "analysis", false, 10.0, 2000.0, 0.03)
+	if err := store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 5.0, 1000.0, 0.01); err != nil {
+		t.Fatalf("RecordOutcome #1: %v", err)
+	}
+	if err := store.RecordOutcome(ctx, "claude-3-5-sonnet", "analysis", false, 10.0, 2000.0, 0.03); err != nil {
+		t.Fatalf("RecordOutcome #2: %v", err)
+	}
 
 	all, err := store.GetAllProfiles(ctx)
 	if err != nil {
@@ -136,14 +155,19 @@ func TestUpdateTheta(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	_ = store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 5.0, 1000.0, 0.01)
+	if err := store.RecordOutcome(ctx, "gpt-4o", "refactor", true, 5.0, 1000.0, 0.01); err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
 
 	err := store.UpdateTheta(ctx, "gpt-4o", "refactor", 1.75)
 	if err != nil {
 		t.Fatalf("UpdateTheta: %v", err)
 	}
 
-	p, _ := store.GetProfile(ctx, "gpt-4o", "refactor")
+	p, err := store.GetProfile(ctx, "gpt-4o", "refactor")
+	if err != nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
 	if p.Theta != 1.75 {
 		t.Errorf("Theta = %f, want 1.75", p.Theta)
 	}

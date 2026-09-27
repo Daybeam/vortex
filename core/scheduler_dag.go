@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/daybeam/vortex/pkg/types"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -936,53 +935,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		}
 
 		// ── Phase 3.5: Context Tree Transition ───────────────────────────────
-		s.Mu.Lock()
-		currNode := graph.ContextTree[graph.CurrentNodeID]
-		if currNode != nil {
-			currNode.StepIDs = append(currNode.StepIDs, step.ID)
-
-			// Detect Branch Point
-			if step.Status == schemas.StepOK {
-				needsNewNode := false
-				reason := result.Output.Assumptions
-				if len(reason) > 0 && strings.Contains(strings.Join(reason, " "), "new task") {
-					needsNewNode = true
-				}
-
-				// Semantic Check (Semantic Pull)
-				if !needsNewNode && len(currNode.Embedding) > 0 {
-					// In a real execution, we would embed the result here
-					// For now, we rely on the heuristic or trigger async embed
-				}
-
-				if needsNewNode {
-					newNodeID := fmt.Sprintf("node_%s", uuid.New().String()[:6])
-					newNode := &schemas.ContextNode{
-						ID:       newNodeID,
-						ParentID: currNode.ID,
-						Intent:   "Adaptive Transition from " + step.ID,
-						Status:   schemas.NodeActive,
-						Metadata: make(map[string]any),
-					}
-
-					// Inherit root metadata (Behavior Contract requirement)
-					for k, v := range currNode.Metadata {
-						newNode.Metadata[k] = v
-					}
-					// Note: LocalSymbolIndex is intentionally left empty/nil to isolate interference.
-
-					graph.ContextTree[newNodeID] = newNode
-					graph.CurrentNodeID = newNodeID
-
-				// Async Embedding of new intent
-				s.goBackground(func() { s.updateNodeEmbedding(graph.TaskID, newNodeID, newNode.Intent) })
-
-				// Async Folding of previous node
-				s.goBackground(func() { s.foldNode(graph.TaskID, currNode.ID) })
-				}
-			}
-		}
-		s.Mu.Unlock()
+		s.transitionContextTree(graph, step, result)
 
 		// ACAIS: Signal field deposit is handled in handleOutput based on quality.
 

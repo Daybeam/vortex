@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/store"
 	"github.com/daybeam/vortex/tools"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 )
 
 // newContractTestApp constructs a minimal App with a real DirectedEngine
@@ -277,7 +277,10 @@ func TestMCPContract_GetTaskStatus_ExistingTask_ReturnsStatus(t *testing.T) {
 		t.Fatalf("submit failed: err=%v, isError=%v", err, submitRes.IsError)
 	}
 	submitOut := parseResultJSON(t, submitRes)
-	taskID := submitOut["task_id"].(string)
+	taskID, ok := submitOut["task_id"].(string)
+	if !ok || taskID == "" {
+		t.Fatalf("expected task_id string in submit response, got %T: %v", submitOut["task_id"], submitOut["task_id"])
+	}
 
 	// Then query its status
 	statusRes, err := callTool(t, s, "orchestrator_get_task_status", map[string]any{

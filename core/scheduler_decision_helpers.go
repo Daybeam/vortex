@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -214,4 +215,58 @@ func (s *DirectedEngine) archiveStep(graph *schemas.TaskGraph, step *schemas.Ste
 	if err := s.Archive.Append(item); err != nil {
 		s.logger.Log("EventArchiveError", graph.TaskID, step.ID, map[string]any{"err": err.Error()})
 	}
+}
+
+// transitionContextTree implements Phase 3.5: Context Tree Transition.
+// When a step succeeds with "new task" in its assumptions, a child context
+// node is created and CurrentNodeID is updated. Extracted from executeStep
+// so tests can verify branching without reimplementing the logic.
+func (s *DirectedEngine) transitionContextTree(graph *schemas.TaskGraph, step *schemas.Step, result *SpawnResult) {
+	s.Mu.Lock()
+	currNode := graph.ContextTree[graph.CurrentNodeID]
+	if currNode != nil {
+		currNode.StepIDs = append(currNode.StepIDs, step.ID)
+
+		// Detect Branch Point
+		if step.Status == schemas.StepOK {
+			needsNewNode := false
+			reason := result.Output.Assumptions
+			if len(reason) > 0 && strings.Contains(strings.Join(reason, " "), "new task") {
+				needsNewNode = true
+			}
+
+			// Semantic Check (Semantic Pull)
+			if !needsNewNode && len(currNode.Embedding) > 0 {
+				// In a real execution, we would embed the result here
+				// For now, we rely on the heuristic or trigger async embed
+			}
+
+			if needsNewNode {
+				newNodeID := fmt.Sprintf("node_%s", uuid.New().String()[:6])
+				newNode := &schemas.ContextNode{
+					ID:       newNodeID,
+					ParentID: currNode.ID,
+					Intent:   "Adaptive Transition from " + step.ID,
+					Status:   schemas.NodeActive,
+					Metadata: make(map[string]any),
+				}
+
+				// Inherit root metadata (Behavior Contract requirement)
+				for k, v := range currNode.Metadata {
+					newNode.Metadata[k] = v
+				}
+				// Note: LocalSymbolIndex is intentionally left empty/nil to isolate interference.
+
+				graph.ContextTree[newNodeID] = newNode
+				graph.CurrentNodeID = newNodeID
+
+				// Async Embedding of new intent
+				s.goBackground(func() { s.updateNodeEmbedding(graph.TaskID, newNodeID, newNode.Intent) })
+
+				// Async Folding of previous node
+				s.goBackground(func() { s.foldNode(graph.TaskID, currNode.ID) })
+			}
+		}
+	}
+	s.Mu.Unlock()
 }

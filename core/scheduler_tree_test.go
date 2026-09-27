@@ -87,31 +87,20 @@ func TestDirectedEngine_ContextTreeBranching(t *testing.T) {
 	step := graph.Steps["step1"]
 	engine.handleOutput(graph, step, result)
 
-	// Trigger Phase 3.5 logic manually or via executeStep mock
-	// For simplicity, let's copy the logic or call handleOutput then manually trigger transition
-	engine.Mu.Lock()
-	currNode := graph.ContextTree[graph.CurrentNodeID]
-	if currNode != nil {
-		currNode.StepIDs = append(currNode.StepIDs, step.ID)
-		if step.Status == schemas.StepOK {
-			newNodeID := "node_branch1"
-			newNode := &schemas.ContextNode{
-				ID:       newNodeID,
-				ParentID: currNode.ID,
-				Intent:   "Adaptive Transition",
-				Status:   schemas.NodeActive,
-			}
-			graph.ContextTree[newNodeID] = newNode
-			graph.CurrentNodeID = newNodeID
-		}
-	}
-	engine.Mu.Unlock()
+	// Phase 3.5: Context Tree Transition — call the production method
+	// instead of reimplementing the branching logic inline.
+	engine.transitionContextTree(graph, step, result)
 
 	if len(graph.ContextTree) != 2 {
 		t.Errorf("expected 2 context nodes after branch, got %d", len(graph.ContextTree))
 	}
-	if graph.CurrentNodeID != "node_branch1" {
-		t.Errorf("expected CurrentNodeID to be node_branch1, got %s", graph.CurrentNodeID)
+	// Production code generates a UUID-based node ID (node_<6hex>).
+	// Verify CurrentNodeID moved off "root" to a new node in the tree.
+	if graph.CurrentNodeID == "root" {
+		t.Errorf("expected CurrentNodeID to have transitioned from root, got %s", graph.CurrentNodeID)
+	}
+	if _, ok := graph.ContextTree[graph.CurrentNodeID]; !ok {
+		t.Errorf("CurrentNodeID %s not found in ContextTree", graph.CurrentNodeID)
 	}
 }
 
