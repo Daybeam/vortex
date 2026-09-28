@@ -187,6 +187,10 @@ type ChatSessionStore struct {
 	sessions map[string]*ChatSession
 	dir      string
 	backend  store.IChatBackend
+
+	// lifecycleCtx is used as the parent context for DB operations
+	// (audit C-12). When nil, context.Background() is used.
+	lifecycleCtx context.Context
 }
 
 func NewChatSessionStore(dir string, backend store.IChatBackend) *ChatSessionStore {
@@ -195,6 +199,23 @@ func NewChatSessionStore(dir string, backend store.IChatBackend) *ChatSessionSto
 	}
 	os.MkdirAll(dir, 0755)
 	return &ChatSessionStore{sessions: make(map[string]*ChatSession), dir: dir, backend: backend}
+}
+
+// SetLifecycleContext sets the parent context for DB operations (audit C-12).
+// When set, DB saves can be cancelled by shutdown via this context.
+func (st *ChatSessionStore) SetLifecycleContext(ctx context.Context) {
+	st.mu.Lock()
+	st.lifecycleCtx = ctx
+	st.mu.Unlock()
+}
+
+// dbCtx returns the context to use for DB operations (audit C-12).
+func (st *ChatSessionStore) dbCtx() (context.Context, context.CancelFunc) {
+	parent := st.lifecycleCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, 30*time.Second)
 }
 
 func (st *ChatSessionStore) GetOrCreate(id string) *ChatSession {
@@ -280,8 +301,7 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 
 	// A20 DB collapse: save to SQLite backend when available
 	if st.backend != nil {
-		// audit M9: bounded context prevents DB op from hanging forever
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := st.dbCtx()
 		defer cancel()
 		st.backend.SaveSession(ctx, s.ID, s.RootID, s.ActiveLeafID, s.CreatedAt)
 		for _, msg := range data.Messages {
@@ -299,8 +319,8 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 func (st *ChatSessionStore) loadLocked(s *ChatSession) {
 	// A20 DB collapse: try SQLite backend first
 	if st.backend != nil {
-		// audit M9: bounded context prevents DB op from hanging forever
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := st.dbCtx()
+		defer cancel()
 		rootID, leafID, msgs, err := st.backend.LoadSession(ctx, s.ID)
 		cancel()
 		if err == nil && len(msgs) > 0 {

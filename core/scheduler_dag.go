@@ -685,8 +685,10 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			// resume (more turns), retry with context, or escalate the model.
 			// Semantics mirror the DYNAMIC_ESCALATION_REQUIRED block above.
 			if strings.Contains(err.Error(), ErrMaxTurnsExhausted) {
-				step.Status = schemas.StepBlocked
+				s.Mu.Lock()
+				step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write (max-turns block)
 				step.LastError = err.Error()
+				s.Mu.Unlock()
 				s.logger.Log(EventDecisionRequired, taskID, step.ID, map[string]any{
 					"reason":       "max_tool_turns_exhausted",
 					"error":        err.Error(),

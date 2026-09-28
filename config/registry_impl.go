@@ -69,6 +69,20 @@ func (r *Registry) HasEnvCapability(cap string) bool {
 	return false
 }
 
+// IsModelConfigured reports whether any configured provider uses the given model.
+// audit NEW-1/NEW-2: used to restrict chat model_override to pre-approved models,
+// bounding the provider cache and preventing cost/privilege bypass.
+func (r *Registry) IsModelConfigured(model string) bool {
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
+	for _, p := range r.Providers {
+		if p.Model == model {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Registry) ResolveProviderConfig(role *Role) *ProviderConfig {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()

@@ -187,11 +187,19 @@ func HandleAdminDeployFile(ctx context.Context, app *App, req mcp.CallToolReques
 		return errResult("path and _reason are required")
 	}
 
-	// audit S-C2: reject path traversal even when deploy write is enabled.
-	// Prevents overwriting system files (e.g. /etc/cron.d/, authorized_keys).
-	pSlash := filepath.ToSlash(path)
-	if strings.Contains(pSlash, "../") || strings.Contains(pSlash, "/..") || pSlash == ".." {
-		return errResult("path traversal rejected (audit S-C2): path must not contain '..' segments")
+	// audit S-C2: enforce deploy_root containment. The resolved path must be
+	// within the configured deploy root (VORTEX_DEPLOY_ROOT, default
+	// "outputs"). This prevents writing to system files even when deploy write
+	// is enabled. Replaces the earlier weak ".." segment check.
+	deployRoot := os.Getenv("VORTEX_DEPLOY_ROOT")
+	if deployRoot == "" {
+		deployRoot = "outputs"
+	}
+	deployRootAbs, _ := filepath.Abs(deployRoot)
+	absPath, _ := filepath.Abs(path)
+	rel, relErr := filepath.Rel(deployRootAbs, absPath)
+	if relErr != nil || strings.HasPrefix(filepath.ToSlash(rel), "..") {
+		return errResult(fmt.Sprintf("path rejected (audit S-C2): %q must be within deploy root %q", path, deployRootAbs))
 	}
 
 	var data []byte
@@ -206,7 +214,6 @@ func HandleAdminDeployFile(ctx context.Context, app *App, req mcp.CallToolReques
 		data = []byte(content)
 	}
 
-	absPath, _ := filepath.Abs(path)
 	if createDirs {
 		_ = os.MkdirAll(filepath.Dir(absPath), 0755)
 	}

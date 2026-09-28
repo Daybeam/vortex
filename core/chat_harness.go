@@ -170,7 +170,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 
 	var finalText strings.Builder // audit H1: was `var finalText string` with += (O(n²))
 	var prevSig string
-	toolFailCount := make(map[string]int)
+	toolFailErrors := make(map[string][]string) // per-tool recent error messages (capped at 5)
 
 	for turn := 0; turn < maxTurns; turn++ {
 		// Abort if the context was cancelled (e.g. client disconnect or shutdown).
@@ -251,15 +251,28 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			emit(ChatEvent{Type: "tool_call", Data: tc.Name, Meta: map[string]any{"args": tc.Arguments}})
 			result, derr := h.execTool(ctx, tc.Name, tc.Arguments, taskID)
 			if derr != nil {
-				toolFailCount[tc.Name]++
-				emit(ChatEvent{Type: "tool_error", Data: derr.Error(), Meta: map[string]any{"tool": tc.Name, "fail_count": toolFailCount[tc.Name]}})
-				if toolFailCount[tc.Name] >= 3 {
-					result = fmt.Sprintf("[TOOL %s HAS FAILED %d TIMES] Stop using this tool. Use an alternative approach or answer directly without tools.", tc.Name, toolFailCount[tc.Name])
+				// Track error messages (not just count) so we can inject them
+				// as pattern evidence after repeated failures. This lets the
+				// model see WHY it keeps failing and avoid the pattern itself,
+				// instead of getting a generic "stop using this tool" with no
+				// actionable information.
+				errMsg := derr.Error()
+				if r := []rune(errMsg); len(r) > 200 { // audit NEW-3: rune-aware truncation avoids splitting multibyte UTF-8
+					errMsg = string(r[:200]) + "..."
+				}
+				toolFailErrors[tc.Name] = append(toolFailErrors[tc.Name], errMsg)
+				if len(toolFailErrors[tc.Name]) > 5 {
+					toolFailErrors[tc.Name] = toolFailErrors[tc.Name][len(toolFailErrors[tc.Name])-5:]
+				}
+				failCount := len(toolFailErrors[tc.Name])
+				emit(ChatEvent{Type: "tool_error", Data: derr.Error(), Meta: map[string]any{"tool": tc.Name, "fail_count": failCount}})
+				if failCount >= 3 {
+					result = fmt.Sprintf("[TOOL %s HAS FAILED %d TIMES] Recent errors:\n%s\nDo not repeat the same approach. Try a different strategy or answer directly.", tc.Name, failCount, strings.Join(toolFailErrors[tc.Name], "\n"))
 				} else {
 					result = fmt.Sprintf("[TOOL FAILED: %s] %s\nDo not abort. Either fix the arguments and retry, use a different tool, or answer directly.", tc.Name, derr.Error())
 				}
 			} else {
-				toolFailCount[tc.Name] = 0
+				toolFailErrors[tc.Name] = nil
 			}
 			emit(ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": tc.Name}})
 			messages = append(messages, ChatMessage{Role: "tool", Content: fmt.Sprintf("[tool %s result]\n%s", tc.Name, result)})

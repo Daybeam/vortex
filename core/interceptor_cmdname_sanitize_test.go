@@ -5,46 +5,22 @@ import (
 	"testing"
 )
 
-// TestSH5_FilepathBaseStripsTraversal is a regression test for audit S-H5:
-// builtin_interceptors.go must sanitize cmdName with filepath.Base() before
-// using it to construct a fix script path. Without this, a cmdName like
-// "../../etc/passwd" would escape the scripts/fix/ directory.
+// TestSH5_FixScriptPathStaysInScriptsDir is a regression test for audit S-H5:
+// builtin_interceptors.go sanitizes cmdName with filepath.Base() before
+// constructing a fix script path. This test verifies the end-to-end property:
+// the constructed path always stays within scripts/fix/, regardless of what
+// cmdName is passed.
 //
-// This test verifies the core property of the fix: filepath.Base strips all
-// directory components, leaving only the final element.
+// Before the fix, a cmdName like "../../etc/passwd" would escape scripts/fix/.
+// After the fix, filepath.Base(cmdName) strips all directory components.
 //
-// Reproduction: filepath.Base must never return a string containing "/" or "..".
-func TestSH5_FilepathBaseStripsTraversal(t *testing.T) {
-	traversalInputs := []string{
-		"../../etc/passwd",
-		"../../../tmp/evil",
-		"..\\..\\windows\\system32\\evil",
-		"/etc/passwd",
-		"scripts/fix/../../../evil",
-		"",
-	}
-
-	for _, input := range traversalInputs {
-		base := filepath.Base(input)
-
-		// The base name must not contain a path separator.
-		if filepath.Dir(base) != "." && base != "." && base != string(filepath.Separator) {
-			t.Errorf("filepath.Base(%q) = %q still has directory component", input, base)
-		}
-
-		// The base name must not be ".." (which could still traverse).
-		if base == ".." {
-			t.Errorf("filepath.Base(%q) = %q is '..', traversal not stripped", input, base)
-		}
-	}
-}
-
-// TestSH5_FixScriptPathStaysInScriptsDir verifies that the fix script path
-// constructed with filepath.Base(cmdName) always stays within scripts/fix/.
+// Reproduction: filepath.Join("scripts","fix","fix_"+filepath.Base(cmdName)+".sh")
+// must never escape the scripts/fix/ directory.
 func TestSH5_FixScriptPathStaysInScriptsDir(t *testing.T) {
 	maliciousCmdNames := []string{
 		"../../etc/passwd",
 		"../../../tmp/evil",
+		"..\\..\\windows\\system32\\evil",
 		"normal_cmd",
 		"subdir/cmd",
 	}

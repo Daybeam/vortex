@@ -10,10 +10,12 @@ import (
 
 type mockExpStore struct {
 	store.IExperienceStore
-	nodes []*store.ExperienceNode
+	nodes      []*store.ExperienceNode
+	lastBudget int // records the tokenBudget passed to RetrieveRelevantExperience
 }
 
 func (m *mockExpStore) RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal string, tokenBudget int) []*store.ExperienceNode {
+	m.lastBudget = tokenBudget
 	return m.nodes
 }
 
@@ -80,7 +82,7 @@ func TestActiveContextAssembler_Assemble(t *testing.T) {
 }
 
 func TestActiveContextAssembler_Budgeting(t *testing.T) {
-	// Test that we respect the budget (minimal tokens)
+	// Test that the assembler passes the token budget to the store.
 	mockStore := &mockExpStore{
 		nodes: []*store.ExperienceNode{
 			{Strategy: strings.Repeat("a", 10000), Outcome: "success"},
@@ -90,12 +92,11 @@ func TestActiveContextAssembler_Budgeting(t *testing.T) {
 
 	prompt := assembler.Assemble("task", "step", "", "cap", "role")
 
-	// Even if store returns a huge node, the store's RetrieveRelevantExperience
-	// should have handled the budget, but here we test the assembler's logic.
-	// Since our mock returns the node anyway, we check if the assembler handles it
-	// (currently it relies on the store to respect the budget).
-
 	if !strings.Contains(prompt, "## Current Task") {
 		t.Errorf("Hot context should always be present")
+	}
+	// The assembler should pass warmBudget = TokenBudget/2 = 50 to the store.
+	if mockStore.lastBudget != 50 {
+		t.Errorf("expected store to receive budget 50 (TokenBudget/2), got %d", mockStore.lastBudget)
 	}
 }

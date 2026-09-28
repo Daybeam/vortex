@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/daybeam/vortex/schemas"
 )
@@ -60,8 +61,6 @@ func (v *CommandPassVerifier) Verify(ctx context.Context, workdir string, criter
 	}
 
 	// audit S-C1: reject shell metacharacters to prevent command injection.
-	// The command originates from task graph exit criteria (LLM/user-controlled).
-	// Allow only simple commands — no chaining, pipes, redirects, or substitution.
 	for _, ch := range cmdStr {
 		if ch == ';' || ch == '|' || ch == '&' || ch == '$' || ch == '`' ||
 			ch == '>' || ch == '<' || ch == '\n' || ch == '\r' {
@@ -69,12 +68,36 @@ func (v *CommandPassVerifier) Verify(ctx context.Context, workdir string, criter
 		}
 	}
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", cmdStr)
-	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	// audit S-C1: executable allowlist. Parse the command and run the
+	// executable DIRECTLY (no shell) — eliminates sh -c / cmd /c injection.
+	// Allowlist is configurable via VORTEX_COMMAND_ALLOWLIST (comma-separated).
+	fields := strings.Fields(cmdStr)
+	if len(fields) == 0 {
+		return false, "empty command after parsing", nil
 	}
+	exe := filepath.Base(fields[0]) // strip any path prefix
+	allowed := map[string]bool{
+		"test": true, "echo": true, "cat": true, "ls": true, "grep": true,
+		"git": true, "go": true, "python3": true, "python": true, "node": true,
+		"npm": true, "make": true, "diff": true, "wc": true, "head": true,
+		"tail": true, "sort": true, "uniq": true, "find": true, "true": true,
+	}
+	if runtime.GOOS == "windows" {
+		allowed["dir"] = true
+		allowed["type"] = true
+		allowed["where"] = true
+	}
+	if custom := os.Getenv("VORTEX_COMMAND_ALLOWLIST"); custom != "" {
+		allowed = make(map[string]bool)
+		for _, c := range strings.Split(custom, ",") {
+			allowed[strings.TrimSpace(c)] = true
+		}
+	}
+	if !allowed[exe] {
+		return false, fmt.Sprintf("command rejected: executable %q not in allowlist (audit S-C1)", exe), nil
+	}
+
+	cmd := exec.CommandContext(ctx, fields[0], fields[1:]...)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}

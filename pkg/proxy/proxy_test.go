@@ -32,8 +32,14 @@ func TestRunStdioToHTTP(t *testing.T) {
 	oldStdin := os.Stdin
 	oldStdout := os.Stdout
 
-	rIn, wIn, _ := os.Pipe()
-	rOut, wOut, _ := os.Pipe()
+	rIn, wIn, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
 
 	os.Stdin = rIn
 	os.Stdout = wOut
@@ -61,7 +67,7 @@ func TestRunStdioToHTTP(t *testing.T) {
 		close(done)
 	}()
 
-	err := <-errChan
+	err = <-errChan
 	if err != nil {
 		t.Fatalf("Proxy returned error: %v", err)
 	}

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,6 +230,37 @@ func (sp *ScriptProvider) loadScript() error {
 	return nil
 }
 
+// validateLuaURL blocks SSRF from Lua http.post: rejects non-HTTPS (except
+// localhost), private/loopback/link-local IPs, and cloud metadata endpoints.
+// audit S-H2: a Lua provider script must not reach internal metadata services.
+func validateLuaURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "https" {
+		if u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1") {
+			// allowed for local dev
+		} else {
+			return fmt.Errorf("scheme %q not allowed (use https)", u.Scheme)
+		}
+	}
+	host := u.Hostname()
+	if host == "" || host == "localhost" || host == "127.0.0.1" {
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil // let HTTP client try (may use proxy)
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			return fmt.Errorf("hostname %s resolves to blocked IP %s", host, ip)
+		}
+	}
+	return nil
+}
+
 // registerBridge injects Go-provided functions into the Lua VM.
 func (sp *ScriptProvider) registerBridge(vm *lua.LState) {
 	// ── env(name) ?string ─────────────────────────────────────────────
@@ -279,6 +312,14 @@ func (sp *ScriptProvider) registerBridge(vm *lua.LState) {
 		url := L.CheckString(1)
 		body := L.CheckString(2)
 		headersTbl := L.OptTable(3, nil)
+
+		// audit S-H2: validate URL to prevent SSRF (cloud metadata, private IPs).
+		if err := validateLuaURL(url); err != nil {
+			L.Push(lua.LNil)
+			L.Push(lua.LNumber(0))
+			L.Push(lua.LString(fmt.Sprintf("url rejected (SSRF protection): %v", err)))
+			return 3
+		}
 
 		httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(body)))
 		if err != nil {

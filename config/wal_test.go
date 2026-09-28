@@ -10,13 +10,20 @@ import (
 	"time"
 )
 
+// mustWrite writes data to path, failing the test on error (audit T-M12).
+func mustWrite(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("WriteFile %s: %v", path, err)
+	}
+}
+
 func TestConfig_CorruptMainFile_QuarantineAndFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{"default_provider":"good"}`), 0644)
+	mustWrite(t, configPath, []byte(`{"default_provider":"good"}`))
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	// First startup: should load fine
 	reg, err := NewRegistry(configPath)
@@ -27,7 +34,7 @@ func TestConfig_CorruptMainFile_QuarantineAndFallback(t *testing.T) {
 
 	// Now corrupt the main config file
 	corruptData := []byte(`{"default_provider":"good", "providers": [ BROKEN JSON`)
-	os.WriteFile(configPath, corruptData, 0644)
+	mustWrite(t, configPath, corruptData)
 
 	// Second startup: should quarantine and bootstrap defaults, not crash
 	reg2, err := NewRegistry(configPath)
@@ -46,13 +53,12 @@ func TestConfig_CorruptMainFile_QuarantineAndFallback(t *testing.T) {
 func TestConfig_CorruptMainFile_RestoreFromBackup(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{"default_provider":"original"}`), 0644)
+	mustWrite(t, configPath, []byte(`{"default_provider":"original"}`))
 
 	// Create a fresh .bak (simulating Compactor's last Persist)
-	os.WriteFile(configPath+".bak", []byte(`{"default_provider":"original"}`), 0644)
+	mustWrite(t, configPath+".bak", []byte(`{"default_provider":"original"}`))
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	// Startup 1: Load OK, auto-saves .bak copy inside loadWithFallback
 	reg1, err := NewRegistry(configPath)
@@ -67,7 +73,7 @@ func TestConfig_CorruptMainFile_RestoreFromBackup(t *testing.T) {
 	}
 
 	// Corrupt main config
-	os.WriteFile(configPath, []byte(`CORRUPTED`), 0644)
+	mustWrite(t, configPath, []byte(`CORRUPTED`))
 
 	// Startup 2: should restore from .bak
 	reg2, err := NewRegistry(configPath)
@@ -89,11 +95,10 @@ func TestConfig_CorruptMainFile_RestoreFromBackup(t *testing.T) {
 func TestWAL_QuarantineOnReplayFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{"default_provider":"baseline"}`), 0644)
+	mustWrite(t, configPath, []byte(`{"default_provider":"baseline"}`))
 	walPath := configPath + ".wal"
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	// Step 1: Create a valid WAL entry
 	wal := NewWAL(walPath)
@@ -128,14 +133,13 @@ func TestWAL_QuarantineOnReplayFailure(t *testing.T) {
 func TestWAL_CompactorOnlyOnSuccessfulReplay(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{"default_provider":"p1"}`), 0644)
+	mustWrite(t, configPath, []byte(`{"default_provider":"p1"}`))
 	walPath := configPath + ".wal"
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	// Step 1: Corrupt WAL before any startup
-	os.WriteFile(walPath, []byte("CORRUPT_DATA"), 0644)
+	mustWrite(t, walPath, []byte("CORRUPT_DATA"))
 
 	// Step 2: Start — compactor should NOT be initialized
 	reg, err := NewRegistry(configPath)
@@ -200,10 +204,9 @@ func TestWAL_Lifecycle(t *testing.T) {
 func TestRegistry_WALIntegration(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{"default_provider":"p1"}`), 0644)
+	mustWrite(t, configPath, []byte(`{"default_provider":"p1"}`))
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {
@@ -245,10 +248,9 @@ func TestRegistry_WALIntegration(t *testing.T) {
 func TestRegistry_Compaction(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{"default_provider":"p1"}`), 0644)
+	mustWrite(t, configPath, []byte(`{"default_provider":"p1"}`))
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {
@@ -288,10 +290,9 @@ func TestRegistry_Compaction(t *testing.T) {
 func TestRegistry_CommitOps_AddRole(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{}`), 0644)
+	mustWrite(t, configPath, []byte(`{}`))
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {
@@ -325,10 +326,9 @@ func TestRegistry_CommitOps_AddRole(t *testing.T) {
 func TestRegistry_Rollback(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{"default_provider":"p1"}`), 0644)
+	mustWrite(t, configPath, []byte(`{"default_provider":"p1"}`))
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {
@@ -387,10 +387,9 @@ func TestRegistry_Rollback(t *testing.T) {
 func TestCompaction_SnapshotRotation(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{"default_provider":"v0"}`), 0644)
+	mustWrite(t, configPath, []byte(`{"default_provider":"v0"}`))
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {
@@ -548,10 +547,9 @@ func TestWAL_ReplaySince_UnknownCheckpointFailsOpenToFullReplay(t *testing.T) {
 func TestRegistry_CrashBetweenSnapshotAndWALClear_DoesNotDoubleApply(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(configPath, []byte(`{}`), 0644)
+	mustWrite(t, configPath, []byte(`{}`))
 
-	os.Setenv("VORTEX_WAL_ENABLED", "true")
-	defer os.Unsetenv("VORTEX_WAL_ENABLED")
+	t.Setenv("VORTEX_WAL_ENABLED", "true")
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {

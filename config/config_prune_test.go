@@ -123,7 +123,9 @@ func TestPersist_PrunesOrphanedFiles(t *testing.T) {
 	}
 
 	data, _ := json.Marshal(initialCfg)
-	_ = os.WriteFile(configPath, data, 0644)
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {

@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"net"
-	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -34,8 +33,7 @@ func TestServeSSE_NoOsExitOnBindError(t *testing.T) {
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	os.Setenv("VORTEX_PORT", strconv.Itoa(port))
-	defer os.Unsetenv("VORTEX_PORT")
+	t.Setenv("VORTEX_PORT", strconv.Itoa(port))
 
 	mcpServer := server.NewMCPServer("test", "1.0.0")
 	_, rootCancel := context.WithCancel(context.Background())
