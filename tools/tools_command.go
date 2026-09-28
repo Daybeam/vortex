@@ -3,12 +3,65 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/daybeam/vortex/core"
+	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/daybeam/vortex/core"
 )
+
+// ── Sandbox run-command workspace cleanup ────────────────────────────────
+//
+// When orchestrator_run_command is called with sandboxed=true, the command
+// runs in an isolated workspace under outputs/sandbox_run/<id>/. A background
+// goroutine periodically removes workspaces older than the TTL so frequent
+// sandboxed invocations don't accumulate unbounded disk usage.
+const (
+	sandboxRunDir           = "outputs/sandbox_run"
+	sandboxRunTTL           = 24 * time.Hour
+	sandboxRunCheckInterval = 1 * time.Hour
+)
+
+var sandboxRunCleanerOnce sync.Once
+
+// startSandboxRunCleaner starts a background goroutine (once per process)
+// that periodically removes sandbox run workspaces older than sandboxRunTTL.
+func startSandboxRunCleaner() {
+	sandboxRunCleanerOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(sandboxRunCheckInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				cleanSandboxRunDir()
+			}
+		}()
+	})
+}
+
+func cleanSandboxRunDir() {
+	entries, err := os.ReadDir(sandboxRunDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-sandboxRunTTL)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			os.RemoveAll(filepath.Join(sandboxRunDir, entry.Name()))
+		}
+	}
+}
 
 func registerCommandList(s *server.MCPServer, app *App) {
 	app.register(s, mcp.NewTool("orchestrator_run_command",
@@ -20,6 +73,7 @@ func registerCommandList(s *server.MCPServer, app *App) {
 		mcp.WithString("input_encoding", mcp.Description("Output encoding: 'utf8' (default) or 'gbk' (Windows Chinese output)")),
 		mcp.WithBoolean("diagnostic_mode", mcp.Description("Enable dual-path verification (direct vs script)")),
 		mcp.WithBoolean("use_script_path", mcp.Description("Force execution via temporary script file (safer for complex quoting)")),
+		mcp.WithBoolean("sandboxed", mcp.Description("When true, runs in an isolated workspace (outputs/sandbox_run/<id>/) with memory/CPU limits (256MB/30s). Default false — shell operations need local environment access. Enable for temporary script writing; workspace is auto-cleaned after 24h.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		cmdName := strArg(req.Params.Arguments, "command")
 		cwd := strArg(req.Params.Arguments, "cwd")
@@ -27,6 +81,7 @@ func registerCommandList(s *server.MCPServer, app *App) {
 		argMap, _ := req.Params.Arguments.(map[string]any)
 		diagnostic := argMap["diagnostic_mode"] == true
 		useScript := argMap["use_script_path"] == true
+		sandboxed := argMap["sandboxed"] == true
 
 		// Parse args: accept JSON array or CSV string
 		cmdArgs := parseRunCommandArgs(req.Params.Arguments)
@@ -50,6 +105,18 @@ func registerCommandList(s *server.MCPServer, app *App) {
 		}
 		if strArg(req.Params.Arguments, "disable_stdin_monitoring") == "true" {
 			exec.DisableStdinMonitoring = true
+		}
+
+		// Sandbox mode: isolated workspace + resource limits. Off by default
+		// because shell operations depend on the local environment (PATH, tools,
+		// cwd). Enable for temporary script writing — workspace is auto-cleaned
+		// after 24h by a background goroutine.
+		if sandboxed {
+			startSandboxRunCleaner()
+			wsDir := filepath.Join(sandboxRunDir, uuid.New().String()[:8])
+			os.MkdirAll(wsDir, 0755)
+			cwd = wsDir
+			exec.Sandboxed = true
 		}
 
 		// Handle forced script path

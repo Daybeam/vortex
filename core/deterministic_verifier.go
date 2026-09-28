@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/daybeam/vortex/schemas"
@@ -75,17 +74,18 @@ func (v *CommandPassVerifier) Verify(ctx context.Context, workdir string, criter
 	if len(fields) == 0 {
 		return false, "empty command after parsing", nil
 	}
-	exe := filepath.Base(fields[0]) // strip any path prefix
+	// audit NEW-1: reject path separators in the executable. This forces PATH
+	// lookup and prevents /tmp/evil/git from bypassing the "git" allowlist
+	// (filepath.Base strips the prefix, but exec uses the full path).
+	if strings.ContainsAny(fields[0], `/\`) {
+		return false, fmt.Sprintf("command rejected: path separators not allowed in executable (audit NEW-1); use a bare command name"), nil
+	}
+	exe := fields[0] // guaranteed bare name — no path prefix possible
 	allowed := map[string]bool{
 		"test": true, "echo": true, "cat": true, "ls": true, "grep": true,
 		"git": true, "go": true, "python3": true, "python": true, "node": true,
 		"npm": true, "make": true, "diff": true, "wc": true, "head": true,
 		"tail": true, "sort": true, "uniq": true, "find": true, "true": true,
-	}
-	if runtime.GOOS == "windows" {
-		allowed["dir"] = true
-		allowed["type"] = true
-		allowed["where"] = true
 	}
 	if custom := os.Getenv("VORTEX_COMMAND_ALLOWLIST"); custom != "" {
 		allowed = make(map[string]bool)

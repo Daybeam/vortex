@@ -484,6 +484,18 @@ func (m *MCPConnectionManager) ensureMCPClient(ctx context.Context, mcp *config.
 
 		var constraints *client.SandboxConstraints
 		if mcp.Sandboxed {
+			// Try bwrap namespace isolation (Linux only, JIT tools only).
+			// Falls back to resource-limits-only on Windows/macOS or if bwrap absent.
+			workDir := resolvedDir
+			if workDir == "" && len(args) > 0 {
+				workDir = filepath.Dir(args[len(args)-1])
+			}
+			if bp, ba := BuildBwrapArgs(cmd, args, workDir); bp != "" {
+				cmd = bp
+				args = ba
+			}
+
+			// Still apply resource limits (bwrap doesn't limit memory/CPU)
 			memMB := m.registry.System.SandboxedMemoryMB
 			if memMB <= 0 {
 				memMB = 256

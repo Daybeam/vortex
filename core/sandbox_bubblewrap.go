@@ -74,3 +74,39 @@ func (p *BubblewrapProvider) Execute(ctx context.Context, req ExecRequest) (*Exe
 	cmd := exec.CommandContext(ctx, p.bwrapPath, bwrapArgs...)
 	return runSandboxedCommand(ctx, cmd, req, startTime)
 }
+
+// BuildBwrapArgs constructs bwrap namespace-isolation args for wrapping an
+// arbitrary command. Returns ("", nil) if bwrap is unavailable or not on
+// Linux — callers should treat this as a graceful fallback to local execution.
+//
+// The sandbox isolates PID/IPC/UTS namespaces, mounts system dirs read-only,
+// and only grants write access to workDir. This is used by MCPConnectionManager
+// to sandbox JIT-registered tools (mcp.Sandboxed=true) on Linux.
+func BuildBwrapArgs(command string, args []string, workDir string) (bwrapPath string, bwrapArgs []string) {
+	if runtime.GOOS != "linux" {
+		return "", nil
+	}
+	path, err := exec.LookPath("bwrap")
+	if err != nil {
+		return "", nil
+	}
+	if workDir == "" {
+		workDir = "/tmp"
+	}
+	bwrapArgs = []string{
+		"--unshare-pid",
+		"--unshare-ipc",
+		"--unshare-uts",
+		"--ro-bind", "/usr", "/usr",
+		"--ro-bind", "/lib", "/lib",
+		"--ro-bind", "/bin", "/bin",
+		"--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
+		"--proc", "/proc",
+		"--dev", "/dev",
+		"--bind", workDir, workDir,
+		"--chdir", workDir,
+		command,
+	}
+	bwrapArgs = append(bwrapArgs, args...)
+	return path, bwrapArgs
+}

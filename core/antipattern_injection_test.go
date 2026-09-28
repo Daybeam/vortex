@@ -165,7 +165,7 @@ func TestChatHarnessSystemPrompt_ContainsReadinessGate(t *testing.T) {
 
 func TestChatHarnessDelegateTool_HasReadinessSelfCheck(t *testing.T) {
 	h := &ChatHarness{}
-	tools := h.toolDefinitions()
+	tools := h.ToolDefinitions()
 	var delegate *schemas.ToolDefinition
 	for i := range tools {
 		if tools[i].Name == "delegate_to_orchestrator" {

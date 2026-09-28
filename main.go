@@ -177,6 +177,7 @@ func runExec(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBas
 	}
 	modelRegistry := registry.NewModelRegistry()
 	scheduler.WireCapabilityRouting(capProfileStore, modelRegistry)
+	scheduler.WireHooks(reg.System.Hooks, reg.ExternalRuntimes)
 
 	scheduler.JITSessions = core.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.TaskRegistry = s.TaskRegistry

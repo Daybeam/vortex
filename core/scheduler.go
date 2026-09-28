@@ -128,6 +128,11 @@ type DirectedEngine struct {
 	// growth on long-running servers. When exceeded, the cache is cleared
 	// (safe — it is only an optimization to avoid re-hashing write-once files).
 	maxHashCacheEntries int
+
+	// hookRunner executes config-driven automated hooks at DAG lifecycle points
+	// (step_post, task_completion, decision_required). Nil-safe: set by
+	// WireHooks after construction. See core- hook_runner.go.
+	hookRunner *HookRunner
 }
 
 const defaultMaxHashCacheEntries = 10000
@@ -221,6 +226,57 @@ func (s *DirectedEngine) WireCapabilityRouting(cps *store.CapabilityProfileStore
 	}
 	if mr != nil {
 		s.spawner.SetModelRegistry(mr)
+	}
+}
+
+// WireHooks connects config-driven hooks to DAG lifecycle events via EventBus.
+func (s *DirectedEngine) WireHooks(hooks []config.HookConfig, runtimes config.ExternalRuntimes) {
+	if len(hooks) == 0 {
+		return
+	}
+	s.hookRunner = NewHookRunner(hooks, runtimes, s.logger)
+
+	if len(s.hookRunner.HooksForPoint(HookStepPost)) > 0 {
+		DefaultBus.Subscribe(string(EventStepCompleted), func(ev AgentEvent) error {
+			s.goBackground(func() {
+				s.hookRunner.Run(s.lifecycleCtx, HookStepPost, HookContext{
+					Point:  HookStepPost,
+					TaskID: ev.TaskID,
+					StepID: ev.StepID,
+					Input:  ev.Payload,
+				})
+			})
+			return nil
+		})
+	}
+
+	if len(s.hookRunner.HooksForPoint(HookTaskCompletion)) > 0 {
+		for _, evt := range []EventType{EventTaskCompleted, EventTaskFailed} {
+			DefaultBus.Subscribe(string(evt), func(ev AgentEvent) error {
+				s.goBackground(func() {
+					s.hookRunner.Run(s.lifecycleCtx, HookTaskCompletion, HookContext{
+						Point:  HookTaskCompletion,
+						TaskID: ev.TaskID,
+						Input:  ev.Payload,
+					})
+				})
+				return nil
+			})
+		}
+	}
+
+	if len(s.hookRunner.HooksForPoint(HookDecisionRequired)) > 0 {
+		DefaultBus.Subscribe(string(EventDecisionRequired), func(ev AgentEvent) error {
+			s.goBackground(func() {
+				s.hookRunner.Run(s.lifecycleCtx, HookDecisionRequired, HookContext{
+					Point:  HookDecisionRequired,
+					TaskID: ev.TaskID,
+					StepID: ev.StepID,
+					Input:  ev.Payload,
+				})
+			})
+			return nil
+		})
 	}
 }
 

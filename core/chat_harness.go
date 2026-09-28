@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -40,6 +41,7 @@ type ChatEvent struct {
 type ChatHarness struct {
 	Provider   providers.Provider
 	Model      string
+	Role       *config.Role // when set, role's Instruction is prepended to system prompt
 	Archive    *ContextArchive
 	MemoryBank *store.MemoryBankStore
 	Embed      EmbeddingClient
@@ -53,7 +55,7 @@ type ChatHarness struct {
 	Sieve *Sieve
 }
 
-func (h *ChatHarness) toolDefinitions() []schemas.ToolDefinition {
+func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
 	tools := CoreToolDefinitions()
 	tools = append(tools, schemas.ToolDefinition{
 		Name: "delegate_to_orchestrator",
@@ -90,6 +92,14 @@ func (h *ChatHarness) toolDefinitions() []schemas.ToolDefinition {
 // buildSystem composes the system prompt from context-tree and memory-bank state.
 func (h *ChatHarness) buildSystem(query, taskID string) string {
 	var b strings.Builder
+
+	// Role system prompt injection — mirrors prompt_assembler.go:66-72.
+	// When a role is set, its Instruction defines the persona; the base
+	// prompt below provides safety guardrails on top.
+	if h.Role != nil && h.Role.Instruction != "" {
+		b.WriteString(fmt.Sprintf("# Role: %s\n%s\n\n", h.Role.Name, h.Role.Instruction))
+	}
+
 	b.WriteString("You are a concise, helpful assistant in a standalone chat harness.\n")
 	b.WriteString("You have a small toolset: write_file, read_file, execute_code, delegate_to_orchestrator.\n")
 	b.WriteString("Use tools when they help; answer directly otherwise. Do not call tools you do not need.\n")
@@ -162,7 +172,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	}
 
 	system := h.buildSystem(query, taskID)
-	tools := h.toolDefinitions()
+	tools := h.ToolDefinitions()
 	mcpServers := []schemas.MCPServerDef{{Name: "core", Tools: tools}}
 
 	messages := make([]ChatMessage, 0, len(history)+maxTurns)

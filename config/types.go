@@ -523,6 +523,29 @@ type SystemSettings struct {
 	// When empty (the default), behavior is identical to legacy env-var keys:
 	// every caller resolves to OwnerID="" and all ownership checks are no-ops.
 	APIKeys []NamedAPIKey `json:"api_keys,omitempty"`
+
+	// Hooks are config-driven automated habits/rules that fire at specific
+	// lifecycle points (chat and DAG). See docs/completed/2026-09-28/UNIFIED_HOOK_ARCHITECTURE_DESIGN.md.
+	// Each hook declares a point, script path, timeout, and optional filter.
+	Hooks []HookConfig `json:"hooks,omitempty"`
+}
+
+// HookConfig declares a single automated hook. Point determines when it fires;
+// Script is the path to a .lua/.py/.js/.sh script; Filter optionally restricts
+// which tasks/steps/roles trigger the hook.
+type HookConfig struct {
+	Point    string     `json:"point"`              // chat_habit|chat_pre_turn|chat_post_turn|step_pre|step_post|task_completion|decision_required
+	Script   string     `json:"script"`             // path to hook script
+	TimeoutMs int       `json:"timeout_ms,omitempty"` // 0 = 10s default
+	Filter   HookFilter `json:"filter,omitempty"`
+}
+
+// HookFilter restricts when a hook fires. All conditions must match (AND).
+type HookFilter struct {
+	RoleID       string `json:"role_id,omitempty"`        // exact match
+	TaskContains string `json:"task_contains,omitempty"`  // case-insensitive substring
+	TaskType     string `json:"task_type,omitempty"`      // matched against role BaseCapability
+	StepIDGlob   string `json:"step_id_glob,omitempty"`   // glob match on step ID
 }
 
 // NamedAPIKey pairs a bearer token with an owner identity and tier.
