@@ -6,7 +6,8 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/dop251/goja v0.0.0-20260911104922-fabc3b8078ad
 	github.com/google/uuid v1.6.0
-	github.com/mark3labs/mcp-go v0.54.0
+	github.com/mark3labs/mcp-go v1.1.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/seiflotfy/cuckoofilter v0.0.0-20240715131351-a2f2c23f1771
 	github.com/yuin/gopher-lua v1.1.2
 	golang.org/x/text v0.39.0
@@ -25,7 +26,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/sys v0.48.0 // indirect
