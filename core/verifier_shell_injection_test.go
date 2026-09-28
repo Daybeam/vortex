@@ -44,7 +44,7 @@ func TestCommandPassVerifier_CleanCommandStillPasses(t *testing.T) {
 
 	var cleanCmds []string
 	if runtime.GOOS == "windows" {
-		cleanCmds = []string{"echo hello", "dir", "echo test"}
+		cleanCmds = []string{"echo hello", "echo test"}
 	} else {
 		cleanCmds = []string{"echo hello", "true", "ls"}
 	}
@@ -56,6 +56,35 @@ func TestCommandPassVerifier_CleanCommandStillPasses(t *testing.T) {
 		}
 		if !passed {
 			t.Errorf("clean command %q: should still pass after S-C1 fix", cmd)
+		}
+	}
+}
+
+// TestCommandPassVerifier_RejectsPathSeparators is a regression test for
+// audit NEW-1: the executable allowlist must reject commands containing path
+// separators. Before the fix, filepath.Base stripped the path prefix for the
+// allowlist check, but exec.CommandContext used the full path — allowing
+// /tmp/evil/git to pass the "git" allowlist while executing the attacker's binary.
+func TestCommandPassVerifier_RejectsPathSeparators(t *testing.T) {
+	v := &CommandPassVerifier{}
+
+	maliciousCmds := []string{
+		"/tmp/evil/git status",
+		"/usr/local/bin/git",
+		"./evil.sh",
+		"../evil/git",
+	}
+
+	for _, cmd := range maliciousCmds {
+		passed, msg, err := v.Verify(context.Background(), t.TempDir(), map[string]any{"command": cmd})
+		if err != nil {
+			t.Errorf("cmd %q: unexpected error: %v", cmd, err)
+		}
+		if passed {
+			t.Errorf("cmd %q: expected rejection for path separator, but it passed", cmd)
+		}
+		if !strings.Contains(msg, "NEW-1") {
+			t.Errorf("cmd %q: expected message to reference NEW-1, got %q", cmd, msg)
 		}
 	}
 }

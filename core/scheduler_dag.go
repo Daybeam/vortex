@@ -80,7 +80,7 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 						"upstream":    insufficient.UpstreamIDs,
 						"upstream_st": insufficient.UpstreamStatuses,
 					},
-				[]string{"rerun_upstream", "skip", "abort"})
+				[]string{"skip", "abort"})
 			s.setGraphStatus(graph, schemas.GraphBlocked)
 			s.persistGraph(graph)
 				s.Broadcast()

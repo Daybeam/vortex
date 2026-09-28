@@ -18,6 +18,8 @@ import (
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
+
+	"github.com/daybeam/vortex/client"
 )
 
 // StdinPattern defines a pattern that indicates a process is waiting for input.
@@ -63,6 +65,7 @@ type ControlledExecutor struct {
 	OutputEncoding         string // "" or "utf8" = default; "gbk" = decode Windows GBK output to UTF-8
 	DisableStdinMonitoring bool
 	DiagnosticMode         bool // ADDED (2026-08-16): Enable dual-path verification
+	Sandboxed              bool // when true, applies client.ApplySandbox (memory/CPU limits) after start
 }
 
 func NewControlledExecutor() *ControlledExecutor {
@@ -118,6 +121,16 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
+	}
+
+	// Apply sandbox resource limits (memory/CPU) when enabled. A failure here
+	// is logged but not fatal — same pattern as execute_code and MCPClient.
+	if e.Sandboxed {
+		if cleanup, sbErr := client.ApplySandbox(cmd.Process.Pid, client.DefaultSandboxConstraints); sbErr != nil {
+			fmt.Fprintf(os.Stderr, "[executor] WARNING: sandbox setup failed for pid=%d: %v\n", cmd.Process.Pid, sbErr)
+		} else {
+			defer cleanup()
+		}
 	}
 
 	// Write initial input if provided

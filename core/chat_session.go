@@ -27,6 +27,7 @@ type ChatSession struct {
 	Messages     map[string]*ChatMessage `json:"messages"`
 	RootID       string                  `json:"root_id,omitempty"`
 	ActiveLeafID string                  `json:"active_leaf_id,omitempty"`
+	ActiveRoleID string                  `json:"active_role_id,omitempty"`
 	CreatedAt    time.Time               `json:"created_at"`
 
 	mu        sync.Mutex
@@ -178,6 +179,20 @@ func (s *ChatSession) SnapshotMessages() []ChatMessage {
 		return nil
 	}
 	return s.getPathLocked(s.ActiveLeafID)
+}
+
+// Clear resets the session to an empty state, removing all messages,
+// events, and idempotency keys. nextSeq is preserved so that SSE
+// Last-Event-ID resume continues to work correctly (new events after
+// a clear will have Seq values higher than any pre-clear event).
+func (s *ChatSession) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Messages = make(map[string]*ChatMessage)
+	s.RootID = ""
+	s.ActiveLeafID = ""
+	s.events = nil
+	s.seenMsg = make(map[string]bool)
 }
 
 // ChatSessionStore owns in-memory sessions and persists each to a JSON file

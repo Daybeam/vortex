@@ -41,7 +41,7 @@ func NewScriptProvider(cfg *config.ProviderConfig, scriptPath string) (*ScriptPr
 	workspaceRoot, _ := cfg.Extra["workspace_root"].(string)
 	sp := &ScriptProvider{
 		cfg:          cfg,
-		client:       &http.Client{Timeout: 120 * time.Second},
+		client:       &http.Client{Timeout: 120 * time.Second, Transport: ssrfSafeTransport()},
 		scriptPath:   scriptPath,
 		workspaceRoot: workspaceRoot,
 	}
@@ -231,7 +231,8 @@ func (sp *ScriptProvider) loadScript() error {
 }
 
 // validateLuaURL blocks SSRF from Lua http.post: rejects non-HTTPS (except
-// localhost), private/loopback/link-local IPs, and cloud metadata endpoints.
+// localhost). IP validation happens at connection time in ssrfSafeTransport
+// (audit NEW-3: prevents DNS rebinding TOCTOU race).
 // audit S-H2: a Lua provider script must not reach internal metadata services.
 func validateLuaURL(raw string) error {
 	u, err := url.Parse(raw)
@@ -240,25 +241,38 @@ func validateLuaURL(raw string) error {
 	}
 	if u.Scheme != "https" {
 		if u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1") {
-			// allowed for local dev
-		} else {
-			return fmt.Errorf("scheme %q not allowed (use https)", u.Scheme)
+			return nil // allowed for local dev
 		}
-	}
-	host := u.Hostname()
-	if host == "" || host == "localhost" || host == "127.0.0.1" {
-		return nil
-	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return nil // let HTTP client try (may use proxy)
-	}
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			return fmt.Errorf("hostname %s resolves to blocked IP %s", host, ip)
-		}
+		return fmt.Errorf("scheme %q not allowed (use https)", u.Scheme)
 	}
 	return nil
+}
+
+// ssrfSafeTransport returns an http.Transport that validates resolved IPs at
+// connection time, eliminating the DNS rebinding TOCTOU (audit NEW-3) and
+// failing closed on DNS errors (audit NEW-6).
+func ssrfSafeTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, fmt.Errorf("SSRF guard: DNS lookup failed for %s: %w (audit NEW-6: fail-closed)", host, err)
+			}
+			for _, ip := range ips {
+				if ip.IP.IsLoopback() || ip.IP.IsPrivate() || ip.IP.IsLinkLocalUnicast() || ip.IP.IsUnspecified() {
+					return nil, fmt.Errorf("SSRF guard: %s resolves to blocked IP %s", host, ip.IP)
+				}
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		},
+	}
 }
 
 // registerBridge injects Go-provided functions into the Lua VM.

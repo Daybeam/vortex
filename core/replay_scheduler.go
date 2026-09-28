@@ -562,6 +562,8 @@ func (rs *replayScheduler) writeBack(ctx context.Context, candidateID string, v 
 	}
 	_ = rs.expStore.AddJITCandidate(ctx, candidate)
 
+	rs.expStore.UpsertTaskPatternFromReplay(candidateID, v.Type, v.Type+" mutation from replay")
+
 	action := "promoted"
 	if !verified {
 		action = "pending"
