@@ -12,21 +12,12 @@ Vortex 调度基于 DAG 的任务图，跨模型提供商路由工作，持久�
 
 **核心能力：**
 - **DAG 任务调度** — 支持并行分支、依赖解析与预算感知执行的多步骤任务图
-  （验证：`core/scheduler_*_test.go`、`schemas/task_test.go` 等）
 - **多提供商路由** — OpenAI、Anthropic、Gemini、Ollama、DeepSeek，内置故障转移、
   限流，并可通过 `pkg/interfaces/` 扩展自定义提供商
-  （验证：`providers/router_test.go`、`instances_test.go`、`pareto_routing_test.go`、
-  `fallback_test.go`、`recovery_test.go`、`multi_key_test.go` 等）
 - **经验图** — 持久化执行结果，用于失败模式纠正与路由优化
-  （验证：`store/experience_*_test.go`、`store/db_sqlite_test.go` 等）
 - **JIT 代码执行** — Python、Node、Bun、Lua REPL 会话，用于动态工具生成
-  （验证：`core/jit_*_test.go`、`store/jit_composition_test.go`）
 - **角色 + 技能系统** — 将能力绑定到智能体人格，组合多角色协作
-  （验证：`core/role_generator_*_test.go`、`core/skill_interpreter_test.go`、
-  `core/delegation_*_test.go`、`core/sop_*_test.go` 等）
 - **信号场** — 基于执行信号的反思与自适应预算
-  （验证：`core/signal_field_*_test.go`、`core/reflection_*_test.go`、
-  `core/adaptive_budget_test.go`、`core/budget_guard_*_test.go` 等）
 
 **接口：**
 - **MCP**（stdio + 原始 SSE）— 12 个核心编排工具，供 MCP 兼容客户端
@@ -44,9 +35,6 @@ Vortex 调度基于 DAG 的任务图，跨模型提供商路由工作，持久�
   - `orchestrator_fork_task` — 从历史检查点时间旅行并分叉任务
   - `orchestrator_run_command` — 执行带超时追踪的原子 shell 命令
 
-  （验证：`tests/contract_tests/mcp_tool_contracts_test.go` 注册与输出契约、
-  `tools/tier_registration_test.go` 分层安全、`tools/admin_tools_test.go`、
-  `tools/tools_task_test.go` 等）
 - **直接 API** — 将 Vortex 作为 Go 库嵌入
 - **原始 SSE** — 面向远程容器的 HTTP 传输（无鉴权，按设计作为本地回退）
   （验证：`transport_sse_test.go`、`tests/extreme_scenarios/sse_extreme_test.go`）

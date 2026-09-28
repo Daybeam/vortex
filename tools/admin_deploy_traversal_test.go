@@ -21,8 +21,7 @@ import (
 // Reproduction: a deploy request with a traversal path should return an
 // error result mentioning "audit S-C2".
 func TestHandleAdminDeployFile_RejectsPathTraversal(t *testing.T) {
-	os.Setenv("VORTEX_ALLOW_DEPLOY_WRITE", "1")
-	defer os.Unsetenv("VORTEX_ALLOW_DEPLOY_WRITE")
+	t.Setenv("VORTEX_ALLOW_DEPLOY_WRITE", "1")
 
 	tempDir, err := os.MkdirTemp("", "admin_traversal_test")
 	if err != nil {
@@ -30,7 +29,10 @@ func TestHandleAdminDeployFile_RejectsPathTraversal(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	logger, _ := core.NewLogger(filepath.Join(tempDir, "logs"), nil)
+	logger, err := core.NewLogger(filepath.Join(tempDir, "logs"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := &App{Logger: logger}
 
 	traversalPaths := []string{
@@ -66,16 +68,19 @@ func TestHandleAdminDeployFile_RejectsPathTraversal(t *testing.T) {
 // TestHandleAdminDeployFile_NormalPathStillWorks verifies that the S-C2 fix
 // does not over-reject legitimate paths without traversal.
 func TestHandleAdminDeployFile_NormalPathStillWorks(t *testing.T) {
-	os.Setenv("VORTEX_ALLOW_DEPLOY_WRITE", "1")
-	defer os.Unsetenv("VORTEX_ALLOW_DEPLOY_WRITE")
+	t.Setenv("VORTEX_ALLOW_DEPLOY_WRITE", "1")
 
 	tempDir, err := os.MkdirTemp("", "admin_normal_test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tempDir)
+	t.Setenv("VORTEX_DEPLOY_ROOT", tempDir)
 
-	logger, _ := core.NewLogger(filepath.Join(tempDir, "logs"), nil)
+	logger, err := core.NewLogger(filepath.Join(tempDir, "logs"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := &App{Logger: logger}
 
 	dest := filepath.Join(tempDir, "normal.txt")

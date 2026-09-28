@@ -140,8 +140,8 @@ type ExperienceStore struct {
 	Edges []ExperienceEdge           `json:"edges"`
 
 	// JIT Promotion Audit (ADDED 2026-09-06)
-	JITCandidates      map[string]*JITCandidate `json:"jit_candidates"`
-	PromotionAuditLogs []PromotionAuditLog      `json:"promotion_audit_logs"`
+	JITCandidates       map[string]*JITCandidate `json:"jit_candidates"`
+	PromotionAuditLogs  []PromotionAuditLog      `json:"promotion_audit_logs"`
 
 	// queryRelevantAntiPatterns is a helper on the store struct that scans
 	// the AntiPatternStore for precedents matching the task intent keywords.
@@ -163,6 +163,17 @@ type ExperienceStore struct {
 	// Cooccurrence) so shutdown can wait for them to drain before closing
 	// the backend (audit H10).
 	saveWg sync.WaitGroup
+
+	// lifecycleCtx is used as parent for async embedding goroutines
+	// (audit C-13). When nil, context.Background() is used.
+	lifecycleCtx context.Context
+}
+
+// SetLifecycleContext sets the parent context for async operations (audit C-13).
+func (es *ExperienceStore) SetLifecycleContext(ctx context.Context) {
+	es.Mu.Lock()
+	es.lifecycleCtx = ctx
+	es.Mu.Unlock()
 }
 
 // WaitAsyncSaves blocks until all fire-and-forget DB save goroutines
@@ -186,22 +197,22 @@ func NewExperienceStore(dir string, ts ITaskStore, sys *config.SystemSettings, e
 		backend = &FileExperienceBackend{dir: dir}
 	}
 	es := &ExperienceStore{
-		dir:                dir,
-		backend:            backend,
-		taskStore:          ts,
-		System:             sys,
-		TaskPatterns:       make(map[string]TaskPattern),
-		RoleProfiles:       make(map[string]*RoleProfile),
-		SkillAffinities:    make(map[string]*SkillAffinity),
-		GeneratedSkills:    make(map[string]*GeneratedSkill),
-		ArchivedSkills:     make(map[string]*GeneratedSkill),
+		dir:               dir,
+		backend:           backend,
+		taskStore:         ts,
+		System:            sys,
+		TaskPatterns:      make(map[string]TaskPattern),
+		RoleProfiles:      make(map[string]*RoleProfile),
+		SkillAffinities:   make(map[string]*SkillAffinity),
+		GeneratedSkills:   make(map[string]*GeneratedSkill),
+		ArchivedSkills:    make(map[string]*GeneratedSkill),
 		RoutingMatrix:      make(map[string]map[string]map[string]map[string]*RouteWeight),
 		EnvironmentIssues:  make(map[string]*EnvironmentIssue),
 		DecisionPrecedents: make(map[string]*schemas.DecisionNode),
 		AntiPatternStore:   NewAntiPatternStore(nil, apBackend),
-		Nodes:              make(map[string]*ExperienceNode),
-		Edges:              make([]ExperienceEdge, 0),
-		JITCandidates:      make(map[string]*JITCandidate),
+		Nodes:             make(map[string]*ExperienceNode),
+		Edges:             make([]ExperienceEdge, 0),
+		JITCandidates:     make(map[string]*JITCandidate),
 		PromotionAuditLogs: make([]PromotionAuditLog, 0),
 		RoleAffinities:     make(map[string]map[string]float64),
 		StatePotentials:    make(map[string]*StatePotential),
@@ -292,9 +303,9 @@ func (es *ExperienceStore) applyTemporalDecayLocked() {
 func (es *ExperienceStore) loadSeeds() {
 	path := filepath.Join(es.dir, "seed.json")
 	var seeds struct {
-		Patterns     []TaskPattern          `json:"task_patterns"`
-		Affinities   []*SkillAffinity       `json:"skill_affinities"`
-		AntiPatterns []AntiPatternPrecedent `json:"anti_patterns"`
+		Patterns     []TaskPattern           `json:"task_patterns"`
+		Affinities   []*SkillAffinity        `json:"skill_affinities"`
+		AntiPatterns []AntiPatternPrecedent  `json:"anti_patterns"`
 	}
 	readJSON(path, &seeds)
 
@@ -552,3 +563,4 @@ func (es *ExperienceStore) GetTaskPatternsSnapshot() map[string]TaskPattern {
 	}
 	return snapshot
 }
+

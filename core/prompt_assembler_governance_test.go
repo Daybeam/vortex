@@ -210,15 +210,15 @@ func TestBuild_BudgetEnforced(t *testing.T) {
 		t.Fatalf("buildSystemPrompt: %v", err)
 	}
 
-	// The total tokens should not exceed the budget (4000) by more than
-	// a small margin (the hard truncate is a best-effort ceiling).
+	// The total tokens should not exceed the budget by more than 50%.
+	// (Protected blocks can't be trimmed, so some overshoot is expected,
+	// but 3× slack hides enforcement bugs — audit T-M21.)
 	enforcer := NewPromptBudgetEnforcer(nil)
 	totalTokens := enforcer.EstimateBlocksTokens(blocks)
 	budget := config.DefaultSystemPromptBudgetLight
 
-	// Allow some slack for protected blocks that can't be trimmed.
-	if totalTokens > budget*3 {
-		t.Errorf("total tokens %d far exceed budget %d — enforcement may not be working", totalTokens, budget)
+	if totalTokens > budget*3/2 {
+		t.Errorf("total tokens %d exceed budget %d by >50%% — enforcement may not be working", totalTokens, budget)
 	}
 }
 

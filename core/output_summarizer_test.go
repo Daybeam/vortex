@@ -87,8 +87,13 @@ func TestSummarizeOutput_PlainText_Fallback(t *testing.T) {
 	data := []byte(sb.String())
 
 	got := SummarizeOutput(data, "plain")
-	if !strings.Contains(got, "TRUNCATED") && !strings.Contains(got, "GATEWAY") && len(got) >= len(data) {
-		t.Errorf("expected truncation or passthrough for plain text, got %d bytes", len(got))
+	// 500 lines of plain text must be summarized/truncated — not passed through verbatim.
+	// The output should be shorter than the input, or contain a truncation marker.
+	if len(got) >= len(data) && !strings.Contains(got, "TRUNCATED") && !strings.Contains(got, "GATEWAY") {
+		t.Errorf("expected truncation or summary for 500-line plain text, got full %d bytes passthrough", len(got))
+	}
+	if len(got) == 0 {
+		t.Error("expected non-empty output")
 	}
 }
 

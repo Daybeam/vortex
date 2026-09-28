@@ -490,6 +490,10 @@ type SystemSettings struct {
 	MaxConcurrentSteps        int             `json:"max_concurrent_steps,omitempty"`
 	MaxTaskChars              int             `json:"max_task_chars,omitempty"`
 	ToolRepetitionThreshold   int             `json:"tool_repetition_threshold,omitempty"`
+	// AllowedOrigins restricts CORS to these origins (audit S-M4). If empty,
+	// defaults to "*" for backward compat (single-machine). Set to explicit
+	// origins (e.g. ["https://app.example.com"]) for multi-tenant deployments.
+	AllowedOrigins            []string        `json:"allowed_origins,omitempty"`
 	Sandbox                   SandboxConfig   `json:"sandbox,omitempty"`
 	// EnableAutoRepair controls the VDA self-healing path in HealthCheckInterceptor.
 	// When false (default), missing MCP dependencies are logged and degraded

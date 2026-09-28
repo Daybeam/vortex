@@ -53,7 +53,10 @@ func newContractTestApp(t *testing.T) (*tools.App, func()) {
 	}
 
 	// Logger
-	logger, _ := core.NewLogger(logDir, nil)
+	logger, err := core.NewLogger(logDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// SignalField
 	sf := core.NewSignalField(0.01, 1*time.Second)

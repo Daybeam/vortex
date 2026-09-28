@@ -48,7 +48,11 @@ func TestReflectionEngine_SignalCapture(t *testing.T) {
 	// Add role to registry
 	reg.Roles["r1"] = &config.Role{ID: "r1", BaseCapability: "repair"}
 
-	_ = graph
+	// Verify test setup: graph step has the expected trigger error
+	if graph.Steps["s1"].TriggerError != "Command not found: 'grep'" {
+		t.Fatalf("test setup error: expected TriggerError 'Command not found: 'grep'', got %q", graph.Steps["s1"].TriggerError)
+	}
+
 	// 2. Reflect (call registerAsSkill directly to avoid background network call in test)
 	re.registerAsSkill(context.Background(), "jit_test", "repair", "fix something", "Command not found: 'grep'")
 

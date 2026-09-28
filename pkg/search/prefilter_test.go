@@ -8,6 +8,20 @@ import (
 	"testing"
 )
 
+func mustMkdirAll(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustWriteFile(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTokenizeIdentifier(t *testing.T) {
 	tests := []struct {
 		input string
@@ -107,8 +121,8 @@ func TestDirectoryRouter_BuildAndPreFilter(t *testing.T) {
 func TestDirectoryRouter_PreFilterNoMatch(t *testing.T) {
 	dir := t.TempDir()
 	full := filepath.Join(dir, "core", "scheduler.go")
-	os.MkdirAll(filepath.Dir(full), 0755)
-	os.WriteFile(full, []byte("x"), 0644)
+	mustMkdirAll(t, filepath.Dir(full))
+	mustWriteFile(t, full, []byte("x"))
 
 	router := NewDirectoryRouter(dir)
 	router.Build()
@@ -129,8 +143,8 @@ func TestDirectoryRouter_PreFilterMultipleTokens(t *testing.T) {
 	}
 	for f, content := range files {
 		full := filepath.Join(dir, f)
-		os.MkdirAll(filepath.Dir(full), 0755)
-		os.WriteFile(full, []byte(content), 0644)
+		mustMkdirAll(t, filepath.Dir(full))
+		mustWriteFile(t, full, []byte(content))
 	}
 
 	router := NewDirectoryRouter(dir)
@@ -151,18 +165,18 @@ func TestDirectoryRouter_SkipsHiddenDirs(t *testing.T) {
 	dir := t.TempDir()
 	// Regular file
 	regular := filepath.Join(dir, "core", "scheduler.go")
-	os.MkdirAll(filepath.Dir(regular), 0755)
-	os.WriteFile(regular, []byte("x"), 0644)
+	mustMkdirAll(t, filepath.Dir(regular))
+	mustWriteFile(t, regular, []byte("x"))
 
 	// Hidden directory file — should NOT be indexed
 	hidden := filepath.Join(dir, ".git", "config")
-	os.MkdirAll(filepath.Dir(hidden), 0755)
-	os.WriteFile(hidden, []byte("x"), 0644)
+	mustMkdirAll(t, filepath.Dir(hidden))
+	mustWriteFile(t, hidden, []byte("x"))
 
 	// vendor directory — should NOT be indexed
 	vendor := filepath.Join(dir, "vendor", "lib.go")
-	os.MkdirAll(filepath.Dir(vendor), 0755)
-	os.WriteFile(vendor, []byte("x"), 0644)
+	mustMkdirAll(t, filepath.Dir(vendor))
+	mustWriteFile(t, vendor, []byte("x"))
 
 	router := NewDirectoryRouter(dir)
 	router.Build()
@@ -190,8 +204,8 @@ func TestDirectoryRouter_CamelCaseQuery(t *testing.T) {
 	dir := t.TempDir()
 	// File with camelCase name
 	full := filepath.Join(dir, "core", "retryStep.go")
-	os.MkdirAll(filepath.Dir(full), 0755)
-	os.WriteFile(full, []byte("x"), 0644)
+	mustMkdirAll(t, filepath.Dir(full))
+	mustWriteFile(t, full, []byte("x"))
 
 	router := NewDirectoryRouter(dir)
 	router.Build()
@@ -217,8 +231,8 @@ func TestDirectoryRouter_CamelCaseQuery(t *testing.T) {
 func TestRegexSymbolFilter_GoFunctions(t *testing.T) {
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "core", "scheduler.go")
-	os.MkdirAll(filepath.Dir(goFile), 0755)
-	os.WriteFile(goFile, []byte(`
+	mustMkdirAll(t, filepath.Dir(goFile))
+	mustWriteFile(t, goFile, []byte(`
 package core
 
 func ExecuteBatchReplace(req BatchReplaceRequest) (*BatchReplaceResult, error) {
@@ -230,7 +244,7 @@ func (s *Scheduler) retryStep(ctx context.Context) error {
 }
 
 type Scheduler struct{}
-`), 0644)
+`))
 
 	filter := NewRegexSymbolFilter(dir)
 	if err := filter.Build(); err != nil {
@@ -258,37 +272,37 @@ func TestRegexSymbolFilter_MultiLanguage(t *testing.T) {
 
 	// Python file
 	pyFile := filepath.Join(dir, "app", "models.py")
-	os.MkdirAll(filepath.Dir(pyFile), 0755)
-	os.WriteFile(pyFile, []byte(`
+	mustMkdirAll(t, filepath.Dir(pyFile))
+	mustWriteFile(t, pyFile, []byte(`
 class User:
     def get_profile(self):
         pass
 
 def create_user(name):
     pass
-`), 0644)
+`))
 
 	// JavaScript file
 	jsFile := filepath.Join(dir, "app", "handler.js")
-	os.MkdirAll(filepath.Dir(jsFile), 0755)
-	os.WriteFile(jsFile, []byte(`
+	mustMkdirAll(t, filepath.Dir(jsFile))
+	mustWriteFile(t, jsFile, []byte(`
 function processRequest(req, res) {
     return null;
 }
 
 const MAX_RETRIES = 3;
-`), 0644)
+`))
 
 	// TypeScript file
 	tsFile := filepath.Join(dir, "app", "types.ts")
-	os.MkdirAll(filepath.Dir(tsFile), 0755)
-	os.WriteFile(tsFile, []byte(`
+	mustMkdirAll(t, filepath.Dir(tsFile))
+	mustWriteFile(t, tsFile, []byte(`
 interface UserDTO {
     id: string;
 }
 
 type Status = "active" | "inactive";
-`), 0644)
+`))
 
 	filter := NewRegexSymbolFilter(dir)
 	filter.Build()
@@ -327,7 +341,7 @@ type Status = "active" | "inactive";
 func TestRegexSymbolFilter_NoMatch(t *testing.T) {
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "main.go")
-	os.WriteFile(goFile, []byte("func existingFunc() {}\n"), 0644)
+	mustWriteFile(t, goFile, []byte("func existingFunc() {}\n"))
 
 	filter := NewRegexSymbolFilter(dir)
 	filter.Build()
@@ -341,8 +355,8 @@ func TestRegexSymbolFilter_NoMatch(t *testing.T) {
 func TestRegexSymbolFilter_MultiWordQuery(t *testing.T) {
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "core", "batch.go")
-	os.MkdirAll(filepath.Dir(goFile), 0755)
-	os.WriteFile(goFile, []byte("func ExecuteBatchReplace() {}\n"), 0644)
+	mustMkdirAll(t, filepath.Dir(goFile))
+	mustWriteFile(t, goFile, []byte("func ExecuteBatchReplace() {}\n"))
 
 	filter := NewRegexSymbolFilter(dir)
 	filter.Build()
@@ -360,7 +374,7 @@ func TestRegexSymbolFilter_SkipsNonSourceFiles(t *testing.T) {
 	dir := t.TempDir()
 	// .txt file should not be scanned
 	txtFile := filepath.Join(dir, "notes.txt")
-	os.WriteFile(txtFile, []byte("func shouldNotBeFound() {}\n"), 0644)
+	mustWriteFile(t, txtFile, []byte("func shouldNotBeFound() {}\n"))
 
 	filter := NewRegexSymbolFilter(dir)
 	filter.Build()

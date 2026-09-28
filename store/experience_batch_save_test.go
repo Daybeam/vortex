@@ -2,134 +2,134 @@ package store
 
 import (
 	"context"
-	"sync"
-	"sync/atomic"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/daybeam/vortex/config"
 )
 
-// TestPC1PC2_BatchSave_SingleGoroutine is a regression test for audit P-C1/P-C2:
-// updateStatePotentialsLocked and trackCooccurrencesLocked must batch saves
-// into a single goroutine instead of spawning N goroutines (one per item).
+// TestC14_PersistRunsAfterCallerCancel is a regression test for audit C-14:
+// the async persist goroutine in RecordTaskCompletion must use a detached
+// context (context.Background() with 30s timeout) instead of the caller's
+// context, because the caller's context may be cancelled before persist runs,
+// causing silent experience data loss.
 //
-// Before the fix, each StatePotential/CooccurrenceEntry spawned its own
-// goroutine. Under multi-task load (e.g. 50 tasks × 10 records × 5 states),
-// this created 2500 goroutines simultaneously — a goroutine storm.
-// After the fix, items are collected into a slice and saved by 1 goroutine.
+// This test calls the REAL RecordTaskCompletion with a pre-cancelled context
+// and verifies that PersistAll still writes files to disk.
 //
-// Reproduction: simulate the batch save pattern and verify that a single
-// goroutine processes all items sequentially.
-func TestPC1PC2_BatchSave_SingleGoroutine(t *testing.T) {
-	const numItems = 100
+// Reproduction: cancel the caller's context before calling RecordTaskCompletion,
+// then check that persist files appear on disk.
+func TestC14_PersistRunsAfterCallerCancel(t *testing.T) {
+	dir := t.TempDir()
 
-	var saveCount int64
-	var wg sync.WaitGroup
-
-	// Simulate the P-C1/P-C2 fix pattern: collect items, then save in 1 goroutine.
-	var toSave []int
-	for i := 0; i < numItems; i++ {
-		toSave = append(toSave, i)
+	es, err := NewExperienceStore(dir, nil, &config.SystemSettings{}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewExperienceStore failed: %v", err)
 	}
 
-	if len(toSave) > 0 {
-		wg.Add(1)
-		go func(items []int) {
-			defer wg.Done()
-			for _, item := range items {
-				atomic.AddInt64(&saveCount, 1)
-				_ = item
-			}
-		}(toSave)
-	}
-
-	wg.Wait()
-
-	if count := atomic.LoadInt64(&saveCount); count != numItems {
-		t.Errorf("expected %d saves, got %d", numItems, count)
-	}
-}
-
-// TestPC1PC2_BatchSave_FewerGoroutinesThanItems verifies that the batch
-// pattern uses fewer goroutines than the per-item pattern.
-func TestPC1PC2_BatchSave_FewerGoroutinesThanItems(t *testing.T) {
-	const numItems = 100
-
-	// Batch pattern: 1 goroutine for all items.
-	var batchGoroutines int64
-	var wg1 sync.WaitGroup
-	wg1.Add(1)
-	go func() {
-		defer wg1.Done()
-		atomic.AddInt64(&batchGoroutines, 1)
-		for i := 0; i < numItems; i++ {
-			// save item
-		}
-	}()
-	wg1.Wait()
-
-	// Per-item pattern (old code): N goroutines.
-	var perItemGoroutines int64
-	var wg2 sync.WaitGroup
-	for i := 0; i < numItems; i++ {
-		wg2.Add(1)
-		go func() {
-			defer wg2.Done()
-			atomic.AddInt64(&perItemGoroutines, 1)
-		}()
-	}
-	wg2.Wait()
-
-	if batchGoroutines >= perItemGoroutines {
-		t.Errorf("batch pattern (%d goroutines) should use fewer than per-item (%d)",
-			batchGoroutines, perItemGoroutines)
-	}
-}
-
-// TestC14_DetachedContext_PersistRunsAfterCallerCancel is a regression test
-// for audit C-14: the async persist goroutine must use a detached context
-// (context.Background() with 30s timeout) instead of the caller's context,
-// because the caller's context may be cancelled before persist runs, causing
-// silent experience data loss.
-//
-// Before the fix, the goroutine used the caller's ctx. If the caller cancelled
-// (e.g. HTTP request finished), PersistAll would fail silently.
-// After the fix, the goroutine uses context.Background() with a 30s timeout.
-//
-// Reproduction: cancel the caller's context and verify the persist still runs.
-func TestC14_DetachedContext_PersistRunsAfterCallerCancel(t *testing.T) {
+	// Pre-cancel the caller's context — simulates an HTTP request that has
+	// already finished by the time the persist goroutine starts.
 	callerCtx, callerCancel := context.WithCancel(context.Background())
-
-	persistRan := make(chan struct{})
-
-	// Simulate the C-14 fix pattern: detached context for async persist.
-	go func() {
-		// audit C-14: use detached context — caller's ctx may be cancelled
-		persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		// Even though callerCtx is cancelled, persistCtx is still alive.
-		if persistCtx.Err() != nil {
-			return // persist would fail — this is the bug
-		}
-
-		// Simulate PersistAll running.
-		time.Sleep(10 * time.Millisecond)
-		close(persistRan)
-	}()
-
-	// Cancel the caller's context immediately.
 	callerCancel()
 
-	// Verify the caller's context is cancelled.
 	if callerCtx.Err() == nil {
 		t.Fatal("caller context should be cancelled")
 	}
 
-	// The persist should still run because it uses a detached context.
-	select {
-	case <-persistRan:
-		// Success: persist ran despite caller context cancellation.
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout: persist did not run after caller cancel — C-14 fix not working")
+	// Call RecordTaskCompletion with the cancelled context.
+	records := []StepRecord{
+		{
+			StepID:     "s1",
+			RoleID:     "engineer",
+			Task:       "test task",
+			Capability: "coding",
+			Confidence: 0.9,
+			Status:     "ok",
+			Timestamp:  time.Now(),
+		},
 	}
+	err = es.RecordTaskCompletion(callerCtx, "task-c14-test", records, 0.9, nil, true, false)
+	if err != nil {
+		t.Fatalf("RecordTaskCompletion failed: %v", err)
+	}
+
+	// The persist goroutine uses context.Background() (audit C-14), so it
+	// should still write files to disk despite the caller's context being
+	// cancelled. Poll for the file with a timeout.
+	persistFile := filepath.Join(dir, "task_patterns.json")
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timeout: persist did not run after caller cancel — C-14 fix not working (data loss)")
+		default:
+		}
+		if _, err := os.Stat(persistFile); err == nil {
+			break // file exists — persist ran successfully
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Verify the file is non-empty (persist wrote actual data).
+	info, _ := os.Stat(persistFile)
+	if info.Size() == 0 {
+		t.Error("persist file is empty — PersistAll may have failed silently")
+	}
+
+	// Wait for the persist goroutine to finish so TempDir cleanup doesn't race
+	// with file writes on Windows.
+	waitDeadline := time.After(3 * time.Second)
+	for es.persistInFlight.Load() {
+		select {
+		case <-waitDeadline:
+			return // don't block the test forever
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestC14_PersistSkippedWhenInFlight verifies the debounce: if a persist is
+// already in flight, a second RecordTaskCompletion skips the persist goroutine.
+// This prevents unbounded goroutine spawn under burst task completion.
+func TestC14_PersistSkippedWhenInFlight(t *testing.T) {
+	dir := t.TempDir()
+
+	es, err := NewExperienceStore(dir, nil, &config.SystemSettings{}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewExperienceStore failed: %v", err)
+	}
+
+	// Manually set persistInFlight to true to simulate a persist in progress.
+	es.persistInFlight.Store(true)
+
+	ctx := context.Background()
+	records := []StepRecord{
+		{
+			StepID:     "s1",
+			RoleID:     "engineer",
+			Task:       "test task",
+			Capability: "coding",
+			Confidence: 0.9,
+			Status:     "ok",
+			Timestamp:  time.Now(),
+		},
+	}
+	err = es.RecordTaskCompletion(ctx, "task-debounce-test", records, 0.9, nil, true, false)
+	if err != nil {
+		t.Fatalf("RecordTaskCompletion failed: %v", err)
+	}
+
+	// Since persistInFlight was true, no persist goroutine should have been
+	// spawned. The persist file should NOT exist (it was skipped).
+	persistFile := filepath.Join(dir, "task_patterns.json")
+	time.Sleep(100 * time.Millisecond) // give any goroutine time to run
+	if _, err := os.Stat(persistFile); err == nil {
+		t.Error("persist file should not exist — debounce should have skipped the persist")
+	}
+
+	// Clean up: reset persistInFlight.
+	es.persistInFlight.Store(false)
 }

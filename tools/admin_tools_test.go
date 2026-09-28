@@ -13,17 +13,20 @@ import (
 )
 
 func TestHandleAdminDeployFile(t *testing.T) {
-	os.Setenv("VORTEX_ALLOW_DEPLOY_WRITE", "1")
-	defer os.Unsetenv("VORTEX_ALLOW_DEPLOY_WRITE")
+	t.Setenv("VORTEX_ALLOW_DEPLOY_WRITE", "1")
 
 	tempDir, err := os.MkdirTemp("", "admin_test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tempDir)
+	t.Setenv("VORTEX_DEPLOY_ROOT", tempDir)
 
 	logDir := filepath.Join(tempDir, "logs")
-	logger, _ := core.NewLogger(logDir, nil)
+	logger, err := core.NewLogger(logDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := &App{Logger: logger}
 
 	t.Run("basic write", func(t *testing.T) {
@@ -178,7 +181,7 @@ func TestHandleAdminDeployFile(t *testing.T) {
 }
 
 func TestHandleAdminDeployFile_GatedByDefault(t *testing.T) {
-	os.Unsetenv("VORTEX_ALLOW_DEPLOY_WRITE")
+	t.Setenv("VORTEX_ALLOW_DEPLOY_WRITE", "")
 	tempDir, err := os.MkdirTemp("", "admin_gate_test")
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +189,10 @@ func TestHandleAdminDeployFile_GatedByDefault(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	logDir := filepath.Join(tempDir, "logs")
-	logger, _ := core.NewLogger(logDir, nil)
+	logger, err := core.NewLogger(logDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := &App{Logger: logger}
 
 	dest := filepath.Join(tempDir, "should_not_exist.txt")
@@ -225,7 +231,10 @@ func TestHandleAdminSuspendUI(t *testing.T) {
 	_ = os.WriteFile(configPath, []byte("{}"), 0644)
 
 	logDir := filepath.Join(tempDir, "logs")
-	logger, _ := core.NewLogger(logDir, nil)
+	logger, err := core.NewLogger(logDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := &App{
 		Logger:     logger,
 		ConfigPath: configPath,

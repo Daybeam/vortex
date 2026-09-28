@@ -24,4 +24,9 @@ const (
 	// MaxErrorBody is the maximum number of bytes to read from an HTTP error
 	// response body for logging purposes only.
 	MaxErrorBody = 1 << 20 // 1 MiB
+
+	// MaxRequestBody is the maximum number of bytes accepted in an HTTP API
+	// request body (audit S-M1). Prevents OOM from unbounded JSON POST bodies.
+	// 10 MiB is generous for config/task submissions; file uploads use multipart.
+	MaxRequestBody = 10 << 20 // 10 MiB
 )

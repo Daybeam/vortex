@@ -119,8 +119,9 @@ func TestGetBatch_EmptyInput(t *testing.T) {
 }
 
 // TestGetBatch_SingleCallReplacesN verifies the core P-H1-H4 property:
-// GetBatch makes exactly 1 call to the backend (not N).
-// This is verified by counting backend.Load calls via a custom backend.
+// when the backend implements batchLoader, GetBatch makes exactly 1 LoadBatch
+// call (not N Load calls). This is the whole point of the fix — replacing
+// N+1 queries with a single query.
 func TestGetBatch_SingleCallReplacesN(t *testing.T) {
 	ctx := context.Background()
 	backend := &countingBackend{data: make(map[string][]byte)}
@@ -144,18 +145,51 @@ func TestGetBatch_SingleCallReplacesN(t *testing.T) {
 		t.Fatalf("GetBatch failed: %v", err)
 	}
 
-	// With the fallback path (no LoadBatch), we expect 10 Load calls.
-	// With LoadBatch support, we'd expect 0 Load calls + 1 LoadBatch call.
-	// Either way, the key property is that it works correctly.
-	if backend.loadCount != 10 && backend.loadCount != 0 {
-		t.Errorf("expected 10 (fallback) or 0 (batch) Load calls, got %d", backend.loadCount)
+	// countingBackend implements batchLoader, so GetBatch must use LoadBatch
+	// exactly once and must NOT call Load at all.
+	if backend.loadBatchCount != 1 {
+		t.Errorf("expected exactly 1 LoadBatch call, got %d", backend.loadBatchCount)
+	}
+	if backend.loadCount != 0 {
+		t.Errorf("expected 0 Load calls (batch path used), got %d", backend.loadCount)
 	}
 }
 
-// countingBackend wraps FileTaskBackend to count Load calls.
+// TestGetBatch_FallbackLoopsWhenNoBatchLoader verifies the fallback path:
+// when the backend does NOT implement batchLoader, GetBatch loops over Load.
+// This ensures the fallback works correctly but is less efficient.
+func TestGetBatch_FallbackLoopsWhenNoBatchLoader(t *testing.T) {
+	ctx := context.Background()
+	backend := &fallbackBackend{data: make(map[string][]byte)}
+
+	for i := 0; i < 5; i++ {
+		sid := "s" + string(rune('0'+i))
+		backend.data[sid] = []byte(`{"data":"ok"}`)
+	}
+
+	ts := NewTaskStore(backend)
+
+	stepIDs := []string{"s0", "s1", "s2", "s3", "s4"}
+	results, err := ts.GetBatch(ctx, "task-fallback", stepIDs)
+	if err != nil {
+		t.Fatalf("GetBatch failed: %v", err)
+	}
+
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	// Fallback path must call Load once per step.
+	if backend.loadCount != 5 {
+		t.Errorf("expected 5 Load calls (fallback path), got %d", backend.loadCount)
+	}
+}
+
+// countingBackend implements ITaskBackend AND batchLoader, so GetBatch uses
+// the single LoadBatch call path.
 type countingBackend struct {
-	data      map[string][]byte
-	loadCount int
+	data           map[string][]byte
+	loadCount      int
+	loadBatchCount int
 }
 
 func (b *countingBackend) Save(ctx context.Context, taskID, stepID string, data []byte) error {
@@ -168,7 +202,40 @@ func (b *countingBackend) Load(ctx context.Context, taskID, stepID string) ([]by
 	return b.data[stepID], nil
 }
 
+func (b *countingBackend) LoadBatch(ctx context.Context, taskID string, stepIDs []string) (map[string][]byte, error) {
+	b.loadBatchCount++
+	result := make(map[string][]byte)
+	for _, sid := range stepIDs {
+		if data, ok := b.data[sid]; ok {
+			result[sid] = data
+		}
+	}
+	return result, nil
+}
+
 func (b *countingBackend) Delete(ctx context.Context, taskID string) (int, error) { return 0, nil }
 func (b *countingBackend) Claim(ctx context.Context, taskID, stepID string) (bool, error) {
+	return true, nil
+}
+
+// fallbackBackend implements ITaskBackend but NOT batchLoader, so GetBatch
+// falls back to looping over Load.
+type fallbackBackend struct {
+	data      map[string][]byte
+	loadCount int
+}
+
+func (b *fallbackBackend) Save(ctx context.Context, taskID, stepID string, data []byte) error {
+	b.data[stepID] = data
+	return nil
+}
+
+func (b *fallbackBackend) Load(ctx context.Context, taskID, stepID string) ([]byte, error) {
+	b.loadCount++
+	return b.data[stepID], nil
+}
+
+func (b *fallbackBackend) Delete(ctx context.Context, taskID string) (int, error) { return 0, nil }
+func (b *fallbackBackend) Claim(ctx context.Context, taskID, stepID string) (bool, error) {
 	return true, nil
 }

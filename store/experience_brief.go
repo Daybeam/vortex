@@ -2,12 +2,12 @@ package store
 
 import (
 	"context"
-	"github.com/daybeam/vortex/pkg/interfaces"
-	"github.com/daybeam/vortex/schemas"
 	"log"
 	"sort"
 	"strings"
 	"time"
+	"github.com/daybeam/vortex/pkg/interfaces"
+	"github.com/daybeam/vortex/schemas"
 )
 
 func (es *ExperienceStore) GetOrchestrationBrief(ctx context.Context, skillIDs []string) map[string]any {
@@ -109,7 +109,7 @@ func (es *ExperienceStore) RecordEnvironmentIssue(ctx context.Context, cmd strin
 // Intended for bulk re-embedding when the embedding model changes, but
 // as of 2026-09-06 has zero call sites in core/ or tools/. The function
 // was previously exposed via admin.reindex_memory (now consolidated
-// into vortex_invoke). It remains in the interface for future
+// into orchestrator_invoke). It remains in the interface for future
 // admin re-embedding tool wiring.
 func (es *ExperienceStore) Reindex(ctx context.Context, provider interfaces.Provider, modelID string) error {
 	es.Mu.Lock()
@@ -241,7 +241,11 @@ func (s *ExperienceStore) UpsertDecisionPrecedent(ctx context.Context, node *sch
 		s.saveWg.Add(1)
 		go func() {
 			defer s.saveWg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			parent := s.lifecycleCtx
+			if parent == nil {
+				parent = context.Background()
+			}
+			ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 			defer cancel()
 			emb, model, err := cli.EmbedWithModel(ctx, node.Reasoning)
 			if err == nil {

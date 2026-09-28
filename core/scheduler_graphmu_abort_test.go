@@ -18,7 +18,8 @@ import (
 // which uses DirectedEngine.Mu.
 // After the fix, GraphMu is set to &s.Mu in scheduler_dag.go.
 //
-// Reproduction: verify GraphMu is non-nil and points to the engine's Mu.
+// Reproduction: verify GraphMu is non-nil and concurrent DecisionHistory
+// writes under GraphMu do not panic.
 func TestC2_GraphMu_SetAndProtectsDecisionHistory(t *testing.T) {
 	s, _ := newAbortTestEngine(t)
 	defer s.Stop()
@@ -38,8 +39,8 @@ func TestC2_GraphMu_SetAndProtectsDecisionHistory(t *testing.T) {
 
 	// Create a ContextHub as the scheduler does in run().
 	hub := &ContextHub{
-		Graph:       graph,
-		GraphMu:     &s.Mu, // This is what scheduler_dag.go sets (audit C-2)
+		Graph:   graph,
+		GraphMu: &s.Mu, // This is what scheduler_dag.go sets (audit C-2)
 	}
 
 	if hub.GraphMu == nil {
