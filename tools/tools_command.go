@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,11 @@ const (
 )
 
 var sandboxRunCleanerOnce sync.Once
+
+// activeSandboxRuns tracks sandbox workspaces currently in use so the
+// background cleaner doesn't RemoveAll a directory while a command is
+// still running in it (audit LOGIC-7: TOCTOU with long-running processes).
+var activeSandboxRuns sync.Map
 
 // startSandboxRunCleaner starts a background goroutine (once per process)
 // that periodically removes sandbox run workspaces older than sandboxRunTTL.
@@ -57,8 +63,13 @@ func cleanSandboxRunDir() {
 		if err != nil {
 			continue
 		}
+		fullPath := filepath.Join(sandboxRunDir, entry.Name())
+		// audit LOGIC-7: skip directories still in use by active sandbox runs
+		if _, active := activeSandboxRuns.Load(fullPath); active {
+			continue
+		}
 		if info.ModTime().Before(cutoff) {
-			os.RemoveAll(filepath.Join(sandboxRunDir, entry.Name()))
+			os.RemoveAll(fullPath)
 		}
 	}
 }
@@ -114,7 +125,11 @@ func registerCommandList(s *server.MCPServer, app *App) {
 		if sandboxed {
 			startSandboxRunCleaner()
 			wsDir := filepath.Join(sandboxRunDir, uuid.New().String()[:8])
-			os.MkdirAll(wsDir, 0755)
+			if err := os.MkdirAll(wsDir, 0755); err != nil { // regression for audit LOGIC-3: was ignoring error
+				return errResult(fmt.Sprintf("sandbox setup failed: cannot create workspace %s: %v", wsDir, err))
+			}
+			activeSandboxRuns.Store(wsDir, true)      // audit LOGIC-7: prevent cleaner from deleting while in use
+			defer activeSandboxRuns.Delete(wsDir)     // audit LOGIC-7: release when command finishes
 			cwd = wsDir
 			exec.Sandboxed = true
 		}

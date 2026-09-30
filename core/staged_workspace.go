@@ -105,8 +105,11 @@ func hashBytes(data []byte) string {
 // scanWorkspace walks TaskDir recursively (excluding `.staging/` at any
 // depth, and the top-level manifest/artifact files) and returns a map of
 // slash-separated relative path -> StagingFileMeta for every tracked file.
-func (sw *StagedWorkspace) scanWorkspace() (map[string]StagingFileMeta, error) {
+// Also returns the file contents keyed by relative path so callers don't
+// need to re-read from disk (audit PERF-7: was 2× disk I/O per file per step).
+func (sw *StagedWorkspace) scanWorkspace() (map[string]StagingFileMeta, map[string][]byte, error) {
 	out := make(map[string]StagingFileMeta)
+	dataMap := make(map[string][]byte)
 
 	var walk func(dir, relPrefix string) error
 	walk = func(dir, relPrefix string) error {
@@ -139,17 +142,18 @@ func (sw *StagedWorkspace) scanWorkspace() (map[string]StagingFileMeta, error) {
 				continue
 			}
 			out[rel] = StagingFileMeta{Path: rel, SHA256: hashBytes(data), Size: int64(len(data))}
+			dataMap[rel] = data
 		}
 		return nil
 	}
 
 	if err := walk(sw.TaskDir, ""); err != nil {
 		if os.IsNotExist(err) {
-			return out, nil
+			return out, dataMap, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	return out, nil
+	return out, dataMap, nil
 }
 
 // snapshotContent writes data to CAS under its own hash if not already
@@ -174,17 +178,13 @@ func (sw *StagedWorkspace) readSnapshot(hash string) ([]byte, error) {
 // snapshotAll scans the current workspace, stores every tracked file's
 // content in CAS, and returns the resulting SnapshotIndex.
 func (sw *StagedWorkspace) snapshotAll(id string) (*SnapshotIndex, error) {
-	files, err := sw.scanWorkspace()
+	files, dataMap, err := sw.scanWorkspace()
 	if err != nil {
 		return nil, err
 	}
 	for rel, meta := range files {
-		full, err := safeJoin(sw.TaskDir, rel)
-		if err != nil {
-			return nil, fmt.Errorf("staged_workspace: snapshot %s: %w", rel, err)
-		}
-		data, rerr := os.ReadFile(full)
-		if rerr != nil {
+		data := dataMap[rel] // audit PERF-7: was os.ReadFile(full) — eliminated double disk read per file
+		if len(data) == 0 {
 			continue
 		}
 		if err := sw.snapshotContent(meta.SHA256, data); err != nil {
@@ -259,7 +259,7 @@ func (sw *StagedWorkspace) Rollback(pre *SnapshotIndex) error {
 	if pre == nil {
 		return fmt.Errorf("staged_workspace: cannot roll back without a pre-step snapshot")
 	}
-	current, err := sw.scanWorkspace()
+	current, _, err := sw.scanWorkspace() // audit PERF-7: data map not needed for rollback
 	if err != nil {
 		return err
 	}

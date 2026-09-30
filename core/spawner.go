@@ -71,6 +71,12 @@ type Spawner struct {
 	capProfileStore          *store.CapabilityProfileStore
 	capLookup                providers.CapabilityProfileLookup
 	modelRegistry            *registry.ModelRegistry
+
+	// signalCollector and policyDecider decouple data collection from policy
+	// computation in calculateMaxTurns. See core/policy_signals.go and
+	// core/policy_decider.go. Nil-safe: initialized in NewSpawner.
+	signalCollector          SignalCollector
+	policyDecider            PolicyDecider
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
@@ -117,6 +123,10 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		allowedWorkspaces:  reg.System.Sandbox.AllowedWorkspaces,
 	}
 
+	// Wire policy signal collection and decision (decoupled from spawner_policy.go)
+	spawner.signalCollector = NewStoreBackedSignalCollector(es, nil, spawner.irtEstimator)
+	spawner.policyDecider = NewIRTPolicyDecider(spawner.irtEstimator, reg)
+
 	// Priority 6: Wire up embedding client for Experience Store
 	if es != nil {
 		hub := NewContextHub(reg, nil, es)
@@ -141,6 +151,8 @@ func (s *Spawner) AddInterceptor(i Interceptor) {
 func (s *Spawner) SetCapabilityProfileStore(cps *store.CapabilityProfileStore) {
 	s.capProfileStore = cps
 	s.capLookup = NewCapProfileLookup(cps)
+	// Re-wire signal collector now that capProfileStore is available
+	s.signalCollector = NewStoreBackedSignalCollector(s.expStore, cps, s.irtEstimator)
 }
 
 // SetModelRegistry wires the pluggable model registry for context-window-aware
@@ -405,7 +417,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	var previousState string   // PGPO (ADDED 2026-09-08)
 	toolFailCount := make(map[string]int)
 
-	maxTurns := s.calculateMaxTurns(req, role)
+	maxTurns := s.calculateMaxTurns(ctx, req, role)
+	// applyStrategyBias is now handled inside calculateMaxTurns via PolicyDecider
 
 	var effectiveProviderID string
 	var effectiveModelID string

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -21,6 +22,10 @@ type FailureModeProfile struct {
 // Tier 1: label-precise match on FailureMode + Capability
 // Tier 2: embedding similarity fallback
 // Tier 3: AntiPatternStore keyword/tag match (surfaced via active_context)
+//
+// When a rerankerClient is wired, coarse candidates are fine-reranked via
+// System One and fused with RRF (whitepaper §3). Structured logging (slog)
+// records per-tier counts, latency, and hit rates (whitepaper §2 / M2).
 func (es *ExperienceStore) RetrieveRelevantExperience(
 	ctx context.Context,
 	query []float32,
@@ -31,29 +36,36 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 	es.Mu.RLock()
 	defer es.Mu.RUnlock()
 
+	log := slog.With("op", "RetrieveRelevantExperience", "capability", capability)
+	overallStart := time.Now()
+
 	var results []*ExperienceNode
 	seen := make(map[string]bool)
 
 	// Tier 1: Label-Precise Match (50% budget)
+	// audit PERF-3: was O(N) full map scan. Now O(1) lookup via nodeIndex.
+	tier1Start := time.Now()
 	predictedMode := es.predictFailureMode(errorSignal)
 
 	tier1Limit := 5
-	tier1Count := 0
-	for _, node := range es.Nodes {
-		if node.Outcome == "failure" && node.FailureMode != "" &&
-			node.FailureMode == predictedMode && node.Capability == capability {
-			if !seen[node.NodeID] {
+	if predictedMode != "" && es.nodeIndex != nil {
+		key := nodeIndexKey(predictedMode, capability)
+		for _, node := range es.nodeIndex[key] {
+			if node.Outcome == "failure" && !seen[node.NodeID] {
 				results = append(results, node)
 				seen[node.NodeID] = true
-				tier1Count++
-				if tier1Count >= tier1Limit {
+				if len(results) >= tier1Limit {
 					break
 				}
 			}
 		}
 	}
+	tier1Count := len(results)
+	tier1Dur := time.Since(tier1Start)
 
 	// Tier 2: Embedding Similarity (30% budget)
+	tier2Start := time.Now()
+	tier2Base := len(results)
 	if len(query) > 0 {
 		simResults := es.querySimilarNodesLocked(query, 5)
 		for _, node := range simResults {
@@ -63,9 +75,13 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 			}
 		}
 	}
+	tier2Count := len(results) - tier2Base
+	tier2Dur := time.Since(tier2Start)
 
 	// Tier 3: AntiPatternStore keyword/tag match (ADDED 2026-09-08)
 	// Surface historical pitfalls during assembly as ExperienceNodes.
+	tier3Start := time.Now()
+	tier3Base := len(results)
 	if len(results) < 15 {
 		// Use error signal and capability to find relevant anti-patterns
 		intent := predictedMode + " " + capability
@@ -96,6 +112,33 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 			seen[ap.ID] = true
 		}
 	}
+	tier3Count := len(results) - tier3Base
+	tier3Dur := time.Since(tier3Start)
+
+	// M3: System One Reranker + RRF Fusion (whitepaper §3).
+	// Coarse ranking = results slice order (Tier1 → Tier2 → Tier3).
+	// Fine ranking = reranker scores → converted to ranks → RRF fused.
+	reranked := false
+	rerankDur := time.Duration(0)
+	if es.rerankerClient != nil && len(results) > 1 {
+		rerankStart := time.Now()
+		results, reranked = es.rerankWithRRF(ctx, log, results, errorSignal, capability)
+		rerankDur = time.Since(rerankStart)
+	}
+
+	totalDur := time.Since(overallStart)
+	log.Info("retrieval_complete",
+		"total_candidates", len(results),
+		"tier1_count", tier1Count,
+		"tier2_count", tier2Count,
+		"tier3_count", tier3Count,
+		"tier1_ms", tier1Dur.Milliseconds(),
+		"tier2_ms", tier2Dur.Milliseconds(),
+		"tier3_ms", tier3Dur.Milliseconds(),
+		"rerank_ms", rerankDur.Milliseconds(),
+		"reranked", reranked,
+		"total_ms", totalDur.Milliseconds(),
+	)
 
 	return results
 }
@@ -203,4 +246,147 @@ func (es *ExperienceStore) GetStatePotential(stateHash string) float64 {
 	}
 	// Default to 1.0 (optimistic) for unknown states to allow exploration.
 	return 1.0
+}
+
+// nodeIndexKey builds the secondary index key for Tier 1 experience retrieval.
+func nodeIndexKey(failureMode, capability string) string {
+	return failureMode + "\x00" + capability
+}
+
+// rebuildNodeIndexLocked rebuilds the secondary index for O(1) Tier 1 lookup.
+// Caller must hold es.Mu.Lock() (audit PERF-3: was O(N) scan per retrieval).
+func (es *ExperienceStore) rebuildNodeIndexLocked() {
+	es.nodeIndex = make(map[string][]*ExperienceNode)
+	for _, node := range es.Nodes {
+		if node.Outcome == "failure" && node.FailureMode != "" {
+			key := nodeIndexKey(node.FailureMode, node.Capability)
+			es.nodeIndex[key] = append(es.nodeIndex[key], node)
+		}
+	}
+}
+
+// RebuildNodeIndex rebuilds the secondary index for O(1) Tier 1 experience
+// retrieval. Call this after directly mutating es.Nodes (e.g., in tests or
+// batch imports) to keep the index in sync with the node map.
+func (es *ExperienceStore) RebuildNodeIndex() {
+	es.Mu.Lock()
+	defer es.Mu.Unlock()
+	es.rebuildNodeIndexLocked()
+}
+
+// ── System One Reranker + RRF Fusion (whitepaper §3) ──────────────────────
+
+// rrfK is the Reciprocal Rank Fusion constant (whitepaper §3.2).
+// k=60 is the standard value; higher k reduces the influence of top-ranked
+// items, giving more weight to agreement between rankings.
+const rrfK = 60
+
+// rerankWithRRF applies System One fine reranking and RRF fusion to coarse
+// retrieval results. Returns the reordered slice and true on success.
+// On reranker error, returns the original order and false (graceful degradation).
+// Caller must hold es.Mu.RLock().
+func (es *ExperienceStore) rerankWithRRF(
+	ctx context.Context,
+	log *slog.Logger,
+	results []*ExperienceNode,
+	errorSignal string,
+	capability string,
+) ([]*ExperienceNode, bool) {
+	// Build query text for the reranker.
+	queryText := errorSignal
+	if queryText == "" {
+		queryText = capability
+	}
+
+	// Build document texts — prefer SourceText, fall back to other fields.
+	docs := make([]string, len(results))
+	for i, node := range results {
+		text := node.SourceText
+		if text == "" {
+			text = node.Critique
+		}
+		if text == "" {
+			text = node.Strategy
+		}
+		if text == "" {
+			text = node.ErrorSignal
+		}
+		docs[i] = text
+	}
+
+	// Call reranker. Scores are runtime-only — never persisted (whitepaper §1.3).
+	scores, err := es.rerankerClient.Rerank(ctx, queryText, docs)
+	if err != nil {
+		log.Warn("reranker_failed_using_coarse_order", "error", err)
+		return results, false
+	}
+	if len(scores) != len(results) {
+		log.Warn("reranker_score_count_mismatch",
+			"expected", len(results), "got", len(scores))
+		return results, false
+	}
+
+	// RRF fusion: combine coarse rank (slice order) with fine rank (by score).
+	fusedOrder := rrfFuse(scores)
+
+	reordered := make([]*ExperienceNode, len(results))
+	for i, idx := range fusedOrder {
+		reordered[i] = results[idx]
+	}
+
+	log.Debug("rerank_complete",
+		"candidates", len(results),
+		"rrf_k", rrfK,
+	)
+
+	return reordered, true
+}
+
+// rrfFuse computes Reciprocal Rank Fusion of two ranked lists:
+//   - Coarse rank: candidate i has rank i (results slice order from Tier1→Tier2→Tier3)
+//   - Fine rank:   candidates ranked by fineScores (higher score = better rank)
+//
+// RRF_Score(d) = 1/(k + coarseRank(d)) + 1/(k + fineRank(d))  (whitepaper §3.2)
+//
+// Returns indices in fused (best-first) order. Using rank — not absolute score —
+// makes fusion immune to different scoring scales across backends (Jev vs Laya).
+func rrfFuse(fineScores []float64) []int {
+	n := len(fineScores)
+
+	// Compute fine ranks: sort indices by score descending, rank 0 = best.
+	fineOrder := make([]int, n)
+	for i := range fineOrder {
+		fineOrder[i] = i
+	}
+	sort.Slice(fineOrder, func(i, j int) bool {
+		return fineScores[fineOrder[i]] > fineScores[fineOrder[j]]
+	})
+	fineRank := make([]int, n)
+	for rank, idx := range fineOrder {
+		fineRank[idx] = rank
+	}
+
+	// Compute RRF scores and sort by fused score descending.
+	type rrfEntry struct {
+		idx      int
+		rrfScore float64
+	}
+	entries := make([]rrfEntry, n)
+	for i := 0; i < n; i++ {
+		coarseRank := i // results slice position = coarse rank
+		entries[i] = rrfEntry{
+			idx: i,
+			rrfScore: 1.0/float64(rrfK+coarseRank) +
+				1.0/float64(rrfK+fineRank[i]),
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].rrfScore > entries[j].rrfScore
+	})
+
+	out := make([]int, n)
+	for i, e := range entries {
+		out[i] = e.idx
+	}
+	return out
 }

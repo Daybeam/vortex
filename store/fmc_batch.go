@@ -44,10 +44,10 @@ Output MUST be valid JSON: {"failure_mode": "...", "critique": "..."}`, node.Sou
 
 		// 2. Call weak LLM
 		resp, err := provider.Complete(ctx, schemas.CompleteRequest{
-			Model:  modelID,
-			System: "",
-			User:   prompt,
-		})
+					Model: modelID,
+					System: "",
+					User: prompt,
+				})
 		if err != nil {
 			log.Printf("[FMC] Failed to classify node %s: %v", node.NodeID, err)
 			continue
@@ -72,6 +72,11 @@ Output MUST be valid JSON: {"failure_mode": "...", "critique": "..."}`, node.Sou
 		es.Mu.Unlock()
 		count++
 	}
+
+	// audit PERF-3: rebuild secondary index after batch FailureMode updates
+	es.Mu.Lock()
+	es.rebuildNodeIndexLocked()
+	es.Mu.Unlock()
 
 	log.Printf("[FMC] Batch classification complete. Updated %d nodes.", count)
 	return count, es.PersistAll(ctx)

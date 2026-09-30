@@ -78,7 +78,9 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 	// persist that runs will pick up all accumulated changes. This
 	// prevents unbounded goroutine spawn under burst task completion.
 	if es.persistInFlight.CompareAndSwap(false, true) {
+		es.saveWg.Add(1) // regression for audit LEAK-2: was not tracked → data loss on shutdown
 		go func() {
+			defer es.saveWg.Done()
 			defer es.persistInFlight.Store(false)
 			// audit C-14: use detached context — caller's ctx may be cancelled
 			// before persist runs, causing silent experience data loss.

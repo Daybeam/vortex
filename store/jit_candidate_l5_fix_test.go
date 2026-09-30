@@ -5,7 +5,7 @@ import (
 )
 
 // TestUpsertTaskPatternFromReplay_Accumulation is the regression test for the
-// L5 double-breakage fix (docs/RSI_AUTONOMY_LEVELS_ASSESSMENT.md).
+// L5 triple-breakage fix (docs/RSI_AUTONOMY_LEVELS_ASSESSMENT.md).
 //
 // Before the fix: replay_scheduler.go:569 called AddJITCandidate which writes
 // to JITCandidates map, but QueryJITCandidates reads from TaskPatterns map.
@@ -22,7 +22,7 @@ func TestUpsertTaskPatternFromReplay_Accumulation(t *testing.T) {
 	}
 
 	// First replay cycle — creates new pattern with SampleCount=1
-	es.UpsertTaskPatternFromReplay("jit_001", "RewriteStrategy", "rewrite mutation from replay")
+	es.UpsertTaskPatternFromReplay("jit_001", "RewriteStrategy", "build a widget", true)
 
 	p, ok := es.TaskPatterns["jit_001"]
 	if !ok {
@@ -33,13 +33,11 @@ func TestUpsertTaskPatternFromReplay_Accumulation(t *testing.T) {
 	}
 
 	// Simulate 4 more replay cycles (6h each = 24h total)
-	// Each cycle should increment SampleCount via accumulation
 	for i := 0; i < 4; i++ {
-		es.UpsertTaskPatternFromReplay("jit_002", "RewriteStrategy", "rewrite mutation from replay")
+		es.UpsertTaskPatternFromReplay("jit_002", "RewriteStrategy", "build a widget", true)
 	}
 
-	// After 5 total writes (1 + 4), the pattern should have SampleCount=5
-	// Find the pattern by SequenceKey
+	// After 5 total writes, SampleCount should be 5
 	var found *TaskPattern
 	for _, p := range es.TaskPatterns {
 		if p.SequenceKey == "RewriteStrategy" {
@@ -62,8 +60,8 @@ func TestUpsertTaskPatternFromReplay_DifferentSequenceKeys(t *testing.T) {
 		TaskPatterns: make(map[string]TaskPattern),
 	}
 
-	es.UpsertTaskPatternFromReplay("jit_001", "RewriteStrategy", "rewrite")
-	es.UpsertTaskPatternFromReplay("jit_002", "AlternativeToolchain", "alt toolchain")
+	es.UpsertTaskPatternFromReplay("jit_001", "RewriteStrategy", "rewrite", true)
+	es.UpsertTaskPatternFromReplay("jit_002", "AlternativeToolchain", "alt toolchain", true)
 
 	if len(es.TaskPatterns) != 2 {
 		t.Errorf("expected 2 patterns for different SequenceKeys, got %d", len(es.TaskPatterns))
@@ -72,22 +70,18 @@ func TestUpsertTaskPatternFromReplay_DifferentSequenceKeys(t *testing.T) {
 
 // TestUpsertTaskPatternFromReplay_VisibleToQueryJITCandidates verifies the
 // data flow closure: after the fix, replay patterns land in TaskPatterns
-// (the map QueryJITCandidates reads from), not just JITCandidates (the map
-// that was never read). Before the fix, TaskPatterns was empty after replay.
+// (the map QueryJITCandidates reads from), not just JITCandidates.
 func TestUpsertTaskPatternFromReplay_VisibleToQueryJITCandidates(t *testing.T) {
 	es := &ExperienceStore{
 		TaskPatterns: make(map[string]TaskPattern),
 	}
 
-	// Before fix: AddJITCandidate writes to JITCandidates, TaskPatterns stays empty.
-	// After fix: UpsertTaskPatternFromReplay writes to TaskPatterns.
-	es.UpsertTaskPatternFromReplay("jit_001", "RewriteStrategy", "rewrite mutation from replay")
+	es.UpsertTaskPatternFromReplay("jit_001", "RewriteStrategy", "build a widget", true)
 
 	if len(es.TaskPatterns) == 0 {
 		t.Error("expected pattern in TaskPatterns after replay write-back, but TaskPatterns is empty (L5 Break 1 not fixed)")
 	}
 
-	// Verify the pattern has the expected fields
 	p, ok := es.TaskPatterns["jit_001"]
 	if !ok {
 		t.Fatal("expected pattern jit_001 in TaskPatterns")
@@ -97,5 +91,64 @@ func TestUpsertTaskPatternFromReplay_VisibleToQueryJITCandidates(t *testing.T) {
 	}
 	if p.SampleCount != 1 {
 		t.Errorf("expected SampleCount=1, got %d", p.SampleCount)
+	}
+}
+
+// TestUpsertTaskPatternFromReplay_VerifiedConfidenceConverges verifies
+// Break 3 fix: when verified=true, AvgConfidence converges toward 0.8
+// (above the 0.7 gate), NOT stuck at 0.5.
+func TestUpsertTaskPatternFromReplay_VerifiedConfidenceConverges(t *testing.T) {
+	es := &ExperienceStore{
+		TaskPatterns: make(map[string]TaskPattern),
+	}
+
+	// Simulate 5 verified replay cycles
+	for i := 0; i < 5; i++ {
+		es.UpsertTaskPatternFromReplay("jit_001", "RewriteStrategy", "build a widget", true)
+	}
+
+	var found *TaskPattern
+	for _, p := range es.TaskPatterns {
+		if p.SequenceKey == "RewriteStrategy" {
+			found = &p
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("pattern not found")
+	}
+
+	// After 5 verified cycles, AvgConfidence should be 0.8 (all samples are 0.8)
+	if found.AvgConfidence < 0.7 {
+		t.Errorf("Break 3 NOT fixed: AvgConfidence=%v after 5 verified cycles, need >= 0.7 for gate", found.AvgConfidence)
+	}
+	t.Logf("AvgConfidence after 5 verified cycles = %v (gate requires >= 0.7)", found.AvgConfidence)
+}
+
+// TestUpsertTaskPatternFromReplay_UnverifiedConfidenceStaysLow verifies
+// that unverified mutations (verified=false) keep AvgConfidence at 0.5,
+// below the 0.7 gate — they should NOT be promoted to production.
+func TestUpsertTaskPatternFromReplay_UnverifiedConfidenceStaysLow(t *testing.T) {
+	es := &ExperienceStore{
+		TaskPatterns: make(map[string]TaskPattern),
+	}
+
+	for i := 0; i < 5; i++ {
+		es.UpsertTaskPatternFromReplay("jit_001", "RewriteStrategy", "build a widget", false)
+	}
+
+	var found *TaskPattern
+	for _, p := range es.TaskPatterns {
+		if p.SequenceKey == "RewriteStrategy" {
+			found = &p
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("pattern not found")
+	}
+
+	if found.AvgConfidence >= 0.7 {
+		t.Errorf("unverified mutations should NOT reach 0.7 gate, but AvgConfidence=%v", found.AvgConfidence)
 	}
 }

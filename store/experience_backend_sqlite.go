@@ -49,12 +49,12 @@ func (b *SQLiteExperienceBackend) Load(ctx context.Context) (map[string]any, err
 				log.Printf("WARN: experience_backend: skip corrupted task_patterns row: %v", err)
 				continue
 			}
-			p.LastSeen = lastSeen
-			p.Embedding = bytesToFloat32(emb)
-			if err := json.Unmarshal([]byte(rawJSON), &p); err != nil {
-				log.Printf("WARN: experience_backend: corrupted raw_json for task_pattern %s: %v", p.ID, err)
-			}
-			patterns[p.ID] = p
+		p.LastSeen = lastSeen
+		p.Embedding = bytesToFloat32(emb)
+		if err := json.Unmarshal([]byte(rawJSON), &p); err != nil {
+			log.Printf("WARN: experience_backend: corrupted raw_json for task_pattern %s: %v", p.ID, err)
+		}
+		patterns[p.ID] = p
 		}
 	}
 	data["task_patterns"] = patterns
@@ -73,12 +73,12 @@ func (b *SQLiteExperienceBackend) Load(ctx context.Context) (map[string]any, err
 				log.Printf("WARN: experience_backend: skip corrupted role_profiles row: %v", err)
 				continue
 			}
-			var rp RoleProfile
-			if err := json.Unmarshal([]byte(raw), &rp); err != nil {
-				log.Printf("WARN: experience_backend: corrupted raw_json for role_profile: %v", err)
-				continue
-			}
-			profiles[rp.RoleID] = &rp
+		var rp RoleProfile
+		if err := json.Unmarshal([]byte(raw), &rp); err != nil {
+			log.Printf("WARN: experience_backend: corrupted raw_json for role_profile: %v", err)
+			continue
+		}
+		profiles[rp.RoleID] = &rp
 		}
 	}
 	data["role_profiles"] = profiles
@@ -195,12 +195,12 @@ func (b *SQLiteExperienceBackend) Load(ctx context.Context) (map[string]any, err
 			var lastUpdated time.Time
 			if err := rows.Scan(&sp.StateHash, &sp.ToolID, &sp.TotalRuns, &sp.SuccessCount, &sp.Potential, &lastUpdated); err != nil {
 				log.Printf("WARN: experience_backend: skip corrupted state_potentials row: %v", err)
-				continue
-			}
-			sp.LastUpdated = lastUpdated
-			statePotentials[sp.StateHash] = &sp
+			continue
 		}
+		sp.LastUpdated = lastUpdated
+		statePotentials[sp.StateHash] = &sp
 	}
+}
 	data["state_potentials"] = statePotentials
 
 	return data, nil
@@ -480,6 +480,59 @@ func (b *SQLiteExperienceBackend) SavePromotionAuditLog(ctx context.Context, log
 		VALUES (?, ?, ?, ?, ?)
 	`, log.CandidateID, log.Action, log.Auditor, log.Reason, log.Timestamp)
 	return err
+}
+
+// SaveExperienceBatch saves all nodes, edges, and logs in a single transaction.
+// audit PERF-1: was N+1 individual ExecContext calls (5000-10000 sequential
+// SQLite writes per persist cycle). A single transaction is ~100× faster.
+func (b *SQLiteExperienceBackend) SaveExperienceBatch(ctx context.Context, nodes []*ExperienceNode, edges []ExperienceEdge, logs []PromotionAuditLog) error {
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // safe: no-op after Commit
+
+	for _, node := range nodes {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO experience_nodes (
+				node_id, task_id, step_id, role_id, capability, strategy, action,
+				outcome, error_signal, model_id, failure_mode, critique, confidence,
+				source_text, embedding, embedding_model, timestamp
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(node_id) DO UPDATE SET
+				task_id=excluded.task_id, step_id=excluded.step_id, role_id=excluded.role_id,
+				capability=excluded.capability, strategy=excluded.strategy, action=excluded.action,
+				outcome=excluded.outcome, error_signal=excluded.error_signal, model_id=excluded.model_id,
+				failure_mode=excluded.failure_mode, critique=excluded.critique, confidence=excluded.confidence,
+				source_text=excluded.source_text, embedding=excluded.embedding,
+				embedding_model=excluded.embedding_model, timestamp=excluded.timestamp
+		`, node.NodeID, node.TaskID, node.StepID, node.RoleID, node.Capability, node.Strategy, node.Action,
+			node.Outcome, node.ErrorSignal, node.ModelID, node.FailureMode, node.Critique, node.Confidence,
+			node.SourceText, float32ToBytes(node.Embedding), node.EmbeddingModel, node.Timestamp); err != nil {
+			return err
+		}
+	}
+
+	for _, edge := range edges {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO experience_edges (source_id, target_id, relation)
+			VALUES (?, ?, ?)
+			ON CONFLICT(source_id, target_id, relation) DO NOTHING
+		`, edge.SourceID, edge.TargetID, edge.Relation); err != nil {
+			return err
+		}
+	}
+
+	for _, log := range logs {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO promotion_audit (candidate_id, action, auditor, reason, timestamp)
+			VALUES (?, ?, ?, ?, ?)
+		`, log.CandidateID, log.Action, log.Auditor, log.Reason, log.Timestamp); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 // LoadPromotionAuditLogs loads all promotion audit records from SQLite.

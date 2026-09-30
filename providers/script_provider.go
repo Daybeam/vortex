@@ -248,6 +248,23 @@ func validateLuaURL(raw string) error {
 	return nil
 }
 
+// validateSSRFIPs checks that the resolved IPs are not private/loopback/etc.
+// and returns the first safe IP for dialing. Returns an error if the list is
+// empty (audit LOGIC-2: NODATA fail-closed) or contains a blocked IP.
+// Extracted from ssrfSafeTransport for direct unit testing — the LOGIC-2
+// scenario (empty slice, nil error) cannot be tested via real DNS.
+func validateSSRFIPs(host string, ips []net.IPAddr) (net.IP, error) {
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("SSRF guard: no IP addresses resolved for %s (audit LOGIC-2: fail-closed)", host)
+	}
+	for _, ip := range ips {
+		if ip.IP.IsLoopback() || ip.IP.IsPrivate() || ip.IP.IsLinkLocalUnicast() || ip.IP.IsUnspecified() {
+			return nil, fmt.Errorf("SSRF guard: %s resolves to blocked IP %s", host, ip.IP)
+		}
+	}
+	return ips[0].IP, nil
+}
+
 // ssrfSafeTransport returns an http.Transport that validates resolved IPs at
 // connection time, eliminating the DNS rebinding TOCTOU (audit NEW-3) and
 // failing closed on DNS errors (audit NEW-6).
@@ -261,16 +278,15 @@ func ssrfSafeTransport() *http.Transport {
 			if host == "localhost" || host == "127.0.0.1" || host == "::1" {
 				return (&net.Dialer{}).DialContext(ctx, network, addr)
 			}
-			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-			if err != nil {
-				return nil, fmt.Errorf("SSRF guard: DNS lookup failed for %s: %w (audit NEW-6: fail-closed)", host, err)
-			}
-			for _, ip := range ips {
-				if ip.IP.IsLoopback() || ip.IP.IsPrivate() || ip.IP.IsLinkLocalUnicast() || ip.IP.IsUnspecified() {
-					return nil, fmt.Errorf("SSRF guard: %s resolves to blocked IP %s", host, ip.IP)
-				}
-			}
-			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("SSRF guard: DNS lookup failed for %s: %w (audit NEW-6: fail-closed)", host, err)
+		}
+		ip, err := validateSSRFIPs(host, ips)
+		if err != nil {
+			return nil, err
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		},
 	}
 }

@@ -31,7 +31,14 @@ func (s *DirectedEngine) recordHashCacheEntry(path, hash string) {
 		s.hashCache = make(map[string]string)
 	}
 	if len(s.hashCache) >= s.maxHashCacheEntries {
-		s.hashCache = make(map[string]string)
+		keep := make(map[string]string, len(s.hashCache)/2)
+		for k, v := range s.hashCache {
+			keep[k] = v
+			if len(keep) >= len(s.hashCache)/2 {
+				break
+			}
+		}
+		s.hashCache = keep
 	}
 	s.hashCache[path] = hash
 }
