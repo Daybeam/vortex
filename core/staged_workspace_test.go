@@ -21,7 +21,7 @@ func TestStagedWorkspace_ScanAndHash(t *testing.T) {
 	}
 
 	sw := NewStagedWorkspace(dir)
-	files, err := sw.scanWorkspace()
+	files, _, err := sw.scanWorkspace()
 	if err != nil {
 		t.Fatalf("scanWorkspace: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestStagedWorkspace_ExcludesManifestArtifactsAndStagingDir(t *testing.T) {
 	// Write a decoy file directly under .staging to confirm it's never scanned.
 	os.WriteFile(filepath.Join(dir, ".staging", "decoy.txt"), []byte("x"), 0644)
 
-	files, err := sw.scanWorkspace()
+	files, _, err := sw.scanWorkspace()
 	if err != nil {
 		t.Fatalf("scanWorkspace: %v", err)
 	}

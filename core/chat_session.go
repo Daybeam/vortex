@@ -34,7 +34,24 @@ type ChatSession struct {
 	events    []ChatEvent
 	nextSeq   int64
 	seenMsg   map[string]bool
+	dirtyMsgs []string // message IDs added since last Persist (audit PERF-6: avoid re-saving all messages)
 	lastAccess time.Time
+}
+
+// GetActiveRoleID returns the session's active role ID (thread-safe).
+// regression for audit LOGIC-1: ActiveRoleID was accessed without mutex.
+func (s *ChatSession) GetActiveRoleID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ActiveRoleID
+}
+
+// SetActiveRoleID sets the session's active role ID (thread-safe).
+// regression for audit LOGIC-1: ActiveRoleID was written without mutex.
+func (s *ChatSession) SetActiveRoleID(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ActiveRoleID = id
 }
 
 // AddEvent assigns the next sequence number and appends to the ring buffer.
@@ -99,6 +116,7 @@ func (s *ChatSession) AppendUserMessage(messageID, content, parentID string) boo
 		CreatedAt: time.Now(),
 	}
 	s.Messages[msg.ID] = msg
+	s.dirtyMsgs = append(s.dirtyMsgs, msg.ID) // audit PERF-6: track new messages for incremental persist
 	if s.RootID == "" {
 		s.RootID = msg.ID
 	}
@@ -126,6 +144,7 @@ func (s *ChatSession) AppendMessage(msg ChatMessage, parentID string) {
 	}
 	m := msg
 	s.Messages[m.ID] = &m
+	s.dirtyMsgs = append(s.dirtyMsgs, m.ID) // audit PERF-6: track new messages for incremental persist
 	if s.RootID == "" {
 		s.RootID = m.ID
 	}
@@ -191,8 +210,10 @@ func (s *ChatSession) Clear() {
 	s.Messages = make(map[string]*ChatMessage)
 	s.RootID = ""
 	s.ActiveLeafID = ""
+	s.ActiveRoleID = ""
 	s.events = nil
 	s.seenMsg = make(map[string]bool)
+	s.dirtyMsgs = nil // audit PERF-6: reset dirty tracking on clear
 }
 
 // ChatSessionStore owns in-memory sessions and persists each to a JSON file
@@ -295,6 +316,7 @@ type chatSessionData struct {
 	Messages      map[string]*ChatMessage `json:"messages"`
 	RootID        string                  `json:"root_id,omitempty"`
 	ActiveLeafID  string                  `json:"active_leaf_id,omitempty"`
+	ActiveRoleID  string                  `json:"active_role_id,omitempty"` // regression for audit LOGIC-5: was missing — role lost on restart
 }
 
 // Persist writes the session's tree to <dir>/<id>.json and/or SQLite backend.
@@ -307,10 +329,15 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 	for k, v := range s.Messages {
 		msgCopy[k] = v
 	}
+	// audit PERF-6: only save new (dirty) messages to DB, not all messages.
+	// The JSON file still gets the full snapshot (one write, not N).
+	dirtyIDs := s.dirtyMsgs
+	s.dirtyMsgs = nil
 	data := chatSessionData{
 		Messages:     msgCopy,
 		RootID:       s.RootID,
 		ActiveLeafID: s.ActiveLeafID,
+		ActiveRoleID: s.ActiveRoleID, // regression for audit LOGIC-5: persist active role
 	}
 	s.mu.Unlock()
 
@@ -319,8 +346,12 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 		ctx, cancel := st.dbCtx()
 		defer cancel()
 		st.backend.SaveSession(ctx, s.ID, s.RootID, s.ActiveLeafID, s.CreatedAt)
-		for _, msg := range data.Messages {
-			st.backend.SaveMessage(ctx, msg.ID, s.ID, msg.ParentID, msg.Role, msg.Content, msg.CreatedAt)
+		// audit PERF-6: was iterating ALL messages (O(T×M) over a conversation).
+		// Now only saves messages added since last persist.
+		for _, id := range dirtyIDs {
+			if msg := msgCopy[id]; msg != nil {
+				st.backend.SaveMessage(ctx, msg.ID, s.ID, msg.ParentID, msg.Role, msg.Content, msg.CreatedAt)
+			}
 		}
 	}
 
@@ -365,6 +396,7 @@ func (st *ChatSessionStore) loadLocked(s *ChatSession) {
 		s.Messages = tsd.Messages
 		s.RootID = tsd.RootID
 		s.ActiveLeafID = tsd.ActiveLeafID
+		s.ActiveRoleID = tsd.ActiveRoleID // regression for audit LOGIC-5: restore active role
 		return
 	}
 	// Fallback: old flat array format — convert to tree with sequential IDs.

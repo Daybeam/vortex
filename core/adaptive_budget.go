@@ -112,3 +112,38 @@ func EstimateTheta(successRate float64) float64 {
 	}
 	return theta
 }
+
+// EstimateDifficultyWithHistory augments the lexical difficulty estimate
+// with a domain-familiarity signal derived from historical success rates.
+//
+// The insight: a "refactor" task in a familiar codebase is easier than in
+// an unfamiliar one — but both have identical lexical features (same text
+// length, same keywords, same file count). Historical success rate on the
+// same capability is the cheapest available proxy for familiarity:
+//
+//	historicalSuccessRate < 0.5  → domain unfamiliar → difficulty × 1.3
+//	historicalSuccessRate > 0.8  → domain familiar   → difficulty × 0.8
+//	historicalSuccessRate ≤ 0    → no history, skip  → lexical only
+//
+// This closes the L4 gap where difficulty was purely lexical and could not
+// distinguish "known territory" from "new territory" — the core of the RSI
+// paper's environment-adaptation concept.
+func (e *IRTBudgetEstimator) EstimateDifficultyWithHistory(taskDesc string, fileCount int, historicalSuccessRate float64) float64 {
+	base := e.EstimateDifficulty(taskDesc, fileCount)
+
+	if historicalSuccessRate > 0 {
+		if historicalSuccessRate < 0.5 {
+			base *= 1.3 // unfamiliar domain: harder
+		} else if historicalSuccessRate > 0.8 {
+			base *= 0.8 // familiar domain: easier
+		}
+	}
+
+	if base < 0.5 {
+		return 0.5
+	}
+	if base > 2.5 {
+		return 2.5
+	}
+	return base
+}

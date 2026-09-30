@@ -42,6 +42,9 @@ func TestSpawner_ActiveContextAssembler_FiresWithoutSimilarTaskPatterns(t *testi
 		Strategy:    "ran a long-lived shell command without a timeout",
 		Critique:    "always pass an explicit timeout to long-running subprocess calls",
 	}
+	// Rebuild the secondary index after direct Nodes mutation so Tier 1
+	// O(1) lookup (audit PERF-3) can find the seeded node.
+	es.RebuildNodeIndex()
 
 	reg := &config.Registry{}
 	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})

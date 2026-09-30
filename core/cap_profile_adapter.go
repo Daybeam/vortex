@@ -65,6 +65,35 @@ func (s *Spawner) avgThetaForCapability(capability string) float64 {
 	return sum / float64(count)
 }
 
+// avgSuccessRateForCapability returns the average historical success rate
+// for a given capability across all models. Returns 0 when no profiles
+// exist (cold start) — callers must treat 0 as "no history available".
+//
+// Used by L4 difficulty estimation (EstimateDifficultyWithHistory) to
+// provide a domain-familiarity signal: low success rate → unfamiliar
+// domain → higher difficulty.
+func (s *Spawner) avgSuccessRateForCapability(capability string) float64 {
+	if s.capProfileStore == nil || capability == "" {
+		return 0
+	}
+	profiles, err := s.capProfileStore.GetAllProfiles(context.Background())
+	if err != nil || len(profiles) == 0 {
+		return 0
+	}
+	var sum float64
+	var count int
+	for _, p := range profiles {
+		if p.Capability == capability && p.TotalRuns > 0 {
+			sum += p.SuccessRate
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return sum / float64(count)
+}
+
 // RecalculateThetas recomputes the IRT ability parameter (theta) for all
 // (model, capability) profiles from their observed success rates via the Rasch
 // model MLE, and persists the updated values. Call this periodically (e.g.

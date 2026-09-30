@@ -54,6 +54,14 @@ type IEmbeddingClient interface {
 	EmbedWithModel(ctx context.Context, text string) ([]float32, string, error)
 }
 
+// IRerankerClient scores candidate documents for semantic relevance to a query.
+// Scores are runtime-only — never persisted to ExperienceNode or TaskPattern.
+// Callers must convert scores to relative ranks before cross-backend fusion
+// (whitepaper §1.3: absolute scores/confidence are backend-specific).
+type IRerankerClient interface {
+	Rerank(ctx context.Context, query string, documents []string) (scores []float64, err error)
+}
+
 // IExperienceBackend defines low-level persistence operations.
 type IExperienceBackend interface {
 	Save(ctx context.Context, data map[string]any) error
@@ -83,6 +91,10 @@ type IExperienceBackend interface {
 	// Promotion Audit (A31 DB collapse)
 	SavePromotionAuditLog(ctx context.Context, log *PromotionAuditLog) error
 	LoadPromotionAuditLogs(ctx context.Context) ([]PromotionAuditLog, error)
+
+	// SaveExperienceBatch saves all nodes, edges, and logs in a single transaction
+	// (audit PERF-1: was N+1 individual saves causing 5000-10000 sequential DB writes).
+	SaveExperienceBatch(ctx context.Context, nodes []*ExperienceNode, edges []ExperienceEdge, logs []PromotionAuditLog) error
 }
 
 // IExperienceStore defines the interface for cross-task learned knowledge.

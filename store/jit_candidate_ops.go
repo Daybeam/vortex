@@ -47,24 +47,41 @@ func (es *ExperienceStore) AddPromotionAuditLog(log PromotionAuditLog) {
 // Accumulation semantics: if a TaskPattern with the same SequenceKey already
 // exists, SampleCount is incremented and AvgConfidence is updated as a
 // running average. This lets repeated replay cycles (every 6h) naturally
-// build SampleCount until it reaches the retrieval threshold (minSamples=5),
-// at which point the pattern becomes visible to QueryJITCandidates.
+// build SampleCount until it reaches the retrieval threshold (minSamples=5).
 //
-// This fixes the L5 double-breakage identified in
-// docs/RSI_AUTONOMY_LEVELS_ASSESSMENT.md: Break 1 (map divergence) and
-// Break 2 (threshold unreachable — now reachable via accumulation).
-func (es *ExperienceStore) UpsertTaskPatternFromReplay(candidateID, sequenceKey, sourceText string) {
+// verified controls the confidence value fed into the running average:
+//   - verified=true  → 0.8 (cross-family verified mutation)
+//   - verified=false → 0.5 (unverified/pending mutation)
+// After enough verified cycles, AvgConfidence converges toward 0.8 > 0.7 gate.
+//
+// sourceText is the original task text, used as SourceText for BM25 matching
+// in QuerySimilarPatterns. This must be the real task description (e.g.
+// "build a widget"), NOT a generic string like "rewrite mutation from replay".
+//
+// This fixes the L5 triple-breakage identified in
+// docs/RSI_AUTONOMY_LEVELS_ASSESSMENT.md: Break 1 (map divergence),
+// Break 2 (SampleCount accumulation), Break 3 (AvgConfidence gate),
+// Break 4 (BM25 SourceText mismatch).
+func (es *ExperienceStore) UpsertTaskPatternFromReplay(candidateID, sequenceKey, sourceText string, verified bool) {
 	es.Mu.Lock()
 	defer es.Mu.Unlock()
 
 	now := time.Now()
+	newConf := 0.5
+	if verified {
+		newConf = 0.8
+	}
 
 	// Look for existing pattern with same SequenceKey (accumulation)
 	for id, p := range es.TaskPatterns {
 		if p.SequenceKey == sequenceKey && sequenceKey != "" {
 			p.SampleCount++
-			p.AvgConfidence = (p.AvgConfidence*float64(p.SampleCount-1) + 0.5) / float64(p.SampleCount)
+			p.AvgConfidence = (p.AvgConfidence*float64(p.SampleCount-1) + newConf) / float64(p.SampleCount)
 			p.LastSeen = now
+			// Update SourceText if the new one is more descriptive
+			if sourceText != "" && len(sourceText) > len(p.SourceText) {
+				p.SourceText = sourceText
+			}
 			es.TaskPatterns[id] = p // write back modified value
 			return
 		}
@@ -76,7 +93,7 @@ func (es *ExperienceStore) UpsertTaskPatternFromReplay(candidateID, sequenceKey,
 		SequenceKey:   sequenceKey,
 		SourceText:    sourceText,
 		SampleCount:   1,
-		AvgConfidence: 0.5,
+		AvgConfidence: newConf,
 		LastSeen:      now,
 	}
 }

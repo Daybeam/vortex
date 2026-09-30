@@ -1,44 +1,39 @@
 package core
 
 import (
+	"context"
+
 	"github.com/daybeam/vortex/config"
 )
 
 // calculateMaxTurns computes the adaptive turn budget for a spawn request.
-// It starts from the system static cap, then expands via IRT difficulty
-// estimation and any accumulated TurnsBudgetBonus from resume decisions.
-// IRT only ever EXPANDS the budget, never shrinks it below the static cap.
-// Extracted from spawner.go per SPAWNER_REFACTORING_EXECUTION_PLAN.md Step 1.
-func (s *Spawner) calculateMaxTurns(req *SpawnRequest, role *config.Role) int {
-	maxTurns := 50
-	if s.registry != nil && s.registry.System.MaxToolTurns > 0 {
-		maxTurns = s.registry.System.MaxToolTurns
-	}
-
-	// IRT adaptive budget (ADDED 2026-09-13): difficulty-aware estimate
-	// smoothed by historical turn data from the Experience Store.
-	if s.irtEstimator != nil {
-		historicalAvg := 0.0
-		if s.expStore != nil {
-			var sum float64
-			var count int
-			for _, p := range s.expStore.GetTaskPatternsSnapshot() {
-				if p.TaskType == role.BaseCapability && p.AvgTurnsUsed > 0 {
-					sum += p.AvgTurnsUsed
-					count++
-				}
-			}
-			if count > 0 {
-				historicalAvg = sum / float64(count)
-			}
+// This is now a thin glue function: SignalCollector gathers data, PolicyDecider
+// computes the decision, and this function applies it.
+//
+// The IRT formula, difficulty estimation, theta→strategy mapping, and skill
+// injection logic have all moved to core/policy_decider.go (irtPolicyDecider).
+// The data collection (expStore/capProfileStore queries) has moved to
+// core/policy_signals.go (storeBackedSignalCollector).
+//
+// See docs/completed/2026-09-28/ for the refactoring rationale.
+func (s *Spawner) calculateMaxTurns(ctx context.Context, req *SpawnRequest, role *config.Role) int {
+	// audit LOGIC-NEW-1: nil guards for bare &Spawner{} in tests.
+	// Production code always initializes these in NewSpawner, but 20+ test
+	// files construct &Spawner{} directly — a nil interface call would panic.
+	if s.signalCollector == nil || s.policyDecider == nil {
+		// Safe fallback: 50 matches NewIRTBudgetEstimator's default.
+		if s.registry != nil && s.registry.System.MaxToolTurns > 0 {
+			return s.registry.System.MaxToolTurns
 		}
-		if irtTurns := s.irtEstimator.CalculateAdaptiveTurnsWithTheta(req.Task, len(req.ContextRefs), historicalAvg, s.avgThetaForCapability(role.BaseCapability)); irtTurns > maxTurns {
-			maxTurns = irtTurns
-		}
+		return 50
 	}
+	signals := s.signalCollector.Collect(ctx, req, role)
+	decision := s.policyDecider.Decide(signals, req, role)
 
-	maxTurns += req.TurnsBudgetBonus
-	return maxTurns
+	// Apply injected skills from the decision
+	req.AdditionalSkills = append(req.AdditionalSkills, decision.InjectedSkills...)
+
+	return decision.MaxTurns + req.TurnsBudgetBonus
 }
 
 // GetEffectiveHandoffThreshold resolves the actual threshold used for

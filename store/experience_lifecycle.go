@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -115,6 +116,12 @@ func (b *FileExperienceBackend) LoadPromotionAuditLogs(ctx context.Context) ([]P
 	return nil, nil
 }
 
+// SaveExperienceBatch for the file backend is a no-op (file writes happen
+// via writeBytes in PersistAll). Implemented to satisfy IExperienceBackend.
+func (b *FileExperienceBackend) SaveExperienceBatch(ctx context.Context, nodes []*ExperienceNode, edges []ExperienceEdge, logs []PromotionAuditLog) error {
+	return nil
+}
+
 // ExperienceStore manages experience data using a backend.
 type ExperienceStore struct {
 	Mu               sync.RWMutex
@@ -139,6 +146,11 @@ type ExperienceStore struct {
 	Nodes map[string]*ExperienceNode `json:"nodes"`
 	Edges []ExperienceEdge           `json:"edges"`
 
+	// nodeIndex is a secondary index for O(1) Tier 1 experience retrieval
+	// keyed by FailureMode + "\x00" + Capability (audit PERF-3: was O(N) scan).
+	// Not JSON-serialized — rebuilt on load.
+	nodeIndex map[string][]*ExperienceNode
+
 	// JIT Promotion Audit (ADDED 2026-09-06)
 	JITCandidates       map[string]*JITCandidate `json:"jit_candidates"`
 	PromotionAuditLogs  []PromotionAuditLog      `json:"promotion_audit_logs"`
@@ -152,6 +164,11 @@ type ExperienceStore struct {
 	StatePotentials map[string]*StatePotential
 
 	embeddingClient IEmbeddingClient
+
+	// rerankerClient provides System One semantic reranking of coarse retrieval
+	// candidates. When nil, RetrieveRelevantExperience returns coarse order.
+	// Scores are runtime-only — never persisted (whitepaper §1.3).
+	rerankerClient IRerankerClient
 
 	// persistInFlight prevents unbounded goroutine spawn from
 	// RecordTaskCompletion's fire-and-forget persist. If a persist
@@ -228,6 +245,15 @@ func (s *ExperienceStore) SetEmbeddingClient(cli IEmbeddingClient) {
 	s.embeddingClient = cli
 }
 
+// SetRerankerClient wires a System One reranker for experience retrieval.
+// When set, RetrieveRelevantExperience applies RRF fusion of coarse retrieval
+// order with fine reranker scores (whitepaper §3). Pass nil to disable.
+func (s *ExperienceStore) SetRerankerClient(cli IRerankerClient) {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	s.rerankerClient = cli
+}
+
 func (es *ExperienceStore) load() {
 	es.Mu.Lock()
 	defer es.Mu.Unlock()
@@ -263,6 +289,8 @@ func (es *ExperienceStore) load() {
 
 	// Apply temporal decay on load (ADDED 2026-08-16)
 	es.applyTemporalDecayLocked()
+	// audit PERF-3: build secondary index for O(1) Tier 1 experience retrieval
+	es.rebuildNodeIndexLocked()
 }
 
 // monthlyDecayRate (ADDED 2026-08-16): multiplier applied to scores per month of inactivity.
@@ -433,19 +461,16 @@ func (es *ExperienceStore) PersistAll(ctx context.Context) error {
 	writeBytes(filepath.Join(es.dir, "role_affinities.json"), roleAffinitiesData)
 	writeBytes(filepath.Join(es.dir, "decision_precedents.json"), decisionPrecedentsData)
 	// A28 DB collapse: save experience graph to SQLite backend + file fallback
-	for _, node := range nodesCopy {
-		es.backend.SaveExperienceNode(ctx, node)
-	}
-	for _, edge := range edgesCopy {
-		es.backend.SaveExperienceEdge(ctx, edge)
+	// audit PERF-1: was N+1 individual SaveExperienceNode/Edge/Log calls (5000-10000
+	// sequential DB writes). Now a single transaction via SaveExperienceBatch.
+	if err := es.backend.SaveExperienceBatch(ctx, nodesCopy, edgesCopy, logsCopy); err != nil {
+		log.Printf("WARN: PersistAll: SaveExperienceBatch failed: %v", err)
 	}
 	writeBytes(filepath.Join(es.dir, "experience_nodes.json"), experienceNodesData)
 	writeBytes(filepath.Join(es.dir, "experience_edges.json"), experienceEdgesData)
 	writeBytes(filepath.Join(es.dir, "jit_candidates.json"), jitCandidatesData)
-	// A31 DB collapse: save promotion audit logs to SQLite backend + file fallback
-	for _, log := range logsCopy {
-		es.backend.SavePromotionAuditLog(ctx, &log)
-	}
+	// A31 DB collapse: promotion audit logs are saved by SaveExperienceBatch above
+	// (audit PERF-1: was N+1 individual SavePromotionAuditLog calls).
 	writeBytes(filepath.Join(es.dir, "promotion_audit_logs.json"), promotionAuditLogsData)
 	writeBytes(filepath.Join(es.dir, "state_potentials.json"), statePotentialsData)
 	return nil

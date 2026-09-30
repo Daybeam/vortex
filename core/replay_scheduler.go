@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daybeam/vortex/store"
 	"github.com/google/uuid"
+	"github.com/daybeam/vortex/store"
 )
 
 // MutationVariant represents a single mutation of a forked task history.
@@ -44,15 +44,15 @@ type ReplayScheduler interface {
 }
 
 type replayScheduler struct {
-	replayer            *Replayer
-	verifier            Verifier
-	expStore            *store.ExperienceStore
-	db                  *sql.DB
-	executor            ToolExecutor
-	maxVariants         int
-	grayscale           *GrayscaleController
+	replayer           *Replayer
+	verifier           Verifier
+	expStore           *store.ExperienceStore
+	db                 *sql.DB
+	executor           ToolExecutor
+	maxVariants        int
+	grayscale          *GrayscaleController
 	crossFamilyResolver func() string
-	spawner             *Spawner
+	spawner            *Spawner
 }
 
 // NewReplayScheduler creates a ReplayScheduler from the existing infra.
@@ -70,14 +70,39 @@ func NewReplayScheduler(replayer *Replayer, verifier Verifier, es *store.Experie
 	}
 }
 
-// SetCrossFamilyVerifier wires the cross-family verifier auto-resolution.
-// When verifier is nil, verifyMutation will call resolver to obtain a
-// provider ID from a different model family, then use spawner to run an
-// LLM-based audit with that provider. See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md
-// §安全约束清单 item 6.
+// SetCrossFamilyVerifier wires the cross-family verification resolver and
+// spawner for verifyMutation. The resolver returns a provider ID for
+// cross-family debate; the spawner is used to spawn the verifier.
 func (rs *replayScheduler) SetCrossFamilyVerifier(resolver func() string, spawner *Spawner) {
 	rs.crossFamilyResolver = resolver
 	rs.spawner = spawner
+}
+
+// extractTaskText recovers the original task description from the replay
+// history. This text becomes the TaskPattern's SourceText for BM25 matching
+// in QuerySimilarPatterns (L5 Break 4 fix: without it, SourceText was a
+// generic "rewrite mutation from replay" string that never matched real
+// task queries like "build a widget").
+//
+// Looks for tool_call events whose args contain a task/prompt/query/content
+// field — these are the fields that carry the user's original task text
+// through the orchestrator's tool-call pipeline.
+func extractTaskText(history []AgentEvent) string {
+	for _, ev := range history {
+		if ev.EventType != "tool_call" {
+			continue
+		}
+		args, _ := ev.Payload["args"].(map[string]any)
+		if args == nil {
+			continue
+		}
+		for _, key := range []string{"task", "prompt", "query", "content", "description"} {
+			if text, ok := args[key].(string); ok && text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 // ReplaySandbox is a mock ToolExecutor that returns canned responses instead
@@ -120,7 +145,7 @@ type trialState struct {
 }
 
 func NewGrayscaleController(trialRate float64, promotionThreshold int) *GrayscaleController {
-	if trialRate < 0 {
+	if trialRate <= 0 {
 		trialRate = 0.05
 	}
 	if promotionThreshold <= 0 {
@@ -357,6 +382,7 @@ func extractRootCause(history []AgentEvent) string {
 // mapCauseToMutation maps a FailureClass (from core/failure_classify.go) to
 // the appropriate mutation type. Returns (mutationType, fixable).
 // Unfixable failures return ("", false) and are skipped by RunReplayCycle.
+// See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §决策2.
 func mapCauseToMutation(cause string) (mutType string, fixable bool) {
 	switch FailureClass(cause) {
 	case FailureClassContextDeficit, FailureClassGenerativeUncertainty, FailureClassContractViolation:
@@ -365,7 +391,7 @@ func mapCauseToMutation(cause string) (mutType string, fixable bool) {
 		return "toolchain", true
 	case FailureClassRateLimit:
 		return "perturbation", true
-	default:
+	default: // bad_request, auth_permission, role_missing, cost_overrun, transient
 		return "", false
 	}
 }
@@ -394,11 +420,15 @@ func (rs *replayScheduler) RunReplayCycle(ctx context.Context) error {
 			continue
 		}
 
+		// ── Failure-cause classification ───────────────────────────────
+		// Skip unfixable failures; only generate the mutation type that
+		// addresses the specific root cause. Falls back to all mutations
+		// for older tasks without root_cause in their event history.
 		cause := extractRootCause(history)
 		mutType, fixable := mapCauseToMutation(cause)
 		if !fixable {
 			if cause == "" {
-				mutType = ""
+				mutType = "" // backward compat: no root_cause → all mutations
 			} else {
 				skipped++
 				continue
@@ -420,6 +450,7 @@ func (rs *replayScheduler) RunReplayCycle(ctx context.Context) error {
 			continue
 		}
 
+		// Filter to only the mutation type matching the failure cause
 		if mutType != "" {
 			filtered := variants[:0]
 			for _, v := range variants {
@@ -430,9 +461,12 @@ func (rs *replayScheduler) RunReplayCycle(ctx context.Context) error {
 			variants = filtered
 		}
 
+		// Extract original task text for BM25 matching (L5 Break 4 fix)
+		taskText := extractTaskText(history)
+
 		for _, v := range variants {
 			totalMutations++
-			record := rs.processMutation(ctx, taskID, failedStepID, v)
+			record := rs.processMutation(ctx, taskID, failedStepID, taskText, v)
 			if record.VerifierResult == "verified" {
 				totalVerified++
 			}
@@ -444,7 +478,7 @@ func (rs *replayScheduler) RunReplayCycle(ctx context.Context) error {
 	return nil
 }
 
-func (rs *replayScheduler) processMutation(ctx context.Context, taskID, stepID string, v MutationVariant) ReplayMutationRecord {
+func (rs *replayScheduler) processMutation(ctx context.Context, taskID, stepID, taskText string, v MutationVariant) ReplayMutationRecord {
 	record := ReplayMutationRecord{
 		ID:           "rmr_" + uuid.New().String()[:8],
 		SourceTaskID: taskID,
@@ -468,7 +502,7 @@ func (rs *replayScheduler) processMutation(ctx context.Context, taskID, stepID s
 	if verified || record.VerifierResult == "skipped" {
 		candidateID := "jit_" + uuid.New().String()[:8]
 		record.CandidateID = candidateID
-		rs.writeBack(ctx, candidateID, v, verified)
+		rs.writeBack(ctx, candidateID, v, verified, taskText)
 	}
 
 	return record
@@ -542,7 +576,7 @@ Respond ONLY with 'PASS' or 'FAIL: <reason>'.`, toolName, v.Type, string(payload
 	return false, "cross_family_rejected:" + auditText
 }
 
-func (rs *replayScheduler) writeBack(ctx context.Context, candidateID string, v MutationVariant, verified bool) {
+func (rs *replayScheduler) writeBack(ctx context.Context, candidateID string, v MutationVariant, verified bool, taskText string) {
 	if rs.expStore == nil {
 		return
 	}
@@ -562,7 +596,19 @@ func (rs *replayScheduler) writeBack(ctx context.Context, candidateID string, v 
 	}
 	_ = rs.expStore.AddJITCandidate(ctx, candidate)
 
-	rs.expStore.UpsertTaskPatternFromReplay(candidateID, v.Type, v.Type+" mutation from replay")
+	// L5 fix (docs/RSI_AUTONOMY_LEVELS_ASSESSMENT.md): also write to TaskPatterns
+	// so QueryJITCandidates -> QuerySimilarPatterns can find the pattern.
+	// AddJITCandidate writes to JITCandidates map which is never read by the
+	// retrieval path. UpsertTaskPatternFromReplay writes to TaskPatterns with
+	// accumulation semantics (SampleCount increments over repeated replay cycles).
+	// taskText is the original task description for BM25 matching (Break 4 fix).
+	// verified controls confidence: 0.8 when verified (converges above 0.7 gate),
+	// 0.5 when unverified (Break 3 fix).
+	sourceText := taskText
+	if sourceText == "" {
+		sourceText = v.Type + " mutation from replay" // fallback
+	}
+	rs.expStore.UpsertTaskPatternFromReplay(candidateID, v.Type, sourceText, verified)
 
 	action := "promoted"
 	if !verified {
