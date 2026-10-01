@@ -85,7 +85,7 @@ func registerAdminTools(s *server.MCPServer, app *App) {
 			args = make(map[string]any)
 		}
 
-		res, err := registry.Invoke(ctx, app, sub, act, args)
+		res, err := Dispatch(ctx, app, sub, act, args)
 		if err != nil {
 			return errResult(err.Error())
 		}
@@ -350,18 +350,6 @@ func HandleAdminDeployCommit(ctx context.Context, app *App, req mcp.CallToolRequ
 		"path": session.Path, "size": session.TotalSize, "checksum": actualHash, "reason": session.Reason,
 	})
 	return jsonOK(map[string]any{"status": "success", "path": session.Path, "sha256": actualHash})
-}
-
-func HandleAdminSuspendUI(ctx context.Context, app *App, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	reason := strArg(req.Params.Arguments, "reason")
-	if reason == "" {
-		reason = "manual_optimization"
-	}
-	app.Logger.Log(core.EventUISuspendRequested, "system", "", map[string]any{"reason": reason})
-	suspendFile := filepath.Join(filepath.Dir(app.ConfigPath), "tmp", "sig_ui_suspend")
-	_ = os.MkdirAll(filepath.Dir(suspendFile), 0755)
-	_ = os.WriteFile(suspendFile, []byte(reason), 0644)
-	return jsonOK(map[string]any{"status": "suspending", "reason": reason})
 }
 
 func copyFile(src, dst string) error {

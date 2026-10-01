@@ -86,12 +86,20 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 		intensity := s.SignalField.BaseIntensity * conf
 		s.SignalField.Deposit(types.LayerCritical, step.ID, intensity)
 
+		// audit L-1.2: collect dependent step IDs under RLock to prevent
+		// concurrent map iteration race with MutateGraphTopology.
+		s.Mu.RLock()
+		dependents := make([]string, 0, len(graph.Steps))
 		for _, other := range graph.Steps {
 			for _, dep := range other.DependsOn {
 				if dep == step.ID && other.Status == schemas.StepPending {
-					s.SignalField.Deposit(types.LayerDependency, other.ID, intensity*0.5)
+					dependents = append(dependents, other.ID)
 				}
 			}
+		}
+		s.Mu.RUnlock()
+		for _, depID := range dependents {
+			s.SignalField.Deposit(types.LayerDependency, depID, intensity*0.5)
 		}
 	}
 

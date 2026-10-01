@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -10,7 +11,11 @@ import (
 )
 
 func TestAgnesProvider(t *testing.T) {
-	t.Skip("Skipping live provider test; requires local config.json with 'agnes' provider")
+	// audit T-1.1: gate behind env var instead of unconditional skip so the
+	// test is no longer permanently dead. Set RUN_LIVE_TESTS=1 to run.
+	if os.Getenv("RUN_LIVE_TESTS") != "1" {
+		t.Skip("Skipping live provider test; set RUN_LIVE_TESTS=1 to run (requires config.json with 'agnes' provider)")
+	}
 	// 1. Initialize Registry to load config.json
 	// We assume the test is run from the project root or the config is at the relative path
 	reg, err := config.NewRegistry("config.json")
@@ -32,9 +37,9 @@ func TestAgnesProvider(t *testing.T) {
 
 	// 4. Prepare a simple request
 	req := schemas.CompleteRequest{
-		Model:     pc.Model,
-		System:    "You are a helpful assistant.",
-		User:      "Hello! Are you working? Please respond with 'AGNES_OK'.",
+		Model: pc.Model,
+		System: "You are a helpful assistant.",
+		User: "Hello! Are you working? Please respond with 'AGNES_OK'.",
 		MaxTokens: 100,
 	}
 

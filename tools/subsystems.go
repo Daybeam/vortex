@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/pkg/codeintel"
@@ -18,7 +19,6 @@ import (
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
-	"github.com/google/uuid"
 )
 
 // Action defines a specific operation within a subsystem.
@@ -87,26 +87,6 @@ func isActionAllowed(subsystem, action, tier string) bool {
 		return true
 	}
 	return tier1AllowedActions[subsystem+"."+action]
-}
-
-// discoverSubsystems returns a summary of all available subsystems.
-func (r *SubsystemRegistry) discoverSubsystems() string {
-	var sb strings.Builder
-	sb.WriteString("## Vortex Subsystems\n\n")
-	sb.WriteString("Use these subsystems for administrative, configuration, and background tasks. ")
-	sb.WriteString("Call `orchestrator_discover(subsystem=\"name\")` to see detailed actions.\n\n")
-
-	keys := make([]string, 0, len(r.Subsystems))
-	for k := range r.Subsystems {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		s := r.Subsystems[k]
-		sb.WriteString(fmt.Sprintf("- **%s**: %s\n", s.Name, s.Description))
-	}
-	return sb.String()
 }
 
 // discoverActions returns detailed documentation for actions within a subsystem.
@@ -1160,7 +1140,7 @@ func registerAdminSubsystem(app *App) {
 
 	s.Actions["import_skills"] = Action{
 		Name:        "import_skills",
-		Description: "Import external agentskills.io-compliant SKILL.md bundles into the Vortex registry. Scans a directory recursively for SKILL.md files and registers them as native Skills (and SOPs if multi-step).",
+		Description: "Import external agentskills.io-compliant SKILL.md bundles into the Orchestrator registry. Scans a directory recursively for SKILL.md files and registers them as native Skills (and SOPs if multi-step).",
 		Parameters: map[string]any{
 			"skill_directory": "string (required) - Absolute path to root directory containing SKILL.md files",
 		},
@@ -1253,11 +1233,34 @@ func registerJitSubsystem(app *App) {
 		},
 	}
 
+
+
 	s.Actions["list_scripts"] = Action{
 		Name:        "list_scripts",
 		Description: "List all script-based providers.",
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			return providers.GetScriptProviders(), nil
+		},
+	}
+
+	s.Actions["reload_script"] = Action{
+		Name:        "reload_script",
+		Description: "Hot-reload a script-based provider by name. Closes the old VM and re-reads the script file.",
+		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			name := strArg(args, "name")
+			if name == "" {
+				return nil, fmt.Errorf("name is required")
+			}
+			app.Registry.Mu.RLock()
+			cfg, ok := app.Registry.Providers[name]
+			app.Registry.Mu.RUnlock()
+			if !ok {
+				return nil, fmt.Errorf("provider %q not found in registry", name)
+			}
+			if err := providers.ReloadScriptProvider(name, cfg); err != nil {
+				return nil, err
+			}
+			return map[string]any{"status": "reloaded", "name": name}, nil
 		},
 	}
 
@@ -1381,10 +1384,10 @@ func registerCapabilitySubsystem(app *App) {
 		Name:        "mount",
 		Description: "Inspect then mount a remote capability (SSE endpoint) into the registry. The capability becomes immediately available to all roles.",
 		Parameters: map[string]any{
-			"id":           "string (required) - capability identifier",
-			"transport":    "string (optional, default \"remote_sse\") - remote_sse|local_process|sandbox_jit",
-			"endpoint":     "string (required) - URL for remote_sse",
-			"manifest":     "object (optional) - auth config {auth_header_name, api_key_env}",
+			"id":        "string (required) - capability identifier",
+			"transport": "string (optional, default \"remote_sse\") - remote_sse|local_process|sandbox_jit",
+			"endpoint":  "string (required) - URL for remote_sse",
+			"manifest":  "object (optional) - auth config {auth_header_name, api_key_env}",
 			"skip_inspect": "boolean (optional, default false) - skip the pre-flight Inspect check",
 		},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
@@ -1476,7 +1479,7 @@ func registerCapabilitySubsystem(app *App) {
 func registerProxySubsystem(app *App) {
 	s := &Subsystem{
 		Name:        "proxy",
-		Description: "Direct tool execution for high-performance session agents. Vortex acts as a resource gateway.",
+		Description: "Direct tool execution for high-performance session agents. Orchestrator acts as a resource gateway.",
 		Actions:     make(map[string]Action),
 	}
 

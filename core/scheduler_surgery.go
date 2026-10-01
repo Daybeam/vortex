@@ -70,12 +70,16 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 			continue
 		}
 		// Remove deprecated step from downstream step's DependsOn
-		for i, dep := range step.DependsOn {
-			if dep == data.DeprecatedStepID {
-				step.DependsOn = append(step.DependsOn[:i], step.DependsOn[i+1:]...)
-				break
+		// audit L-6.1: remove ALL occurrences, not just the first (was `break`).
+		// Duplicate deps would block the step forever since the deprecated step
+		// has StepDeprecated status which fails ReadySteps' satisfaction check.
+		filtered := step.DependsOn[:0]
+		for _, dep := range step.DependsOn {
+			if dep != data.DeprecatedStepID {
+				filtered = append(filtered, dep)
 			}
 		}
+		step.DependsOn = filtered
 		// If a pending step loses its last blocker, it may now be ready
 		if step.Status == schemas.StepPending {
 			if len(step.DependsOn) == 0 {

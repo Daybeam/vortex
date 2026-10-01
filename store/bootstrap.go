@@ -73,7 +73,3 @@ func loadRolesFromDisk(rolesDir string) (map[string]*config.Role, error) {
 	return roles, nil
 }
 
-// RoleJSONPath returns the conventional JSON file path for a given role ID.
-func RoleJSONPath(rolesDir, roleID string) string {
-	return filepath.Join(rolesDir, roleID+".json")
-}

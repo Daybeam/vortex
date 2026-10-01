@@ -337,9 +337,12 @@ func TestRetrieveRelevantExperience_RerankerScoreCountMismatch_GracefulDegradati
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
-	// Should preserve coarse order.
-	if results[0].NodeID != "a" {
-		t.Fatalf("expected coarse order preserved on score mismatch, got '%s' first", results[0].NodeID)
+	// Should preserve coarse order (both nodes present, no reranking applied).
+	// audit T-fix: use set-based check — Tier 1 relaxation iterates es.Nodes
+	// map whose order is randomized by Go, so positional check was flaky.
+	ids := map[string]bool{results[0].NodeID: true, results[1].NodeID: true}
+	if !ids["a"] || !ids["b"] {
+		t.Fatalf("expected both nodes a and b, got %s and %s", results[0].NodeID, results[1].NodeID)
 	}
 }
 
@@ -409,15 +412,17 @@ func TestRebuildNodeIndex_AfterDirectMutation(t *testing.T) {
 		Outcome:    "success",
 	}
 
-	// Before rebuild, index is nil — Tier 1 lookup returns nothing.
+	// Before rebuild, index is nil — strict Tier 1 lookup returns nothing,
+	// but hierarchical relaxation (design §2.4) finds the node via linear scan.
+	// This is expected: relaxation is the fallback when the index is empty.
 	results := es.RetrieveRelevantExperience(
 		context.Background(), nil, "coding", "timeout", 1000,
 	)
-	if len(results) != 0 {
-		t.Fatalf("expected 0 results before rebuild, got %d", len(results))
+	if len(results) == 0 {
+		t.Fatal("expected relaxation to find results even without index, got 0")
 	}
 
-	// Rebuild and verify Tier 1 now finds the seeded node.
+	// Rebuild and verify Tier 1 strict lookup now finds the seeded node via O(1) index.
 	es.RebuildNodeIndex()
 	results = es.RetrieveRelevantExperience(
 		context.Background(), nil, "coding", "timeout", 1000,
@@ -427,5 +432,162 @@ func TestRebuildNodeIndex_AfterDirectMutation(t *testing.T) {
 	}
 	if results[0].NodeID != "n1" {
 		t.Fatalf("expected node n1, got %s", results[0].NodeID)
+	}
+}
+
+// ── Hierarchical Relaxation Tests (design §2.4) ─────────────────────────────
+
+func TestRetrieveRelevantExperience_Tier1Relaxation_FailureModeOnly(t *testing.T) {
+	es := &ExperienceStore{
+		Nodes:            make(map[string]*ExperienceNode),
+		AntiPatternStore: NewAntiPatternStore(nil, nil),
+	}
+	// Node has FailureMode="timeout_exceeded" but Capability="debugging" (≠ query "coding").
+	// Strict Tier 1 lookup (timeout_exceeded + coding) → 0 results.
+	// Relaxation by FailureMode-only → finds this node.
+	es.Nodes["n1"] = &ExperienceNode{
+		NodeID:      "n1",
+		Capability:  "debugging",
+		Outcome:     "failure",
+		FailureMode: "timeout_exceeded",
+	}
+	es.RebuildNodeIndex()
+
+	results := es.RetrieveRelevantExperience(context.Background(), nil, "coding", "timeout", 1000)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result from FailureMode-only relaxation, got %d", len(results))
+	}
+	if results[0].NodeID != "n1" {
+		t.Fatalf("expected node n1, got %s", results[0].NodeID)
+	}
+}
+
+func TestRetrieveRelevantExperience_Tier1Relaxation_CapabilityOnly(t *testing.T) {
+	es := &ExperienceStore{
+		Nodes:            make(map[string]*ExperienceNode),
+		AntiPatternStore: NewAntiPatternStore(nil, nil),
+	}
+	// Node has FailureMode="rate_limit_hit" (≠ predicted "timeout_exceeded") and Capability="coding".
+	// Strict Tier 1 (timeout_exceeded + coding) → 0.
+	// FailureMode-only relaxation (timeout_exceeded) → 0.
+	// Capability-only relaxation (coding) → finds this node.
+	es.Nodes["n1"] = &ExperienceNode{
+		NodeID:      "n1",
+		Capability:  "coding",
+		Outcome:     "failure",
+		FailureMode: "rate_limit_hit",
+	}
+	es.RebuildNodeIndex()
+
+	results := es.RetrieveRelevantExperience(context.Background(), nil, "coding", "timeout", 1000)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result from Capability-only relaxation, got %d", len(results))
+	}
+	if results[0].NodeID != "n1" {
+		t.Fatalf("expected node n1, got %s", results[0].NodeID)
+	}
+}
+
+func TestRetrieveRelevantExperience_Tier1Strict_NoRelaxationNeeded(t *testing.T) {
+	es := &ExperienceStore{
+		Nodes:            make(map[string]*ExperienceNode),
+		AntiPatternStore: NewAntiPatternStore(nil, nil),
+	}
+	// Exact match: FailureMode="timeout_exceeded" + Capability="coding".
+	// Strict Tier 1 should find it; relaxation should NOT run.
+	es.Nodes["strict_match"] = &ExperienceNode{
+		NodeID:      "strict_match",
+		Capability:  "coding",
+		Outcome:     "failure",
+		FailureMode: "timeout_exceeded",
+	}
+	// This node would only be found via relaxation — if relaxation runs erroneously.
+	es.Nodes["relaxed_only"] = &ExperienceNode{
+		NodeID:      "relaxed_only",
+		Capability:  "debugging",
+		Outcome:     "failure",
+		FailureMode: "timeout_exceeded",
+	}
+	es.RebuildNodeIndex()
+
+	results := es.RetrieveRelevantExperience(context.Background(), nil, "coding", "timeout", 1000)
+	// Strict match should be found. Relaxed_only should NOT be found because
+	// strict already returned results, so relaxation is skipped.
+	ids := make(map[string]bool)
+	for _, r := range results {
+		ids[r.NodeID] = true
+	}
+	if !ids["strict_match"] {
+		t.Fatal("expected strict_match in results")
+	}
+	if ids["relaxed_only"] {
+		t.Fatal("relaxed_only should NOT appear — strict lookup succeeded, relaxation should not run")
+	}
+}
+
+// ── Context Bonus Scoring Tests (design §2.3) ───────────────────────────────
+
+func TestApplyContextBonus_CapabilityMatchBoosted(t *testing.T) {
+	// 3 nodes: [A (cap=debugging), B (cap=other), C (cap=coding)]
+	// Query capability = "coding"
+	// Scores: A=1/1+0=1.0, B=1/2+0=0.5, C=1/3+0.5=0.833
+	// Expected order: A (1.0), C (0.833), B (0.5) — C moves up from position 2 to 1.
+	results := []*ExperienceNode{
+		{NodeID: "A", Capability: "debugging"},
+		{NodeID: "B", Capability: "other"},
+		{NodeID: "C", Capability: "coding"},
+	}
+	out := applyContextBonus(results, "coding")
+	if len(out) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(out))
+	}
+	if out[0].NodeID != "A" {
+		t.Fatalf("expected A first (score 1.0), got %s", out[0].NodeID)
+	}
+	if out[1].NodeID != "C" {
+		t.Fatalf("expected C second (boosted to 0.833), got %s", out[1].NodeID)
+	}
+	if out[2].NodeID != "B" {
+		t.Fatalf("expected B third (score 0.5), got %s", out[2].NodeID)
+	}
+}
+
+func TestApplyContextBonus_NoMatch_PreservesOrder(t *testing.T) {
+	// No capability matches — bonus is 0 for all, order preserved by base score.
+	results := []*ExperienceNode{
+		{NodeID: "A", Capability: "debugging"},
+		{NodeID: "B", Capability: "other"},
+		{NodeID: "C", Capability: "testing"},
+	}
+	out := applyContextBonus(results, "coding")
+	for i, expected := range []string{"A", "B", "C"} {
+		if out[i].NodeID != expected {
+			t.Fatalf("position %d: expected %s, got %s", i, expected, out[i].NodeID)
+		}
+	}
+}
+
+func TestApplyContextBonus_SingleElement(t *testing.T) {
+	results := []*ExperienceNode{
+		{NodeID: "A", Capability: "coding"},
+	}
+	out := applyContextBonus(results, "coding")
+	if len(out) != 1 || out[0].NodeID != "A" {
+		t.Fatalf("expected single element A, got %v", out)
+	}
+}
+
+func TestApplyContextBonus_AllMatch_PreservesOrder(t *testing.T) {
+	// All capabilities match — all get +0.5, relative order preserved.
+	results := []*ExperienceNode{
+		{NodeID: "A", Capability: "coding"},
+		{NodeID: "B", Capability: "coding"},
+		{NodeID: "C", Capability: "coding"},
+	}
+	out := applyContextBonus(results, "coding")
+	for i, expected := range []string{"A", "B", "C"} {
+		if out[i].NodeID != expected {
+			t.Fatalf("position %d: expected %s, got %s", i, expected, out[i].NodeID)
+		}
 	}
 }

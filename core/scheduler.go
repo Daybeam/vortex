@@ -31,6 +31,10 @@ func (s *DirectedEngine) recordHashCacheEntry(path, hash string) {
 		s.hashCache = make(map[string]string)
 	}
 	if len(s.hashCache) >= s.maxHashCacheEntries {
+		// audit PERF-4: was clearing ALL entries (cliff-edge → thundering herd
+		// of re-hashing on next persist). Keep half to spread the re-hash cost
+		// across subsequent calls instead of one burst. Map iteration order is
+		// randomized in Go, so this keeps a random half — no LRU dependency needed.
 		keep := make(map[string]string, len(s.hashCache)/2)
 		for k, v := range s.hashCache {
 			keep[k] = v
@@ -138,7 +142,7 @@ type DirectedEngine struct {
 
 	// hookRunner executes config-driven automated hooks at DAG lifecycle points
 	// (step_post, task_completion, decision_required). Nil-safe: set by
-	// WireHooks after construction. See core- hook_runner.go.
+	// WireHooks after construction. See core/hook_runner.go.
 	hookRunner *HookRunner
 }
 
@@ -237,6 +241,10 @@ func (s *DirectedEngine) WireCapabilityRouting(cps *store.CapabilityProfileStore
 }
 
 // WireHooks connects config-driven hooks to DAG lifecycle events via EventBus.
+// Subscribes to EventStepCompleted (step_post), EventTaskCompleted/Failed
+// (task_completion), and EventDecisionRequired (decision_required). Each
+// subscription runs via goBackground for clean shutdown. Safe to call with
+// no hooks configured — the HookRunner will have nothing to run.
 func (s *DirectedEngine) WireHooks(hooks []config.HookConfig, runtimes config.ExternalRuntimes) {
 	if len(hooks) == 0 {
 		return
@@ -573,7 +581,9 @@ func (s *DirectedEngine) Clear(taskID string) error {
 	if cancel != nil {
 		cancel()
 	}
-	_, _ = s.taskStore.ClearTask(s.lifecycleCtx, taskID)
+	if _, err := s.taskStore.ClearTask(s.lifecycleCtx, taskID); err != nil {
+		return fmt.Errorf("clear task store for %s: %w", taskID, err)
+	}
 
 	tmpDir := filepath.Join(s.tmpBase, taskID)
 	_ = os.RemoveAll(tmpDir)

@@ -123,6 +123,16 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		return "", err
 	}
 
+	// ── Directory-Skill Expansion (PRD §2.2, Skill Interpreter) ──────
+	// If the first input targets a role bound to a DirectorySkill, expand
+	// it into a multi-step DAG. No-op when no DirectorySkill is bound.
+	expandInputs, expandErr := s.expandSkillsIfNecessary(inputs, roles, skills)
+	if expandErr != nil {
+		return "", expandErr
+	}
+	inputs = expandInputs
+	// ────────────────────────────────────────────────────────────────
+
 	// Smart Routing Fast-Path (ADDED 2026-08-27):
 	// After validateTaskComplexity passes (task is complex enough for
 	// orchestration), check if it's a single-step task with no

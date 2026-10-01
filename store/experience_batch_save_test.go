@@ -73,7 +73,12 @@ func TestC14_PersistRunsAfterCallerCancel(t *testing.T) {
 	}
 
 	// Verify the file is non-empty (persist wrote actual data).
-	info, _ := os.Stat(persistFile)
+	// audit T-3.1: check os.Stat error before calling info.Size() to
+	// prevent nil-pointer dereference if Stat fails.
+	info, err := os.Stat(persistFile)
+	if err != nil {
+		t.Fatalf("stat persist file %q: %v", persistFile, err)
+	}
 	if info.Size() == 0 {
 		t.Error("persist file is empty — PersistAll may have failed silently")
 	}

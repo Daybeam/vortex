@@ -434,12 +434,6 @@ func (r *Registry) persistLocked() error {
 	return r.persistAndSnapshot(cfg)
 }
 
-func (r *Registry) bootstrapDefaults() {
-	r.Mu.Lock()
-	defer r.Mu.Unlock()
-	r.bootstrapDefaultsLocked()
-}
-
 func (r *Registry) bootstrapDefaultsLocked() {
 	r.DefaultProvider = "default"
 	r.Providers["default"] = &ProviderConfig{
@@ -513,7 +507,7 @@ func (r *Registry) applySystemDefaults() {
 	// ── Environment Variable Overrides ────────────────────────────────
 	// ADDED (2026-09-06): allow operators to toggle DelegationMode without
 	// editing config.json. This is essential for SSE deployments where the
-	// operator wants the Vortex to act as a "prompt compiler" that
+	// operator wants the Orchestrator to act as a "prompt compiler" that
 	// returns pre-assembled system_prompt + user_prompt to the caller
 	// (Main Agent / Gateway) rather than calling the LLM provider itself.
 	// Env var takes precedence over config.json: setting it to "true" or

@@ -51,11 +51,12 @@ func (s *DirectedEngine) swarmWatchdog(ctx context.Context, taskID string) {
 		return
 	}
 
+	// audit L-1.5: hold RLock for graph.Status check + graph.Steps iteration
+	// to prevent TOCTOU and concurrent map iteration race with MutateGraphTopology.
 	s.Mu.RLock()
 	graph := s.graphs[taskID]
-	s.Mu.RUnlock()
-
 	if graph == nil || graph.Status != schemas.GraphRunning {
+		s.Mu.RUnlock()
 		return
 	}
 
@@ -67,6 +68,7 @@ func (s *DirectedEngine) swarmWatchdog(ctx context.Context, taskID string) {
 			break
 		}
 	}
+	s.Mu.RUnlock()
 
 	if !hasActivity {
 		s.logger.Log(EventSwarmWatchdogTriggered, taskID, "", map[string]any{
@@ -129,15 +131,18 @@ func (s *DirectedEngine) updateNodeEmbedding(taskID, nodeID string, text string)
 }
 
 func (s *DirectedEngine) foldNode(taskID, nodeID string) {
+	// audit L-1.6: hold RLock for graph.ContextTree lookup + graph.Steps reads
+	// to prevent concurrent map access race with MutateGraphTopology.
 	s.Mu.RLock()
 	graph := s.graphs[taskID]
-	s.Mu.RUnlock()
 	if graph == nil {
+		s.Mu.RUnlock()
 		return
 	}
 
 	node := graph.ContextTree[nodeID]
 	if node == nil {
+		s.Mu.RUnlock()
 		return
 	}
 
@@ -157,11 +162,12 @@ func (s *DirectedEngine) foldNode(taskID, nodeID string) {
 			fmt.Fprintf(&content, "Result: %v\n", res.Data)
 		}
 	}
+	s.Mu.RUnlock()
 
 	// ACAIS: Folding must preserve a checksum for integrity
 	h := sha256.New()
 	h.Write([]byte(content.String()))
-	node.Checksum = fmt.Sprintf("sha256:%x", h.Sum(nil))
+	checksum := fmt.Sprintf("sha256:%x", h.Sum(nil))
 
 	// Use a lightweight LLM call to summarize
 	summaryPrompt := fmt.Sprintf("Summarize the following task execution history into a concise conclusion (max 100 words):\n\n%s", content.String())
@@ -178,6 +184,7 @@ func (s *DirectedEngine) foldNode(taskID, nodeID string) {
 
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
+	node.Checksum = checksum // audit L-1.6: write checksum under Lock
 	if err == nil {
 		node.Summary = fmt.Sprintf("%v", res.Output.Result)
 		node.Status = schemas.NodeResolved

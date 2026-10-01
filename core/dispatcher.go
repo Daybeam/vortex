@@ -13,12 +13,30 @@ import (
 )
 
 func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventType EventType) {
+	// audit L-1.4: snapshot graph.Status + GlobalWorkspace and determine
+	// matching routes under RLock to prevent concurrent map iteration race
+	// with MutateGraphTopology and field reads racing with handleStepSuccess.
+	s.Mu.RLock()
 	rec := NotificationRecord{
 		TaskID:    graph.TaskID,
 		Status:    string(graph.Status),
 		Event:     string(eventType),
 		Timestamp: time.Now(),
 	}
+	statusSnap := graph.Status
+	globalWSSnap := graph.GlobalWorkspace
+
+	cfg := s.registry.System.Notifications
+	matchingRoutes := make([]config.NotificationRoute, 0)
+	if cfg.Enabled {
+		for _, route := range cfg.Routes {
+			if matchesTrigger(route, eventType, graph) {
+				matchingRoutes = append(matchingRoutes, route)
+			}
+		}
+	}
+	s.Mu.RUnlock()
+
 	s.notifMu.Lock()
 	s.notifications = append(s.notifications, rec)
 	if len(s.notifications) > 100 {
@@ -26,24 +44,21 @@ func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventTy
 	}
 	s.notifMu.Unlock()
 
-	cfg := s.registry.System.Notifications
-	if !cfg.Enabled || len(cfg.Routes) == 0 {
+	if !cfg.Enabled || len(matchingRoutes) == 0 {
 		return
 	}
 
 	payload := map[string]any{
 		"task_id":      graph.TaskID,
-		"status":       graph.Status,
+		"status":       statusSnap,
 		"event":        eventType,
 		"completed_at": time.Now().Unix(),
-		"artifacts":    graph.GlobalWorkspace,
+		"artifacts":    globalWSSnap,
 	}
 	body, _ := json.Marshal(payload)
 
-	for _, route := range cfg.Routes {
-		if matchesTrigger(route, eventType, graph) {
-			go sendWebhook(route.TargetURL, route.SecretEnv, body)
-		}
+	for _, route := range matchingRoutes {
+		go sendWebhook(route.TargetURL, route.SecretEnv, body)
 	}
 }
 

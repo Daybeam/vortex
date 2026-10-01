@@ -21,6 +21,12 @@ type upstreamInsufficientInfo struct {
 // Returns nil if no such situation exists (meaning some upstream is
 // still running and the graph should wait). ADDED (2026-08-27).
 func (s *DirectedEngine) detectUpstreamInsufficient(graph *schemas.TaskGraph) *upstreamInsufficientInfo {
+	// audit L-1.1: hold RLock during graph.Steps iteration + step.Status/DependsOn
+	// reads. Without this, executeStep goroutines writing step.Status and
+	// MutateGraphTopology mutating DependsOn race with this scan, producing
+	// incorrect upstream_insufficient decisions.
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
 	for stepID, step := range graph.Steps {
 		if step.Status != schemas.StepPending {
 			continue
