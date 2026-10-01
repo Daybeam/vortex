@@ -89,6 +89,9 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 			}
 		}
 	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].NodeID < results[j].NodeID
+	})
 	tier1Count := len(results)
 	tier1Dur := time.Since(tier1Start)
 

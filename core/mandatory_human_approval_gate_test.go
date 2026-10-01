@@ -23,6 +23,7 @@ func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 		cancelFuncs: make(map[string]context.CancelFunc),
 	}
 	engine.lifecycleCtx, engine.lifecycleCancel = context.WithCancel(context.Background())
+	defer engine.lifecycleCancel()
 
 	graph := &schemas.TaskGraph{
 		TaskID: "task_human_1",
@@ -56,6 +57,7 @@ func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 	}
 
 	// Reset for "reject"
+	engine.Mu.Lock()
 	graph.Steps["s1"].Status = schemas.StepBlocked
 	graph.PendingDecisions = []*schemas.Decision{
 		{
@@ -64,6 +66,7 @@ func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 			Type:   schemas.DecisionHumanApprovalRequired,
 		},
 	}
+	engine.Mu.Unlock()
 	// 2. Test "reject"
 	err = engine.SubmitDecision("task_human_1", "dec_human_2", "reject")
 	if err != nil {
@@ -74,6 +77,7 @@ func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 	}
 
 	// Reset for "modify_and_resume"
+	engine.Mu.Lock()
 	graph.Steps["s1"].Status = schemas.StepBlocked
 	graph.PendingDecisions = []*schemas.Decision{
 		{
@@ -82,6 +86,7 @@ func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 			Type:   schemas.DecisionHumanApprovalRequired,
 		},
 	}
+	engine.Mu.Unlock()
 	// 3. Test "modify_and_resume"
 	payload := `{"task":"Updated Approved Deployment Task"}`
 	err = engine.SubmitDecisionWithPayload("task_human_1", "dec_human_3", "modify_and_resume", payload)
