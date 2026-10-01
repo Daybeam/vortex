@@ -2,7 +2,8 @@ package store
 
 import (
 	"context"
-	"os"
+	"math"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,8 +11,7 @@ import (
 )
 
 func TestCooccurrenceTracking_SQLite(t *testing.T) {
-	dbFile := "test_cooccurrence.db"
-	defer os.Remove(dbFile)
+	dbFile := filepath.Join(t.TempDir(), "test_cooccurrence.db") // audit T-2.1: use TempDir for parallel safety
 
 	db, err := InitDB(dbFile)
 	if err != nil {
@@ -72,14 +72,13 @@ func TestCooccurrenceTracking_SQLite(t *testing.T) {
 	if got.SuccessCount != 2 {
 		t.Errorf("SuccessCount = %d, want 2", got.SuccessCount)
 	}
-	if rate := got.SuccessRate(); rate != 2.0/3.0 {
+	if rate := got.SuccessRate(); math.Abs(rate-2.0/3.0) > 1e-9 { // audit T-5.1: tolerance-based float comparison
 		t.Errorf("SuccessRate = %.2f, want %.2f", rate, 2.0/3.0)
 	}
 }
 
 func TestCompoundCandidates_ThresholdFilter(t *testing.T) {
-	dbFile := "test_compound_threshold.db"
-	defer os.Remove(dbFile)
+	dbFile := filepath.Join(t.TempDir(), "test_compound_threshold.db") // audit T-2.1
 
 	db, err := InitDB(dbFile)
 	if err != nil {
@@ -117,8 +116,7 @@ func TestCompoundCandidates_ThresholdFilter(t *testing.T) {
 }
 
 func TestRecordTaskCompletion_TracksCooccurrence(t *testing.T) {
-	dbFile := "test_cooccurrence_record.db"
-	defer os.Remove(dbFile)
+	dbFile := filepath.Join(t.TempDir(), "test_cooccurrence_record.db") // audit T-2.1
 
 	db, err := InitDB(dbFile)
 	if err != nil {

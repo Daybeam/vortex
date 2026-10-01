@@ -111,6 +111,11 @@ Output ONLY the revised result, no explanations.`, step.Task, currentContent, cr
 // Design ref: docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
 // Hard-capped at 2 rounds. Budget-guarded by the existing BudgetGuard.
 func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schemas.TaskGraph, step *schemas.Step, result *SpawnResult) (bool, string, schemas.VerificationFailureType) {
+	// audit L-3.4: ensure Result map is initialized to prevent nil map panic
+	// when writing debate_content at lines 147/169.
+	if result.Output.Result == nil {
+		result.Output.Result = make(map[string]any)
+	}
 	s.logger.Log(EventDebateStarted, graph.TaskID, step.ID, map[string]any{
 		"proposer": step.ProviderOverride,
 		"critic":   step.VerifierModel,
@@ -372,17 +377,6 @@ Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA`, step.Task, step.ExitC
 	}
 
 	return true, "", schemas.FailureNone
-}
-
-func joinCaps(caps []string) string {
-	result := ""
-	for i, c := range caps {
-		if i > 0 {
-			result += "+"
-		}
-		result += c
-	}
-	return result
 }
 
 func (s *DirectedEngine) generateDynamicRubrics(ctx context.Context, graph *schemas.TaskGraph, step *schemas.Step) ([]string, error) {

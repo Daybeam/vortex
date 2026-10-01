@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/daybeam/vortex/config"
 )
@@ -174,12 +175,17 @@ func HealthCheckInterceptor(registry *config.Registry, logger *Logger) Intercept
 									"script":     fixScript,
 								})
 
-								var repairCmd *exec.Cmd
-								if runtime.GOOS == "windows" {
-									repairCmd = exec.Command("cmd", "/C", fixScript)
-								} else {
-									repairCmd = exec.Command("sh", fixScript)
-								}
+							var repairCmd *exec.Cmd
+							// audit S-1: use CommandContext with 10s timeout to
+							// prevent a hung repair script from blocking the
+							// interceptor chain forever.
+							repairCtx, repairCancel := context.WithTimeout(ctx, 10*time.Second)
+							defer repairCancel()
+							if runtime.GOOS == "windows" {
+								repairCmd = exec.CommandContext(repairCtx, "cmd", "/C", fixScript)
+							} else {
+								repairCmd = exec.CommandContext(repairCtx, "sh", fixScript)
+							}
 
 								if rout, rerr := repairCmd.CombinedOutput(); rerr == nil {
 									logger.Log("EventEnvironmentRepairSuccess", req.TaskID, req.StepID, map[string]any{

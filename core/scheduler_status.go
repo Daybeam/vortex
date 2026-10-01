@@ -557,6 +557,21 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 		graph.Status = schemas.GraphRunning
 		// Create a new done channel for the resumed task session
 		s.doneChans[taskID] = make(chan struct{})
+		// audit L-7.1: restart run() goroutine. Without this, if the previous
+		// run exited (context cancelled, panic), the graph stalls in
+		// GraphRunning with no executor — WaitTask hangs until timeout.
+		// Cancel the old context (no-op if already dead), derive a fresh
+		// one from lifecycleCtx so Stop() can still cancel it.
+		if oldCancel, ok := s.cancelFuncs[taskID]; ok {
+			oldCancel()
+		}
+		runCtx, runCancel := context.WithCancel(s.lifecycleCtx)
+		s.cancelFuncs[taskID] = runCancel
+		if !s.UseSwarm {
+			s.goBackground(func() { s.run(runCtx, taskID) })
+		} else {
+			s.goBackground(func() { s.swarmWatchdog(runCtx, taskID) })
+		}
 	}
 
 	s.logger.Log(EventDecisionSubmitted, taskID, dec.StepID, map[string]any{

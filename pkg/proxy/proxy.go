@@ -7,9 +7,15 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/daybeam/vortex/pkg/safelimits"
 )
+
+// audit H-2: use a client with timeout instead of http.DefaultClient
+// (which has Timeout: 0 = no timeout). A hung master would stall the
+// proxy goroutine forever.
+var proxyClient = &http.Client{Timeout: 30 * time.Second}
 
 // RunStdioToHTTP reads JSON-RPC messages from stdin and forwards them to a Master's HTTP endpoint.
 // It writes responses back to stdout. All logging goes to stderr.
@@ -40,7 +46,7 @@ func RunStdioToHTTP(targetURL string, apiKey string) error {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := proxyClient.Do(req)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[proxy] Error forwarding request: %v\n", err)
 			continue

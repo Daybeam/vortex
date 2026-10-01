@@ -68,7 +68,9 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 
 	// Write manifest
 	outDir := filepath.Join(s.outputBase, graph.TaskID)
-	_ = os.MkdirAll(outDir, 0755)
+	if err := os.MkdirAll(outDir, 0755); err != nil { // audit L-3.1: log MkdirAll failure
+		log.Printf("WARN: finalizeDecision: failed to create output dir %s: %v", outDir, err)
+	}
 	manifest := graph.ToStatusDict()
 	if data, err := json.MarshalIndent(manifest, "", "  "); err == nil {
 		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {
@@ -95,6 +97,11 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 }
 
 func (s *DirectedEngine) deliverArtifacts(graph *schemas.TaskGraph) {
+	// audit L-1.3: hold Lock during artifact iteration + status writes to
+	// prevent race with persistGraph (marshals Artifacts under Lock) and
+	// handleStepSuccess (appends to OutputFiles under Lock). Unlock before
+	// persistGraph since it acquires Mu.Lock internally.
+	s.Mu.Lock()
 	for i := range graph.Artifacts {
 		art := &graph.Artifacts[i]
 		if art.Status == "published" {
@@ -157,6 +164,7 @@ func (s *DirectedEngine) deliverArtifacts(graph *schemas.TaskGraph) {
 			})
 		}
 	}
+	s.Mu.Unlock()
 
 	// Persist the updated delivery statuses
 	s.persistGraph(graph)

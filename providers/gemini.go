@@ -11,34 +11,12 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/pkg/safelimits"
 )
-
-type GeminiLoadBalancer struct {
-	keys    []string
-	current int
-	mu      sync.Mutex
-}
-
-func NewGeminiLoadBalancer(keys []string) *GeminiLoadBalancer {
-	return &GeminiLoadBalancer{keys: keys}
-}
-
-func (lb *GeminiLoadBalancer) NextKey() string {
-	lb.mu.Lock()
-	defer lb.mu.Unlock()
-	if len(lb.keys) == 0 {
-		return ""
-	}
-	key := lb.keys[lb.current]
-	lb.current = (lb.current + 1) % len(lb.keys)
-	return key
-}
 
 // ─── Gemini ────────────────────────────────────────────────────────────
 

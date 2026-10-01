@@ -47,16 +47,24 @@ func (r *SystemOneReranker) Rerank(ctx context.Context, query string, documents 
 	}
 
 	// Build "score" questions for each candidate document (§0.4.1).
+	// Laya/Jev wire protocol: criteria is a list of ordered level descriptions;
+	// the backend returns a score on a 0..(len-1) scale. We use 5 relevance
+	// levels. The document text goes into "instructions" so the model can
+	// rate it against the state (query).
+	relevanceLevels := []string{
+		"not relevant",
+		"slightly relevant",
+		"moderately relevant",
+		"highly relevant",
+		"perfect match",
+	}
 	questions := make(map[string]any, len(documents))
 	for i, doc := range documents {
 		qID := docQuestionID(i)
 		questions[qID] = map[string]any{
 			"type":         "score",
-			"instructions": "Rate the relevance of this experience to the query on a scale of 0-10",
-			"criteria": map[string]any{
-				"query": query,
-				"text":  doc,
-			},
+			"instructions": fmt.Sprintf("Rate the relevance of this experience to the query: %s", doc),
+			"criteria":     relevanceLevels,
 		}
 	}
 

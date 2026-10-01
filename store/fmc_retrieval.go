@@ -34,7 +34,6 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 	tokenBudget int,
 ) []*ExperienceNode {
 	es.Mu.RLock()
-	defer es.Mu.RUnlock()
 
 	log := slog.With("op", "RetrieveRelevantExperience", "capability", capability)
 	overallStart := time.Now()
@@ -55,6 +54,36 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 				results = append(results, node)
 				seen[node.NodeID] = true
 				if len(results) >= tier1Limit {
+					break
+				}
+			}
+		}
+	}
+
+	// Hierarchical relaxation (design §2.4): when strict Tier 1 yields 0,
+	// relax constraints — first by FailureMode only (any Capability), then
+	// by Capability only (any FailureMode). This prevents over-fitting to
+	// exact label matches and enables cross-capability experience reuse.
+	tier1Relaxed := 0
+	if len(results) == 0 && predictedMode != "" {
+		for _, node := range es.Nodes {
+			if node.Outcome == "failure" && node.FailureMode == predictedMode && !seen[node.NodeID] {
+				results = append(results, node)
+				seen[node.NodeID] = true
+				tier1Relaxed++
+				if tier1Relaxed >= tier1Limit {
+					break
+				}
+			}
+		}
+	}
+	if len(results) == 0 && capability != "" {
+		for _, node := range es.Nodes {
+			if node.Outcome == "failure" && node.Capability == capability && !seen[node.NodeID] {
+				results = append(results, node)
+				seen[node.NodeID] = true
+				tier1Relaxed++
+				if tier1Relaxed >= tier1Limit {
 					break
 				}
 			}
@@ -115,6 +144,22 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 	tier3Count := len(results) - tier3Base
 	tier3Dur := time.Since(tier3Start)
 
+	// Context bonus scoring (design §2.3): environmental context matches add
+	// incremental scoring weights rather than disqualifying patterns.
+	// Re-sorts candidates by (tier rank + context bonus) before reranking.
+	contextBonusDur := time.Duration(0)
+	if len(results) > 1 && capability != "" {
+		bonusStart := time.Now()
+		results = applyContextBonus(results, capability)
+		contextBonusDur = time.Since(bonusStart)
+	}
+
+	// audit P-2.3: release RLock before reranker HTTP call. The reranker
+	// operates on the local results slice only (no es.Nodes access), so
+	// holding the store lock during the network call blocked ALL experience
+	// writes for the duration of the HTTP round-trip.
+	es.Mu.RUnlock()
+
 	// M3: System One Reranker + RRF Fusion (whitepaper §3).
 	// Coarse ranking = results slice order (Tier1 → Tier2 → Tier3).
 	// Fine ranking = reranker scores → converted to ranks → RRF fused.
@@ -130,11 +175,13 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 	log.Info("retrieval_complete",
 		"total_candidates", len(results),
 		"tier1_count", tier1Count,
+		"tier1_relaxed", tier1Relaxed,
 		"tier2_count", tier2Count,
 		"tier3_count", tier3Count,
 		"tier1_ms", tier1Dur.Milliseconds(),
 		"tier2_ms", tier2Dur.Milliseconds(),
 		"tier3_ms", tier3Dur.Milliseconds(),
+		"context_bonus_ms", contextBonusDur.Milliseconds(),
 		"rerank_ms", rerankDur.Milliseconds(),
 		"reranked", reranked,
 		"total_ms", totalDur.Milliseconds(),
@@ -164,18 +211,41 @@ func (es *ExperienceStore) predictFailureMode(err string) string {
 }
 
 func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int) []*ExperienceNode {
+	if len(query) == 0 {
+		return nil
+	}
 	type scoredNode struct {
 		node  *ExperienceNode
 		score float64
 	}
-	var scored []scoredNode
+	// audit P-1.3: preallocate slice + precompute query norm once.
+	// Was: unsized slice + cosineSimilarity recomputed query norm per node.
+	scored := make([]scoredNode, 0, len(es.Nodes))
+
+	var queryNormSq float64
+	for _, v := range query {
+		queryNormSq += float64(v) * float64(v)
+	}
+	if queryNormSq == 0 {
+		return nil
+	}
+	queryNorm := math.Sqrt(queryNormSq)
 
 	for _, node := range es.Nodes {
-		if len(node.Embedding) > 0 {
-			score := es.cosineSimilarity(query, node.Embedding)
-			if score > 0.7 {
-				scored = append(scored, scoredNode{node: node, score: score})
-			}
+		if len(node.Embedding) == 0 || len(node.Embedding) != len(query) {
+			continue
+		}
+		var dot, normB float64
+		for i := range query {
+			dot += float64(query[i]) * float64(node.Embedding[i])
+			normB += float64(node.Embedding[i]) * float64(node.Embedding[i])
+		}
+		if normB == 0 {
+			continue
+		}
+		score := dot / (queryNorm * math.Sqrt(normB))
+		if score > 0.7 {
+			scored = append(scored, scoredNode{node: node, score: score})
 		}
 	}
 
@@ -208,6 +278,38 @@ func (es *ExperienceStore) cosineSimilarity(a, b []float32) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// applyContextBonus re-sorts retrieval candidates by combining tier rank with
+// context-matching bonuses (design §2.3). Context dimensions are soft features
+// — they add incremental weight rather than acting as binary filters.
+//
+// Base score = 1/(rank+1)  (inverse tier position, decays with rank)
+// Capability match → +0.5 bonus
+//
+// This runs BEFORE the reranker so that RRF fusion combines the context-aware
+// coarse ranking with the reranker's fine ranking.
+func applyContextBonus(results []*ExperienceNode, capability string) []*ExperienceNode {
+	type scored struct {
+		node  *ExperienceNode
+		score float64
+	}
+	scoredResults := make([]scored, len(results))
+	for i, node := range results {
+		score := 1.0 / float64(i+1) // base: inverse tier rank
+		if node.Capability == capability {
+			score += 0.5 // context bonus: capability match
+		}
+		scoredResults[i] = scored{node: node, score: score}
+	}
+	sort.Slice(scoredResults, func(i, j int) bool {
+		return scoredResults[i].score > scoredResults[j].score
+	})
+	out := make([]*ExperienceNode, len(scoredResults))
+	for i, s := range scoredResults {
+		out[i] = s.node
+	}
+	return out
 }
 
 // GetFailureModeProfile returns the dominant failure modes for a specific model.
@@ -284,7 +386,8 @@ const rrfK = 60
 // rerankWithRRF applies System One fine reranking and RRF fusion to coarse
 // retrieval results. Returns the reordered slice and true on success.
 // On reranker error, returns the original order and false (graceful degradation).
-// Caller must hold es.Mu.RLock().
+// audit P-2.3: caller must NOT hold es.Mu — this function makes an HTTP call
+// and only operates on the local results slice + es.rerankerClient (init-time).
 func (es *ExperienceStore) rerankWithRRF(
 	ctx context.Context,
 	log *slog.Logger,

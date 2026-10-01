@@ -208,11 +208,21 @@ func (s *PromptAssembler) Build(
 		// Single skill (or zero): full prompt, no information loss.
 		for _, id := range skillIDs {
 			if skill := hub.GetSkill(id); skill != nil {
-				prompt, err := skill.GetPrompt(providerCfg.Model, providerCfg.Family)
-				if err != nil {
-					skillPart.WriteString(fmt.Sprintf("# Skill %s\n%v\n\n", id, err))
+				if skill.ExecutionMode == config.ExecutionModeDirectory {
+					// DirectorySkill: inject lightweight metadata, not full prompt.
+					// expandSkillsIfNecessary already expanded the skill into sub-steps;
+					// the LLM executes each step as a separate task and does not need
+					// the full declarative spec in the system prompt (avoids context bloat).
+					skillPart.WriteString(fmt.Sprintf("# Skill: %s (%s)\n", skill.Name, skill.ID))
+					skillPart.WriteString(fmt.Sprintf("Description: %s\n", skill.Description))
+					skillPart.WriteString("Status: [Directory-Mode] Executing multi-step declarative DAG. Refer to the current step task for detailed instructions.\n\n")
 				} else {
-					skillPart.WriteString(prompt + "\n\n")
+					prompt, err := skill.GetPrompt(providerCfg.Model, providerCfg.Family)
+					if err != nil {
+						skillPart.WriteString(fmt.Sprintf("# Skill %s\n%v\n\n", id, err))
+					} else {
+						skillPart.WriteString(prompt + "\n\n")
+					}
 				}
 			}
 		}

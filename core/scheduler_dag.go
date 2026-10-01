@@ -210,30 +210,16 @@ func (s *DirectedEngine) ClaimStep(taskID, stepID string) bool {
 	return true
 }
 
-func (s *DirectedEngine) checkFinalize(graph *schemas.TaskGraph) {
-	s.Mu.RLock()
-	isTerm := graph.IsTerminal()
-	status := graph.Status
-	s.Mu.RUnlock()
-
-	if isTerm && status == schemas.GraphRunning {
-		s.finalize(graph)
-	} else {
-		s.Broadcast()
-	}
-}
-
 // HandleSwarmOutput processes a result submitted by a remote swarm worker.
 func (s *DirectedEngine) HandleSwarmOutput(taskID, stepID string, output *schemas.SubagentOutput) {
-	s.Mu.RLock()
+	// audit L-1.7: combine graph + step lookup into a single Lock section to
+	// prevent TOCTOU (graph could be evicted between the two lock acquisitions).
+	s.Mu.Lock()
 	graph := s.graphs[taskID]
-	s.Mu.RUnlock()
-
 	if graph == nil {
+		s.Mu.Unlock()
 		return
 	}
-
-	s.Mu.Lock()
 	step, ok := graph.Steps[stepID]
 	s.Mu.Unlock()
 
@@ -302,21 +288,24 @@ func (s *DirectedEngine) ReleaseTask(stepID string) {
 }
 
 func (s *DirectedEngine) ExecuteTask(ctx context.Context, stepID string) (*schemas.SubagentOutput, error) {
+	// audit L-4.1: lookup both graph and step under RLock with nil check.
+	// Previously, step was dereferenced after RUnlock without ok check,
+	// risking nil dereference and concurrent map access.
 	s.Mu.RLock()
 	var targetGraph *schemas.TaskGraph
+	var step *schemas.Step
 	for _, g := range s.graphs {
-		if _, ok := g.Steps[stepID]; ok {
+		if st, ok := g.Steps[stepID]; ok {
 			targetGraph = g
+			step = st
 			break
 		}
 	}
 	s.Mu.RUnlock()
 
-	if targetGraph == nil {
+	if targetGraph == nil || step == nil {
 		return nil, fmt.Errorf("task step %s not found", stepID)
 	}
-
-	step := targetGraph.Steps[stepID]
 
 	// Delegate to the internal execution logic
 	s.executeStep(ctx, targetGraph, step)

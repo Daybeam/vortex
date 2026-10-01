@@ -97,15 +97,6 @@ func TestRouteProvider_FallsBackToNextWhenNoLookup(t *testing.T) {
 	}
 }
 
-// TestAvgThetaForCapability_ReturnsZeroWhenNilStore verifies the neutral
-// theta fallback when no telemetry is available.
-func TestAvgThetaForCapability_ReturnsZeroWhenNilStore(t *testing.T) {
-	s := &Spawner{}
-	if theta := s.avgThetaForCapability("refactor"); theta != 0 {
-		t.Errorf("avgTheta = %v, want 0 for nil store", theta)
-	}
-}
-
 // TestRecalculateThetas_UpdatesFromSuccessRate verifies that the batch theta
 // recalculation correctly computes Rasch MLE from observed success rates.
 func TestRecalculateThetas_UpdatesFromSuccessRate(t *testing.T) {

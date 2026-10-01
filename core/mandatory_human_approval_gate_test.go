@@ -17,10 +17,12 @@ func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 	logger, _ := NewLogger(tmpDir, nil)
 	defer logger.Close()
 	engine := &DirectedEngine{
-		graphs:    make(map[string]*schemas.TaskGraph),
-		logger:    logger,
-		doneChans: make(map[string]chan struct{}),
+		graphs:      make(map[string]*schemas.TaskGraph),
+		logger:      logger,
+		doneChans:   make(map[string]chan struct{}),
+		cancelFuncs: make(map[string]context.CancelFunc),
 	}
+	engine.lifecycleCtx, engine.lifecycleCancel = context.WithCancel(context.Background())
 
 	graph := &schemas.TaskGraph{
 		TaskID: "task_human_1",

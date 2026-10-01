@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -489,6 +491,19 @@ func (rs *replayScheduler) processMutation(ctx context.Context, taskID, stepID, 
 	payloadBytes, _ := json.Marshal(v.Payload)
 	record.MutationPayload = string(payloadBytes)
 
+	// Stable candidate ID: hash of (taskID, stepID, mutationType, payload).
+	// Same mutation across replay cycles → same ID → GrayscaleController can
+	// track consecutive successes and accumulate trial state across cycles.
+	h := sha256.Sum256([]byte(taskID + ":" + stepID + ":" + v.Type + ":" + record.MutationPayload))
+	candidateID := "jit_" + hex.EncodeToString(h[:])[:12]
+
+	// Grayscale lifecycle: skip archived candidates (failed previously).
+	if rs.grayscale != nil && rs.grayscale.IsArchived(candidateID) {
+		record.VerifierResult = "archived"
+		record.VerifierReason = "candidate archived by grayscale controller"
+		return record
+	}
+
 	verified, reason := rs.verifyMutation(ctx, v)
 	if verified {
 		record.VerifierResult = "verified"
@@ -499,8 +514,14 @@ func (rs *replayScheduler) processMutation(ctx context.Context, taskID, stepID, 
 	}
 	record.VerifierReason = reason
 
+	// Grayscale lifecycle: record outcome for stable candidate ID.
+	// Only record when verification actually ran (not "no_verifier" skips,
+	// which are neutral — no signal to promote or archive on).
+	if rs.grayscale != nil && record.VerifierResult != "skipped" {
+		rs.grayscale.RecordOutcome(candidateID, verified)
+	}
+
 	if verified || record.VerifierResult == "skipped" {
-		candidateID := "jit_" + uuid.New().String()[:8]
 		record.CandidateID = candidateID
 		rs.writeBack(ctx, candidateID, v, verified, taskText)
 	}

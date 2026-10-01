@@ -28,15 +28,6 @@ func truncateForLog(s string, n int) string {
 // map/slice-shaped values so diagnostic logs (e.g. InfiniteLoopDetected's
 // loop_detail) are actually inspectable; fall back to %v for everything
 // else (strings, errors, scalars) where %v is already the natural format.
-
-// formatForLog renders a tool result for diagnostic logging. Tool results
-// are commonly map[string]any (JSON-decoded responses), for which
-// fmt.Sprintf("%v", ...) produces Go's default map-printing format
-// ("map[key:val key2:val2]") -- readable for small maps but loses nesting
-// structure and quoting for anything non-trivial. Prefer json.Marshal for
-// map/slice-shaped values so diagnostic logs (e.g. InfiniteLoopDetected's
-// loop_detail) are actually inspectable; fall back to %v for everything
-// else (strings, errors, scalars) where %v is already the natural format.
 func formatForLog(v any) string {
 	switch v.(type) {
 	case map[string]any, []any:

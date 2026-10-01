@@ -142,8 +142,8 @@ func newProvider(cfg *config.ProviderConfig, runtimes config.ExternalRuntimes) (
 		scriptPath, _ := cfg.Extra["script_path"].(string)
 		if scriptPath == "" {
 			return nil, fmt.Errorf("external provider requires extra.script_path")
-		}
-		return NewExternalScriptProvider(cfg, scriptPath, runtimes)
+	}
+	return NewExternalScriptProvider(cfg, scriptPath, runtimes)
 	case "swarm":
 		return nil, fmt.Errorf("swarm provider is not available")
 	case "systemone":
@@ -153,6 +153,25 @@ func newProvider(cfg *config.ProviderConfig, runtimes config.ExternalRuntimes) (
 	default:
 		return nil, fmt.Errorf("unsupported provider %q (supported: anthropic, openai, gemini, ollama, script, external, swarm, systemone, host)", cfg.Provider)
 	}
+}
+
+// unwrapScriptProvider walks the provider wrapper chain (RateLimitedProvider →
+// RetryingProvider → base) to find a *ScriptProvider. Returns nil if the chain
+// does not terminate at a script provider.
+func unwrapScriptProvider(p interfaces.Provider) *ScriptProvider {
+	for p != nil {
+		switch v := p.(type) {
+		case *ScriptProvider:
+			return v
+		case *RateLimitedProvider:
+			p = v.Base
+		case *RetryingProvider:
+			p = v.Base
+		default:
+			return nil
+		}
+	}
+	return nil
 }
 
 // ReloadScriptProvider reloads a script provider by its cache key name.
@@ -165,12 +184,10 @@ func ReloadScriptProvider(name string, cfg *config.ProviderConfig) error {
 	if !ok {
 		return fmt.Errorf("provider %q not loaded", name)
 	}
-	sp, ok := p.(*ScriptProvider)
-	if !ok {
+	sp := unwrapScriptProvider(p)
+	if sp == nil {
 		return fmt.Errorf("provider %q is not a script provider", name)
 	}
-	// Remove from cache so next Get() rebuilds
-	delete(cache, key)
 	return sp.Reload()
 }
 
@@ -180,7 +197,7 @@ func GetScriptProviders() []map[string]any {
 	mu.Lock()
 	defer mu.Unlock()
 	for key, p := range cache {
-		if sp, ok := p.(*ScriptProvider); ok {
+		if sp := unwrapScriptProvider(p); sp != nil {
 			result = append(result, map[string]any{
 				"cache_key":   key,
 				"name":        sp.Name(),

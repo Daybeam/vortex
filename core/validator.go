@@ -8,11 +8,11 @@ import (
 
 // ValidationResult carries the outcome of a skill/mcp combination check.
 type ValidationResult struct {
-	Valid  bool
-	Reason string
-	Tokens int
-	Skills []string
-	MCPs   []config.MCPBinding
+	Valid   bool
+	Reason  string
+	Tokens  int
+	Skills  []string
+	MCPs    []config.MCPBinding
 }
 
 // ValidateCombination checks if a set of skill IDs can be used together without conflict.
@@ -67,7 +67,7 @@ func ResolveFinalSkills(hub *ContextHub, roleID string, additionalSkills []strin
 	// Merge bound and additional
 	final := make([]string, 0, len(role.BoundSkills)+len(additionalSkills))
 	final = append(final, role.BoundSkills...)
-
+	
 	seen := make(map[string]bool)
 	for _, s := range role.BoundSkills {
 		seen[s] = true
@@ -130,7 +130,7 @@ func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, a
 				return nil, fmt.Errorf("unknown MCP id %q (not in whitelist)", mcpID)
 			}
 		}
-
+		
 		allowed := []string{}
 		if additionalToolAllowlists != nil {
 			if tools, ok := additionalToolAllowlists[mcpID]; ok {
@@ -147,10 +147,3 @@ func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, a
 	return hub.Registry.ResolveToolBindings(role, extraBindings), nil
 }
 
-// Note: added a small helper to handle nil map in ResolveFinalMCPs
-func handleAllowlists(allowlists map[string][]string, mcpID string) []string {
-	if allowlists == nil {
-		return nil
-	}
-	return allowlists[mcpID]
-}
