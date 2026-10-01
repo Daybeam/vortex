@@ -294,20 +294,28 @@ func (sw *StagedWorkspace) Rollback(pre *SnapshotIndex) error {
 	return nil
 }
 
-// AppendJournalEntry appends one entry to journal.json (read-modify-write
-// under a mutex -- the file itself is small and step-frequency writes, so
-// this is not a performance concern; the data model it presents is
-// logically append-only per design doc §3.3).
+// AppendJournalEntry appends one entry to the journal as a single JSONL line
+// (O(1) append — no read-modify-write). Format: JSONL (one JSON object per line).
+// Backward compat: loadJournalLocked handles both old JSON array and new JSONL.
 func (sw *StagedWorkspace) AppendJournalEntry(entry *StagingJournalEntry) error {
 	sw.journalMu.Lock()
 	defer sw.journalMu.Unlock()
 
-	entries, err := sw.loadJournalLocked()
+	if err := os.MkdirAll(filepath.Dir(sw.JournalPath), 0755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
-	entries = append(entries, *entry)
-	return sw.writeJournalLocked(entries)
+	data = append(data, '\n')
+	f, err := os.OpenFile(sw.JournalPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(data)
+	return err
 }
 
 // MarkRolledBack finds the most recent journal entry for stepID and marks
@@ -337,9 +345,25 @@ func (sw *StagedWorkspace) loadJournalLocked() ([]StagingJournalEntry, error) {
 		}
 		return nil, err
 	}
+	// Backward compat: old format was a JSON array (starts with '[')
+	if len(data) > 0 && data[0] == '[' {
+		var entries []StagingJournalEntry
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return nil, err
+		}
+		return entries, nil
+	}
+	// New format: JSONL (one JSON object per line)
 	var entries []StagingJournalEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, err
+	for _, line := range splitLines(data) {
+		if len(line) == 0 {
+			continue
+		}
+		var entry StagingJournalEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue // skip malformed lines
+		}
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }
@@ -348,12 +372,20 @@ func (sw *StagedWorkspace) writeJournalLocked(entries []StagingJournalEntry) err
 	if err := os.MkdirAll(filepath.Dir(sw.JournalPath), 0755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(entries, "", "  ")
+	// Write as JSONL (one JSON object per line via json.Encoder)
+	tmp := sw.JournalPath + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	tmp := sw.JournalPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	enc := json.NewEncoder(f)
+	for i := range entries {
+		if err := enc.Encode(&entries[i]); err != nil {
+			f.Close()
+			return err
+		}
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, sw.JournalPath)

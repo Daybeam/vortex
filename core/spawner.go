@@ -247,9 +247,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	if req.Hub == nil {
 		req.Hub = NewContextHub(s.registry, nil, s.expStore)
 	}
-	if req.Hub.GraphMu == nil {
-		req.Hub.GraphMu = &sync.RWMutex{} // audit C-2: fallback — Graph is nil here, mutex unused
-	}
+	// P-2.1 Step 2: GraphMu fallback removed — DecisionHistory access now goes
+	// through TaskGraph.RecordDecision/UpdateDecisionOutcome (nil-safe on Graph).
 
 	role := req.Hub.GetRole(req.RoleID)
 	if role == nil {
@@ -752,13 +751,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 					node.Causes = append(node.Causes, k)
 				}
 
-				req.Hub.GraphMu.Lock()
-				if req.Hub.Graph.DecisionHistory == nil {
-					req.Hub.Graph.DecisionHistory = make(map[string]*schemas.DecisionNode)
-				}
-				req.Hub.Graph.DecisionHistory[turnDecisionID] = node
+				req.Hub.Graph.RecordDecision(turnDecisionID, node)
 				decisionIDs = append(decisionIDs, turnDecisionID)
-				req.Hub.GraphMu.Unlock() // audit C-2: use engine mutex, not Spawner's s.Mu
 
 				// Priority 6: Learn from the new decision
 				if s.expStore != nil {
@@ -821,11 +815,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 
 			// ── Priority 5: Update Decision Outcome (Final) ──────────────────
 			if turnDecisionID != "" && req.Hub != nil && req.Hub.Graph != nil {
-				req.Hub.GraphMu.Lock()
-				if node, ok := req.Hub.Graph.DecisionHistory[turnDecisionID]; ok {
-					node.Outcome = string(output.Status)
-				}
-				req.Hub.GraphMu.Unlock() // audit C-2: use engine mutex, not Spawner's s.Mu
+				req.Hub.Graph.UpdateDecisionOutcome(turnDecisionID, string(output.Status))
 			}
 
 			s.taskStoreSet(ctx, req.TaskID, req.StepID, &store.StepResult{
@@ -1105,11 +1095,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 
 		// ── Priority 5: Update Decision Outcome ──────────────────────────
 		if turnDecisionID != "" && req.Hub != nil && req.Hub.Graph != nil {
-			s.Mu.Lock()
-			if node, ok := req.Hub.Graph.DecisionHistory[turnDecisionID]; ok {
-				node.Outcome = fmt.Sprintf("executed %d tools", len(resp.ToolCalls))
-			}
-			s.Mu.Unlock()
+			req.Hub.Graph.UpdateDecisionOutcome(turnDecisionID, fmt.Sprintf("executed %d tools", len(resp.ToolCalls)))
 		}
 
 		// Priority 4: Re-route tools for the next turn based on updated context

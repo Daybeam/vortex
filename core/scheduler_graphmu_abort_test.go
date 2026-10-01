@@ -9,17 +9,16 @@ import (
 )
 
 // TestC2_GraphMu_SetAndProtectsDecisionHistory is a regression test for
-// audit C-2: ContextHub.GraphMu must be initialized to the scheduler's Mu
-// so that Spawner's DecisionHistory writes are protected by the same mutex
-// as persistGraph.
+// audit C-2 (updated for P-2.1 Step 2): DecisionHistory is now protected by
+// TaskGraph.decisionMu via RecordDecision/UpdateDecisionOutcome methods,
+// decoupled from DirectedEngine.Mu.
 //
-// Before the fix, ContextHub had no mutex for graph access. The Spawner used
-// its own s.Mu to protect Graph.DecisionHistory, racing with persistGraph
-// which uses DirectedEngine.Mu.
-// After the fix, GraphMu is set to &s.Mu in scheduler_dag.go.
+// Before the original fix (C-2), ContextHub had no mutex for graph access.
+// Before P-2.1 Step 2, GraphMu pointed to &s.Mu, blocking all graph ops
+// during DecisionHistory writes. Now TaskGraph has its own decisionMu.
 //
-// Reproduction: verify GraphMu is non-nil and concurrent DecisionHistory
-// writes under GraphMu do not panic.
+// Reproduction: verify concurrent DecisionHistory writes via RecordDecision
+// do not panic.
 func TestC2_GraphMu_SetAndProtectsDecisionHistory(t *testing.T) {
 	s, _ := newAbortTestEngine(t)
 	defer s.Stop()
@@ -37,28 +36,13 @@ func TestC2_GraphMu_SetAndProtectsDecisionHistory(t *testing.T) {
 	s.graphs["task-graphmu-test"] = graph
 	s.Mu.Unlock()
 
-	// Create a ContextHub as the scheduler does in run().
-	hub := &ContextHub{
-		Graph:   graph,
-		GraphMu: &s.Mu, // This is what scheduler_dag.go sets (audit C-2)
-	}
-
-	if hub.GraphMu == nil {
-		t.Fatal("GraphMu must be non-nil after C-2 fix")
-	}
-
-	// Concurrent DecisionHistory writes using GraphMu should not panic.
+	// Concurrent DecisionHistory writes via RecordDecision should not panic.
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			hub.GraphMu.Lock()
-			if hub.Graph.DecisionHistory == nil {
-				hub.Graph.DecisionHistory = make(map[string]*schemas.DecisionNode)
-			}
-			hub.Graph.DecisionHistory["decision-"+string(rune('A'+idx%26))] = &schemas.DecisionNode{}
-			hub.GraphMu.Unlock()
+			graph.RecordDecision("decision-"+string(rune('A'+idx%26)), &schemas.DecisionNode{})
 		}(i)
 	}
 
@@ -75,8 +59,8 @@ func TestC2_GraphMu_SetAndProtectsDecisionHistory(t *testing.T) {
 		t.Fatal("timeout: concurrent DecisionHistory writes deadlocked")
 	}
 
-	if len(hub.Graph.DecisionHistory) == 0 {
-		t.Errorf("expected non-zero decisions, got %d", len(hub.Graph.DecisionHistory))
+	if len(graph.DecisionHistory) == 0 {
+		t.Errorf("expected non-zero decisions, got %d", len(graph.DecisionHistory))
 	}
 }
 

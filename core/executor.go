@@ -168,6 +168,12 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 	// has gone quiet (no further output) for a short grace period after the match. This
 	// avoids killing processes whose legitimate output momentarily resembles a prompt.
 	const stdinConfirmDelay = 1500 * time.Millisecond
+	// G-7: cap concurrent pattern-match confirmation goroutines to prevent
+	// transient goroutine storm under adversarial output (e.g. process printing
+	// "y/n" 1000×/sec). 32 is generous — if 32 confirmations are already
+	// pending, the idle signal is already imminent and additional matches are
+	// redundant. The non-blocking send (default case) simply skips spawning.
+	confirmSem := make(chan struct{}, 32)
 	var lastReadAt atomic.Int64
 	lastReadAt.Store(time.Now().UnixNano())
 	go func() {
@@ -188,19 +194,25 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 						if p.Pattern.MatchString(output) {
 							matchedAt := time.Now().UnixNano()
 							desc := p.Description + ": " + output
-							go func(matchedAt int64, desc string) {
-								timer := time.NewTimer(stdinConfirmDelay)
-								defer timer.Stop()
-								<-timer.C
-								// Only fire if no newer output has arrived since this
-								// match — i.e. the process is still genuinely idle.
-								if lastReadAt.Load() <= matchedAt {
-									select {
-									case stdinDetected <- desc:
-									default:
+							select {
+							case confirmSem <- struct{}{}:
+								go func(matchedAt int64, desc string) {
+									defer func() { <-confirmSem }()
+									timer := time.NewTimer(stdinConfirmDelay)
+									defer timer.Stop()
+									<-timer.C
+									// Only fire if no newer output has arrived since this
+									// match — i.e. the process is still genuinely idle.
+									if lastReadAt.Load() <= matchedAt {
+										select {
+										case stdinDetected <- desc:
+										default:
+										}
 									}
-								}
-							}(matchedAt, desc)
+								}(matchedAt, desc)
+							default:
+								// semaphore full — skip; idle signal already imminent
+							}
 						}
 					}
 				}

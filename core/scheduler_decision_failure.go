@@ -69,8 +69,15 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 		s.Mu.Unlock()
 	}
 
+	// audit L-N7: graph.FallbackFor iterates graph.Steps (map) and we read
+	// fallback.Status — both race with MutateGraphTopology which adds steps
+	// under s.Mu.Lock(). Concurrent map iteration + write can fatal-panic.
+	// Snapshot the fallback info under RLock before use.
+	s.Mu.RLock()
 	fallback := graph.FallbackFor(step.ID)
-	if fallback != nil && fallback.Status == schemas.StepPending {
+	fallbackPending := fallback != nil && fallback.Status == schemas.StepPending
+	s.Mu.RUnlock()
+	if fallbackPending {
 		s.Mu.Lock()
 		step.Status = schemas.StepFailed
 		step.LastError = fmt.Sprintf("%s: confidence %.2f, root cause: %s", output.Status, conf, string(cause))
