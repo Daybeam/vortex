@@ -3,9 +3,9 @@
 ## Reporting a vulnerability
 
 Do NOT open a public issue for a security vulnerability. Report it via GitHub
-Security Advisories (Repository → Security → Advisories → New advisory) or
-email security@daybeam.dev. We will acknowledge within 48 hours and ship a
-fix with credit once it is released.
+Security Advisories (Repository → Security → Advisories → New advisory).
+We will acknowledge within 48 hours and ship a fix with credit once it is
+released.
 
 ## API keys and secrets
 
