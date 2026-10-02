@@ -72,20 +72,24 @@ type SpawnRequest struct {
 	ContextRefs              map[string]string
 	// DegradedMCPs: MCPs that failed health check and were skipped.
 	// Populated by HealthCheckInterceptor. Downstream spawner should not attempt to start them.
-	DegradedMCPs []string
+	DegradedMCPs             []string
 	// TurnsBudgetBonus: extra tool-turn budget granted on top of maxTurns,
 	// propagated from Step.TurnsBudgetBonus by the scheduler. Lets a resumed
 	// step actually get more room instead of re-hitting the same cap.
 	// ADDED (2026-09-07).
-	TurnsBudgetBonus int
-	Temperature      *float32
-	FrequencyPenalty *float32
-	Metadata         map[string]any
+	TurnsBudgetBonus         int
+	Temperature              *float32
+	FrequencyPenalty         *float32
+	Metadata                 map[string]any
 	// ProviderOverride: if set, overrides the role-level provider for this step.
 	// Must match a named provider in the registry (config.json "providers" keys).
 	ProviderOverride string
 	RoutingMode      string
 	CompressionHint  string
+	// PredecessorSkillID is the RoleID of the previous completed step in the
+	// DAG. Used by CaSKG to boost tools that were successful after that skill.
+	// Empty for the first step or when no predecessor has completed yet.
+	PredecessorSkillID string
 
 	// SessionRoot is the session-level authorized workspace root directory.
 	// When non-empty, the spawner's SafePathValidator uses it as a Level 2

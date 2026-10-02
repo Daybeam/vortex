@@ -18,10 +18,10 @@ import (
 type ModelTier string
 
 const (
-	ModelTierLight    ModelTier = "light"    // < ~8B params / local
-	ModelTierStandard ModelTier = "standard" // 8B-70B / mid-tier
-	ModelTierFlagship ModelTier = "flagship" // 70B+ / frontier
-	ModelTierUnknown  ModelTier = "unknown"  // unrecognized — caller falls back
+	ModelTierLight     ModelTier = "light"     // < ~8B params / local
+	ModelTierStandard  ModelTier = "standard"  // 8B-70B / mid-tier
+	ModelTierFlagship  ModelTier = "flagship"  // 70B+ / frontier
+	ModelTierUnknown   ModelTier = "unknown"   // unrecognized — caller falls back
 )
 
 const (
@@ -57,6 +57,12 @@ const (
 	// hand-written instructions that have grown bloated and are eating
 	// front-loaded attention budget.
 	MaxRoleInstructionChars = 2000
+
+	// MaxRoleRulesChars is the soft cap for Role.Rules. Rules are typically
+	// longer than Instructions (structured guidance vs. a summary), so the cap
+	// is higher. Without this, Rules are unbounded and silently consume
+	// front-loaded attention budget. E8 fix (2026-10-02).
+	MaxRoleRulesChars = 10000
 )
 
 // GetModelTier classifies the provider's Model string into a budget tier.
@@ -194,9 +200,9 @@ func (p *ProviderConfig) GetReserveTokens() int {
 // logs it as a Warning but does not reject the config — the runtime
 // PromptBudgetEnforcer handles structural compression.
 type RoleInstructionWarning struct {
-	RoleID     string
-	Length     int
-	Cap        int
+	RoleID    string
+	Length    int
+	Cap       int
 	Suggestion string
 }
 
@@ -228,6 +234,7 @@ func ValidateRoleInstruction(role *Role) *RoleInstructionWarning {
 // ValidateAllRoleInstructions runs ValidateRoleInstruction over every Role
 // in the Registry and returns all warnings. The loader calls this after a
 // successful load and logs each warning. Returns nil if all roles are clean.
+// Also validates Role.Rules length against MaxRoleRulesChars (E8 fix).
 func ValidateAllRoleInstructions(roles map[string]*Role) []RoleInstructionWarning {
 	if len(roles) == 0 {
 		return nil
@@ -236,6 +243,15 @@ func ValidateAllRoleInstructions(roles map[string]*Role) []RoleInstructionWarnin
 	for _, role := range roles {
 		if w := ValidateRoleInstruction(role); w != nil {
 			warnings = append(warnings, *w)
+		}
+		// E8 fix: validate Role.Rules length (previously unbounded).
+		if role != nil && role.Rules != "" && len(role.Rules) > MaxRoleRulesChars {
+			warnings = append(warnings, RoleInstructionWarning{
+				RoleID:     role.ID,
+				Length:     len(role.Rules),
+				Cap:        MaxRoleRulesChars,
+				Suggestion: "Role.Rules exceeds soft cap; consider splitting into structured fields or compressing",
+			})
 		}
 	}
 	return warnings

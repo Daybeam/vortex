@@ -13,11 +13,11 @@ import (
 
 // Sieve handles result validation, repetition detection, and schema enforcement.
 type Sieve struct {
-	RepetitionThreshold     float64               // Similarity threshold to trigger repetition warning (e.g., 0.85)
-	ToolRepetitionThreshold int                   // Number of identical tool calls allowed before interception
-	WindowSize              int                   // Number of previous lines to compare for repetition
-	MaxKeep                 int                   // Max lines to keep in pruner
-	toolHistory             map[string][]string   // taskID -> list of toolCallHashes
+	RepetitionThreshold     float64             // Similarity threshold to trigger repetition warning (e.g., 0.85)
+	ToolRepetitionThreshold int                 // Number of identical tool calls allowed before interception
+	WindowSize              int                 // Number of previous lines to compare for repetition
+	MaxKeep                 int                 // Max lines to keep in pruner
+	toolHistory             map[string][]string // taskID -> list of toolCallHashes
 	compressor              *codeintel.Compressor // AST-aware code shrinking
 	mu                      sync.Mutex
 
@@ -47,14 +47,14 @@ func NewSieve(maxKeep int) *Sieve {
 		toolHistory:             make(map[string][]string),
 		compressor:              codeintel.NewCompressor(100),
 		ProtectedPrefixes: []string{
-			"$artifact",  // ArtifactContract / provenance metadata
-			"$contract",  // Artifact Contract fields (required_fields, type_schema)
-			"$goal",      // Task goal / invariant
-			"$rule",      // SOP rule / system directive
-			"$sop",       // SOP role definition
-			"$schema",    // JSON schema declarations
-			"$invariant", // Explicit invariants
-			"protected_", // Prefix reserved for any custom protected entry
+			"$artifact",    // ArtifactContract / provenance metadata
+			"$contract",    // Artifact Contract fields (required_fields, type_schema)
+			"$goal",        // Task goal / invariant
+			"$rule",        // SOP rule / system directive
+			"$sop",         // SOP role definition
+			"$schema",      // JSON schema declarations
+			"$invariant",   // Explicit invariants
+			"protected_",   // Prefix reserved for any custom protected entry
 		},
 	}
 }
@@ -218,19 +218,19 @@ func (s *Sieve) detectRepetition(text string) bool {
 		if current == "" {
 			continue
 		}
-
+		
 		// Compare with previous N lines
 		start := i - s.WindowSize
 		if start < 0 {
 			start = 0
 		}
-
+		
 		for j := start; j < i; j++ {
 			prev := strings.TrimSpace(lines[j])
 			if prev == "" {
 				continue
 			}
-
+			
 			if s.calculateSimilarity(current, prev) > s.RepetitionThreshold {
 				return true
 			}
@@ -244,10 +244,10 @@ func (s *Sieve) calculateSimilarity(a, b string) float64 {
 	if a == b {
 		return 1.0
 	}
-
+	
 	tokensA := strings.Fields(strings.ToLower(a))
 	tokensB := strings.Fields(strings.ToLower(b))
-
+	
 	if len(tokensA) == 0 || len(tokensB) == 0 {
 		return 0
 	}
@@ -337,6 +337,9 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 }
 
 func (s *Sieve) ClearHistory(taskID string) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.toolHistory, taskID)

@@ -122,10 +122,10 @@ func TestGetModelTier_NilSafe(t *testing.T) {
 func TestGetModelTier_PrefixStripped(t *testing.T) {
 	// "models/" and "google/" prefixes should be stripped before matching.
 	cases := map[string]ModelTier{
-		"models/gpt-4o":         ModelTierFlagship,
-		"google/gemini-1.5-pro": ModelTierFlagship,
-		"models/gpt-4o-mini":    ModelTierStandard,
-		"google/gemma-2b":       ModelTierLight,
+		"models/gpt-4o":            ModelTierFlagship,
+		"google/gemini-1.5-pro":    ModelTierFlagship,
+		"models/gpt-4o-mini":       ModelTierStandard,
+		"google/gemma-2b":          ModelTierLight,
 	}
 	for model, want := range cases {
 		pc := &ProviderConfig{Model: model}
@@ -139,13 +139,13 @@ func TestGetModelTier_PrefixStripped(t *testing.T) {
 
 func TestGetMaxSystemPromptTokens(t *testing.T) {
 	cases := map[string]int{
-		"claude-3.5-sonnet": DefaultSystemPromptBudgetFlagship,
-		"gpt-4o":            DefaultSystemPromptBudgetFlagship,
-		"gpt-4o-mini":       DefaultSystemPromptBudgetStandard,
-		"claude-3.5-haiku":  DefaultSystemPromptBudgetStandard,
-		"llama-3-8b":        DefaultSystemPromptBudgetLight,
-		"qwen-7b":           DefaultSystemPromptBudgetLight,
-		"unknown-model":     DefaultSystemPromptBudgetStandard,
+		"claude-3.5-sonnet":   DefaultSystemPromptBudgetFlagship,
+		"gpt-4o":              DefaultSystemPromptBudgetFlagship,
+		"gpt-4o-mini":         DefaultSystemPromptBudgetStandard,
+		"claude-3.5-haiku":    DefaultSystemPromptBudgetStandard,
+		"llama-3-8b":          DefaultSystemPromptBudgetLight,
+		"qwen-7b":             DefaultSystemPromptBudgetLight,
+		"unknown-model":       DefaultSystemPromptBudgetStandard,
 	}
 	for model, want := range cases {
 		pc := &ProviderConfig{Model: model}
@@ -345,5 +345,32 @@ func TestGetReserveTokens_NilSafe(t *testing.T) {
 	var pc *ProviderConfig
 	if got := pc.GetReserveTokens(); got != DefaultReserveTokensStandard {
 		t.Errorf("nil ProviderConfig should return Standard default, got %d", got)
+	}
+}
+
+// TestValidateAllRoleInstructions_RulesOverflow is a regression test for E8:
+// Role.Rules had no length limit, silently consuming front-loaded attention
+// budget. ValidateAllRoleInstructions now also checks Rules length.
+func TestValidateAllRoleInstructions_RulesOverflow(t *testing.T) {
+	roles := map[string]*Role{
+		"clean":      {ID: "clean", Instruction: "short", Rules: "short rules"},
+		"rules_big":  {ID: "rules_big", Rules: strings.Repeat("r", MaxRoleRulesChars+1)},
+		"rules_ok":   {ID: "rules_ok", Rules: strings.Repeat("r", MaxRoleRulesChars)},
+		"both_big":   {ID: "both_big", Instruction: strings.Repeat("i", MaxRoleInstructionChars+1), Rules: strings.Repeat("r", MaxRoleRulesChars+1)},
+	}
+	warnings := ValidateAllRoleInstructions(roles)
+	// Expect 3 warnings: rules_big (Rules), both_big (Instruction + Rules)
+	if len(warnings) != 3 {
+		t.Fatalf("expected 3 warnings (rules_big + both_big×2), got %d: %v", len(warnings), warnings)
+	}
+	// Verify at least one warning is specifically about Rules (Cap == MaxRoleRulesChars)
+	foundRulesWarning := false
+	for _, w := range warnings {
+		if w.Cap == MaxRoleRulesChars {
+			foundRulesWarning = true
+		}
+	}
+	if !foundRulesWarning {
+		t.Error("expected at least one Rules-length warning (Cap == MaxRoleRulesChars)")
 	}
 }

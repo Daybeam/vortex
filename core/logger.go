@@ -28,6 +28,10 @@ const (
 	EventRateLimited             EventType = "rate_limited"
 	EventDecisionRequired        EventType = "decision_required"
 	EventDecisionSubmitted       EventType = "decision_submitted"
+	// EventDecisionAutoResolved is emitted when NonInteractive mode auto-selects
+	// a conservative default for a decision that would otherwise block forever.
+	// ADDED (2026-10-02, E5).
+	EventDecisionAutoResolved    EventType = "decision_auto_resolved"
 	EventTaskCompleted           EventType = "task_completed"
 	EventTaskFailed              EventType = "task_failed"
 	EventProviderCallStarted     EventType = "provider_call_started"

@@ -15,7 +15,11 @@ import (
 
 func buildSmartRoutingEngine(t *testing.T, requireReview bool) (*DirectedEngine, string) {
 	t.Helper()
-	tmpDir := t.TempDir()
+	tmpDir, err := os.MkdirTemp("", "smart-routing-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
 	configPath := filepath.Join(tmpDir, "config.json")
 
 	cfg := config.Config{

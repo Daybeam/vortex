@@ -29,6 +29,22 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 
 	cause, suggestion, details := s.diagnoseFault(&output, step)
 
+	// E2/E3 fix (2026-10-02): if a tool has repeatedly failed at the task level,
+	// the failure is deterministic/environmental, not generative. Reclassify so
+	// the follow-up block below does NOT spawn a same-role substep that would
+	// just repeat the same failing tool call (the amplification loop seen as
+	// 21/22 generative_uncertainty in the eval trajectory). Falls through to a
+	// decision_required instead, and the step_failed payload reports the real
+	// cause. Only overrides generative_uncertainty — context_deficit carries a
+	// genuine missing-context signal we must preserve.
+	if cause == FailureClassGenerativeUncertainty && s.spawner != nil {
+		if tool, n := s.spawner.RepeatedToolFailure(taskID); n >= toolFailCircuitBreakerThreshold {
+			cause = FailureClassDeterministicToolRefusal
+			suggestion = fmt.Sprintf("Tool %q failed %d times this task; deterministic or environmental refusal. Do not repeat the same call.", tool, n)
+			details = append(details, tool)
+		}
+	}
+
 	if s.tryBacktrack(graph, step, &output) {
 		return VerdictReturn
 	}
@@ -69,16 +85,14 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 		s.Mu.Unlock()
 	}
 
-	// audit L-N7: graph.FallbackFor iterates graph.Steps (map) and we read
-	// fallback.Status — both race with MutateGraphTopology which adds steps
-	// under s.Mu.Lock(). Concurrent map iteration + write can fatal-panic.
-	// Snapshot the fallback info under RLock before use.
-	s.Mu.RLock()
+	// audit L-N7/L-N11: graph.FallbackFor iterates graph.Steps (map) and we
+	// read/write fallback.Status — both race with MutateGraphTopology which
+	// adds steps under s.Mu.Lock(). Use a single Lock (not RLock+Lock) to
+	// eliminate the TOCTOU window where a concurrent MutateGraphTopology could
+	// remove or modify the fallback between RUnlock and Lock.
+	s.Mu.Lock()
 	fallback := graph.FallbackFor(step.ID)
-	fallbackPending := fallback != nil && fallback.Status == schemas.StepPending
-	s.Mu.RUnlock()
-	if fallbackPending {
-		s.Mu.Lock()
+	if fallback != nil && fallback.Status == schemas.StepPending {
 		step.Status = schemas.StepFailed
 		step.LastError = fmt.Sprintf("%s: confidence %.2f, root cause: %s", output.Status, conf, string(cause))
 		fallback.Status = schemas.StepPending
@@ -90,11 +104,21 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 		})
 		return VerdictReturn
 	}
+	s.Mu.Unlock()
 
 	s.Mu.Lock()
 	step.Status = schemas.StepBlocked
 	s.Mu.Unlock()
-	s.publishEvent(taskID, step.ID, EventStepFailed, map[string]any{"root_cause": string(cause), "blocked": true})
+	// E4 fix: enrich step_failed payload with role_id, suggestion, confidence.
+	// All values are already in scope; this is purely additive — the thin
+	// {blocked, root_cause} payload made external observability impossible.
+	s.publishEvent(taskID, step.ID, EventStepFailed, map[string]any{
+		"root_cause":  string(cause),
+		"blocked":     true,
+		"role_id":     step.RoleID,
+		"suggestion":  suggestion,
+		"confidence":  conf,
+	})
 
 	if s.SignalField != nil {
 		s.SignalField.Deposit(types.LayerCritical, step.ID, 1.5)

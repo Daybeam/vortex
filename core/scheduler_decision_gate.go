@@ -1,6 +1,8 @@
 package core
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/daybeam/vortex/schemas"
@@ -68,8 +70,8 @@ func (s *DirectedEngine) addDecision(
 
 	// [CORE: DAG Surgery Option Injection] (2026-09-07)
 	// When the decision type is upstream_insufficient or step_failed with
-	// context_deficit, add "rewrite_dag" as a valid option. This allows
-	// the Autonomous Decision Router to trigger DAG Surgery automatically.
+	// context_deficit, add "rewrite_dag" as a valid option for the external
+	// decider (or E5 NonInteractive auto-resolver) to choose.
 	if dtype == schemas.DecisionUpstreamInsufficient {
 		options = append(options, "rewrite_dag")
 	} else if dtype == schemas.DecisionStepFailed {
@@ -87,17 +89,12 @@ func (s *DirectedEngine) addDecision(
 		Options: options,
 		Created: time.Now(),
 	}
-	// [CORE: Autonomous Decision Router]
-	// If the decision context identifies a known retriable failure,
-	// automatically route the decision choice to optimize flow,
-	// rather than blocking for manual user input.
-	if dtype == schemas.DecisionStepFailed {
-		if rootCause, ok := ctx["root_cause"].(string); ok && rootCause == "generative_uncertainty" {
-			// Automatically route 'refine_and_retry' to bypass human block
-			s.SubmitDecision(graph.TaskID, dec.ID, "refine_and_retry")
-			return
-		}
-	}
+	// NOTE: The former "Autonomous Decision Router" that auto-routed
+	// generative_uncertainty → refine_and_retry was removed (2026-10-02).
+	// It called SubmitDecision BEFORE the decision was enqueued, so the
+	// call always failed silently, and the early return prevented the
+	// decision from being added to PendingDecisions — causing silent
+	// deadlocks. The E5 NonInteractive auto-resolution below replaces it.
 	// Race fix: protect graph.Status and graph.PendingDecisions with Mu.
 	// Must unlock before broadcastDone (line 87) which takes Mu.Lock —
 	// sync.RWMutex is not reentrant.
@@ -121,6 +118,166 @@ func (s *DirectedEngine) addDecision(
 		"decision_id": dec.ID,
 		"type":        string(dtype),
 	})
+
+	// E5 fix (2026-10-02): NonInteractive auto-resolution.
+	// In unattended mode (CI / batch eval), a decision that would block forever
+	// is auto-resolved, using the SAME SubmitDecision path an external caller
+	// uses (reuses pending-removal + run() restart). Runs in a goroutine so the
+	// current step goroutine can unwind first — SubmitDecision cancels the run
+	// ctx, which would otherwise abort this step mid-flight. Config-gated; default off.
+	//
+	// Two strategies:
+	//   delegate    — DecisionDeciderRole is set: spawn that role to evaluate
+	//                 the decision context and choose. Falls back to conservative
+	//                 if the decider errors or returns an invalid choice.
+	//   conservative — no decider role: use defaultNonInteractiveChoice (hardcoded
+	//                  safe defaults). Guaranteed to terminate.
+	if s.registry != nil && s.registry.System.NonInteractive {
+		taskID, decID := graph.TaskID, dec.ID
+		deciderRole := s.registry.System.DecisionDeciderRole
+		s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
+			"decision_id":  decID,
+			"type":         string(dtype),
+			"options":      options,
+			"decider_role": deciderRole,
+		})
+		s.goBackground(func() {
+			choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options)
+			if choice == "" {
+				return // must not auto-resolve (e.g. human_approval_required)
+			}
+			if err := s.SubmitDecision(taskID, decID, choice); err != nil {
+				s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
+					"decision_id":        decID,
+					"auto_resolve_error": err.Error(),
+				})
+			}
+		})
+	}
+}
+
+// resolveNonInteractiveDecision picks a choice for a blocked decision in
+// unattended mode. If deciderRole is non-empty, it spawns that role to
+// evaluate the decision and choose; on any failure it falls back to the
+// conservative default. Returns "" if the decision must not be auto-resolved.
+func (s *DirectedEngine) resolveNonInteractiveDecision(
+	deciderRole, taskID, decID, stepID string,
+	dtype schemas.DecisionType,
+	ctx map[string]any,
+	options []string,
+) string {
+	// Delegate strategy: spawn decider role to choose.
+	if deciderRole != "" && s.spawner != nil {
+		if choice, ok := s.spawnDecider(deciderRole, taskID, stepID, dtype, ctx, options); ok {
+			return choice
+		}
+		// Decider failed or returned invalid choice — fall through to conservative.
+		s.logger.Log(EventDecisionAutoResolved, taskID, stepID, map[string]any{
+			"decision_id": decID,
+			"fallback":    "decider_failed_or_invalid",
+		})
+	}
+	// Conservative strategy: hardcoded safe defaults.
+	choice, ok := defaultNonInteractiveChoice(dtype, options)
+	if !ok {
+		return ""
+	}
+	return choice
+}
+
+// spawnDecider asks the configured decider role to choose an option for a
+// blocked decision. Returns (choice, true) if the decider picked a valid
+// option, or ("", false) on any error or invalid response.
+func (s *DirectedEngine) spawnDecider(
+	roleID, taskID, stepID string,
+	dtype schemas.DecisionType,
+	ctx map[string]any,
+	options []string,
+) (string, bool) {
+	prompt := fmt.Sprintf(`You are a decision arbiter. A workflow step has blocked and requires a decision.
+
+Decision type: %s
+Decision context: %v
+Available options: %s
+
+Choose exactly ONE option from the list above. Respond with ONLY the option name, nothing else.`,
+		dtype, ctx, strings.Join(options, ", "))
+
+	res, err := s.spawner.Spawn(s.lifecycleCtx, &SpawnRequest{
+		TaskID:      taskID,
+		StepID:      stepID + "_decider",
+		RoleID:      roleID,
+		Task:        prompt,
+		RoutingMode: schemas.RoutingModeLegacy,
+	})
+	if err != nil || res == nil {
+		// audit L-N10: Spawn can return (nil, nil) e.g. when an external
+		// interceptor short-circuits. Without this guard, res.Output.Result
+		// panics with nil deref — the goroutine exits silently via
+		// goBackground's recover, and the decision deadlocks forever in
+		// NonInteractive mode (no human to resolve it).
+		return "", false
+	}
+	text := strings.TrimSpace(strings.ToLower(fmt.Sprintf("%v", res.Output.Result)))
+	for _, opt := range options {
+		if strings.ToLower(opt) == text {
+			return opt, true
+		}
+	}
+	// Fuzzy: response contains the option as a substring.
+	for _, opt := range options {
+		if strings.Contains(text, strings.ToLower(opt)) {
+			return opt, true
+		}
+	}
+	return "", false
+}
+
+// askSystemOneForDecision uses the System One decision model to pick an option.
+// System One is not available in the open core; this stub always returns false.
+func (s *DirectedEngine) askSystemOneForDecision(
+	taskID, stepID string,
+	dtype schemas.DecisionType,
+	decisionCtx map[string]any,
+	options []string,
+) (string, bool) {
+	return "", false
+}
+
+// defaultNonInteractiveChoice returns the conservative default choice to use
+// when NonInteractive mode must resolve a decision without a human, or
+// ("", false) if the decision type must NOT be auto-resolved.
+//
+// Conservative bias: prefer "skip" (don't kill the whole task, don't loop).
+// human_approval_required is deliberately excluded — it is an explicit safety
+// gate and must always wait for a human, even unattended.
+func defaultNonInteractiveChoice(dtype schemas.DecisionType, options []string) (string, bool) {
+	var want string
+	switch dtype {
+	case schemas.DecisionStepFailed, schemas.DecisionCapabilityRequired,
+		schemas.DecisionLowConfidence, schemas.DecisionEnvironmentMissing,
+		schemas.DecisionDelegationRequired, schemas.DecisionUpstreamInsufficient,
+		schemas.DecisionBudgetExhausted:
+		want = "skip"
+	case schemas.DecisionMaxTurnsExhausted:
+		// Bounded by the existing TurnsBudgetBonus cap; grants the stuck step
+		// one more chunk of turns rather than silently skipping it.
+		want = "resume_more_turns"
+	case schemas.DecisionAutonomousAbortRequested:
+		// Cost-governance abort request: in unattended mode, "continue" keeps
+		// running (the budget sentinel fired once per tier, so this is bounded).
+		want = "continue"
+	default:
+		// human_approval_required, rewrite_dag (needs a surgery payload), etc.
+		return "", false
+	}
+	// The chosen default must actually be an offered option.
+	for _, o := range options {
+		if o == want {
+			return want, true
+		}
+	}
+	return "", false
 }
 
 // RequestAutonomousAbort lets the Main Agent request a structured task abort

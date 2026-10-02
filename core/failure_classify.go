@@ -69,6 +69,14 @@ const (
 	// FailureClassCostOverrun: cost governance abort — cache inefficiency, budget
 	// trajectory, or behavior deviation. ADDED (2026-09-14).
 	FailureClassCostOverrun FailureClass = "cost_overrun"
+
+	// FailureClassDeterministicToolRefusal: a tool returned a deterministic or
+	// environmental refusal (e.g. an operation the environment forbids), detected
+	// via a repeated task-level tool failure count. Distinct from
+	// generative_uncertainty: retrying the same call cannot succeed, so the
+	// engine must NOT spawn a same-role follow-up (which would just repeat the
+	// same failing tool call). ADDED (2026-10-02, E2/E3 fix).
+	FailureClassDeterministicToolRefusal FailureClass = "deterministic_tool_refusal"
 )
 
 // classifyError centralizes the failure-classification logic used by the
@@ -118,4 +126,11 @@ func classifyError(err error) FailureClass {
 	}
 
 	return FailureClassTransient
+}
+
+// classifyErrorWithSystemOne wraps classifyError with an optional System One
+// refinement. System One is not available in the open core; this stub returns
+// the base classification directly.
+func (s *DirectedEngine) classifyErrorWithSystemOne(err error, stepID, roleID, stepTask string) FailureClass {
+	return classifyError(err)
 }
