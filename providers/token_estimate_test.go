@@ -97,9 +97,15 @@ func TestAnthropicCountTokens_FallsBackOnAPIError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected graceful fallback (no error), got err: %v", err)
 	}
-	want := estimateTokens(text)
+	// audit T-1.5: hardcode the expected token count instead of calling
+	// estimateTokens (the function under test) to compute it. A circular
+	// assertion (want := estimateTokens(text)) proves nothing — if
+	// estimateTokens is identically broken in both production and test,
+	// the test passes vacuously.
+	// "hello world this is a test" = 24 ASCII chars / 4.0 = 6 tokens.
+	const want = 6
 	if got != want {
-		t.Fatalf("expected fallback to estimateTokens (%d), got %d", want, got)
+		t.Fatalf("expected fallback token count %d, got %d", want, got)
 	}
 }
 
@@ -136,8 +142,11 @@ func TestAnthropicCountTokens_NoModelFallsBackWithoutNetworkCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != estimateTokens(text) {
-		t.Fatalf("expected estimateTokens fallback, got %d", got)
+	// audit T-1.5: hardcode expected count (was circular: estimateTokens(text)).
+	// "some text" = 9 ASCII chars / 4.0 = 2.25 → int(2.25) = 2 tokens.
+	const want = 2
+	if got != want {
+		t.Fatalf("expected fallback token count %d, got %d", want, got)
 	}
 }
 

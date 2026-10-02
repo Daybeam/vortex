@@ -24,10 +24,10 @@ type ContextHub struct {
 	Graph    *schemas.TaskGraph
 	Exp      store.IExperienceStore // ADDED (2026-08-16): Support JIT/Generated skills
 
-	// GraphMu points to the owning DirectedEngine's Mu. The Spawner writes
-	// Graph.DecisionHistory through the hub, and persistGraph marshals the
-	// graph under the same mutex. Without this pointer, the Spawner used its
-	// own s.Mu (a different mutex) — a data race (audit C-2).
+	// GraphMu is deprecated (P-2.1 Step 2). DecisionHistory is now protected
+	// by TaskGraph.decisionMu via RecordDecision/UpdateDecisionOutcome methods.
+	// Kept as nil-safe field for backward compatibility with tests that construct
+	// ContextHub directly.
 	GraphMu *sync.RWMutex
 
 	// OnUnknownMCP is called when ResolveFinalMCPs encounters an MCP ID not

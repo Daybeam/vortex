@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -63,6 +64,14 @@ func (m *CaSKGManager) Save() error {
 	m.mu.RUnlock()
 	if err != nil {
 		return err
+	}
+	// Ensure parent directory exists (auto-init: data/ may not exist on first run).
+	// Regression: without this, os.WriteFile fails with "no such file or directory"
+	// and causal learning is silently lost across restarts.
+	if dir := filepath.Dir(m.PersistPath); dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
 	}
 	return os.WriteFile(m.PersistPath, data, 0644)
 }

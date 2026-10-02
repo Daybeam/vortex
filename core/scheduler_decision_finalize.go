@@ -72,7 +72,7 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 		log.Printf("WARN: finalizeDecision: failed to create output dir %s: %v", outDir, err)
 	}
 	manifest := graph.ToStatusDict()
-	if data, err := json.MarshalIndent(manifest, "", "  "); err == nil {
+	if data, err := json.Marshal(manifest); err == nil { // P-1.8: compact marshal on hot path
 		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {
 			log.Printf("WARN: finalizeDecision: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
 		}

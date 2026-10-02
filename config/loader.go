@@ -73,8 +73,15 @@ func (r *Registry) LoadRaw() ([]byte, error) {
 
 func (r *Registry) loadWithFallback() error {
 	r.Mu.Lock()
-	defer r.Mu.Unlock()
-	return r.loadWithFallbackLocked()
+	err := r.loadWithFallbackLocked()
+	callbacks := r.reloadCallbacks // snapshot under lock
+	r.Mu.Unlock()
+	if err == nil {
+		for _, cb := range callbacks {
+			cb()
+		}
+	}
+	return err
 }
 
 func (r *Registry) loadWithFallbackLocked() error {

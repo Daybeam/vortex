@@ -252,6 +252,32 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	// ── Stores ────────────────────────────────────────────────────────────
 	ts := s.Tasks
 	es := s.Experience
+
+	wireReranker := func() {
+		expStore, ok := es.(*store.ExperienceStore)
+		if !ok {
+			return
+		}
+		reg.Mu.RLock()
+		rc := reg.System.Reranker
+		reg.Mu.RUnlock()
+		if rc.BaseURL != "" {
+			sysOneP := providers.NewSystemOneProvider(&config.ProviderConfig{
+				Provider: "systemone",
+				Model:    rc.Model,
+				BaseURL:  rc.BaseURL,
+				APIKey:   rc.APIKey,
+			})
+			expStore.SetRerankerClient(providers.NewSystemOneReranker(sysOneP))
+			log.Printf("[reranker] enabled (endpoint=%s, model=%s)", rc.BaseURL, rc.Model)
+		} else {
+			expStore.SetRerankerClient(nil)
+			log.Printf("[reranker] disabled (no base_url — using coarse tier ranking)")
+		}
+	}
+	wireReranker()
+	reg.OnReload(wireReranker)
+
 	ss := s.Schedules
 	mbStore := s.MemoryBank
 

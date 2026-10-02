@@ -529,6 +529,11 @@ type TaskGraph struct {
 	// sessionMu guards SessionRoles/SessionSkills/SessionProviders (2026-07-20).
 	sessionMu sync.Mutex `json:"-"`
 
+	// decisionMu guards DecisionHistory (P-2.1 Step 2: decoupled from
+	// DirectedEngine.Mu so Spawner DecisionHistory writes don't block
+	// all graph operations across all tasks).
+	decisionMu sync.RWMutex `json:"-"`
+
 	// Session-level workspace binding (ADDED 2026-09-19).
 	// See docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2 ②.
 	// When SessionID is empty, behavior is identical to legacy (backward compatible).
@@ -664,6 +669,36 @@ func (g *TaskGraph) ListSessionProviderIDs() []string {
 	}
 	return ids
 }
+
+// RecordDecision adds a decision node to DecisionHistory under decisionMu.
+// (P-2.1 Step 2: replaces direct map access + GraphMu.Lock in Spawner)
+func (g *TaskGraph) RecordDecision(id string, node *DecisionNode) {
+	g.decisionMu.Lock()
+	defer g.decisionMu.Unlock()
+	if g.DecisionHistory == nil {
+		g.DecisionHistory = make(map[string]*DecisionNode)
+	}
+	g.DecisionHistory[id] = node
+}
+
+// UpdateDecisionOutcome sets the outcome on an existing decision node.
+// (P-2.1 Step 2: replaces direct map access + GraphMu.Lock in Spawner)
+func (g *TaskGraph) UpdateDecisionOutcome(id, outcome string) bool {
+	g.decisionMu.Lock()
+	defer g.decisionMu.Unlock()
+	if node, ok := g.DecisionHistory[id]; ok {
+		node.Outcome = outcome
+		return true
+	}
+	return false
+}
+
+// LockDecisionHistory acquires a read lock on DecisionHistory. Callers must
+// call UnlockDecisionHistory when done. Used by persistGraph to safely marshal
+// the graph while the Spawner may be appending decisions.
+// (P-2.1 Step 2)
+func (g *TaskGraph) LockDecisionHistory() { g.decisionMu.RLock() }
+func (g *TaskGraph) UnlockDecisionHistory() { g.decisionMu.RUnlock() }
 
 // ComputeConfidence returns geometric mean of confidence across completed steps.
 func (g *TaskGraph) ComputeConfidence() float64 {
@@ -829,6 +864,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 
 	// Sanitize DecisionHistory for status reports (hide heavy embeddings)
 	sanitizedHistory := make(map[string]map[string]any)
+	g.decisionMu.RLock()
 	for id, node := range g.DecisionHistory {
 		reasoning := node.Reasoning
 		if len(reasoning) > 200 {
@@ -846,6 +882,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 			"timestamp": node.Timestamp.Format(time.RFC3339),
 		}
 	}
+	g.decisionMu.RUnlock()
 
 	// Sanitize ContextTree for status reports
 	sanitizedTree := make(map[string]map[string]any)

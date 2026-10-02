@@ -228,6 +228,23 @@ func (l *Logger) writer() {
 	}
 }
 
+// recordFileSizeCacheEntry looks up or inserts a file size cache entry,
+// evicting the entire cache if it has grown beyond maxFileSizeCacheEntries.
+// Extracted from write() for testability (audit T-1.2).
+func (l *Logger) recordFileSizeCacheEntry(path string) int64 {
+	cachedSize, hasSize := l.fileSizeCache[path]
+	if !hasSize {
+		if len(l.fileSizeCache) >= l.maxFileSizeCacheEntries {
+			l.fileSizeCache = make(map[string]int64)
+		}
+		if info, err := os.Stat(path); err == nil {
+			cachedSize = info.Size()
+		}
+		l.fileSizeCache[path] = cachedSize
+	}
+	return cachedSize
+}
+
 func (l *Logger) write(ev LogEvent) {
 	// Fan-out to SSE subscribers (non-blocking)
 	l.subMu.RLock()
@@ -255,19 +272,7 @@ func (l *Logger) write(ev LogEvent) {
 	// Use in-memory size tracking instead of os.Stat per log event.
 	// Only call Stat on the first write to a file (to sync with any
 	// pre-existing content) or when the in-memory size exceeds the threshold.
-	cachedSize, hasSize := l.fileSizeCache[path]
-	if !hasSize {
-		// Evict entire cache if it has grown too large (unbounded growth
-		// protection for long-running servers). Safe because the cache is
-		// only an optimization — cleared entries trigger a one-time Stat.
-		if len(l.fileSizeCache) >= l.maxFileSizeCacheEntries {
-			l.fileSizeCache = make(map[string]int64)
-		}
-		if info, err := os.Stat(path); err == nil {
-			cachedSize = info.Size()
-		}
-		l.fileSizeCache[path] = cachedSize
-	}
+	cachedSize := l.recordFileSizeCacheEntry(path)
 	if cachedSize > maxLogSize {
 		l.rotate(path)
 		l.fileSizeCache[path] = 0

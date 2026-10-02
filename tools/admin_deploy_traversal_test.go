@@ -75,6 +75,7 @@ func TestHandleAdminDeployFile_NormalPathStillWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tempDir)
+
 	t.Setenv("VORTEX_DEPLOY_ROOT", tempDir)
 
 	logger, err := core.NewLogger(filepath.Join(tempDir, "logs"), nil)

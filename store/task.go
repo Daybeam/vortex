@@ -57,10 +57,19 @@ func (b *FileTaskBackend) Delete(ctx context.Context, taskID string) (int, error
 	dir := filepath.Join(b.baseDir, taskID)
 	files, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, nil
+		// audit L-N3: return the error instead of silently swallowing it.
+		// "not exist" is a valid idempotent-delete case (already deleted
+		// or never existed) — return success. All other errors (permission
+		// denied, I/O) must propagate so Clear() can detect failures.
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
 	}
 	count := len(files)
-	_ = os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return 0, err
+	}
 	return count, nil
 }
 

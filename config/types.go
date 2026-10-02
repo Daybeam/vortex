@@ -490,6 +490,10 @@ type SystemSettings struct {
 	MaxConcurrentSteps        int             `json:"max_concurrent_steps,omitempty"`
 	MaxTaskChars              int             `json:"max_task_chars,omitempty"`
 	ToolRepetitionThreshold   int             `json:"tool_repetition_threshold,omitempty"`
+	// Reranker configures the optional System One experience reranker.
+	// When BaseURL is empty, the reranker is disabled and retrieval
+	// uses coarse tier ranking only (graceful degradation).
+	Reranker                   RerankerConfig  `json:"reranker,omitempty"`
 	// AllowedOrigins restricts CORS to these origins (audit S-M4). If empty,
 	// defaults to "*" for backward compat (single-machine). Set to explicit
 	// origins (e.g. ["https://app.example.com"]) for multi-tenant deployments.
@@ -528,6 +532,24 @@ type SystemSettings struct {
 	// lifecycle points (chat and DAG). See docs/completed/2026-09-28/UNIFIED_HOOK_ARCHITECTURE_DESIGN.md.
 	// Each hook declares a point, script path, timeout, and optional filter.
 	Hooks []HookConfig `json:"hooks,omitempty"`
+}
+
+// RerankerConfig configures the optional System One experience reranker.
+// When BaseURL is empty, the reranker is disabled and retrieval uses
+// coarse tier ranking only (graceful degradation — zero behavior change).
+//
+// Example config.json:
+//
+//	"system": {
+//	  "reranker": {
+//	    "base_url": "http://127.0.0.1:8000",
+//	    "model": "laya"
+//	  }
+//	}
+type RerankerConfig struct {
+	BaseURL string `json:"base_url,omitempty"` // SystemOne/Jev/Laya endpoint (e.g. http://127.0.0.1:8000)
+	Model   string `json:"model,omitempty"`     // model name (e.g. "laya", "jev")
+	APIKey  string `json:"api_key,omitempty"`   // bearer token (optional for local self-hosted)
 }
 
 // HookConfig declares a single automated hook. Point determines when it fires;

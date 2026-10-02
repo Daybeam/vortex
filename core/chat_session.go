@@ -3,8 +3,11 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -233,7 +236,9 @@ func NewChatSessionStore(dir string, backend store.IChatBackend) *ChatSessionSto
 	if dir == "" {
 		dir = filepath.Join("outputs", "chat")
 	}
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("WARN: chat_session: failed to create session dir %s: %v", dir, err)
+	}
 	return &ChatSessionStore{sessions: make(map[string]*ChatSession), dir: dir, backend: backend}
 }
 
@@ -299,16 +304,49 @@ func (st *ChatSessionStore) Get(id string) *ChatSession {
 	return s
 }
 
-// ListSessions returns recent sessions from the backend (DB). If no backend
-// is configured, returns nil.
+// ListSessions returns recent sessions from the backend (DB). If the DB
+// returns no sessions, falls back to listing session JSON files from the
+// directory. This handles the case where SaveSession silently fails (e.g.
+// lifecycle context cancelled) but JSON files were still written.
 func (st *ChatSessionStore) ListSessions(ctx context.Context, limit int) ([]store.ChatSessionRow, error) {
 	st.mu.Lock()
 	backend := st.backend
+	dir := st.dir
 	st.mu.Unlock()
-	if backend == nil {
-		return nil, nil
+	if backend != nil {
+		rows, err := backend.ListSessions(ctx, limit)
+		if err == nil && len(rows) > 0 {
+			return rows, nil
+		}
+		// DB returned empty or error — fall through to file-based fallback
 	}
-	return backend.ListSessions(ctx, limit)
+	// File-based fallback: list *.json files in dir, sorted by mod time desc.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil // dir doesn't exist or unreadable — not an error for caller
+	}
+	var rows []store.ChatSessionRow
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		rows = append(rows, store.ChatSessionRow{
+			ID:        id,
+			CreatedAt: info.ModTime(),
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].CreatedAt.After(rows[j].CreatedAt)
+	})
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
 }
 
 // chatSessionData is the on-disk format for tree-based sessions.
@@ -344,15 +382,19 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 	// A20 DB collapse: save to SQLite backend when available
 	if st.backend != nil {
 		ctx, cancel := st.dbCtx()
-		defer cancel()
-		st.backend.SaveSession(ctx, s.ID, s.RootID, s.ActiveLeafID, s.CreatedAt)
+		if err := st.backend.SaveSession(ctx, s.ID, s.RootID, s.ActiveLeafID, s.CreatedAt); err != nil {
+			log.Printf("WARN: chat_session: SaveSession failed for %s: %v (file fallback will cover listing)", s.ID, err)
+		}
 		// audit PERF-6: was iterating ALL messages (O(T×M) over a conversation).
 		// Now only saves messages added since last persist.
 		for _, id := range dirtyIDs {
 			if msg := msgCopy[id]; msg != nil {
-				st.backend.SaveMessage(ctx, msg.ID, s.ID, msg.ParentID, msg.Role, msg.Content, msg.CreatedAt)
+				if err := st.backend.SaveMessage(ctx, msg.ID, s.ID, msg.ParentID, msg.Role, msg.Content, msg.CreatedAt); err != nil {
+					log.Printf("WARN: chat_session: SaveMessage failed for %s/%s: %v", s.ID, msg.ID, err)
+				}
 			}
 		}
+		cancel()
 	}
 
 	raw, err := json.MarshalIndent(data, "", "  ")
