@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -29,7 +30,12 @@ func TestSpawner_FailFast_MissingCapabilities(t *testing.T) {
 		Skills: map[string]*config.Skill{},
 		MCPs: map[string]*config.MCPDef{},
 	}
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logDir, err := os.MkdirTemp("", "spawner-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+	logger, _ := NewLogger(logDir, &config.SystemSettings{})
 	s := &Spawner{
 		registry: reg,
 		logger:   logger,
@@ -40,7 +46,7 @@ func TestSpawner_FailFast_MissingCapabilities(t *testing.T) {
 
 	// Test hard failure
 	req1 := &SpawnRequest{RoleID: "strict_role", TaskID: "t1", StepID: "s1", Hub: hub}
-	_, err := s.doSpawn(ctx, req1)
+	_, err = s.doSpawn(ctx, req1)
 	if err == nil || !strings.Contains(err.Error(), "Blocked") {
 		t.Errorf("expected Blocked error for strict_role, got %v", err)
 	}

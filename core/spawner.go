@@ -77,6 +77,13 @@ type Spawner struct {
 	// core/policy_decider.go. Nil-safe: initialized in NewSpawner.
 	signalCollector          SignalCollector
 	policyDecider            PolicyDecider
+
+	// E1 fix: task-level tool fail count (persists across steps within a task).
+	// The step-level toolFailCount (local var in doSpawn) resets per step;
+	// this map persists across steps, so a tool failing in step 1, 2, and 3
+	// accumulates to 3 and triggers toolFailFeedback's circuit-breaker.
+	taskFailMu               sync.Mutex
+	taskToolFailCount        map[string]map[string]int // taskID → toolName → count
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
@@ -305,10 +312,11 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 		// ─── Phase 0.5: Dynamic Tool Sieve (Skill Affinity) ──────────────────
 		// Filter tools based on task description to reduce schema noise
 		bindings = s.toolRouter.Route(RouteRequest{
-			Task:            req.Task,
-			Bindings:        bindings,
-			Turn:            0,
-			ProgressiveMode: progressiveEnabled,
+			Task:               req.Task,
+			Bindings:           bindings,
+			Turn:               0,
+			ProgressiveMode:    progressiveEnabled,
+			PredecessorSkillID: req.PredecessorSkillID,
 		})
 	}
 
@@ -415,6 +423,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	var statesVisited []string // PGPO (ADDED 2026-09-08)
 	var previousState string   // PGPO (ADDED 2026-09-08)
 	toolFailCount := make(map[string]int)
+	sieveGuardianHits := 0
 
 	maxTurns := s.calculateMaxTurns(ctx, req, role)
 	// applyStrategyBias is now handled inside calculateMaxTurns via PolicyDecider
@@ -847,8 +856,41 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 		var turnAttachments []schemas.Attachment
 		needsVerification := false
 
-		// ── Sieve Guardian: Tool Loop Detection ──────────────────────────────
+		// ── Sieve Guardian: Tool Loop Detection (Two-Tier Escalation) ───────
 		if valid, reason := s.checkSieveGuardian(req.TaskID, req.StepID, turn, resp.ToolCalls, trace); !valid {
+			sieveGuardianHits++
+			if sieveGuardianHits == 1 {
+				userBlocks = append(userBlocks, schemas.ContentBlock{
+					Text: "[SYSTEM]: Loop detected (" + reason + "). You are repeating the same tool calls. Change your approach — try different parameters, a different tool, or provide a final answer with current information.",
+				})
+				continue
+			}
+			if noToolProvider, perr := providers.Get(currentPCfg, req.Hub.Registry.ExternalRuntimes); perr == nil {
+				noToolResp, nerr := noToolProvider.StreamComplete(ctx, providers.CompleteRequest{
+					UserBlocks: append(userBlocks, schemas.ContentBlock{
+						Text: "[SYSTEM]: You are still repeating tool calls. Stop calling tools and provide your best answer with the information you already have.",
+					}),
+					System:    "Provide your best answer based on the information available in the conversation.",
+					Model:     currentPCfg.Model,
+					MaxTokens: 4096,
+				}, nil)
+				if nerr == nil && noToolResp.Text != "" {
+					degradedOutput := schemas.ParseOutput(noToolResp.Text, role.BaseCapability)
+					degradedOutput.Status = schemas.StatusPartial
+					if degradedOutput.Confidence > 0.3 {
+						degradedOutput.Confidence = 0.3
+					}
+					degradedOutput.Warnings = append(degradedOutput.Warnings, "degraded: "+reason)
+					return &SpawnResult{
+						Output:        degradedOutput,
+						ProviderID:    effectiveProviderID,
+						ModelID:       effectiveModelID,
+						Ref:           req.TaskID + ":" + req.StepID,
+						TurnsUsed:     turn + 2,
+						StatesVisited: statesVisited,
+					}, nil
+				}
+			}
 			return s.failedOutput(role.BaseCapability, reason), nil
 		}
 
@@ -868,10 +910,11 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				taskDir := filepath.Join(s.outputBase, req.TaskID)
 				validator := NewSafePathValidator(taskDir, req.SessionRoot, s.allowedWorkspaces)
 				res, status, interaction := s.handleCoreToolCall(ctx, call, req.TaskID, req.StepID, validator)
-				if status == "error" {
-					toolFailCount[call.Name]++
-					res = toolFailFeedback(call.Name, res, toolFailCount[call.Name])
-				} else {
+			if status == "error" {
+				toolFailCount[call.Name]++
+				effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+				res = toolFailFeedback(call.Name, res, effCount)
+			} else {
 					toolFailCount[call.Name] = 0
 				}
 				trace = append(trace, interaction)
@@ -897,7 +940,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 
 		if mcpDef == nil {
 			toolFailCount[call.Name]++
-			res := toolFailFeedback(call.Name, fmt.Sprintf("MCP server %s not found for tool %s", mcpID, call.Name), toolFailCount[call.Name])
+			effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+			res := toolFailFeedback(call.Name, fmt.Sprintf("MCP server %s not found for tool %s", mcpID, call.Name), effCount)
 			interaction.Result = res
 			trace = append(trace, interaction)
 
@@ -978,7 +1022,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 
 			if execErr != nil {
 				toolFailCount[call.Name]++
-				resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing tool %s: %v", call.Name, execErr), toolFailCount[call.Name])
+				effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+				resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing tool %s: %v", call.Name, execErr), effCount)
 				interaction.Result = resErr
 				env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
 				toolResults = append(toolResults, env.ToMarkdown(call.Name))
@@ -1010,7 +1055,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 
 			if execErr != nil {
 				toolFailCount[call.Name]++
-				resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing remote tool %s: %v", call.Name, execErr), toolFailCount[call.Name])
+				effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+				resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing remote tool %s: %v", call.Name, execErr), effCount)
 				interaction.Result = resErr
 				env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
 				toolResults = append(toolResults, env.ToMarkdown(call.Name))
@@ -1035,7 +1081,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				}
 		} else {
 			toolFailCount[call.Name]++
-			res := toolFailFeedback(call.Name, fmt.Sprintf("MCP %s has neither a local command nor a remote URL configured for tool %s", mcpDef.ID, call.Name), toolFailCount[call.Name])
+			effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+			res := toolFailFeedback(call.Name, fmt.Sprintf("MCP %s has neither a local command nor a remote URL configured for tool %s", mcpDef.ID, call.Name), effCount)
 			interaction.Result = res
 			env := s.processor.Wrap(call.Name, res, "error", "orchestrator:cloud", reason)
 			toolResults = append(toolResults, env.ToMarkdown(call.Name))
@@ -1101,10 +1148,11 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 		// Priority 4: Re-route tools for the next turn based on updated context
 		// (Progressive Disclosure)
 		bindings = s.toolRouter.Route(RouteRequest{
-			Task:            req.Task + " " + resp.Text, // Include assistant thought in relevance check
-			Bindings:        initialBindings,            // Re-evaluate from original set
-			Turn:            turn + 1,
-			ProgressiveMode: progressiveEnabled,
+			Task:               req.Task + " " + resp.Text,
+			Bindings:           initialBindings,
+			Turn:               turn + 1,
+			ProgressiveMode:    progressiveEnabled,
+			PredecessorSkillID: req.PredecessorSkillID,
 		})
 
 		vdaPrompt := ""

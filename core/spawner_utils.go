@@ -184,15 +184,67 @@ func copyToolCallArguments(src map[string]any, decisionID string) map[string]any
 	return dst
 }
 
+// toolFailCircuitBreakerThreshold is the number of failures (step-level or
+// task-level, whichever is higher) at which toolFailFeedback switches to the
+// circuit-breaker message and the engine treats the failure as deterministic
+// rather than generative (E2/E3 fix).
+const toolFailCircuitBreakerThreshold = 3
+
 // toolFailFeedback wraps a tool error with recovery guidance for the LLM.
 // After 3 consecutive failures, it switches to a circuit-breaker message
 // telling the LLM to stop using that tool. Mirrors chat_harness.go's pattern.
 // Moved from spawner.go during god-class split.
 func toolFailFeedback(toolName, errMsg string, failCount int) string {
-	if failCount >= 3 {
+	if failCount >= toolFailCircuitBreakerThreshold {
 		return fmt.Sprintf("[TOOL %s HAS FAILED %d TIMES] Stop using this tool. Use an alternative approach or answer directly without tools.", toolName, failCount)
 	}
 	return fmt.Sprintf("[TOOL FAILED: %s] %s\nDo not abort. Either fix the arguments and retry, use a different tool, or answer directly.", toolName, errMsg)
+}
+
+// RepeatedToolFailure returns the tool with the highest task-level failure
+// count for the task, so callers can decide whether a step failure is a
+// deterministic/environmental tool refusal rather than generative uncertainty.
+// Returns ("", 0) when the task has no recorded failures.
+func (s *Spawner) RepeatedToolFailure(taskID string) (string, int) {
+	s.taskFailMu.Lock()
+	defer s.taskFailMu.Unlock()
+	tool, max := "", 0
+	for name, n := range s.taskToolFailCount[taskID] {
+		if n > max {
+			tool, max = name, n
+		}
+	}
+	return tool, max
+}
+
+// incrTaskToolFail increments the task-level tool failure count and returns
+// the effective count = max(stepCount, taskCount). The step-level count
+// (toolFailCount local var in doSpawn) resets per step; this task-level
+// counter persists across steps within the same task, so a tool failing
+// in step 1, 2, and 3 accumulates to 3 and triggers the circuit-breaker.
+// E1 fix (2026-10-02): two-layer failure count.
+const maxTaskToolFailEntries = 1000 // cap; clearing is safe (loses counts for abandoned tasks)
+
+func (s *Spawner) incrTaskToolFail(taskID, toolName string, stepCount int) int {
+	s.taskFailMu.Lock()
+	defer s.taskFailMu.Unlock()
+	if s.taskToolFailCount == nil {
+		s.taskToolFailCount = make(map[string]map[string]int)
+	}
+	// Cap to prevent unbounded growth from abandoned tasks.
+	if len(s.taskToolFailCount) > maxTaskToolFailEntries {
+		s.taskToolFailCount = make(map[string]map[string]int)
+	}
+	taskCounts := s.taskToolFailCount[taskID]
+	if taskCounts == nil {
+		taskCounts = make(map[string]int)
+		s.taskToolFailCount[taskID] = taskCounts
+	}
+	taskCounts[toolName]++
+	if taskCounts[toolName] > stepCount {
+		return taskCounts[toolName]
+	}
+	return stepCount
 }
 
 // recordCapabilityOutcome feeds execution telemetry to CapabilityProfileStore

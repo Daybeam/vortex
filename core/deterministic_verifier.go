@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/daybeam/vortex/schemas"
@@ -100,6 +101,17 @@ func (v *CommandPassVerifier) Verify(ctx context.Context, workdir string, criter
 	cmd := exec.CommandContext(ctx, fields[0], fields[1:]...)
 	if workdir != "" {
 		cmd.Dir = workdir
+	}
+	// On Windows, cmd.exe builtins (echo, type, etc.) have no standalone
+	// executable. If LookPath fails, fall back to cmd /c. Safe because
+	// metacharacters are already rejected (audit S-C1).
+	if runtime.GOOS == "windows" {
+		if _, lookErr := exec.LookPath(fields[0]); lookErr != nil {
+			cmd = exec.CommandContext(ctx, "cmd", append([]string{"/c"}, fields...)...)
+			if workdir != "" {
+				cmd.Dir = workdir
+			}
+		}
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {

@@ -122,11 +122,11 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 			if !graphRunning {
 				break
 			}
-			wg.Add(1)
-		select {
+		wg.Add(1)
+	select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
-			wg.Done()
+		wg.Done()
 			// audit C-10: wait for in-flight goroutines with grace period before
 			// returning, so previously launched steps can bail out cleanly.
 			wd := make(chan struct{})
@@ -138,7 +138,7 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 			return
 		}
 			go func(st *schemas.Step) {
-				defer wg.Done()
+			defer wg.Done()
 				defer func() { <-sem }()
 				defer func() {
 					if r := recover(); r != nil {
@@ -437,6 +437,16 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"steps_done":    doneSteps,
 					"steps_total":   totalSteps,
 				})
+				// E6 fix: wire cost_overrun into the failure classification path.
+				// At tier ≥ 90 (critical), request an autonomous abort classified
+				// as FailureClassCostOverrun. This flows through the event system
+				// and replay scheduler (mapCauseToMutation correctly treats
+				// cost_overrun as unfixable). Previously cost_overrun was a dead
+				// constant — BudgetSentinel only logged, never classified.
+				if tier >= 90 {
+					s.RequestAutonomousAbort(taskID, step.ID, FailureClassCostOverrun,
+						fmt.Sprintf("budget predicted to exceed: %d%% used, %d%% predicted (%d/%d tokens)", pct, predictedPct, tokensUsed, tokenBudget))
+				}
 			}
 		}
 	}
@@ -605,7 +615,16 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		ctx = ContextWithTrace(ctx, traceID, spanID)
 
 		hub := NewContextHub(s.registry, graph, s.expStore)
-		hub.GraphMu = &s.Mu // audit C-2: share engine mutex so Spawner's DecisionHistory writes race-free with persistGraph
+		// CaSKG: find the first completed dependency's RoleID for causal boost.
+		var predecessorSkillID string
+		for _, depID := range step.DependsOn {
+			if dep, ok := graph.Steps[depID]; ok && (dep.Status == schemas.StepOK || dep.Status == schemas.StepPartial) {
+				predecessorSkillID = dep.RoleID
+				break
+			}
+		}
+		// P-2.1 Step 2: GraphMu removed; DecisionHistory is now protected by
+		// TaskGraph.decisionMu (accessed via RecordDecision/UpdateDecisionOutcome).
 		result, err := s.spawner.Spawn(ctx, &SpawnRequest{
 			TaskID:                   taskID,
 			StepID:                   step.ID,
@@ -624,6 +643,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			CompressionHint:          step.CompressionHint,
 			TurnsBudgetBonus:         step.TurnsBudgetBonus,
 			SessionRoot:              graph.WorkspaceRoot,
+			PredecessorSkillID:       predecessorSkillID,
 			Metadata: map[string]any{
 				"context_tree_path": treeHistory,
 			},
@@ -655,7 +675,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
 					"error":      "Dynamic Escalation Required",
 					"reason":     err.Error(),
-					"root_cause": string(classifyError(err)),
+					"root_cause": string(s.classifyErrorWithSystemOne(err, step.ID, step.RoleID, step.Task)),
 				})
 				s.Mu.Lock()
 				step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write
@@ -984,7 +1004,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 	s.Mu.Unlock()
 	s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
 		"last_error": step.LastError,
-		"root_cause": string(classifyError(errors.New(step.LastError))),
+		"root_cause": string(s.classifyErrorWithSystemOne(errors.New(step.LastError), step.ID, step.RoleID, step.Task)),
 	})
 
 	// ── StagedWorkspace post-step snapshot + rollback (failure, WIRED 2026-08-21) ──

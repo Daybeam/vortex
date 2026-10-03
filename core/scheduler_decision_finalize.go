@@ -172,7 +172,9 @@ func (s *DirectedEngine) deliverArtifacts(graph *schemas.TaskGraph) {
 
 func (s *DirectedEngine) reflect(graph *schemas.TaskGraph) {
 	s.sieve.ClearHistory(graph.TaskID)
-	s.spawner.ClearSieveHistory(graph.TaskID)
+	if s.spawner != nil {
+		s.spawner.ClearSieveHistory(graph.TaskID)
+	}
 	if s.reflection != nil {
 		s.goBackground(func() { s.reflection.ReflectOnTask(s.lifecycleCtx, graph) })
 	}

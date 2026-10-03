@@ -125,10 +125,20 @@ func tryDefaultRoleFallback(registry *config.Registry, logger *Logger, req *Spaw
 	if defaultRole == nil {
 		return false
 	}
+	bindingCount := len(defaultRole.BoundMCPIDs())
 	logger.Log("EventRoleFallbackToDefault", req.TaskID, req.StepID, map[string]any{
-		"original_role_id": req.RoleID,
-		"error":            genErr.Error(),
+		"original_role_id":   req.RoleID,
+		"error":              genErr.Error(),
+		"level":              "ERROR",
+		"mcp_bindings_count": bindingCount,
 	})
+	if bindingCount == 0 {
+		logger.Log("EventRoleFallbackNoBindings", req.TaskID, req.StepID, map[string]any{
+			"role_id": "orchestrator_default",
+			"warning": "fallback role has zero MCP bindings; model can only use built-in tools",
+			"level":   "WARN",
+		})
+	}
 	if req.Hub != nil && req.Hub.Graph != nil {
 		req.Hub.Graph.SetSessionRole(req.RoleID, defaultRole)
 	} else {

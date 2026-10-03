@@ -65,7 +65,14 @@ func NewReflectionEngine(
 // merge, crystallization) derive their timeouts from it so they exit on
 // shutdown instead of running for up to 5 minutes on a dead engine (audit C2).
 func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *schemas.TaskGraph) {
-	if len(graph.Steps) == 0 {
+	if re == nil || graph == nil || len(graph.Steps) == 0 {
+		return
+	}
+	// Nil-guard: reflection fundamentally needs a task store and a registry
+	// (step-record batch fetch + role lookup). Without this, an engine
+	// constructed without them panics in the background goroutine that calls
+	// this — surfaced by NonInteractive tests where tasks now finalize.
+	if re.taskStore == nil || re.registry == nil {
 		return
 	}
 

@@ -478,6 +478,20 @@ type SystemSettings struct {
 	SwarmFallbackDelay        int             `json:"swarm_fallback_delay,omitempty"`
 	SwarmAgentCount           int             `json:"swarm_agent_count,omitempty"` // audit L1: was hardcoded 5
 	DelegationMode            bool            `json:"delegation_mode,omitempty"`
+	// NonInteractive enables unattended mode: when a step would block on a
+	// decision (step failure, low confidence, max-turns, autonomous abort),
+	// the engine auto-selects a conservative default instead of blocking
+	// forever. Required for CI/batch eval where no human can resolve
+	// decisions. Default false = fully interactive (zero behavior change).
+	// human_approval_required is NEVER auto-resolved (deliberate safety gate).
+	// E5 fix (2026-10-02).
+	NonInteractive            bool            `json:"non_interactive,omitempty"`
+	// DecisionDeciderRole: when NonInteractive is on and this is set, the engine
+	// spawns this role to evaluate each blocked decision and choose an option,
+	// instead of falling back to hardcoded conservative defaults. The decider
+	// role's Instruction carries domain-specific decision logic. Empty = use
+	// conservative defaults (defaultNonInteractiveChoice). E5 delegate strategy.
+	DecisionDeciderRole       string          `json:"decision_decider_role,omitempty"`
 	RefBasedHandoffThreshold  int64           `json:"ref_based_handoff_threshold,omitempty"`
 	AntiSlop                  AntiSlopConfig  `json:"anti_slop,omitempty"`
 	StagingEnabled            bool            `json:"staging_enabled,omitempty"`
@@ -494,6 +508,11 @@ type SystemSettings struct {
 	// When BaseURL is empty, the reranker is disabled and retrieval
 	// uses coarse tier ranking only (graceful degradation).
 	Reranker                   RerankerConfig  `json:"reranker,omitempty"`
+	// SystemOne configures the optional System One decision model for
+	// decision gate, tool router, and failure classification. When BaseURL
+	// is empty, all three points use their existing fallback logic
+	// (graceful degradation — zero behavior change).
+	SystemOne                  SystemOneConfig `json:"systemone,omitempty"`
 	// AllowedOrigins restricts CORS to these origins (audit S-M4). If empty,
 	// defaults to "*" for backward compat (single-machine). Set to explicit
 	// origins (e.g. ["https://app.example.com"]) for multi-tenant deployments.
@@ -550,6 +569,34 @@ type RerankerConfig struct {
 	BaseURL string `json:"base_url,omitempty"` // SystemOne/Jev/Laya endpoint (e.g. http://127.0.0.1:8000)
 	Model   string `json:"model,omitempty"`     // model name (e.g. "laya", "jev")
 	APIKey  string `json:"api_key,omitempty"`   // bearer token (optional for local self-hosted)
+}
+
+// SystemOneConfig configures the optional System One decision model for
+// three internal decision points: decision gate (NonInteractive mode),
+// tool router (semantic scoring), and failure classification (transient
+// refinement). Each point is independently toggleable. When BaseURL is
+// empty or the specific enable flag is false, the point uses its existing
+// fallback logic (graceful degradation — zero behavior change).
+//
+// Example config.json:
+//
+//	"system": {
+//	  "systemone": {
+//	    "base_url": "http://127.0.0.1:8000",
+//	    "model": "jev",
+//	    "enable_decision_gate": true,
+//	    "enable_tool_router": true,
+//	    "min_confidence": 0.5
+//	  }
+//	}
+type SystemOneConfig struct {
+	BaseURL               string  `json:"base_url,omitempty"`
+	Model                 string  `json:"model,omitempty"`
+	APIKey                string  `json:"api_key,omitempty"`
+	EnableDecisionGate    bool    `json:"enable_decision_gate,omitempty"`
+	EnableToolRouter      bool    `json:"enable_tool_router,omitempty"`
+	EnableFailureClassify bool    `json:"enable_failure_classify,omitempty"`
+	MinConfidence         float64 `json:"min_confidence,omitempty"`
 }
 
 // HookConfig declares a single automated hook. Point determines when it fires;
