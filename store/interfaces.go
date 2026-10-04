@@ -196,7 +196,7 @@ type IChatBackend interface {
 	SaveSession(ctx context.Context, sessionID, rootID, activeLeafID string, createdAt time.Time) error
 	SaveMessage(ctx context.Context, msgID, sessionID, parentID, role, content string, createdAt time.Time) error
 	LoadSession(ctx context.Context, sessionID string) (rootID, activeLeafID string, messages map[string]*ChatMessageRow, err error)
-	ListSessions(ctx context.Context, limit int) ([]ChatSessionRow, error)
+	ListSessions(ctx context.Context, limit, offset int) ([]ChatSessionRow, error)
 }
 
 // ChatMessageRow is the DB representation of a chat message.

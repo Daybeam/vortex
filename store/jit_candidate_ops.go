@@ -73,8 +73,14 @@ func (es *ExperienceStore) UpsertTaskPatternFromReplay(candidateID, sequenceKey,
 	}
 
 	// Look for existing pattern with same SequenceKey (accumulation)
-	for id, p := range es.TaskPatterns {
-		if p.SequenceKey == sequenceKey && sequenceKey != "" {
+	// audit M-6: use sequenceKeyIndex for O(1) lookup instead of O(N) scan.
+	// Rebuild if nil (test setups that bypass NewExperienceStore).
+	if sequenceKey != "" {
+		if es.sequenceKeyIndex == nil {
+			es.rebuildSequenceKeyIndexLocked()
+		}
+		if id, ok := es.sequenceKeyIndex[sequenceKey]; ok {
+			p := es.TaskPatterns[id]
 			p.SampleCount++
 			p.AvgConfidence = (p.AvgConfidence*float64(p.SampleCount-1) + newConf) / float64(p.SampleCount)
 			p.LastSeen = now
@@ -95,5 +101,9 @@ func (es *ExperienceStore) UpsertTaskPatternFromReplay(candidateID, sequenceKey,
 		SampleCount:   1,
 		AvgConfidence: newConf,
 		LastSeen:      now,
+	}
+	// audit M-6: maintain sequenceKeyIndex
+	if sequenceKey != "" {
+		es.sequenceKeyIndex[sequenceKey] = candidateID
 	}
 }

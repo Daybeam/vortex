@@ -67,8 +67,8 @@ func (b *SQLiteChatBackend) LoadSession(ctx context.Context, sessionID string) (
 	return rootID, activeLeafID, messages, nil
 }
 
-func (b *SQLiteChatBackend) ListSessions(ctx context.Context, limit int) ([]ChatSessionRow, error) {
-	rows, err := b.db.QueryContext(ctx, `SELECT id, root_id, active_leaf_id, created_at FROM chat_sessions ORDER BY created_at DESC LIMIT ?`, limit)
+func (b *SQLiteChatBackend) ListSessions(ctx context.Context, limit, offset int) ([]ChatSessionRow, error) {
+	rows, err := b.db.QueryContext(ctx, `SELECT id, root_id, active_leaf_id, created_at FROM chat_sessions ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
 	}

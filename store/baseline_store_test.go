@@ -139,7 +139,13 @@ func TestBaselineStore_PinOverwrite(t *testing.T) {
 	store.PinBaseline(ctx, "task-x", "sop_a", "1.0", "role_a", "1.0")
 	store.PinBaseline(ctx, "task-x", "sop_b", "2.0", "role_b", "2.0")
 
-	b, _ := store.GetBaseline(ctx, "task-x")
+	b, err := store.GetBaseline(ctx, "task-x") // audit NEW-L5: check error before deref
+	if err != nil {
+		t.Fatalf("GetBaseline: %v", err)
+	}
+	if b == nil {
+		t.Fatal("expected baseline after pin, got nil")
+	}
 	if b.SOPID != "sop_b" {
 		t.Errorf("expected overwrite to sop_b, got %s", b.SOPID)
 	}
