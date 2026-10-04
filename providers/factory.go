@@ -143,12 +143,10 @@ func newProvider(cfg *config.ProviderConfig, runtimes config.ExternalRuntimes) (
 			return nil, fmt.Errorf("external provider requires extra.script_path")
 		}
 		return NewExternalScriptProvider(cfg, scriptPath, runtimes)
-	case "systemone":
-		return NewSystemOneProvider(cfg), nil
 	case "host":
 		return &HostProvider{name: brand}, nil
 	default:
-		return nil, fmt.Errorf("unsupported provider %q (supported: anthropic, openai, gemini, ollama, script, external, systemone, host)", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider %q (supported: anthropic, openai, gemini, ollama, script, external, host)", cfg.Provider)
 	}
 }
 
