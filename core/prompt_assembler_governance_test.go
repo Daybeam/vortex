@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -48,7 +49,7 @@ func TestBuild_PrecedentsCappedAtTopN(t *testing.T) {
 	}
 
 	blocks, err := spawner.buildSystemPrompt(
-		nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
+		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		precedents, "do the task", "",
 	)
@@ -88,7 +89,7 @@ func TestBuild_RoleInstructionCompressed(t *testing.T) {
 	role := &config.Role{ID: "r1", Name: "test", Instruction: longInstruction}
 
 	blocks, err := spawner.buildSystemPrompt(
-		nil, role, nil, "coding",
+		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		nil, "do the task", "",
 	)
@@ -147,7 +148,7 @@ func TestBuild_TreePathSlidingWindow(t *testing.T) {
 	mergedContext := map[string]any{"path": path}
 
 	blocks, err := spawner.buildSystemPrompt(
-		nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
+		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "",
 	)
@@ -199,7 +200,7 @@ func TestBuild_BudgetEnforced(t *testing.T) {
 	mergedContext := map[string]any{"path": hugePath}
 
 	blocks, err := spawner.buildSystemPrompt(
-		nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
+		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "llama-3-8b"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "",
 	)
@@ -244,7 +245,7 @@ func TestBuild_ProtectedBlocksSurviveBudgetPressure(t *testing.T) {
 	mergedContext := map[string]any{"path": hugePath}
 
 	blocks, err := spawner.buildSystemPrompt(
-		nil, role, nil, "coding",
+		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{Model: "llama-3-8b"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "",
 	)
@@ -283,7 +284,7 @@ func TestBuild_LightModelBudgetTighterThanFlagship(t *testing.T) {
 	mergedContext := map[string]any{"path": path}
 
 	lightBlocks, err := spawner.buildSystemPrompt(
-		nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
+		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "llama-3-8b"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "",
 	)
@@ -292,7 +293,7 @@ func TestBuild_LightModelBudgetTighterThanFlagship(t *testing.T) {
 	}
 
 	flagshipBlocks, err := spawner.buildSystemPrompt(
-		nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
+		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "",
 	)
@@ -321,7 +322,7 @@ func TestBuild_FewShotsTaggedTier3(t *testing.T) {
 	fewShots := []string{"example 1", "example 2"}
 
 	blocks, err := spawner.buildSystemPrompt(
-		nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
+		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, fewShots, false,
 		nil, "do the task", "",
 	)
@@ -390,7 +391,7 @@ func TestBuild_SingleSkillFullPrompt(t *testing.T) {
 	hub.Registry = spawner.registry
 
 	blocks, err := spawner.buildSystemPrompt(
-		hub, &config.Role{ID: "r1", Name: "test"}, []string{"s1"}, "coding",
+		context.Background(), hub, &config.Role{ID: "r1", Name: "test"}, []string{"s1"}, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		nil, "do the task", "",
 	)
@@ -440,7 +441,7 @@ func TestBuild_MultipleSkillsProgressiveDisclosure(t *testing.T) {
 	hub.Registry = spawner.registry
 
 	blocks, err := spawner.buildSystemPrompt(
-		hub, &config.Role{ID: "r1", Name: "test"}, []string{"s1", "s2"}, "coding",
+		context.Background(), hub, &config.Role{ID: "r1", Name: "test"}, []string{"s1", "s2"}, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		nil, "do the task", "",
 	)

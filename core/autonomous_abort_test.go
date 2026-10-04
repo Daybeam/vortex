@@ -16,9 +16,14 @@ func newAbortTestEngine(t *testing.T) (*DirectedEngine, *config.Registry) {
 		Providers: make(map[string]*config.ProviderConfig),
 		System:    config.SystemSettings{},
 	}
-	logDir := mustTempDir(t, "vortex-test")
-	outDir := mustTempDir(t, "vortex-test")
+	logDir := t.TempDir()
+	outDir := t.TempDir()
 	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
+	// Close logger before t.TempDir() cleanup to prevent TempDir RemoveAll
+	// races: the logger spawns a background goroutine for async log
+	// compression (logger.go:335) that writes to logDir. Without Close(),
+	// t.TempDir() cleanup can fail with "directory not empty".
+	t.Cleanup(func() { logger.Close() })
 	s := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
 	return s, reg
 }

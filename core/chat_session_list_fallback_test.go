@@ -44,7 +44,7 @@ func TestListSessions_FileFallback(t *testing.T) {
 	}
 
 	// ListSessions should return both sessions from files, newest first
-	rows, err := st.ListSessions(context.Background(), 50)
+	rows, err := st.ListSessions(context.Background(), 50, 0)
 	if err != nil {
 		t.Fatalf("ListSessions error: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestListSessions_FileFallback_Limit(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	rows, err := st.ListSessions(context.Background(), 2)
+	rows, err := st.ListSessions(context.Background(), 2, 0)
 	if err != nil {
 		t.Fatalf("ListSessions error: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestListSessions_FileFallback_EmptyDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nonexistent")
 	st := NewChatSessionStore(dir, nil)
 
-	rows, err := st.ListSessions(context.Background(), 50)
+	rows, err := st.ListSessions(context.Background(), 50, 0)
 	if err != nil {
 		t.Fatalf("ListSessions error on empty dir: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestListSessions_DBBackendPreferred(t *testing.T) {
 	// Also create a file-based session that should NOT appear
 	os.WriteFile(filepath.Join(dir, "file-session.json"), []byte("{}"), 0644)
 
-	rows, err := st.ListSessions(context.Background(), 50)
+	rows, err := st.ListSessions(context.Background(), 50, 0)
 	if err != nil {
 		t.Fatalf("ListSessions error: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestListSessions_DBEmptyFallsBackToFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "file-session-1.json"), []byte("{}"), 0644)
 	os.WriteFile(filepath.Join(dir, "file-session-2.json"), []byte("{}"), 0644)
 
-	rows, err := st.ListSessions(context.Background(), 50)
+	rows, err := st.ListSessions(context.Background(), 50, 0)
 	if err != nil {
 		t.Fatalf("ListSessions error: %v", err)
 	}
@@ -166,7 +166,16 @@ type fakeListBackend struct {
 	sessions []store.ChatSessionRow
 }
 
-func (f *fakeListBackend) ListSessions(ctx context.Context, limit int) ([]store.ChatSessionRow, error) {
+func (f *fakeListBackend) ListSessions(ctx context.Context, limit, offset int) ([]store.ChatSessionRow, error) {
+	if offset > 0 && offset < len(f.sessions) {
+		s := f.sessions[offset:]
+		if limit > 0 && len(s) > limit {
+			return s[:limit], nil
+		}
+		return s, nil
+	} else if offset > 0 {
+		return []store.ChatSessionRow{}, nil
+	}
 	if limit > 0 && len(f.sessions) > limit {
 		return f.sessions[:limit], nil
 	}

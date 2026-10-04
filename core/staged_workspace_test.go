@@ -122,6 +122,14 @@ func TestStagedWorkspace_Diff_DetectsDeletion(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------------
+// Feature: Staged Workspace Disk Transaction Isolation
+// Invariant: On step failure, disk is automatically rolled back to keep the
+// host workspace clean
+// Scenario: When a step corrupts code mid-edit (panic), SnapshotRollback
+// restores the files
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Staged Workspace
+// -----------------------------------------------------------------------------
 func TestStagedWorkspace_Rollback_RestoresDeletedAndRemovesCreated(t *testing.T) {
 	dir := t.TempDir()
 	sw := NewStagedWorkspace(dir)

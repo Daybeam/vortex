@@ -115,7 +115,7 @@ func TestPromptAssembler_DirectorySkillInjectsLightweightMetadata(t *testing.T) 
 	hub := NewContextHub(reg, nil, nil)
 
 	blocks, err := spawner.buildSystemPrompt(
-		hub, nil, []string{"dir_skill"}, "coding",
+		context.Background(), hub, nil, []string{"dir_skill"}, "coding",
 		&config.ProviderConfig{Model: "test-model"}, []string{}, nil, nil, false, nil,
 		"review the code", "",
 	)

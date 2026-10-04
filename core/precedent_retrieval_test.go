@@ -94,7 +94,7 @@ func TestSpawner_PrecedentInjection(t *testing.T) {
 		},
 	}
 
-	blocks, err := spawner.buildSystemPrompt(nil, &config.Role{Name: "test"}, nil, "text", &config.ProviderConfig{}, []string{}, nil, nil, false, precedents, "test task", "")
+	blocks, err := spawner.buildSystemPrompt(context.Background(), nil, &config.Role{Name: "test"}, nil, "text", &config.ProviderConfig{}, []string{}, nil, nil, false, precedents, "test task", "")
 	if err != nil {
 		t.Fatalf("buildSystemPrompt failed: %v", err)
 	}

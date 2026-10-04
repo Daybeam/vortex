@@ -119,7 +119,7 @@ func TestToolRouter_PrunesDecisionSubmission(t *testing.T) {
 		},
 	}
 
-	routed := router.Route(req)
+	routed := router.Route(context.Background(), req)
 	if len(routed) != 1 {
 		t.Fatalf("Expected 1 binding, got %d", len(routed))
 	}
