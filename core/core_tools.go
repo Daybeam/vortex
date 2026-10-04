@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/client"
+	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -269,6 +270,24 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 		sandboxCleanup()
 	}
 
+	// #17 (eval §8.35): On success (exit_code == 0), return only stdout/stderr
+	// — omit exit_code/error so the model doesn't treat exit_code:0 as a domain
+	// success signal. On failure, include the full wrapper for diagnosis.
+	if cmd.ProcessState.ExitCode() == 0 {
+		// #2 (eval §8.31): Observable classification for "false success" —
+		// execute_code exits 0 but only produces stdout (print), with no
+		// domain side-effect. Pure metric, zero behavior change. An arm can
+		// compare `execute_code_print_only` / `execute_code_success` ratio
+		// against reward to validate the "false success" hypothesis.
+		observability.GetGlobalMetrics().Inc("orchestrator.calls.execute_code_success", 1)
+		if stdout.Len() > 0 && stderr.Len() == 0 {
+			observability.GetGlobalMetrics().Inc("orchestrator.calls.execute_code_print_only", 1)
+		}
+		return map[string]any{
+			"stdout": stdout.String(),
+			"stderr": stderr.String(),
+		}, nil
+	}
 	return map[string]any{
 		"stdout":    stdout.String(),
 		"stderr":    stderr.String(),

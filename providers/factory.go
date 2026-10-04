@@ -2,7 +2,6 @@ package providers
 
 import (
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
 
@@ -125,13 +124,13 @@ func newProvider(cfg *config.ProviderConfig, runtimes config.ExternalRuntimes) (
 
 	switch proto {
 	case "anthropic":
-		return &AnthropicProvider{cfg: cfg, name: brand, client: &http.Client{Timeout: 120 * time.Second}}, nil
+		return &AnthropicProvider{cfg: cfg, name: brand, client: SharedHTTPClient(120 * time.Second)}, nil
 	case "openai", "deepseek", "sensenova", "sentimes", "together", "groq":
-		return &OpenAIProvider{cfg: cfg, name: brand, client: &http.Client{Timeout: 300 * time.Second}}, nil
+		return &OpenAIProvider{cfg: cfg, name: brand, client: SharedHTTPClient(300 * time.Second)}, nil
 	case "gemini", "gemma":
-		return &GeminiProvider{cfg: cfg, name: brand, client: &http.Client{Timeout: 120 * time.Second}}, nil
+		return &GeminiProvider{cfg: cfg, name: brand, client: SharedHTTPClient(120 * time.Second)}, nil
 	case "ollama":
-		return &OllamaProvider{cfg: cfg, name: brand, client: &http.Client{Timeout: 300 * time.Second}}, nil
+		return &OllamaProvider{cfg: cfg, name: brand, client: SharedHTTPClient(300 * time.Second)}, nil
 	case "script":
 		scriptPath, _ := cfg.Extra["script_path"].(string)
 		if scriptPath == "" {
@@ -142,16 +141,12 @@ func newProvider(cfg *config.ProviderConfig, runtimes config.ExternalRuntimes) (
 		scriptPath, _ := cfg.Extra["script_path"].(string)
 		if scriptPath == "" {
 			return nil, fmt.Errorf("external provider requires extra.script_path")
-	}
-	return NewExternalScriptProvider(cfg, scriptPath, runtimes)
-	case "swarm":
-		return nil, fmt.Errorf("swarm provider is not available")
-	case "systemone":
-		return NewSystemOneProvider(cfg), nil
+		}
+		return NewExternalScriptProvider(cfg, scriptPath, runtimes)
 	case "host":
 		return &HostProvider{name: brand}, nil
 	default:
-		return nil, fmt.Errorf("unsupported provider %q (supported: anthropic, openai, gemini, ollama, script, external, swarm, systemone, host)", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider %q (supported: anthropic, openai, gemini, ollama, script, external, host)", cfg.Provider)
 	}
 }
 

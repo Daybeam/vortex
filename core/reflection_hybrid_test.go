@@ -58,11 +58,11 @@ func TestReflectionEngine_ScanForHybridMerge(t *testing.T) {
 	providers.GlobalRouter.Register("default", providerCfg, mock)
 	t.Cleanup(func() { providers.GlobalRouter.Deregister("default") })
 
-	logger, _ := NewLogger(logDir, nil)
+	logger := mustNewLogger(t, logDir, nil)
 	jit := NewJITManager(reg, tmpDir)
 
 	// Experience store
-	es, _ := store.NewExperienceStore(tmpDir, nil, nil, nil, nil)
+	es := mustNewExperienceStore(t, tmpDir, nil, nil, nil, nil)
 	re := NewReflectionEngine(es, nil, reg, jit, logger)
 
 	// 2. Prepare two verified variants
@@ -120,9 +120,9 @@ func TestReflectionEngine_CrystallizeStepToSkill_Additive(t *testing.T) {
 	providers.GlobalRouter.Register("default", providerCfg, mock)
 	t.Cleanup(func() { providers.GlobalRouter.Deregister("default") })
 
-	logger, _ := NewLogger(logDir, nil)
+	logger := mustNewLogger(t, logDir, nil)
 	jit := NewJITManager(reg, tmpDir)
-	es, _ := store.NewExperienceStore(tmpDir, nil, nil, nil, nil)
+	es := mustNewExperienceStore(t, tmpDir, nil, nil, nil, nil)
 
 	// Mock TaskStore
 	ts := &mockSignalTaskStore{}

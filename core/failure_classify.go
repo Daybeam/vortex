@@ -77,6 +77,11 @@ const (
 	// engine must NOT spawn a same-role follow-up (which would just repeat the
 	// same failing tool call). ADDED (2026-10-02, E2/E3 fix).
 	FailureClassDeterministicToolRefusal FailureClass = "deterministic_tool_refusal"
+
+	// FailureClassResourceNotFound: a 404-style response from an MCP tool.
+	// Handled by asking the user to verify the resource identifier.
+	// ADDED (2026-10-03) for SERF integration.
+	FailureClassResourceNotFound FailureClass = "resource_not_found"
 )
 
 // classifyError centralizes the failure-classification logic used by the
@@ -129,8 +134,8 @@ func classifyError(err error) FailureClass {
 }
 
 // classifyErrorWithSystemOne wraps classifyError with an optional System One
-// refinement. System One is not available in the open core; this stub returns
-// the base classification directly.
+// refinement. In the open core, System One is not available, so this is a
+// stub that returns classifyError(err) directly.
 func (s *DirectedEngine) classifyErrorWithSystemOne(err error, stepID, roleID, stepTask string) FailureClass {
 	return classifyError(err)
 }

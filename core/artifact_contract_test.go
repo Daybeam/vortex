@@ -12,8 +12,7 @@ import (
 // TestPersistGraphWritesArtifacts verifies that persistGraph computes SHA-256 +
 // provenance and writes artifacts.json alongside manifest.json for primary outputs.
 func TestPersistGraphWritesArtifacts(t *testing.T) {
-	tempDir, _ := os.MkdirTemp("", "orch_artifacts_test")
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	// Build an engine with outputBase = tempDir
 	eng := &DirectedEngine{outputBase: tempDir}

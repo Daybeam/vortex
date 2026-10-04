@@ -97,7 +97,7 @@ func sendWebhook(targetURL, secretEnv string, body []byte) {
 		}
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}}
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[webhook] dispatch failed for %s: %v\n", targetURL, err)

@@ -302,6 +302,14 @@ func (r *Registry) loadLocked() error {
 		log.Printf("[prompt-governance] WARNING: %s", w)
 	}
 
+	// Ghost Tool Validation (§8.31 #13): config-time check that every role's
+	// BoundMCPBindings reference real MCPs/tools, and that backtick-quoted
+	// tool names in Instruction/Rules exist in some MCP's AvailableTools.
+	// Zero behavior change — pure advisory warnings.
+	for _, w := range ValidateRoleToolBindings(r.Roles, r.MCPs) {
+		log.Printf("[tool-validation] WARNING: %s", w)
+	}
+
 	// RoleGroups
 	keepRoleGroups := make(map[string]bool)
 	for i := range cfg.RoleGroups {

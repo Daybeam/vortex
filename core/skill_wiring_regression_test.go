@@ -45,10 +45,7 @@ func TestExpandSkillsIfNecessary_WiresDirectorySkill(t *testing.T) {
 	reg.Roles["dir_expert"] = &config.Role{ID: "dir_expert", BoundSkills: []string{"dir_skill"}}
 	reg.Mu.Unlock()
 
-	logger, err := NewLogger(t.TempDir(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	logger := mustNewLogger(t, t.TempDir(), nil)
 	t.Cleanup(func() { logger.Close() })
 
 	engine := &DirectedEngine{registry: reg, logger: logger}
@@ -112,13 +109,13 @@ func TestPromptAssembler_DirectorySkillInjectsLightweightMetadata(t *testing.T) 
 			},
 		},
 	}
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	t.Cleanup(func() { logger.Close() })
 	spawner := NewSpawner(reg, nil, nil, logger, nil, "outputs")
 	hub := NewContextHub(reg, nil, nil)
 
 	blocks, err := spawner.buildSystemPrompt(
-		hub, nil, []string{"dir_skill"}, "coding",
+		context.Background(), hub, nil, []string{"dir_skill"}, "coding",
 		&config.ProviderConfig{Model: "test-model"}, []string{}, nil, nil, false, nil,
 		"review the code", "",
 	)

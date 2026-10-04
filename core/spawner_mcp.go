@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -122,12 +123,19 @@ func (s *Spawner) buildMCPServers(
 ) []providers.MCPServerDef {
 	var servers []providers.MCPServerDef
 
-	// Inject core tools (write_file, read_file, execute_code) as a virtual MCP server
-	servers = append(servers, providers.MCPServerDef{
+	// #1 (eval §8.31): Core tools (write_file, read_file, execute_code) as a
+	// virtual MCP server. Default: injected first (backward compat). Set
+	// VORTEX_CORE_TOOLS_ORDER=last to inject after domain MCPs so small
+	// models see domain tools first instead of biasing toward sandbox tools.
+	coreServer := providers.MCPServerDef{
 		Name:  "_core",
 		URL:   "core://internal",
 		Tools: CoreToolDefinitions(),
-	})
+	}
+	coreLast := os.Getenv("VORTEX_CORE_TOOLS_ORDER") == "last"
+	if !coreLast {
+		servers = append(servers, coreServer)
+	}
 
 	for _, b := range bindings {
 		mcp := hub.GetMCP(b.MCPID)
@@ -203,6 +211,15 @@ func (s *Spawner) buildMCPServers(
 						}
 					}
 				} else {
+					// #18 (eval §8.31): Surface tools/list failure at ERROR level
+					// so it is visible in standard log output, not just event logs.
+					// Without this, a failed discovery leaves FullToolDefinitions
+					// empty but the MCP is still added to the server list with 0
+					// tools — the engine silently assumes the MCP is usable.
+					slog.Error("MCP tools/list discovery failed — MCP will have 0 tools",
+						"mcp", mcp.ID,
+						"error", err.Error(),
+						"task", taskID)
 					s.logger.Log("EventMCPToolsDiscoveryFailed", taskID, "", map[string]any{
 						"mcp":   mcp.ID,
 						"error": err.Error(),
@@ -261,6 +278,12 @@ func (s *Spawner) buildMCPServers(
 					}
 					mcp.DiscoveryStatus = status
 
+					// #18 (eval §8.31): Surface remote tools/list failure at ERROR level.
+					slog.Error("MCP remote tools/list discovery failed — MCP will have 0 tools",
+						"mcp", mcp.ID,
+						"status", status,
+						"error", errStr,
+						"task", taskID)
 					s.logger.Log("EventMCPToolsDiscoveryFailed", taskID, "", map[string]any{
 						"mcp":    mcp.ID,
 						"status": status,
@@ -290,6 +313,10 @@ func (s *Spawner) buildMCPServers(
 			})
 		}
 		dLock.Unlock() // audit H8: release per-MCP discovery lock
+	}
+
+	if coreLast {
+		servers = append(servers, coreServer)
 	}
 	return servers
 }

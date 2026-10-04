@@ -6,12 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/daybeam/vortex/client"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/pkg/registry"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -40,27 +42,27 @@ const (
 
 // Spawner builds subagent prompts, calls the provider, and parses output.
 type Spawner struct {
-	registry     *config.Registry
-	taskStore    store.ITaskStore
-	expStore     store.IExperienceStore
-	logger       *Logger
-	mcpMgr       *MCPConnectionManager
-	Mu           sync.Mutex
-	interceptors []Interceptor
-	contextProviders []ContextProvider
-	outputBase         string
-	ResourceLoader     *ResourceLoader
-	processor          *OutputProcessor
-	toolRouter         *ToolRouter
-	skillRouter        *SkillRouter
-	verifierRegistry   map[string]Verifier
-	constraintAdapter  *ConstraintAdapter
-	sieve              *Sieve
-	contextManager     *ContextManager
-	CaSKG              *CaSKGManager
-	watchdog           *GatewayWatchdog
-	healer             *Healer
-	pa                 *PromptAssembler
+	registry          *config.Registry
+	taskStore         store.ITaskStore
+	expStore          store.IExperienceStore
+	logger            *Logger
+	mcpMgr            *MCPConnectionManager
+	Mu                sync.Mutex
+	interceptors      []Interceptor
+	contextProviders  []ContextProvider
+	outputBase        string
+	ResourceLoader    *ResourceLoader
+	processor         *OutputProcessor
+	toolRouter        *ToolRouter
+	skillRouter       *SkillRouter
+	verifierRegistry  map[string]Verifier
+	constraintAdapter *ConstraintAdapter
+	sieve             *Sieve
+	contextManager    *ContextManager
+	CaSKG             *CaSKGManager
+	watchdog          *GatewayWatchdog
+	healer            *Healer
+	pa                *PromptAssembler
 
 	assets                   *AssetManager
 	refBasedHandoffThreshold int
@@ -75,15 +77,15 @@ type Spawner struct {
 	// signalCollector and policyDecider decouple data collection from policy
 	// computation in calculateMaxTurns. See core/policy_signals.go and
 	// core/policy_decider.go. Nil-safe: initialized in NewSpawner.
-	signalCollector          SignalCollector
-	policyDecider            PolicyDecider
+	signalCollector SignalCollector
+	policyDecider   PolicyDecider
 
 	// E1 fix: task-level tool fail count (persists across steps within a task).
 	// The step-level toolFailCount (local var in doSpawn) resets per step;
 	// this map persists across steps, so a tool failing in step 1, 2, and 3
 	// accumulates to 3 and triggers toolFailFeedback's circuit-breaker.
-	taskFailMu               sync.Mutex
-	taskToolFailCount        map[string]map[string]int // taskID → toolName → count
+	taskFailMu        sync.Mutex
+	taskToolFailCount map[string]map[string]int // taskID → toolName → count
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
@@ -103,14 +105,14 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 	caskg.HookEventBus(DefaultBus)
 
 	spawner := &Spawner{
-		registry:           reg,
-		taskStore:          ts,
-		expStore:           es,
-		logger:             logger,
-		ResourceLoader:     loader,
-		mcpMgr:             NewMCPConnectionManager(reg, logger),
-		verifierRegistry:   make(map[string]Verifier),
-		interceptors:       interceptors,
+		registry:         reg,
+		taskStore:        ts,
+		expStore:         es,
+		logger:           logger,
+		ResourceLoader:   loader,
+		mcpMgr:           NewMCPConnectionManager(reg, logger),
+		verifierRegistry: make(map[string]Verifier),
+		interceptors:     interceptors,
 		contextProviders: []ContextProvider{
 			&TimeProvider{},
 		},
@@ -123,11 +125,11 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		sieve:             newSieveFromConfig(reg.System),
 		contextManager:    NewContextManager(reg),
 		watchdog:          NewGatewayWatchdog(reg),
-		healer:             NewHealer(),
-		pa:                 NewPromptAssembler(es, loader, reg, logger),
-		irtEstimator:       NewIRTBudgetEstimator(50),
-		cacheSentinel:      NewCacheSentinel(),
-		allowedWorkspaces:  reg.System.Sandbox.AllowedWorkspaces,
+		healer:            NewHealer(),
+		pa:                NewPromptAssembler(es, loader, reg, logger),
+		irtEstimator:      NewIRTBudgetEstimator(50),
+		cacheSentinel:     NewCacheSentinel(),
+		allowedWorkspaces: reg.System.Sandbox.AllowedWorkspaces,
 	}
 
 	// Wire policy signal collection and decision (decoupled from spawner_policy.go)
@@ -140,6 +142,13 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		if esStore, ok := es.(*store.ExperienceStore); ok {
 			esStore.SetEmbeddingClient(hub.GetEmbeddingClient())
 		}
+
+		// Wire up embedding client for ToolRouter hybrid search.
+		spawner.toolRouter.SetEmbedClient(NewHubEmbeddingClient(hub))
+		spawner.toolRouter.RefreshToolEmbeddings(context.Background(), reg)
+		reg.OnReload(func() {
+			spawner.toolRouter.RefreshToolEmbeddings(context.Background(), reg)
+		})
 	}
 
 	spawner.CaSKG.HookEventBus(DefaultBus)
@@ -240,6 +249,14 @@ func (s *Spawner) Spawn(ctx context.Context, req *SpawnRequest) (*SpawnResult, e
 	handler := BuildInterceptorChain(s.interceptors, s.doSpawn)
 	start := time.Now()
 	result, err := handler(ctx, req)
+	// audit L-N12 (fix-propagation gap, 4th occurrence): the interceptor chain
+	// can short-circuit and return (nil, nil). Previously only spawnDecider
+	// (L-N10) guarded against this; 7 sibling call sites did not, causing nil
+	// pointer dereferences on res.Output.Result. Root-cause fix: ensure Spawn
+	// NEVER returns (nil, nil) so all callers can safely dereference.
+	if err == nil && result == nil {
+		result = &SpawnResult{Output: schemas.SubagentOutput{Result: map[string]any{}}}
+	}
 	if err == nil && result != nil {
 		s.recordCapabilityOutcome(ctx, req, result, time.Since(start))
 	}
@@ -311,7 +328,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	if req.RoutingMode != schemas.RoutingModeManifest {
 		// ─── Phase 0.5: Dynamic Tool Sieve (Skill Affinity) ──────────────────
 		// Filter tools based on task description to reduce schema noise
-		bindings = s.toolRouter.Route(RouteRequest{
+		bindings = s.toolRouter.Route(ctx, RouteRequest{
 			Task:               req.Task,
 			Bindings:           bindings,
 			Turn:               0,
@@ -423,7 +440,47 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	var statesVisited []string // PGPO (ADDED 2026-09-08)
 	var previousState string   // PGPO (ADDED 2026-09-08)
 	toolFailCount := make(map[string]int)
+	// #11 (eval §8.41): Per-task identical-call counter for dedup.
+	// Key = toolName + ":" + fnv(args). Allows 2 identical calls; the 3rd
+	// requires a _reason argument (legitimate retries like data refresh pass).
+	// Per-step scope: different steps may legitimately make the same call
+	// (e.g., parallel searches gathering information). Task-level scope would
+	// block normal cross-step work.
+	toolCallCount := make(map[string]int) // callKey → count (resets per step)
 	sieveGuardianHits := 0
+	// P1 fix (2026-10-03, eval §0.5): Consecutive parse failure counter.
+	// After 3 consecutive unparseable outputs, break the spin loop instead
+	// of burning 19-43 provider calls on identical failures.
+	consecutiveParseFailures := 0
+	const maxConsecutiveParseFailures = 3
+
+	// #15 (eval §8.35): No-progress turn detection. Tracks consecutive turns
+	// where ALL tool calls were fs-only (write_file/read_file/execute_code)
+	// with zero domain MCP calls. A high streak indicates the model is stuck
+	// in a write→read self-proof loop burning the turn budget. Pure metrics —
+	// no behavior change; threshold/action to be added after an arm validates.
+	fsOnlyTurnStreak := 0
+	// #4+#15 (eval §8.37.2/§8.40): Configurable fs-only streak limit.
+	// When the model makes N consecutive turns using ONLY filesystem tools
+	// (write_file/read_file/execute_code) without any domain MCP calls,
+	// break the turn loop — the model is stuck in a self-proof loop.
+	//
+	// NECESSITY: Premature — no production evidence of this pattern. maxTurns
+	// (default 50) + #11 dedup already bound the problem. The gap this catches
+	// (different fs-only calls each turn, no domain progress) is narrow.
+	// Design: measure-first-then-act. Deploy with metrics only (limit=0),
+	// monitor orchestrator.progress.fs_only_streak_max, enable threshold only
+	// if metrics justify it. See docs/completed/2026-10-03/ §#4+#15.
+	//
+	// Default 0 = disabled (metrics only). Set ORCH_FS_ONLY_STREAK_LIMIT=5
+	// to enable. Start conservative to avoid aborting legitimate long
+	// reasoning chains that use fs-only tools productively.
+	fsOnlyStreakLimit := 0
+	if v := os.Getenv("ORCH_FS_ONLY_STREAK_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			fsOnlyStreakLimit = n
+		}
+	}
 
 	maxTurns := s.calculateMaxTurns(ctx, req, role)
 	// applyStrategyBias is now handled inside calculateMaxTurns via PolicyDecider
@@ -466,9 +523,9 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				}
 			}
 
-		var provider providers.Provider
+			var provider providers.Provider
 
-		slot, err := s.routeProvider(providers.PoolIDFor(pCfg), role.BaseCapability)
+			slot, err := s.routeProvider(providers.PoolIDFor(pCfg), role.BaseCapability)
 			if err == nil {
 				provider = slot.Provider
 			} else {
@@ -482,7 +539,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 			}
 
 			// Dynamic Protocol: Re-build prompts and servers for each candidate family
-			systemBlocks, err := s.buildSystemPrompt(req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, mergedContext, toolFewShots, req.Isolation, precedents, req.Task, "")
+			systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, mergedContext, toolFewShots, req.Isolation, precedents, req.Task, "")
 			if err != nil {
 				return s.failedOutput(role.BaseCapability, fmt.Sprintf("failed to render prompt: %v", err)), nil
 			}
@@ -560,9 +617,9 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				"candidate_idx":     candIdx,
 			})
 
-		if os.Getenv("VORTEX_DEBUG") != "" {
-			fmt.Fprintf(os.Stderr, "[DEBUG] Calling Provider %s for Task %s Turn %d (candidate %d)\n", pCfg.Model, req.TaskID, turn, candIdx)
-		}
+			if os.Getenv("VORTEX_DEBUG") != "" {
+				fmt.Fprintf(os.Stderr, "[DEBUG] Calling Provider %s for Task %s Turn %d (candidate %d)\n", pCfg.Model, req.TaskID, turn, candIdx)
+			}
 
 			// --- Sieve Context Management (SOP 3.0) ---
 			reqSieve := &schemas.CompleteRequest{
@@ -605,8 +662,11 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 					patternWindow = patternWindow[len(patternWindow)-150:]
 				}
 				if len(patternWindow) >= 150 {
-					tail := string(patternWindow[len(patternWindow)-30:])
-					if strings.Count(string(patternWindow), tail) >= 4 {
+					// M-9 (2026-10-04): Convert patternWindow to string once
+					// instead of twice (was: string() for tail + string() for Count).
+					windowStr := string(patternWindow)
+					tail := windowStr[len(windowStr)-30:]
+					if strings.Count(windowStr, tail) >= 4 {
 						return fmt.Errorf("ErrPatternLoopBrake")
 					}
 				}
@@ -631,6 +691,69 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				}, nil
 			}
 
+			// #20 (eval §8.46): Reactive context compression. When the provider
+			// returns a context-limit error (prompt too long for the model's
+			// window), compress the conversation history by dropping older
+			// middle blocks and retry the same provider once. This prevents
+			// a hard 400 crash that kills the step — the model gets a second
+			// chance with a shorter context.
+			if err != nil && isContextLimitError(err) {
+				compressed := compressUserBlocks(userBlocks)
+				if compressed != nil {
+					observability.GetGlobalMetrics().Inc("orchestrator.context.compressed", 1)
+					s.logger.Log("EventContextCompressed", req.TaskID, req.StepID, map[string]any{
+						"turn":          turn,
+						"provider":      pCfg.Provider,
+						"model":         pCfg.Model,
+						"blocks_before": len(userBlocks),
+						"blocks_after":  len(compressed),
+						"error":         err.Error(),
+					})
+					userBlocks = compressed
+
+					// Retry with compressed context.
+					retryCtx, retryCancel := context.WithTimeout(ctx, 120*time.Second)
+					resp, err = provider.StreamComplete(retryCtx, providers.CompleteRequest{
+						SystemBlocks:     systemBlocks,
+						UserBlocks:       userBlocks,
+						System:           flattenContentBlocks(systemBlocks),
+						User:             flattenContentBlocks(userBlocks),
+						Model:            pCfg.Model,
+						MaxTokens:        4096,
+						Temperature:      temp,
+						FrequencyPenalty: freqPen,
+						MCPServers:       mcpServers,
+						Attachments:      attachments,
+						Secrets:          req.Hub.Registry.Secrets,
+						ForceToolCall:    forceTool,
+						Constraints:      constraints,
+					}, func(chunk string) error {
+						streamBuffer.WriteString(chunk)
+						return nil
+					})
+					retryCancel()
+
+					if err == nil {
+						observability.GetGlobalMetrics().Inc("orchestrator.context.compress_retry_success", 1)
+						s.logger.Log("EventContextCompressRetrySuccess", req.TaskID, req.StepID, map[string]any{
+							"turn":     turn,
+							"provider": pCfg.Provider,
+							"model":    pCfg.Model,
+						})
+						effectiveProviderID = pCfg.PoolID
+						effectiveModelID = pCfg.Model
+						break // Turn succeeded with compressed context
+					}
+					// Retry also failed — fall through to normal error handling.
+					s.logger.Log("EventContextCompressRetryFailed", req.TaskID, req.StepID, map[string]any{
+						"turn":     turn,
+						"provider": pCfg.Provider,
+						"model":    pCfg.Model,
+						"error":    err.Error(),
+					})
+				}
+			}
+
 			if err == nil {
 				// Empty Response Circuit Breaker (ADDED 2026-09-18):
 				// Provider returned HTTP 200 but model produced zero tokens and
@@ -646,7 +769,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 						"failed_model":    pCfg.Model,
 						"error":           "empty_response_zero_tokens",
 						"prompt_tokens":   resp.PromptTokens,
-						"next_candidate":  func() string {
+						"next_candidate": func() string {
 							if candIdx < len(candidateConfigs)-1 {
 								return candidateConfigs[candIdx+1].providerID
 							}
@@ -657,11 +780,13 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 						continue // try next candidate provider/model
 					}
 					// No more candidates: fast-fail instead of looping
-					s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
-						"error":   "empty_response_zero_tokens",
-						"details": "all candidates returned 0 completion tokens; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter",
-					})
-					return nil, fmt.Errorf("empty_response_zero_tokens")
+				s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+					"error":   "empty_response_zero_tokens",
+					"details": "all candidates returned 0 completion tokens; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter",
+				})
+				// Persist partial trace for observability (eval §8.48.6).
+				s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
+				return nil, fmt.Errorf("empty_response_zero_tokens")
 				}
 				effectiveProviderID = pCfg.PoolID
 				effectiveModelID = pCfg.Model
@@ -696,6 +821,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				"error":   "Provider call failed (all candidates exhausted)",
 				"details": err.Error(),
 			})
+			// Persist partial trace for observability (eval §8.48.6).
+			s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
 			return nil, err
 		}
 
@@ -782,6 +909,46 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 			noToolCallsYet := len(trace) == 0
 			selfReportedLowConfidence := output.Status == schemas.StatusPartial && output.Confidence < 0.4
 
+			// P1 fix (2026-10-03, eval §0.5): Detect parse failures and track consecutive count.
+			// ParseOutput fallback sets Assumptions to "output not parseable" or
+			// "output parseable but semantically hollow". Use this to distinguish
+			// "model didn't call tools" from "model called tools but output was garbage".
+			parseFailed := false
+			for _, a := range output.Assumptions {
+				if strings.Contains(a, "not parseable") || strings.Contains(a, "semantically hollow") {
+					parseFailed = true
+					break
+				}
+			}
+			if parseFailed {
+				consecutiveParseFailures++
+			} else {
+				consecutiveParseFailures = 0
+			}
+
+			// P1 fix (2026-10-03, eval §0.5): Spin breaker.
+			// After N consecutive parse failures, stop spinning and return the
+			// best partial result. Burning the entire turn budget on identical
+			// failures wastes 19-43 provider calls for zero benefit.
+			if consecutiveParseFailures >= maxConsecutiveParseFailures {
+				output.Warnings = append(output.Warnings, fmt.Sprintf(
+					"orchestrator: broke spin loop after %d consecutive parse failures", consecutiveParseFailures))
+				s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+					"turn":                       turn,
+					"consecutive_parse_failures": consecutiveParseFailures,
+					"action":                     "spin_break",
+				})
+				observability.GetGlobalMetrics().Inc("orchestrator.spin.broken", 1)
+				return &SpawnResult{
+					Output:        output,
+					ProviderID:    effectiveProviderID,
+					ModelID:       effectiveModelID,
+					Ref:           req.TaskID + ":" + req.StepID,
+					TurnsUsed:     turn + 1,
+					StatesVisited: statesVisited,
+				}, nil
+			}
+
 			// FIX (2026-09-07): Malformatted Tool Call Guard.
 			// When the model outputs pseudo-XML like <anim:call> instead of real JSON tool calls,
 			// intercept it and inject a stern correction prompt so it doesn't get trapped.
@@ -805,6 +972,13 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				msg := "[SYSTEM]: You have not executed any tools yet. Please proceed to actually call the necessary tool(s) now."
 				if output.Status == schemas.StatusCapabilityRequired && len(output.RequiredCapabilities) > 0 {
 					msg = fmt.Sprintf("[SYSTEM]: Before finalizing capability_required, double-check your bound tools. If none fulfill %v, explain and finalize.", output.RequiredCapabilities)
+				}
+				// P1 fix (2026-10-03, eval §0.5): When the spin is caused by parse
+				// failure (not just "no tools"), include format guidance so the model
+				// knows BOTH problems: (1) call tools, (2) output valid JSON.
+				// Without this, the model retries with the same bad format → spin.
+				if parseFailed {
+					msg = "[SYSTEM]: You have not executed any tools yet, AND your previous output was not valid JSON. You MUST: (1) call the necessary tool(s) using the native JSON tool call structure, (2) ensure your final output is valid JSON with \"status\", \"confidence\", and \"result\" fields. Do not repeat the same formatting mistake."
 				}
 				for i := range userBlocks {
 					userBlocks[i].CacheControl = ""
@@ -841,14 +1015,14 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				CreatedAt:      time.Now(),
 			})
 
-		return &SpawnResult{
-			Output:        output,
-			ProviderID:    effectiveProviderID,
-			ModelID:       effectiveModelID,
-			Ref:           req.TaskID + ":" + req.StepID,
-			StatesVisited: statesVisited,
-			TurnsUsed:     turn + 1,
-		}, nil
+			return &SpawnResult{
+				Output:        output,
+				ProviderID:    effectiveProviderID,
+				ModelID:       effectiveModelID,
+				Ref:           req.TaskID + ":" + req.StepID,
+				StatesVisited: statesVisited,
+				TurnsUsed:     turn + 1,
+			}, nil
 		}
 
 		// Handle Tool Calls
@@ -859,6 +1033,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 		// ── Sieve Guardian: Tool Loop Detection (Two-Tier Escalation) ───────
 		if valid, reason := s.checkSieveGuardian(req.TaskID, req.StepID, turn, resp.ToolCalls, trace); !valid {
 			sieveGuardianHits++
+			observability.GetGlobalMetrics().Inc("orchestrator.sieve.interceptions", 1)
 			if sieveGuardianHits == 1 {
 				userBlocks = append(userBlocks, schemas.ContentBlock{
 					Text: "[SYSTEM]: Loop detected (" + reason + "). You are repeating the same tool calls. Change your approach — try different parameters, a different tool, or provide a final answer with current information.",
@@ -895,6 +1070,16 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 		}
 
 		for _, call := range resp.ToolCalls {
+			// #2+#14 (eval §8.34): Side-effect classification. Core tools
+			// (write_file/read_file/execute_code) are fs-only — no domain
+			// side-effect. Domain MCP tools have real side-effects. Pure
+			// metrics, zero behavior change.
+			if CoreToolNames[call.Name] {
+				observability.GetGlobalMetrics().Inc("orchestrator.calls.fs_only", 1)
+			} else {
+				observability.GetGlobalMetrics().Inc("orchestrator.calls.domain", 1)
+			}
+
 			// Inject InputMapping (ADDED 2026-08-17)
 			if call.Arguments == nil {
 				call.Arguments = make(map[string]any)
@@ -905,16 +1090,47 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				}
 			}
 
+			// #11 (eval §8.41): Identical-call dedup. Allow 2 identical
+			// calls (same tool + same args); on the 3rd, require a _reason
+			// argument. Legitimate retries (data refresh, waiting for async
+			// result) pass by providing _reason. Mindless repetition is
+			// blocked, saving turn budget.
+			// Per-step scope: resets each step. Different steps may legitimately
+			// make the same call (parallel searches, phased gathering).
+			callKey := toolCallKey(call.Name, call.Arguments)
+			callCount := toolCallCount[callKey]
+			if callCount >= 2 {
+				reason, hasReason := call.Arguments["_reason"].(string)
+				if !hasReason || reason == "" {
+					observability.GetGlobalMetrics().Inc("orchestrator.dedup.blocked", 1)
+					toolResults = append(toolResults, fmt.Sprintf(
+						"[%s] This is the %drd identical call with the same arguments. "+
+							"Previous results were identical. If this is a legitimate retry "+
+							"(e.g., waiting for data refresh), provide a `_reason` argument "+
+							"explaining why. Otherwise, use the previous result.",
+						call.Name, callCount+1))
+					continue
+				}
+				// Legitimate retry with reason — allow and log.
+				observability.GetGlobalMetrics().Inc("orchestrator.dedup.reasoned_retry", 1)
+				s.logger.Log("EventDedupReasonedRetry", req.TaskID, req.StepID, map[string]any{
+					"tool":   call.Name,
+					"count":  callCount + 1,
+					"reason": reason,
+				})
+			}
+			toolCallCount[callKey]++
+
 			// Core tools (write_file, read_file, execute_code) — handled directly
 			if CoreToolNames[call.Name] {
 				taskDir := filepath.Join(s.outputBase, req.TaskID)
 				validator := NewSafePathValidator(taskDir, req.SessionRoot, s.allowedWorkspaces)
 				res, status, interaction := s.handleCoreToolCall(ctx, call, req.TaskID, req.StepID, validator)
-			if status == "error" {
-				toolFailCount[call.Name]++
-				effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
-				res = toolFailFeedback(call.Name, res, effCount)
-			} else {
+				if status == "error" {
+					toolFailCount[call.Name]++
+					effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+					res = toolFailFeedback(call.Name, res, effCount)
+				} else {
 					toolFailCount[call.Name] = 0
 				}
 				trace = append(trace, interaction)
@@ -930,7 +1146,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 			interaction := store.ToolInteraction{
 				ToolName:  call.Name,
 				Arguments: copyToolCallArguments(call.Arguments, turnDecisionID),
-		}
+			}
 
 			reason := ToolCallReasonLLMInitiated // audit C-15: replaced mojibake string literal
 			if r, ok := call.Arguments["_reason"].(string); ok && r != "" {
@@ -938,17 +1154,55 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				delete(call.Arguments, "_reason")
 			}
 
-		if mcpDef == nil {
-			toolFailCount[call.Name]++
-			effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
-			res := toolFailFeedback(call.Name, fmt.Sprintf("MCP server %s not found for tool %s", mcpID, call.Name), effCount)
-			interaction.Result = res
-			trace = append(trace, interaction)
+			// #19 (eval §8.42): Write reflection gate. MCP tools that modify
+			// external state (cancel_*, update_*, create_*, etc.) require a
+			// _reason argument. The purpose is to nudge the model to reflect
+			// on the current situation before writing: "What is the state?
+			// Should I change strategy? Is this call necessary?"
+			// If _reason is provided, the call proceeds — the model reflected
+			// and decided to act. If not, the reflection prompt is returned.
+			// StagedWorkspace provides rollback for file operations; this gate
+			// provides accountability for MCP operations that can't be rolled back.
+			if IsWriteMCPTool(call.Name) && reason == ToolCallReasonLLMInitiated {
+				if writeReason, hasReason := call.Arguments["_reason"].(string); hasReason && writeReason != "" {
+					// Model reflected and provided a reason — allow the write.
+					s.logger.Log("EventWriteAuthAllowed", req.TaskID, req.StepID, map[string]any{
+						"tool":   call.Name,
+						"mcp":    mcpID,
+						"reason": writeReason,
+					})
+				} else {
+					observability.GetGlobalMetrics().Inc("orchestrator.auth.write_blocked", 1)
+					s.logger.Log("EventWriteAuthBlocked", req.TaskID, req.StepID, map[string]any{
+						"tool": call.Name,
+						"mcp":  mcpID,
+					})
+					res := fmt.Sprintf(
+						"[%s] This tool modifies external state. Before proceeding, reflect:\n"+
+							"  - What is the current state?\n"+
+							"  - Is this write necessary, or should I change strategy?\n"+
+							"To proceed, add a `_reason` argument to the tool call.\n"+
+							"Example: {\"_reason\": \"user confirmed; current status is pending\"}",
+						call.Name)
+					interaction.Result = res
+					trace = append(trace, interaction)
+					env := s.processor.Wrap(call.Name, res, "error", "orchestrator", reason)
+					toolResults = append(toolResults, env.ToMarkdown(call.Name))
+					continue
+				}
+			}
 
-			env := s.processor.Wrap(call.Name, res, "error", "orchestrator", reason)
-			toolResults = append(toolResults, env.ToMarkdown(call.Name))
-			continue
-		}
+			if mcpDef == nil {
+				toolFailCount[call.Name]++
+				effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+				res := toolFailFeedback(call.Name, fmt.Sprintf("MCP server %s not found for tool %s", mcpID, call.Name), effCount)
+				interaction.Result = res
+				trace = append(trace, interaction)
+
+				env := s.processor.Wrap(call.Name, res, "error", "orchestrator", reason)
+				toolResults = append(toolResults, env.ToMarkdown(call.Name))
+				continue
+			}
 
 			if isStateChangingTool(call.Name) {
 				needsVerification = true
@@ -1020,73 +1274,95 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				}
 				cancelTool()
 
-			if execErr != nil {
-				toolFailCount[call.Name]++
-				effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
-				resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing tool %s: %v", call.Name, execErr), effCount)
-				interaction.Result = resErr
-				env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
-				toolResults = append(toolResults, env.ToMarkdown(call.Name))
-			} else {
-				toolFailCount[call.Name] = 0
-				interaction.Result = finalRes
-					if att, ok := finalRes.(schemas.SubagentOutput); ok {
-						turnAttachments = append(turnAttachments, att.Attachments...)
-					}
-					status := "ok"
-					if m, ok := finalRes.(map[string]any); ok {
-						if s, ok := m["status"].(string); ok {
-							status = s
+				if execErr != nil {
+					toolFailCount[call.Name]++
+					effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+					resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing tool %s: %v", call.Name, execErr), effCount)
+					interaction.Result = resErr
+					env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
+					toolResults = append(toolResults, env.ToMarkdown(call.Name))
+				} else {
+					// SERF: check MCP isError field before treating as success (ADDED 2026-10-03)
+					isToolError, serf, errMsg := parseMCPError(finalRes)
+					if isToolError {
+						toolFailCount[call.Name]++
+						effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+						recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
+						interaction.Result = recoveryMsg
+						env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
+						toolResults = append(toolResults, env.ToMarkdown(call.Name))
+					} else {
+						toolFailCount[call.Name] = 0
+						interaction.Result = finalRes
+						if att, ok := finalRes.(schemas.SubagentOutput); ok {
+							turnAttachments = append(turnAttachments, att.Attachments...)
 						}
-					}
-					env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
-					md := env.ToMarkdown(call.Name)
+						status := "ok"
+						if m, ok := finalRes.(map[string]any); ok {
+							if s, ok := m["status"].(string); ok {
+								status = s
+							}
+						}
+						env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
+						md := env.ToMarkdown(call.Name)
 
-					// Apply Sieve Pruning to reduce token noise for large tool outputs
-					if len(md) > 2000 {
-						md = s.sieve.PruneOutput(md, req.Task)
+						// Apply Sieve Pruning to reduce token noise for large tool outputs
+						if len(md) > 2000 {
+							md = s.sieve.PruneOutput(md, req.Task)
+						}
+						toolResults = append(toolResults, md)
 					}
-					toolResults = append(toolResults, md)
 				}
 			} else if mcpDef.URL != "" {
 				toolCtx, cancelTool := context.WithTimeout(ctx, 60*time.Second)
 				finalRes, execErr := s.mcpMgr.callRemoteMCPTool(toolCtx, mcpDef, call.Name, call.Arguments)
 				cancelTool()
 
-			if execErr != nil {
+				if execErr != nil {
+					toolFailCount[call.Name]++
+					effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+					resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing remote tool %s: %v", call.Name, execErr), effCount)
+					interaction.Result = resErr
+					env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
+					toolResults = append(toolResults, env.ToMarkdown(call.Name))
+				} else {
+					// SERF: check MCP isError field before treating as success (ADDED 2026-10-03)
+					isToolError, serf, errMsg := parseMCPError(finalRes)
+					if isToolError {
+						toolFailCount[call.Name]++
+						effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
+						recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
+						interaction.Result = recoveryMsg
+						env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
+						toolResults = append(toolResults, env.ToMarkdown(call.Name))
+					} else {
+						toolFailCount[call.Name] = 0
+						interaction.Result = finalRes
+						status := "ok"
+						if m, ok := finalRes.(map[string]any); ok {
+							if s, ok := m["status"].(string); ok {
+								status = s
+							}
+						}
+						env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
+						md := env.ToMarkdown(call.Name)
+
+						// Apply Sieve Pruning to reduce token noise for large tool outputs,
+						// mirroring the local (command-based) MCP branch above.
+						if len(md) > 2000 {
+							md = s.sieve.PruneOutput(md, req.Task)
+						}
+						toolResults = append(toolResults, md)
+					}
+				}
+			} else {
 				toolFailCount[call.Name]++
 				effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
-				resErr := toolFailFeedback(call.Name, fmt.Sprintf("Error executing remote tool %s: %v", call.Name, execErr), effCount)
-				interaction.Result = resErr
-				env := s.processor.Wrap(call.Name, resErr, "error", "mcp:"+mcpDef.ID, reason)
+				res := toolFailFeedback(call.Name, fmt.Sprintf("MCP %s has neither a local command nor a remote URL configured for tool %s", mcpDef.ID, call.Name), effCount)
+				interaction.Result = res
+				env := s.processor.Wrap(call.Name, res, "error", "orchestrator:cloud", reason)
 				toolResults = append(toolResults, env.ToMarkdown(call.Name))
-			} else {
-				toolFailCount[call.Name] = 0
-				interaction.Result = finalRes
-					status := "ok"
-					if m, ok := finalRes.(map[string]any); ok {
-						if s, ok := m["status"].(string); ok {
-							status = s
-						}
-					}
-					env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
-					md := env.ToMarkdown(call.Name)
-
-					// Apply Sieve Pruning to reduce token noise for large tool outputs,
-					// mirroring the local (command-based) MCP branch above.
-					if len(md) > 2000 {
-						md = s.sieve.PruneOutput(md, req.Task)
-					}
-					toolResults = append(toolResults, md)
-				}
-		} else {
-			toolFailCount[call.Name]++
-			effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
-			res := toolFailFeedback(call.Name, fmt.Sprintf("MCP %s has neither a local command nor a remote URL configured for tool %s", mcpDef.ID, call.Name), effCount)
-			interaction.Result = res
-			env := s.processor.Wrap(call.Name, res, "error", "orchestrator:cloud", reason)
-			toolResults = append(toolResults, env.ToMarkdown(call.Name))
-		}
+			}
 			trace = append(trace, interaction)
 
 			// ── PGPO: State Observation Loop (ADDED 2026-09-08) ──
@@ -1147,7 +1423,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 
 		// Priority 4: Re-route tools for the next turn based on updated context
 		// (Progressive Disclosure)
-		bindings = s.toolRouter.Route(RouteRequest{
+		bindings = s.toolRouter.Route(ctx, RouteRequest{
 			Task:               req.Task + " " + resp.Text,
 			Bindings:           initialBindings,
 			Turn:               turn + 1,
@@ -1173,6 +1449,47 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 
 		resMD := fmt.Sprintf("[ENVIRONMENT OBSERVATION]\n%s%s%s", observation, healingAdvice, vdaPrompt)
 		userBlocks = append(userBlocks, schemas.ContentBlock{Text: resMD, CacheControl: "ephemeral"}) // Tool results turn
+
+		// #15 (eval §8.35): No-progress turn detection. If this turn had tool
+		// calls but ALL were fs-only (no domain MCP calls), increment the
+		// streak. Otherwise reset. Emit metric so an arm can validate before
+		// adding a threshold/action.
+		if len(resp.ToolCalls) > 0 {
+			allFsOnly := true
+			for _, tc := range resp.ToolCalls {
+				if !CoreToolNames[tc.Name] {
+					allFsOnly = false
+					break
+				}
+			}
+			if allFsOnly {
+				fsOnlyTurnStreak++
+			} else {
+				if fsOnlyTurnStreak > 0 {
+					observability.GetGlobalMetrics().Inc("orchestrator.progress.fs_only_streak_max", int64(fsOnlyTurnStreak))
+				}
+				fsOnlyTurnStreak = 0
+			}
+			if fsOnlyTurnStreak >= 2 {
+				observability.GetGlobalMetrics().Inc("orchestrator.progress.stalled_turns", 1)
+			}
+			// #4+#15 (eval §8.37.2/§8.40): Break the turn loop if the fs-only
+			// streak exceeds the configured limit. The model is stuck in a
+			// write→read self-proof loop with no domain progress.
+			if fsOnlyStreakLimit > 0 && fsOnlyTurnStreak >= fsOnlyStreakLimit {
+				observability.GetGlobalMetrics().Inc("orchestrator.progress.fs_only_stall_break", 1)
+				s.logger.Log("EventFsOnlyStallBreak", req.TaskID, req.StepID, map[string]any{
+					"turn":         turn,
+					"streak":       fsOnlyTurnStreak,
+					"limit":        fsOnlyStreakLimit,
+					"max_turns":    maxTurns,
+					"tool_results": len(toolResults),
+				})
+				// Persist partial trace for observability (eval §8.48.6).
+				s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
+				return nil, fmt.Errorf("fs_only_stall: %d consecutive turns used only filesystem tools (write_file/read_file/execute_code) without domain MCP calls; breaking to conserve budget (limit=%d)", fsOnlyTurnStreak, fsOnlyStreakLimit)
+			}
+		}
 	}
 
 	// FIX (2026-09-07): instead of hard-failing, emit a sentinel error the
@@ -1180,6 +1497,9 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// (schemas.DecisionMaxTurnsExhausted). The step keeps its partial progress
 	// (trace is persisted as the step's tool interactions) so a resume can
 	// continue from here rather than restarting blind.
+	// FIX (eval §8.48.6): the comment above claimed trace was persisted, but
+	// no taskStoreSet call existed. Now actually persist it.
+	s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
 	return nil, fmt.Errorf("%s: tool execution loop reached max turns (%d) without a final answer; %d tool interaction(s) executed",
 		ErrMaxTurnsExhausted, maxTurns, len(trace))
 }

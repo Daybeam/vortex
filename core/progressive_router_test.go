@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -34,7 +35,7 @@ func TestToolRouter_ProgressiveDisclosure(t *testing.T) {
 			Turn:            0,
 			ProgressiveMode: true,
 		}
-		routed := router.Route(req)
+		routed := router.Route(context.Background(), req)
 
 		// Count tools
 		totalVisible := 0
@@ -79,7 +80,7 @@ func TestToolRouter_ProgressiveDisclosure(t *testing.T) {
 			Turn:            0,
 			ProgressiveMode: true,
 		}
-		routed := router.Route(req)
+		routed := router.Route(context.Background(), req)
 
 		hasApply := false
 		for _, b := range routed {
@@ -104,7 +105,7 @@ func TestToolRouter_ProgressiveDisclosure(t *testing.T) {
 			Turn:            1,
 			ProgressiveMode: true,
 		}
-		routed := router.Route(req)
+		routed := router.Route(context.Background(), req)
 
 		hasWrite := false
 		for _, b := range routed {

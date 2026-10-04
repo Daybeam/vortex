@@ -178,6 +178,18 @@ func TestAutoDeposit_ResultIsReference(t *testing.T) {
 }
 
 func TestAutoDepositSafe_NoPanicOnNilGraph(t *testing.T) {
-	// Should not panic, should not log (logger is nil)
+	// audit T-N20: was vacuous (no assertions). Added assertion that the
+	// function is a true no-op on nil graph — no panic AND no side effects.
 	AutoDepositResultSafe(nil, "s1", map[string]any{"key": "val"}, nil)
+	// If we reach here, no panic occurred. Verify the no-op contract:
+	// a non-nil empty graph should also not be modified by AutoDepositResultSafe
+	// when the result map has no recognized artifact keys.
+	graph := &schemas.TaskGraph{
+		TaskID: "test_nil_graph",
+		Steps:  map[string]*schemas.Step{},
+	}
+	AutoDepositResultSafe(graph, "s1", map[string]any{"key": "val"}, nil)
+	if len(graph.Steps) != 0 {
+		t.Fatalf("expected 0 steps after safe deposit on empty graph, got %d", len(graph.Steps))
+	}
 }

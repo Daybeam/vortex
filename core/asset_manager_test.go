@@ -2,10 +2,10 @@ package core
 
 import (
 	"context"
+	"github.com/daybeam/vortex/store"
 	"os"
 	"path/filepath"
 	"testing"
-	"github.com/daybeam/vortex/store"
 )
 
 type mockTaskStoreForAssets struct {
@@ -31,8 +31,7 @@ func (m *mockTaskStoreForAssets) GetBatch(ctx context.Context, taskID string, st
 }
 
 func TestAssetManager_Handle(t *testing.T) {
-	tempDir, _ := os.MkdirTemp("", "assets_test")
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	am := NewAssetManager(tempDir, 100, nil) // 100 bytes threshold
 
@@ -62,8 +61,7 @@ func TestAssetManager_Handle(t *testing.T) {
 }
 
 func TestAssetManager_SentryCleanup(t *testing.T) {
-	tempDir, _ := os.MkdirTemp("", "assets_cleanup_test")
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	am := NewAssetManager(tempDir, 10, nil)
 
@@ -91,8 +89,7 @@ func TestAssetManager_SentryCleanup(t *testing.T) {
 }
 
 func TestAssetManager_HandleWithKind(t *testing.T) {
-	tempDir, _ := os.MkdirTemp("", "assets_kind_test")
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	am := NewAssetManager(tempDir, 10, nil)
 
@@ -130,8 +127,7 @@ func TestAssetManager_HandleWithKind(t *testing.T) {
 }
 
 func TestAssetManager_EvidenceKindReadable(t *testing.T) {
-	tempDir, _ := os.MkdirTemp("", "assets_evidence_test")
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	am := NewAssetManager(tempDir, 1, nil)
 	_, err := am.Handle("taskE", "step1", []byte("raw evidence"), "txt", "evidence")

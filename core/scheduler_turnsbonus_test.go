@@ -2,7 +2,6 @@ package core
 
 import (
 	"fmt"
-	"os"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -20,11 +19,9 @@ func TestSubmitDecision_TurnsBudgetBonusCapped(t *testing.T) {
 		Providers: make(map[string]*config.ProviderConfig),
 		System:    config.SystemSettings{MaxToolTurns: 50},
 	}
-	logDir, _ := os.MkdirTemp("", "h3-log-*")
-	outDir, _ := os.MkdirTemp("", "h3-out-*")
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
-	t.Cleanup(func() { _ = os.RemoveAll(outDir) })
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logDir := mustTempDir(t, "turnsbonus-log")
+	outDir := mustTempDir(t, "turnsbonus-out")
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	s := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
 	defer s.Stop()
 

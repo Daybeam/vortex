@@ -178,7 +178,10 @@ func TestAtomicWriteFile_OverwritesExisting(t *testing.T) {
 }
 func TestDiagSplitThreshold(t *testing.T) {
 	t.Setenv("VORTEX_CONFIG_SPLIT_THRESHOLD", "500")
-	t.Logf("threshold=%d", splitThresholdBytes())
+	// audit T-N18: was vacuous (only t.Logf). Added assertions.
+	if got := splitThresholdBytes(); got != 500 {
+		t.Fatalf("splitThresholdBytes() = %d, want 500", got)
+	}
 	r := newSplitTestRegistry(t)
 	addTestMCPs(r, 20)
 	r.Mu.RLock()
@@ -189,19 +192,22 @@ func TestDiagSplitThreshold(t *testing.T) {
 	r.Mu.RUnlock()
 	cfg := Config{MCPs: mcps}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
-	t.Logf("size=%d", len(b))
-	t.Logf("splitLayout=%v", r.getSplitLayout())
+	if len(b) == 0 {
+		t.Fatal("marshaled config is empty")
+	}
 }
 func TestDiagSplitThreshold2(t *testing.T) {
 	t.Setenv("VORTEX_CONFIG_SPLIT_THRESHOLD", "500")
 	r := newSplitTestRegistry(t)
 	addTestMCPs(r, 20)
-	t.Logf("before Persist: env=%s existing=%v", os.Getenv("VORTEX_CONFIG_SPLIT_THRESHOLD"), r.getSplitLayout())
 	err := r.Persist()
-	t.Logf("Persist err=%v", err)
-	t.Logf("after Persist: existing=%v", r.getSplitLayout())
+	if err != nil {
+		t.Fatalf("Persist failed: %v", err)
+	}
 	data, _ := os.ReadFile(r.GetConfigPath())
-	t.Logf("mainfile len=%d", len(data))
+	if len(data) == 0 {
+		t.Fatal("main config file is empty after Persist")
+	}
 }
 
 func TestPersist_UnregisteredItem_FileRemovedOnDisk(t *testing.T) {

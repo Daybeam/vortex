@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,8 +10,7 @@ import (
 )
 
 func TestSQLiteScheduleBackend(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "schedule_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := InitDB(dbPath)
@@ -25,10 +23,10 @@ func TestSQLiteScheduleBackend(t *testing.T) {
 	ctx := context.Background()
 
 	s := &schemas.Schedule{
-		ID:     "sched_1",
-		Name:   "Daily Backup",
-		Type:   schemas.ScheduleCron,
-		Status: schemas.ScheduleActive,
+		ID:       "sched_1",
+		Name:     "Daily Backup",
+		Type:     schemas.ScheduleCron,
+		Status:   schemas.ScheduleActive,
 		CronExpr: "0 0 * * *",
 		TaskInputs: []schemas.StepInput{
 			{Task: "backup all data"},

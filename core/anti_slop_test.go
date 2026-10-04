@@ -21,7 +21,7 @@ func TestAntiSlop_Enabled_Strict_Block(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -52,7 +52,7 @@ func TestAntiSlop_Enabled_NonStrict_Warn(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -81,7 +81,7 @@ func TestAntiSlop_Clean_ResponseNoFiller(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -109,7 +109,7 @@ func TestAntiSlop_Disabled_PassThrough(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 
 	ctx := context.Background()
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}
@@ -147,7 +147,7 @@ func TestAntiSlop_NestedMap_Detection(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -180,7 +180,7 @@ func TestAntiSlop_UpperCase_CaseInsensitive(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -206,7 +206,7 @@ func TestAntiSlop_MinHits_Configurable(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -234,7 +234,7 @@ func TestAntiSlop_DefaultMinHits(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -260,7 +260,8 @@ func TestAntiSlop_Interceptor_StrictBlock_ReturnsError(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	var err error
 	ctx := context.Background()
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}
 
@@ -275,7 +276,7 @@ func TestAntiSlop_Interceptor_StrictBlock_ReturnsError(t *testing.T) {
 	}
 
 	isc := NewAntiSlopInterceptor(reg, logger)
-	_, err := isc.Wrap(ctx, req, next)
+	_, err = isc.Wrap(ctx, req, next)
 	if err == nil {
 		t.Fatal("Expected error for strict block, got nil")
 	}
@@ -294,7 +295,7 @@ func TestAntiSlop_Interceptor_Warn_AppendsWarning(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	ctx := context.Background()
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}
 
@@ -331,7 +332,7 @@ func TestAntiSlop_ScanResultMapSliceOfMaps(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -364,7 +365,7 @@ func TestAntiSlop_ScanAssumptions(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -391,7 +392,7 @@ func TestAntiSlop_FakeProvider_EndToEnd(t *testing.T) {
 			},
 		},
 	}
-	logger, _ := NewLogger("/tmp", &config.SystemSettings{})
+	logger := mustNewLogger(t, "/tmp", &config.SystemSettings{})
 
 	ctx := context.Background()
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}

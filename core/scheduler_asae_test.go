@@ -10,7 +10,7 @@ import (
 
 func TestDirectedEngine_ASAE(t *testing.T) {
 	tmpDir := t.TempDir()
-	logger, _ := NewLogger(tmpDir, nil)
+	logger := mustNewLogger(t, tmpDir, nil)
 	defer logger.Close()
 	reg := &config.Registry{
 		System: config.SystemSettings{

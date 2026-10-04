@@ -2,18 +2,18 @@ package core
 
 import (
 	"context"
-	"os"
+	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/schemas"
+	"github.com/daybeam/vortex/store"
 	"strings"
 	"testing"
 	"time"
-	"github.com/daybeam/vortex/schemas"
-	"github.com/daybeam/vortex/config"
-	"github.com/daybeam/vortex/store"
 )
 
 type mockTaskStore struct {
 	store.ITaskStore
 }
+
 func (m *mockTaskStore) Get(ctx context.Context, taskID, stepID string) (*store.StepResult, error) {
 	return &store.StepResult{Data: "mock result"}, nil
 }
@@ -30,18 +30,17 @@ func (m *mockTaskStore) Set(ctx context.Context, taskID, stepID string, res *sto
 
 func TestDirectedEngine_ContextTreeBranching(t *testing.T) {
 	reg := &config.Registry{
-		Roles: make(map[string]*config.Role),
+		Roles:  make(map[string]*config.Role),
 		Skills: make(map[string]*config.Skill),
-		MCPs: make(map[string]*config.MCPDef),
+		MCPs:   make(map[string]*config.MCPDef),
 	}
 	reg.Roles["test-role"] = &config.Role{ID: "test-role", BaseCapability: "test"}
 
 	ts := &mockTaskStore{}
 
-	tasksDir, _ := os.MkdirTemp("", "ctx_tree")
-	logger, _ := NewLogger(tasksDir, nil)
+	tasksDir := t.TempDir()
+	logger := mustNewLogger(t, tasksDir, nil)
 	defer logger.Close()
-	defer os.RemoveAll(tasksDir)
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
 	defer engine.Stop()
@@ -77,9 +76,9 @@ func TestDirectedEngine_ContextTreeBranching(t *testing.T) {
 	// Mock a result that triggers a branch
 	result := &SpawnResult{
 		Output: schemas.SubagentOutput{
-			Status:     schemas.StatusOK,
-			Confidence: 0.9,
-			Result:     map[string]any{"data": "done"},
+			Status:      schemas.StatusOK,
+			Confidence:  0.9,
+			Result:      map[string]any{"data": "done"},
 			Assumptions: []string{"start new task"}, // Trigger for branching
 		},
 	}
@@ -119,15 +118,15 @@ func TestSpawner_BuildSystemPrompt_WithTree(t *testing.T) {
 				"status":  schemas.NodeResolved,
 			},
 			{
-				"id":      "branch1",
-				"intent":  "Feature Work",
-				"status":  schemas.NodeActive,
+				"id":     "branch1",
+				"intent": "Feature Work",
+				"status": schemas.NodeActive,
 			},
 		},
 	}
 
 	hub := NewContextHub(reg, nil, nil)
-	blocks, err := s.buildSystemPrompt(hub, nil, []string{}, "code", &config.ProviderConfig{}, []string{}, mergedContext, []string{}, false, nil, "test task", "")
+	blocks, err := s.buildSystemPrompt(context.Background(), hub, nil, []string{}, "code", &config.ProviderConfig{}, []string{}, mergedContext, []string{}, false, nil, "test task", "")
 	if err != nil {
 		t.Fatalf("buildSystemPrompt failed: %v", err)
 	}
@@ -169,7 +168,7 @@ func TestSpawner_BuildSystemPrompt_Diffusion(t *testing.T) {
 	}
 
 	hub := NewContextHub(reg, nil, nil)
-	blocksD, err := s.buildSystemPrompt(hub, nil, []string{}, "code", cfg, []string{}, mergedContext, []string{}, false, nil, "test task", "")
+	blocksD, err := s.buildSystemPrompt(context.Background(), hub, nil, []string{}, "code", cfg, []string{}, mergedContext, []string{}, false, nil, "test task", "")
 	if err != nil {
 		t.Fatalf("buildSystemPrompt failed: %v", err)
 	}

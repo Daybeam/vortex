@@ -13,9 +13,9 @@ import (
 type ContextTier int
 
 const (
-	ContextHot  ContextTier = iota // Required: current task spec, step input, latest error
-	ContextWarm                    // Relevant: matched experience nodes (successes + failures)
-	ContextCold                    // Background: SOPs, role cookbooks, skill index
+	ContextHot ContextTier = iota // Required: current task spec, step input, latest error
+	ContextWarm                   // Relevant: matched experience nodes (successes + failures)
+	ContextCold                   // Background: SOPs, role cookbooks, skill index
 )
 
 // ActiveContextAssembler rebuilds the prompt before each step execution.
@@ -36,11 +36,12 @@ func NewActiveContextAssembler(gs store.IExperienceStore, ec store.IEmbeddingCli
 // Assemble builds the context string for a step execution.
 // Called by executeStep() before spawning the sub-agent.
 func (a *ActiveContextAssembler) Assemble(
-	taskSpec string, // Hot: current task description
-	stepInput string, // Hot: current step input
+	ctx context.Context, // L-2.1: propagated ctx for cancellation
+	taskSpec string,    // Hot: current task description
+	stepInput string,   // Hot: current step input
 	latestError string, // Hot: error from previous attempt (if retrying)
-	capability string, // Warm: for graph retrieval
-	roleID string, // Cold: for role cookbook lookup
+	capability string,  // Warm: for graph retrieval
+	roleID string,      // Cold: for role cookbook lookup
 ) string {
 	var sb strings.Builder
 
@@ -58,7 +59,8 @@ func (a *ActiveContextAssembler) Assemble(
 	if a.Graph != nil {
 		warmBudget := a.TokenBudget / 2 // 50% for warm context
 		// audit L5: bounded context prevents embedding/retrieval from hanging
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// L-2.1: derive from propagated ctx so cancellation propagates
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		var query []float32
 		if a.EmbedClient != nil {

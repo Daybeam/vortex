@@ -42,11 +42,8 @@ func (s *DirectedEngine) ApprovePlan(taskID string) error {
 
 	s.logger.Log("task_approved", taskID, "", nil)
 
-	if !s.UseSwarm {
-		s.goBackground(func() { s.run(ctx, taskID) }) // audit C5: use goBackground so Stop() drains
-	} else {
-		s.goBackground(func() { s.swarmWatchdog(ctx, taskID) }) // audit C5: use goBackground so Stop() drains
-	}
+	// audit C5: startGraphExecutor handles UseSwarm branching.
+	s.startGraphExecutor(ctx, taskID)
 
 	return nil
 }
@@ -131,9 +128,20 @@ func (s *DirectedEngine) WaitTask(ctx context.Context, taskID string, timeout ti
 		return nil, false
 	}
 
+	// audit L-N8: graph.Status and graph.ToStatusDictView (which iterates
+	// graph.Steps map) must be read under RLock — MutateGraphTopology can
+	// add steps concurrently, and concurrent map iteration + write can
+	// fatal-panic. Use a snapshot helper to avoid repeating lock/unlock.
+	snapshotStatus := func() (map[string]any, schemas.GraphStatus) {
+		s.Mu.RLock()
+		defer s.Mu.RUnlock()
+		return graph.ToStatusDictView(v), graph.Status
+	}
+
 	// Fast path: check if already terminal
-	if graph.Status == schemas.GraphCompleted || graph.Status == schemas.GraphFailed || graph.Status == schemas.GraphBlocked {
-		return graph.ToStatusDictView(v), true
+	status, graphStatus := snapshotStatus()
+	if graphStatus == schemas.GraphCompleted || graphStatus == schemas.GraphFailed || graphStatus == schemas.GraphBlocked {
+		return status, true
 	}
 
 	timer := time.NewTimer(timeout)
@@ -141,13 +149,15 @@ func (s *DirectedEngine) WaitTask(ctx context.Context, taskID string, timeout ti
 
 	select {
 	case <-ch:
-		return graph.ToStatusDictView(v), true
+		status, _ := snapshotStatus()
+		return status, true
 	case <-ctx.Done():
-		return graph.ToStatusDictView(v), true
+		status, _ := snapshotStatus()
+		return status, true
 	case <-timer.C:
-		status := graph.ToStatusDictView(v)
+		status, graphStatus := snapshotStatus()
 		// Behavior Contract: return STILL_RUNNING if timeout reached and still running
-		if graph.Status == schemas.GraphRunning {
+		if graphStatus == schemas.GraphRunning {
 			status["wait_status"] = "STILL_RUNNING"
 		}
 		return status, true
@@ -188,6 +198,14 @@ func (s *DirectedEngine) broadcastDone(taskID string) {
 func (s *DirectedEngine) GetManifest(taskID string) (map[string]any, bool) {
 	s.Mu.RLock()
 	graph := s.graphs[taskID]
+	// L-N17 (2026-10-04): Move ToStatusDict() inside RLock to close a TOCTOU
+	// window. Previously, RUnlock happened before ToStatusDict(), so another
+	// goroutine could mutate the graph (add/remove steps, change status)
+	// between the unlock and the read — a data race.
+	var m map[string]any
+	if graph != nil {
+		m = graph.ToStatusDict()
+	}
 	s.Mu.RUnlock()
 	if graph == nil {
 		// FALLBACK: Read from disk if task is no longer in memory
@@ -201,7 +219,6 @@ func (s *DirectedEngine) GetManifest(taskID string) (map[string]any, bool) {
 		}
 		return nil, false
 	}
-	m := graph.ToStatusDict()
 	m["manifest_path"] = filepath.Join(s.outputBase, taskID, "manifest.json")
 	return m, true
 }
@@ -372,6 +389,17 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 		} else {
 			graph.Status = schemas.GraphRunning
 			s.doneChans[taskID] = make(chan struct{})
+			// audit L-N5: restart run() goroutine (same fix as L-7.1).
+			// Without this, if the previous run exited when the graph
+			// blocked, the task silently stalls in GraphRunning with no
+			// executor — WaitTask hangs until timeout.
+			if oldCancel, ok := s.cancelFuncs[taskID]; ok {
+				oldCancel()
+			}
+			runCtx, runCancel := context.WithCancel(s.lifecycleCtx)
+			s.cancelFuncs[taskID] = runCancel
+			// audit L-N5: startGraphExecutor handles UseSwarm branching.
+			s.startGraphExecutor(runCtx, taskID)
 		}
 	}
 
@@ -486,24 +514,24 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 					step.AdditionalPromptContext = feedback
 				}
 			}
-	case "approve":
-		step.Status = schemas.StepOK
-	case "reject":
-		step.Status = schemas.StepFailed
-		step.LastError = "human_rejected"
-	case "confirm_abort":
-		// Cost governance (ADDED 2026-09-14): user confirmed Main Agent's
-		// autonomous abort request. Cancel the task graph.
-		graph.Status = schemas.GraphFailed
-		graph.BudgetPaused = true
-		if s.cancelFuncs != nil {
-			if cancel, ok := s.cancelFuncs[taskID]; ok {
-				cancel()
+		case "approve":
+			step.Status = schemas.StepOK
+		case "reject":
+			step.Status = schemas.StepFailed
+			step.LastError = "human_rejected"
+		case "confirm_abort":
+			// Cost governance (ADDED 2026-09-14): user confirmed Main Agent's
+			// autonomous abort request. Cancel the task graph.
+			graph.Status = schemas.GraphFailed
+			graph.BudgetPaused = true
+			if s.cancelFuncs != nil {
+				if cancel, ok := s.cancelFuncs[taskID]; ok {
+					cancel()
+				}
 			}
-		}
-	case "continue":
-		// Cost governance: user rejected the abort request, resume execution.
-		step.Status = schemas.StepPending
+		case "continue":
+			// Cost governance: user rejected the abort request, resume execution.
+			step.Status = schemas.StepPending
 		case "modify_and_resume":
 			step.Status = schemas.StepPending
 			if payload != "" {
@@ -567,11 +595,8 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 		}
 		runCtx, runCancel := context.WithCancel(s.lifecycleCtx)
 		s.cancelFuncs[taskID] = runCancel
-		if !s.UseSwarm {
-			s.goBackground(func() { s.run(runCtx, taskID) })
-		} else {
-			s.goBackground(func() { s.swarmWatchdog(runCtx, taskID) })
-		}
+		// audit L-7.1: startGraphExecutor handles UseSwarm branching.
+		s.startGraphExecutor(runCtx, taskID)
 	}
 
 	s.logger.Log(EventDecisionSubmitted, taskID, dec.StepID, map[string]any{

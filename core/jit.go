@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/env"
-	"github.com/google/uuid"
 )
 
 // JITManager handles the creation, registration, and lifecycle of temporary tools.
@@ -27,7 +27,11 @@ type JITManager struct {
 
 func NewJITManager(reg *config.Registry, workDir string) *JITManager {
 	dir := filepath.Join(workDir, "jit_tools")
-	os.MkdirAll(dir, 0755)
+	// audit L-N13: was silently ignoring MkdirAll error. Log warning on failure
+	// so the operator knows JIT tool promotions will fail downstream.
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[WARN] JIT manager: failed to create dir %s: %v — JIT tool promotions will fail", dir, err)
+	}
 
 	if runtime.GOOS != "windows" {
 		log.Printf("[SECURITY WARNING] JIT code isolation (Job Objects) is only supported on Windows. On %s, code runs with the same privileges as the host process. Use with caution.", runtime.GOOS)
@@ -60,10 +64,10 @@ const EmbeddedCommandPrefix = "__embedded__:"
 // RegisterTool creates a temporary script file and registers it as a dynamic MCP.
 // As of the embedded-runtime + preflight architecture
 // (docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md), this method:
-//  1. Runs PreflightCheck first — bad code is rejected before any file I/O.
-//  2. Routes embedded langs (js, lua) to RegisterEmbeddedTool, which registers
-//     an in-process MCP marker instead of requiring a host binary.
-//  3. Keeps the legacy host-binary path for managed langs (python, node, bun).
+//   1. Runs PreflightCheck first — bad code is rejected before any file I/O.
+//   2. Routes embedded langs (js, lua) to RegisterEmbeddedTool, which registers
+//      an in-process MCP marker instead of requiring a host binary.
+//   3. Keeps the legacy host-binary path for managed langs (python, node, bun).
 func (m *JITManager) RegisterTool(script, lang string, ttl time.Duration, sandboxed bool) (string, error) {
 	if err := PreflightCheck(lang, script); err != nil {
 		return "", err

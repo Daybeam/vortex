@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/schemas"
 )
 
 type SQLiteRepo struct {
@@ -76,6 +77,45 @@ func (r *SQLiteRepo) SyncFileToDB(roles map[string]*config.Role) error {
 			VALUES (?, ?, ?, ?, ?, ?)
 		`, role.ID, role.Name, role.BaseCapability, role.Provider, role.Model, raw)
 		if err != nil {
+			return err
+		}
+		// P10: dual-write into role_versions (version archive).
+		// INSERT OR REPLACE on (id, version): same version overwrites (hot-reload),
+		// new version inserts (history preserved). Skip when version is empty
+		// (unversioned roles have no archive entry).
+		if role.Version != "" {
+			if _, err := tx.Exec(`
+				INSERT OR REPLACE INTO role_versions
+				(id, version, author, mutable_by_agent, raw_json, created_at)
+				VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			`, role.ID, role.Version, role.Author, role.MutableByAgent, raw); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// SyncSOPsToDB upserts SOP definitions into the sop_versions archive table.
+// Called alongside SyncFileToDB during Registry load to maintain the
+// dual-layer model: config.json = source of truth, SQLite = immutable archive.
+func (r *SQLiteRepo) SyncSOPsToDB(sops map[string]*schemas.SOP) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, sop := range sops {
+		if sop.Version == "" {
+			continue
+		}
+		raw, _ := json.Marshal(sop)
+		if _, err := tx.Exec(`
+			INSERT OR REPLACE INTO sop_versions
+			(id, version, author, mutable_by_agent, raw_json, created_at)
+			VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`, sop.ID, sop.Version, sop.Author, sop.MutableByAgent, raw); err != nil {
 			return err
 		}
 	}

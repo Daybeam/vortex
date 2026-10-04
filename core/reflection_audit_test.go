@@ -9,7 +9,6 @@ import (
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
-	"github.com/daybeam/vortex/store"
 )
 
 // TestReflectOnTask_CancelledLifecycleCtxReturnsPromptly is the regression
@@ -26,9 +25,9 @@ func TestReflectOnTask_CancelledLifecycleCtxReturnsPromptly(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "reflect-audit-")
 	reg, _ := config.NewRegistry(filepath.Join(tmpDir, "config.json"))
 	ts := &mockSignalTaskStore{}
-	es, _ := store.NewExperienceStore(tmpDir, nil, nil, nil, nil)
+	es := mustNewExperienceStore(t, tmpDir, nil, nil, nil, nil)
 	loggerDir, _ := os.MkdirTemp("", "reflect-audit-log-")
-	logger, _ := NewLogger(loggerDir, nil)
+	logger := mustNewLogger(t, loggerDir, nil)
 	defer logger.Close()
 
 	re := NewReflectionEngine(es, ts, reg, nil, logger)

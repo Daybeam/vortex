@@ -203,10 +203,7 @@ func TestAuditM14_ExecuteTask_YieldBodyClosed(t *testing.T) {
 	// least a logger and registry to not panic. Spawn will likely return an
 	// error (empty registry), but ExecuteTask still proceeds to yield.
 	tmpDir := t.TempDir()
-	logger, err := NewLogger(tmpDir, &config.SystemSettings{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	logger := mustNewLogger(t, tmpDir, &config.SystemSettings{})
 	defer logger.Close()
 	hub.Spawner = &Spawner{
 		registry: &config.Registry{

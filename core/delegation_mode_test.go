@@ -49,11 +49,11 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 
 	logDir := t.TempDir()
 	outDir := t.TempDir()
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 
 	backend := &mockBackend{data: make(map[string][]byte)}
 	ts := store.NewTaskStore(backend)
-	expStore, _ := store.NewExperienceStore(t.TempDir(), ts, &reg.System, nil, nil)
+	expStore := mustNewExperienceStore(t, t.TempDir(), ts, &reg.System, nil, nil)
 
 	engine := NewDirectedEngine(reg, ts, expStore, nil, logger, nil, outDir, outDir, nil)
 	defer engine.Stop()
@@ -173,11 +173,11 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 
 	logDir := t.TempDir()
 	outDir := t.TempDir()
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 
 	backend := &mockBackend{data: make(map[string][]byte)}
 	ts := store.NewTaskStore(backend)
-	expStore, _ := store.NewExperienceStore(t.TempDir(), ts, &reg.System, nil, nil)
+	expStore := mustNewExperienceStore(t, t.TempDir(), ts, &reg.System, nil, nil)
 
 	engine := NewDirectedEngine(reg, ts, expStore, nil, logger, nil, outDir, outDir, nil)
 	defer engine.Stop()
@@ -285,11 +285,11 @@ func newDelegationEngine(t *testing.T) (*DirectedEngine, *config.Registry) {
 
 	logDir := mkdirTemp(t)
 	outDir := mkdirTemp(t)
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 
 	backend := &mockBackend{data: make(map[string][]byte)}
 	ts := store.NewTaskStore(backend)
-	expStore, _ := store.NewExperienceStore(mkdirTemp(t), ts, &reg.System, nil, nil)
+	expStore := mustNewExperienceStore(t, mkdirTemp(t), ts, &reg.System, nil, nil)
 
 	engine := NewDirectedEngine(reg, ts, expStore, nil, logger, nil, outDir, outDir, nil)
 	t.Cleanup(func() { engine.Stop() })

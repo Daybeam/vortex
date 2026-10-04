@@ -353,8 +353,15 @@ func TestGrayscaleController_ShouldTrial(t *testing.T) {
 		t.Error("with trialRate=1.0, ShouldTrial should always return true")
 	}
 
-	gc2 := NewGrayscaleController(0.0, 10)
-	gc2.RecordOutcome("cand_archived", false)
+	// trialRate=0.0 is clamped to 0.05 by the constructor, so we can't test
+	// the "never trials" case via the constructor. Instead, test with a very
+	// small rate and accept the probabilistic nature (or test the promoted/
+	// archived fast paths which are deterministic).
+	gc2 := NewGrayscaleController(0.0, 10) // constructor clamps to 0.05
+	// A new candidate has a 5% chance of trialing — that's by design.
+	// The deterministic guarantee is: promoted candidates always trial,
+	// archived candidates never trial. Test those instead.
+	gc2.RecordOutcome("cand_archived", false) // archives the candidate
 	if gc2.ShouldTrial("cand_archived") {
 		t.Error("archived candidate should never trial")
 	}
@@ -439,6 +446,7 @@ func TestMapCauseToMutation(t *testing.T) {
 }
 
 func TestExtractRootCause(t *testing.T) {
+	// No step_failed event → empty
 	history := []AgentEvent{
 		{EventType: "step_start", Payload: map[string]any{}},
 		{EventType: "tool_call", Payload: map[string]any{}},
@@ -447,6 +455,7 @@ func TestExtractRootCause(t *testing.T) {
 		t.Errorf("expected empty cause, got %q", cause)
 	}
 
+	// step_failed with root_cause → extracted
 	history = []AgentEvent{
 		{EventType: "step_start", Payload: map[string]any{}},
 		{EventType: "step_failed", Payload: map[string]any{"root_cause": "context_deficit"}},
@@ -455,6 +464,7 @@ func TestExtractRootCause(t *testing.T) {
 		t.Errorf("expected 'context_deficit', got %q", cause)
 	}
 
+	// Multiple step_failed → last one wins
 	history = []AgentEvent{
 		{EventType: "step_failed", Payload: map[string]any{"root_cause": "rate_limit"}},
 		{EventType: "step_failed", Payload: map[string]any{"root_cause": "capability_required"}},

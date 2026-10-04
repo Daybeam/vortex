@@ -81,6 +81,7 @@ func (s *Spawner) resolveContextAttachments(ctx context.Context, taskID, stepID 
 // Spawner three-layer split). The body was extracted to core/prompt_assembler.go
 // for independent testability and decoupling from Spawner internals.
 func (s *Spawner) buildSystemPrompt(
+	ctx context.Context, // L-2.1: propagated ctx for cancellation
 	hub *ContextHub,
 	role *config.Role,
 	skillIDs []string,
@@ -97,19 +98,19 @@ func (s *Spawner) buildSystemPrompt(
 	if s.pa == nil {
 		s.pa = NewPromptAssembler(s.expStore, s.ResourceLoader, s.registry, s.logger)
 	}
-	return s.pa.Build(hub, role, skillIDs, capability, providerCfg, toolConstraints, mergedContext, fewShots, isolation, precedents, taskText, latestError)
+	return s.pa.Build(ctx, hub, role, skillIDs, capability, providerCfg, toolConstraints, mergedContext, fewShots, isolation, precedents, taskText, latestError)
 }
 
 // PreviewPrompt assembles and returns the full system prompt for a role/task
 // without executing any provider call. Useful for debugging and prompt review.
 // Moved from spawner.go during god-class split.
-func (s *Spawner) PreviewPrompt(roleID, task string, context map[string]any) (string, error) {
+func (s *Spawner) PreviewPrompt(roleID, task string, ctxMap map[string]any) (string, error) {
 	hub := NewContextHub(s.registry, nil, s.expStore)
 	role := hub.GetRole(roleID)
 	if role == nil {
 		return "", fmt.Errorf("role %s not found", roleID)
 	}
-	blocks, err := s.buildSystemPrompt(hub, role, []string{}, role.BaseCapability, &config.ProviderConfig{}, []string{}, context, []string{}, false, nil, task, "")
+	blocks, err := s.buildSystemPrompt(context.Background(), hub, role, []string{}, role.BaseCapability, &config.ProviderConfig{}, []string{}, ctxMap, []string{}, false, nil, task, "")
 	if err != nil {
 		return "", err
 	}

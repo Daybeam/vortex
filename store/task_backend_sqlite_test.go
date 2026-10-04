@@ -2,15 +2,13 @@ package store
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 )
 
 func TestSQLiteTaskBackend(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "task_store_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := InitDB(dbPath)

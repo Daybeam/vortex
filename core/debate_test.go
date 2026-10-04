@@ -1,7 +1,6 @@
 package core
 
 import (
-	"os"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -14,11 +13,9 @@ func TestDebateFields_PropagatedFromStepInput(t *testing.T) {
 		Providers: make(map[string]*config.ProviderConfig),
 		System:    config.SystemSettings{},
 	}
-	logDir, _ := os.MkdirTemp("", "debate-log-*")
-	outDir, _ := os.MkdirTemp("", "debate-out-*")
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
-	t.Cleanup(func() { _ = os.RemoveAll(outDir) })
-	logger, _ := NewLogger(logDir, &reg.System)
+	logDir := t.TempDir()
+	outDir := t.TempDir()
+	logger := mustNewLogger(t, logDir, &reg.System)
 	s := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
 	defer s.Stop()
 
@@ -61,11 +58,9 @@ func TestDebateFields_DefaultZero(t *testing.T) {
 		Providers: make(map[string]*config.ProviderConfig),
 		System:    config.SystemSettings{},
 	}
-	logDir, _ := os.MkdirTemp("", "debate-log-*")
-	outDir, _ := os.MkdirTemp("", "debate-out-*")
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
-	t.Cleanup(func() { _ = os.RemoveAll(outDir) })
-	logger, _ := NewLogger(logDir, &reg.System)
+	logDir := t.TempDir()
+	outDir := t.TempDir()
+	logger := mustNewLogger(t, logDir, &reg.System)
 	s := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
 	defer s.Stop()
 

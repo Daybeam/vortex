@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/observability"
@@ -40,6 +41,24 @@ type OpenAIProvider struct {
 }
 
 func (p *OpenAIProvider) Name() string { return p.name }
+
+// disableThinking reports whether the request body should carry
+// `chat_template_kwargs: {"enable_thinking": false}`.
+//
+// Thinking models (e.g. Qwen3.5-4B) put their chain-of-thought into the
+// response's `reasoning_content` field, leaving `content` EMPTY. The engine then
+// parses an empty body, and on a parse failure the spawner spin-breaker path
+// (EVAL_ANTI_OVERFITTING P1) burns the whole turn budget before giving up.
+//
+// Off by default: Qwen3-4B-Instruct-2507 is a non-thinking model, and injecting
+// this field there would only add an unnecessary variable to the qwen3 run.
+//
+// audit NEW-L3 (2026-10-04): cached via sync.OnceValue so os.Getenv is called
+// once at first use, not on every request (hot path).
+var disableThinking = sync.OnceValue(func() bool {
+	v := strings.TrimSpace(os.Getenv("ORCH_DISABLE_THINKING"))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+})
 
 func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest, onChunk func(string) error) (*ProviderResponse, error) {
 	chatURL := getOpenAIEndpoint(p.cfg.BaseURL, "/v1/chat/completions")
@@ -79,6 +98,12 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 	}
 	if req.FrequencyPenalty != nil {
 		body["frequency_penalty"] = *req.FrequencyPenalty
+	}
+
+	// ORCH_DISABLE_THINKING=1 → 让思考型模型（Qwen3.5-4B）直接给 content，
+	// 避免解析到空串触发 P1 自旋。默认关闭（qwen3-4b 是非思考模型）。
+	if disableThinking() {
+		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}
 
 	if len(req.MCPServers) > 0 {
@@ -145,15 +170,19 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 	var fullText strings.Builder
 	toolCallMap := make(map[int]*streamingToolCall)
 
+	// M-8: Use scanner.Bytes() instead of scanner.Text() to avoid a
+	// string allocation + []byte(string) copy per SSE chunk. Bytes()
+	// returns a slice valid only until the next Scan() call, which is
+	// safe here because payload is consumed immediately by json.Unmarshal.
 	scanner := bufio.NewScanner(httpResp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" || !strings.HasPrefix(line, "data: ") {
+		line := scanner.Bytes()
+		if len(line) == 0 || !bytes.HasPrefix(line, []byte("data: ")) {
 			continue
 		}
-		payload := strings.TrimPrefix(line, "data: ")
-		if payload == "[DONE]" {
+		payload := bytes.TrimPrefix(line, []byte("data: "))
+		if bytes.Equal(payload, []byte("[DONE]")) {
 			break
 		}
 
@@ -174,7 +203,7 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		if err := json.Unmarshal(payload, &chunk); err != nil {
 			continue
 		}
 		if len(chunk.Choices) == 0 {
@@ -282,6 +311,11 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 	}
 	if req.FrequencyPenalty != nil {
 		body["frequency_penalty"] = *req.FrequencyPenalty
+	}
+
+	// ORCH_DISABLE_THINKING=1 → 同上，非流式路径也必须带（否则 Q3.5 仍能解析到空串）。
+	if disableThinking() {
+		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}
 
 	// Native Tools Support

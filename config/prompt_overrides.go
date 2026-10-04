@@ -46,6 +46,11 @@ type PromptOverrides struct {
 	// literal '%' character in an externally-edited prompt file is never
 	// misinterpreted as a format verb.
 	OutputContract string
+	// RoleInstructions overrides the Instruction field of built-in roles
+	// when present. Keyed by role ID (e.g. "sop_generator"). Loaded from
+	// workspace/prompts/roles/<role_id>.txt. When a file is absent, the
+	// compiled-in default (see seed_builtins.go const block) is used.
+	RoleInstructions map[string]string
 }
 
 // promptOverridesDir returns the directory prompt override files are read
@@ -65,11 +70,41 @@ func promptOverridesDir(configPath string) string {
 // file elsewhere in Load().
 func loadPromptOverrides(configPath string) PromptOverrides {
 	dir := promptOverridesDir(configPath)
+	roleOverrides := loadRoleInstructionOverrides(filepath.Join(dir, "roles"))
 	return PromptOverrides{
 		ServerInstructions:       readPromptOverrideFile(filepath.Join(dir, "server_instructions.txt")),
 		ServerInstructionsPublic: readPromptOverrideFile(filepath.Join(dir, "server_instructions_public.txt")),
 		OutputContract:           readPromptOverrideFile(filepath.Join(dir, "output_contract.txt")),
+		RoleInstructions:         roleOverrides,
 	}
+}
+
+func loadRoleInstructionOverrides(dir string) map[string]string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// audit NEW-L2 (2026-10-04): log non-not-exist errors (e.g. permission
+		// denied) so operators know role overrides are silently disabled.
+		// A missing dir is expected (no overrides configured) — silent skip.
+		if !os.IsNotExist(err) {
+			log.Printf("warning: failed to read role overrides dir %s: %v", dir, err)
+		}
+		return nil
+	}
+	out := make(map[string]string)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
+		}
+		roleID := strings.TrimSuffix(entry.Name(), ".txt")
+		content := readPromptOverrideFile(filepath.Join(dir, entry.Name()))
+		if content != "" {
+			out[roleID] = content
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func readPromptOverrideFile(path string) string {

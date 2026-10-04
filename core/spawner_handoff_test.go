@@ -16,14 +16,24 @@ import (
 // mockTaskStoreForHandoff implements store.ITaskStore for ref-based handoff tests.
 type mockTaskStoreForHandoff struct{}
 
-func (m *mockTaskStoreForHandoff) Set(ctx context.Context, taskID, stepID string, result *store.StepResult) error { return nil }
-func (m *mockTaskStoreForHandoff) Get(ctx context.Context, taskID, stepID string) (*store.StepResult, error)        { return nil, os.ErrNotExist }
+func (m *mockTaskStoreForHandoff) Set(ctx context.Context, taskID, stepID string, result *store.StepResult) error {
+	return nil
+}
+func (m *mockTaskStoreForHandoff) Get(ctx context.Context, taskID, stepID string) (*store.StepResult, error) {
+	return nil, os.ErrNotExist
+}
 func (m *mockTaskStoreForHandoff) GetBatch(ctx context.Context, taskID string, stepIDs []string) (map[string]*store.StepResult, error) {
 	return make(map[string]*store.StepResult), nil
 }
-func (m *mockTaskStoreForHandoff) GetByRef(ctx context.Context, ref string) (*store.StepResult, error)               { return nil, os.ErrNotExist }
-func (m *mockTaskStoreForHandoff) ClearTask(ctx context.Context, taskID string) (int, error)                        { return 0, nil }
-func (m *mockTaskStoreForHandoff) Claim(ctx context.Context, taskID, stepID string) (bool, error)                   { return true, nil }
+func (m *mockTaskStoreForHandoff) GetByRef(ctx context.Context, ref string) (*store.StepResult, error) {
+	return nil, os.ErrNotExist
+}
+func (m *mockTaskStoreForHandoff) ClearTask(ctx context.Context, taskID string) (int, error) {
+	return 0, nil
+}
+func (m *mockTaskStoreForHandoff) Claim(ctx context.Context, taskID, stepID string) (bool, error) {
+	return true, nil
+}
 
 // buildTestSpawnerForHandoff constructs a minimal Spawner pre-wired with an
 // AssetManager, Logger, and ContextHub so that the production method
@@ -36,10 +46,7 @@ func buildTestSpawnerForHandoff(t *testing.T, threshold int) (*Spawner, string) 
 		t.Fatal(err)
 	}
 
-	logger, err := NewLogger(filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	logger := mustNewLogger(t, filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
 	t.Cleanup(func() { logger.Close() })
 
 	am := NewAssetManager(tmpDir, 1, nil)

@@ -18,6 +18,22 @@ import (
 
 // ─── Shared HTTP helper ────────────────────────────────────────────────────
 
+// audit H-2 (P-N3): shared transport with tuned connection pooling.
+// Go's http.DefaultTransport sets MaxIdleConnsPerHost=2, causing TLS churn
+// under concurrency (10 parallel steps × LLM calls to the same endpoint).
+// This shared transport reuses up to 100 idle connections per host.
+var sharedHTTPTransport = &http.Transport{
+	MaxIdleConnsPerHost: 100,
+	MaxIdleConns:        200,
+	IdleConnTimeout:     90 * time.Second,
+}
+
+// SharedHTTPClient returns an *http.Client using the shared pooled transport.
+// Callers should set their own Timeout; the transport is reused.
+func SharedHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: sharedHTTPTransport}
+}
+
 type httpDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }

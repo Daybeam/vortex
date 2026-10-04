@@ -36,10 +36,7 @@ func newTestLogInterceptorDeps(t *testing.T, enableEphemeral, enableDynamic bool
 		AllowDynamicMCPs:    true,
 		MaxAdditionalSkills: 10,
 	}
-	logger, err := NewLogger(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("failed to create logger: %v", err)
-	}
+	logger := mustNewLogger(t, t.TempDir(), nil)
 	t.Cleanup(func() { logger.Close() })
 	gen := NewRoleGenerator(reg, nil, logger)
 	return reg, logger, gen

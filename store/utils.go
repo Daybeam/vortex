@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -48,14 +49,7 @@ func deriveTaskType(records []StepRecord) string {
 }
 
 func joinStrings(s []string, sep string) string {
-	result := ""
-	for i, v := range s {
-		if i > 0 {
-			result += sep
-		}
-		result += v
-	}
-	return result
+	return strings.Join(s, sep)
 }
 
 func toSet(s []string) map[string]bool {

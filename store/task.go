@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,17 +21,17 @@ type ToolInteraction struct {
 }
 
 type StepResult struct {
-	Data           any               `json:"data"`
-	Confidence     float64           `json:"confidence"`
-	MissingContext []string          `json:"missing_context"`
-	Capability     string            `json:"capability"`
-	ProviderID     string            `json:"provider_id,omitempty"`
-	ModelID        string            `json:"model_id,omitempty"`
+	Data           any                  `json:"data"`
+	Confidence     float64              `json:"confidence"`
+	MissingContext []string             `json:"missing_context"`
+	Capability     string               `json:"capability"`
+	ProviderID     string               `json:"provider_id,omitempty"`
+	ModelID        string               `json:"model_id,omitempty"`
 	Attachments    []schemas.Attachment `json:"attachments"`
-	Trace          []ToolInteraction `json:"trace"`
-	DecisionIDs    []string          `json:"decision_ids,omitempty"` // Link to structured decisions
-	StatesVisited  []string          `json:"states_visited,omitempty"` // PGPO: Visited environment states (ADDED 2026-09-08)
-	CreatedAt      time.Time         `json:"created_at"`
+	Trace          []ToolInteraction    `json:"trace"`
+	DecisionIDs    []string             `json:"decision_ids,omitempty"`   // Link to structured decisions
+	StatesVisited  []string             `json:"states_visited,omitempty"` // PGPO: Visited environment states (ADDED 2026-09-08)
+	CreatedAt      time.Time            `json:"created_at"`
 }
 
 // FileTaskBackend implements ITaskBackend using the local filesystem.
@@ -39,7 +40,11 @@ type FileTaskBackend struct {
 }
 
 func NewFileTaskBackend(baseDir string) *FileTaskBackend {
-	_ = os.MkdirAll(baseDir, 0755)
+	// audit L-N14: was swallowing MkdirAll error. Log warning on failure so
+	// the operator knows task persistence will fail (tasks exist in memory only).
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		log.Printf("[WARN] FileTaskBackend: failed to create base dir %s: %v — tasks will not persist", baseDir, err)
+	}
 	return &FileTaskBackend{baseDir: baseDir}
 }
 

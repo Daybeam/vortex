@@ -11,6 +11,7 @@ import (
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
+	"github.com/daybeam/vortex/store"
 )
 
 func truncateForLog(s string, n int) string {
@@ -126,6 +127,87 @@ func isRetryableError(err error) bool {
 	return false
 }
 
+// isContextLimitError detects provider errors caused by the prompt exceeding
+// the model's maximum context window. Different providers phrase this differently:
+//   - OpenAI:    "context_length_exceeded" / "This model's maximum context length is"
+//   - Anthropic: "prompt is too long" / "context too long"
+//   - Gemini:    "exceeds the maximum number of tokens"
+//   - llama.cpp: "request (17164 tokens) exceeds the available context size (16384)"
+//   - vLLM/Ollama/LM Studio: same OpenAI-compatible format as llama.cpp
+//   - Generic:   "too many tokens" / "context length" / "context size"
+//
+// Used by #20 (eval §8.46): reactive context compression — when the provider
+// returns this error, we compress the conversation history and retry once
+// instead of failing the step or falling through to the next candidate.
+//
+// Regression: eval §8.48.7 — the original 8 cases all missed llama.cpp's real
+// 400 text "exceeds the available context size", so #20 never triggered for
+// any OpenAI-compatible local server. Added "context size" to fix this.
+func isContextLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "context_length_exceeded") ||
+		strings.Contains(s, "context length") ||
+		strings.Contains(s, "context size") ||
+		strings.Contains(s, "maximum context") ||
+		strings.Contains(s, "prompt is too long") ||
+		strings.Contains(s, "context too long") ||
+		strings.Contains(s, "too many tokens") ||
+		strings.Contains(s, "exceeds the maximum number of tokens") ||
+		strings.Contains(s, "max_tokens")
+}
+
+// compressUserBlocks removes older conversation blocks from the middle of the
+// slice, keeping the first few (system prompt + task description) and the last
+// few (recent context). A compression marker is inserted where blocks were
+// removed so the model knows history was truncated.
+//
+// Strategy: keep first 2 + last 6 blocks. If total <= 8, can't compress —
+// return nil to signal "not compressible" so the caller falls through to
+// normal error handling.
+func compressUserBlocks(blocks []schemas.ContentBlock) []schemas.ContentBlock {
+	const keepFirst = 2  // system prompt + task description
+	const keepLast = 6   // recent turns (tool results + model reasoning)
+	const minToCompress = keepFirst + keepLast + 2
+
+	if len(blocks) <= minToCompress {
+		return nil // not enough blocks to compress
+	}
+
+	compressed := make([]schemas.ContentBlock, 0, keepFirst+keepLast+1)
+	compressed = append(compressed, blocks[:keepFirst]...)
+	compressed = append(compressed, schemas.ContentBlock{
+		Text: "[... earlier conversation history compressed to fit within context budget ...]",
+	})
+	compressed = append(compressed, blocks[len(blocks)-keepLast:]...)
+	return compressed
+}
+
+// toolCallKey computes a deterministic key for a tool call (tool name + args).
+// Used by #11 (eval §8.41) to detect identical repeated calls. Uses FNV-1a
+// hash of the JSON-marshaled args for O(1) map lookup.
+func toolCallKey(toolName string, args map[string]any) string {
+	if len(args) == 0 {
+		return toolName + ":"
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		// If args can't be marshaled, fall back to tool name only.
+		// This is overly permissive (won't dedup) but safe.
+		return toolName + ":unmarshalable"
+	}
+	// FNV-1a 64-bit hash — fast, deterministic, no collisions in practice
+	// for argument maps with < 100 keys.
+	h := uint64(14695981039346656037) // FNV offset basis
+	for _, c := range b {
+		h ^= uint64(c)
+		h *= 1099511628211 // FNV prime
+	}
+	return fmt.Sprintf("%s:%d", toolName, h)
+}
+
 // stateChangingTools is a package-level set to avoid per-call map allocation (audit P-H8).
 var stateChangingTools = map[string]bool{
 	"click":          true,
@@ -139,6 +221,38 @@ var stateChangingTools = map[string]bool{
 
 func isStateChangingTool(name string) bool {
 	return stateChangingTools[name]
+}
+
+// writeToolPrefixes lists verb prefixes for MCP tools that modify external
+// state (database, API, business domain). Used by #19 (eval §8.42) to gate
+// write operations with a _reason requirement.
+//
+// Classification is by name prefix — any tool starting with these verbs is
+// considered a write tool. This is intentionally broad: false positives
+// (treating a read tool as write) just require a _reason, which is a mild
+// friction. False negatives (treating a write tool as read) are the real
+// risk, so the list errs on the side of inclusion.
+var writeToolPrefixes = []string{
+	"cancel_", "update_", "create_", "delete_", "set_", "write_",
+	"send_", "transfer_", "book_", "submit_", "close_", "modify_",
+	"edit_", "insert_", "remove_", "drop_", "put_", "post_", "replace_",
+	"approve_", "reject_", "assign_", "revoke_", "activate_", "deactivate_",
+}
+
+// IsWriteMCPTool returns true if the tool name starts with a write verb prefix.
+// Core tools (write_file, read_file, execute_code) are excluded — they are
+// filesystem operations tracked by StagedWorkspace, not domain writes.
+// Exported for contract testing (Feature #17: Write Authorization).
+func IsWriteMCPTool(name string) bool {
+	if CoreToolNames[name] {
+		return false // core tools are fs-only, tracked by StagedWorkspace
+	}
+	for _, prefix := range writeToolPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsTool(tools []string, target string) bool {
@@ -201,6 +315,67 @@ func toolFailFeedback(toolName, errMsg string, failCount int) string {
 	return fmt.Sprintf("[TOOL FAILED: %s] %s\nDo not abort. Either fix the arguments and retry, use a different tool, or answer directly.", toolName, errMsg)
 }
 
+// buildSERFRecovery constructs a structured recovery message from SERF error
+// metadata. Replaces the pure string concatenation of toolFailFeedback when
+// MCP tools return isError:true with SERF-parseable content.
+//
+// If serf is nil (no SERF metadata found), falls back to the original
+// toolFailFeedback behavior.
+func buildSERFRecovery(toolName string, serf *SERFError, errMsg string, failCount int) string {
+	if failCount >= toolFailCircuitBreakerThreshold {
+		return fmt.Sprintf("[TOOL %s HAS FAILED %d TIMES] Stop using this tool. Use an alternative approach or answer directly without tools.", toolName, failCount)
+	}
+
+	if serf == nil {
+		return fmt.Sprintf("[TOOL FAILED: %s] %s\nDo not abort. Either fix the arguments and retry, use a different tool, or answer directly.", toolName, errMsg)
+	}
+
+	var advice string
+	switch serf.Category {
+	case "INVALID_INPUT":
+		advice = "The arguments were invalid. Check the tool's input schema and retry with corrected parameters."
+	case "RESOURCE_NOT_FOUND":
+		advice = "The requested resource was not found. Verify the resource identifier (e.g. project_id, service_name) and retry, or ask the user to confirm the target."
+	case "RESOURCE_EXHAUSTED":
+		if serf.RetryAfterMs != nil {
+			advice = fmt.Sprintf("Rate limit reached. Wait %dms before retrying. If persistent, switch to an alternative resource.", *serf.RetryAfterMs)
+		} else {
+			advice = "Rate limit reached. Wait before retrying, or switch to an alternative resource."
+		}
+	case "PERMISSION_DENIED":
+		advice = "Permission denied. Do not retry with the same credentials. Escalate to the user to provide alternative access."
+	case "UPSTREAM_FAILURE":
+		if serf.Retryable {
+			advice = "Upstream service is temporarily unavailable. Retry with backoff."
+		} else {
+			advice = "Upstream service failure. Switch to an alternative resource or escalate."
+		}
+	case "INTERNAL_ERROR":
+		advice = "Internal server error. Do not retry — escalate to the user."
+	default:
+		advice = fmt.Sprintf("Tool error: %s. Consider fixing arguments, switching tools, or answering directly.", serf.RawMessage)
+	}
+
+	// M-7 (2026-10-04): Use strings.Builder instead of repeated += allocation.
+	var sb strings.Builder
+	sb.WriteString(advice)
+	for i, action := range serf.SuggestedActions {
+		switch action.Type {
+		case "SWITCH_RESOURCE":
+			field, _ := action.Params["field"].(string)
+			if field != "" {
+				fmt.Fprintf(&sb, "\n[OPTION %d]: Try switching %s to a different value.", i+1, field)
+			}
+		case "ESCALATE_TO_USER":
+			fmt.Fprintf(&sb, "\n[OPTION %d]: %s", i+1, action.Message)
+		case "RETRY":
+			fmt.Fprintf(&sb, "\n[OPTION %d]: Retry the call with adjusted parameters.", i+1)
+		}
+	}
+
+	return fmt.Sprintf("[TOOL FAILED: %s] Category: %s. %s", toolName, serf.Category, sb.String())
+}
+
 // RepeatedToolFailure returns the tool with the highest task-level failure
 // count for the task, so callers can decide whether a step failure is a
 // deterministic/environmental tool refusal rather than generative uncertainty.
@@ -245,6 +420,22 @@ func (s *Spawner) incrTaskToolFail(taskID, toolName string, stepCount int) int {
 		return taskCounts[toolName]
 	}
 	return stepCount
+}
+
+// persistTraceOnError persists the accumulated trace to the task store when
+// doSpawn returns an error. Without this, the trace (tool interactions from
+// turns before the error) is lost, making the engine DB incomplete — eval
+// §8.48.6 observed 28.3% of steps missing from the DB, almost all from error
+// paths. Best-effort: taskStoreSet is nil-safe and ignores write errors
+// (we're already on the error path; a store failure is not actionable here).
+func (s *Spawner) persistTraceOnError(ctx context.Context, req *SpawnRequest, trace []store.ToolInteraction, providerID, modelID, capability string) {
+	s.taskStoreSet(ctx, req.TaskID, req.StepID, &store.StepResult{
+		Capability: capability,
+		ProviderID: providerID,
+		ModelID:    modelID,
+		Trace:      trace,
+		CreatedAt:  time.Now(),
+	})
 }
 
 // recordCapabilityOutcome feeds execution telemetry to CapabilityProfileStore
@@ -302,14 +493,45 @@ func gatherToolFewShots(hub *ContextHub, bindings []config.MCPBinding) []string 
 // Extracted from spawner.go doSpawn during god-class split.
 func (s *Spawner) resolveContextRefs(ctx context.Context, req *SpawnRequest) map[string]any {
 	resolvedCtx := make(map[string]any)
+	if s.taskStore == nil || len(req.ContextRefs) == 0 {
+		return resolvedCtx
+	}
+
+	// M-1 (2026-10-04): Group refs by taskID for batch fetching via GetBatch,
+	// replacing the N+1 pattern (one ts.Get per ref) with one GetBatch per task.
+	type refEntry struct {
+		name   string
+		stepID string
+	}
+	byTask := make(map[string][]refEntry)
 	for name, ref := range req.ContextRefs {
 		if ref == "" {
 			continue
 		}
 		parts := strings.SplitN(ref, ":", 2)
 		if len(parts) == 2 {
-			if result := s.taskStoreGet(ctx, parts[0], parts[1]); result != nil {
-				resolvedCtx[name] = result.Data
+			byTask[parts[0]] = append(byTask[parts[0]], refEntry{name: name, stepID: parts[1]})
+		}
+	}
+
+	for taskID, refs := range byTask {
+		stepIDs := make([]string, len(refs))
+		for i, r := range refs {
+			stepIDs[i] = r.stepID
+		}
+		results, err := s.taskStore.GetBatch(ctx, taskID, stepIDs)
+		if err != nil {
+			// Fallback to individual gets on batch failure.
+			for _, r := range refs {
+				if result := s.taskStoreGet(ctx, taskID, r.stepID); result != nil {
+					resolvedCtx[r.name] = result.Data
+				}
+			}
+			continue
+		}
+		for _, r := range refs {
+			if result, ok := results[r.stepID]; ok {
+				resolvedCtx[r.name] = result.Data
 			}
 		}
 	}
@@ -481,7 +703,7 @@ func (s *Spawner) tryDelegationMode(ctx context.Context, req *SpawnRequest, role
 	// Defect 3 fix: redact sensitive context in delegation mode
 	delegationCtx := redactContextForDelegation(mergedContext)
 	delegationPrecedents := []*schemas.DecisionNode{}
-	systemBlocks, err := s.buildSystemPrompt(req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "")
+	systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "")
 	if err != nil {
 		return nil, false
 	}

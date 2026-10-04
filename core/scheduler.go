@@ -100,9 +100,18 @@ type DirectedEngine struct {
 	// When nil (tests, backward compat), the check is skipped.
 	Sessions *SessionManager
 
+	// BaselineStore pins SOP/Role versions at task creation time so resumed
+	// tasks use the same versions as the original run. Nil-safe.
+	BaselineStore store.BaselineStore
+
 	// pathLocks (ADDED 2026-09-13) — fine-grained per-path RWMutex for
 	// concurrent step file-write isolation. See core/path_lock.go.
 	pathLocks *PathLockManager
+
+	// H-5 (2026-10-04): Debounce map for persistGraph — taskID → last persist
+	// time. Skips redundant persists within 200ms, eliminating the 3-4× per
+	// step lifecycle marshal overhead. sync.Map for lock-free access.
+	lastPersistAt sync.Map
 
 	UseSwarm    bool
 	agents      []interfaces.AutonomousProvider
@@ -344,6 +353,16 @@ func (s *DirectedEngine) Refresh() error {
 	return nil
 }
 
+// startGraphExecutor launches the appropriate executor goroutine (run or
+// swarmWatchdog) for a task graph, based on the UseSwarm flag.
+func (s *DirectedEngine) startGraphExecutor(ctx context.Context, taskID string) {
+	if !s.UseSwarm {
+		s.goBackground(func() { s.run(ctx, taskID) })
+	} else {
+		s.goBackground(func() { s.swarmWatchdog(ctx, taskID) })
+	}
+}
+
 func (s *DirectedEngine) loadGraphs() {
 	files, err := os.ReadDir(s.outputBase)
 	if err != nil {
@@ -382,11 +401,8 @@ func (s *DirectedEngine) loadGraphs() {
 					if _, ok := s.doneChans[graph.TaskID]; !ok {
 						s.doneChans[graph.TaskID] = make(chan struct{})
 					}
-					if !s.UseSwarm {
-						// audit H3: use goBackground so Stop()'s bgWg.Wait()
-						// actually waits for resumed tasks to drain.
-						s.goBackground(func() { s.run(ctx, graph.TaskID) })
-					}
+					// audit H3/L-N4: startGraphExecutor handles UseSwarm branching.
+					s.startGraphExecutor(ctx, graph.TaskID)
 				}
 				s.Mu.Unlock()
 			}
@@ -423,6 +439,19 @@ func (s *DirectedEngine) detectReadDeps(graph *schemas.TaskGraph, stepID string,
 }
 
 func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
+	// H-5 (2026-10-04): Debounce — skip if the same graph was persisted
+	// < 200ms ago. Eliminates redundant persists at adjacent state
+	// transitions (e.g., scheduler_dag.go:147+162 are < 10ms apart).
+	// 200ms is conservative: step transitions involve LLM calls (> 1s),
+	// so meaningful persists are never skipped.
+	now := time.Now()
+	if last, ok := s.lastPersistAt.Load(graph.TaskID); ok {
+		if now.Sub(last.(time.Time)) < 200*time.Millisecond {
+			return
+		}
+	}
+	s.lastPersistAt.Store(graph.TaskID, now)
+
 	// P-H5 fix: marshal under lock, write to disk outside lock.
 	// This unblocks concurrent graph ops that were serializing on
 	// file I/O (10-100ms per persist) after every step state change.

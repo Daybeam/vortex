@@ -51,6 +51,7 @@ func TestActiveContextAssembler_Assemble(t *testing.T) {
 	assembler := NewActiveContextAssembler(mockStore, mockEmbed, 4000)
 
 	prompt := assembler.Assemble(
+		context.Background(),
 		"Main task spec",
 		"Step input data",
 		"Previous error signal",
@@ -90,7 +91,7 @@ func TestActiveContextAssembler_Budgeting(t *testing.T) {
 	}
 	assembler := NewActiveContextAssembler(mockStore, nil, 100) // Small budget
 
-	prompt := assembler.Assemble("task", "step", "", "cap", "role")
+	prompt := assembler.Assemble(context.Background(), "task", "step", "", "cap", "role")
 
 	if !strings.Contains(prompt, "## Current Task") {
 		t.Errorf("Hot context should always be present")

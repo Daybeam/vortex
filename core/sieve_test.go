@@ -4,7 +4,12 @@ import (
 	"testing"
 )
 
-func TestSieveInspectRepetition(t *testing.T) {
+// Feature: Sieve Guardian
+// Scenario: Repetition detection — when output repetition rate exceeds threshold,
+//          the call is intercepted
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Sieve Guardian
+// -----------------------------------------------------------------------------
+func TestSieve_BlocksWhenRepetitionExceedsThreshold(t *testing.T) {
 	s := NewSieve(10)
 	s.WindowSize = 2
 	s.RepetitionThreshold = 0.9

@@ -61,7 +61,7 @@ func TestTaskGraph_ToStatusDictView(t *testing.T) {
 
 func TestLogger_ReadTaskLogsPagination(t *testing.T) {
 	tmpDir := t.TempDir()
-	logger, _ := NewLogger(tmpDir, nil)
+	logger := mustNewLogger(t, tmpDir, nil)
 	defer logger.Close()
 
 	taskID := "task_pagination"

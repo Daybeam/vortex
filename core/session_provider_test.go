@@ -58,7 +58,7 @@ func TestSpawner_SessionProviderFallback(t *testing.T) {
 
 	// 4. Setup Logger
 	logDir := t.TempDir()
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 
 	// 5. Setup Spawner
 	s := NewSpawner(reg, ts, nil, logger, nil, "outputs")
@@ -156,7 +156,7 @@ func TestSpawner_OrdinaryTaskFallback(t *testing.T) {
 
 	// 3. Setup Spawner
 	logDir := t.TempDir()
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	s := NewSpawner(reg, ts, nil, logger, nil, "outputs")
 
 	// 4. Spawn

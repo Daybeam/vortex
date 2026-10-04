@@ -130,9 +130,18 @@ type ExperienceStore struct {
 	taskStore        ITaskStore
 	System           *config.SystemSettings
 	TaskPatterns     map[string]TaskPattern
+	// sequenceKeyIndex maps SequenceKey → patternID for O(1) lookup in
+	// upsertTaskPattern and jit_candidate_ops, replacing O(N) full scans
+	// (audit M-6). Not JSON-serialized — rebuilt on load.
+	sequenceKeyIndex  map[string]string
 	RoleProfiles     map[string]*RoleProfile
 	DecisionOutcomes []*DecisionOutcome
 	SkillAffinities  map[string]*SkillAffinity
+	// skillAffinityBySkill maps AddedSkill → list of SkillAffinities keys
+	// for O(skills_for_this_skill) lookup in experienceScore's similarity
+	// smoothing, replacing O(total_affinities) full scan (audit M-5).
+	// Not JSON-serialized — rebuilt on load.
+	skillAffinityBySkill map[string][]string
 	GeneratedSkills  map[string]*GeneratedSkill
 	ArchivedSkills   map[string]*GeneratedSkill
 	// RoutingMatrix indices: [RoleID][ModelID][Capability][SkillID]
@@ -219,8 +228,10 @@ func NewExperienceStore(dir string, ts ITaskStore, sys *config.SystemSettings, e
 		taskStore:         ts,
 		System:            sys,
 		TaskPatterns:      make(map[string]TaskPattern),
+		sequenceKeyIndex:  make(map[string]string),
 		RoleProfiles:      make(map[string]*RoleProfile),
 		SkillAffinities:   make(map[string]*SkillAffinity),
+		skillAffinityBySkill: make(map[string][]string),
 		GeneratedSkills:   make(map[string]*GeneratedSkill),
 		ArchivedSkills:    make(map[string]*GeneratedSkill),
 		RoutingMatrix:      make(map[string]map[string]map[string]map[string]*RouteWeight),
@@ -291,6 +302,35 @@ func (es *ExperienceStore) load() {
 	es.applyTemporalDecayLocked()
 	// audit PERF-3: build secondary index for O(1) Tier 1 experience retrieval
 	es.rebuildNodeIndexLocked()
+	// audit M-5/M-6: rebuild secondary indices for O(1) lookup
+	es.rebuildSequenceKeyIndexLocked()
+	es.rebuildSkillAffinityBySkillLocked()
+}
+
+// rebuildSequenceKeyIndexLocked reconstructs the SequenceKey→patternID index
+// from the loaded TaskPatterns. Caller MUST hold es.Mu. (audit M-6)
+func (es *ExperienceStore) rebuildSequenceKeyIndexLocked() {
+	es.sequenceKeyIndex = make(map[string]string, len(es.TaskPatterns))
+	for id, p := range es.TaskPatterns {
+		if p.SequenceKey != "" {
+			// First-wins: if duplicates exist (legacy data), keep the
+			// first seen — matches the pre-fix scan's merge semantics.
+			if _, exists := es.sequenceKeyIndex[p.SequenceKey]; !exists {
+				es.sequenceKeyIndex[p.SequenceKey] = id
+			}
+		}
+	}
+}
+
+// rebuildSkillAffinityBySkillLocked reconstructs the AddedSkill→[]affinityKey
+// index from the loaded SkillAffinities. Caller MUST hold es.Mu. (audit M-5)
+func (es *ExperienceStore) rebuildSkillAffinityBySkillLocked() {
+	es.skillAffinityBySkill = make(map[string][]string, len(es.SkillAffinities))
+	for key, sa := range es.SkillAffinities {
+		if sa.AddedSkill != "" {
+			es.skillAffinityBySkill[sa.AddedSkill] = append(es.skillAffinityBySkill[sa.AddedSkill], key)
+		}
+	}
 }
 
 // monthlyDecayRate (ADDED 2026-08-16): multiplier applied to scores per month of inactivity.
@@ -341,6 +381,12 @@ func (es *ExperienceStore) loadSeeds() {
 		p.IsSeed = true
 		if _, ok := es.TaskPatterns[p.ID]; !ok {
 			es.TaskPatterns[p.ID] = p
+			// audit M-6: maintain sequenceKeyIndex
+			if p.SequenceKey != "" {
+				if _, exists := es.sequenceKeyIndex[p.SequenceKey]; !exists {
+					es.sequenceKeyIndex[p.SequenceKey] = p.ID
+				}
+			}
 		}
 	}
 	for _, a := range seeds.Affinities {
@@ -348,6 +394,10 @@ func (es *ExperienceStore) loadSeeds() {
 		key := fmt.Sprintf("%s:%s", a.BaseCapability, a.AddedSkill)
 		if _, ok := es.SkillAffinities[key]; !ok {
 			es.SkillAffinities[key] = a
+			// audit M-5: maintain skillAffinityBySkill
+			if a.AddedSkill != "" {
+				es.skillAffinityBySkill[a.AddedSkill] = append(es.skillAffinityBySkill[a.AddedSkill], key)
+			}
 		}
 	}
 	for _, ap := range seeds.AntiPatterns {

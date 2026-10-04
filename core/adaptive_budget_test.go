@@ -6,11 +6,11 @@ func TestIRTBudgetEstimator_EstimateDifficulty(t *testing.T) {
 	e := NewIRTBudgetEstimator(50)
 
 	tests := []struct {
-		name     string
-		task     string
-		files    int
-		minB     float64
-		maxB     float64
+		name  string
+		task  string
+		files int
+		minB  float64
+		maxB  float64
 	}{
 		{"simple short task", "check if file exists", 1, 0.5, 1.5},
 		{"refactor keyword", "refactor the auth module", 3, 1.5, 2.5},

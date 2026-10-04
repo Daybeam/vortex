@@ -178,10 +178,13 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 	// the same signature instead of always inserting a fresh one.
 	key := stepSequenceKey(steps)
 	if key != "" {
-		for id, existing := range es.TaskPatterns {
-			if existing.SequenceKey != key {
-				continue
-			}
+		// audit M-6: use sequenceKeyIndex for O(1) lookup instead of O(N) scan.
+		// Rebuild if nil (test setups that bypass NewExperienceStore).
+		if es.sequenceKeyIndex == nil {
+			es.rebuildSequenceKeyIndexLocked()
+		}
+		if existingID, ok := es.sequenceKeyIndex[key]; ok {
+			existing := es.TaskPatterns[existingID]
 			existing.SampleCount++
 			existing.LastSeen = time.Now()
 			n := float64(existing.SampleCount)
@@ -190,7 +193,7 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 			if fullSource != "" && existing.SourceText == "" {
 				existing.SourceText = fullSource
 			}
-			es.TaskPatterns[id] = existing
+			es.TaskPatterns[existingID] = existing
 			return
 		}
 	}
@@ -210,6 +213,10 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 		SourceText:     fullSource,
 		Embedding:      records[0].Embedding,      // Capture from first step
 		EmbeddingModel: records[0].EmbeddingModel, // Capture from first step
+	}
+	// audit M-6: maintain sequenceKeyIndex
+	if key != "" {
+		es.sequenceKeyIndex[key] = patternID
 	}
 }
 
@@ -276,6 +283,11 @@ func (es *ExperienceStore) updateSkillAffinities(rec *StepRecord) {
 				AddedSkill:     skill,
 			}
 			es.SkillAffinities[key] = sa
+			// audit M-5: maintain skillAffinityBySkill index
+			if es.skillAffinityBySkill == nil {
+				es.skillAffinityBySkill = make(map[string][]string)
+			}
+			es.skillAffinityBySkill[skill] = append(es.skillAffinityBySkill[skill], key)
 		}
 		sa.SampleCount++
 		delta := rec.Confidence - es.getConfidenceThreshold()
@@ -420,6 +432,11 @@ func (es *ExperienceStore) applyTaskLevelPenalty(records []StepRecord) {
 			if sa == nil {
 				sa = &SkillAffinity{BaseCapability: rec.Capability, AddedSkill: skill}
 				es.SkillAffinities[key] = sa
+				// audit M-5: maintain skillAffinityBySkill index
+				if es.skillAffinityBySkill == nil {
+					es.skillAffinityBySkill = make(map[string][]string)
+				}
+				es.skillAffinityBySkill[skill] = append(es.skillAffinityBySkill[skill], key)
 			}
 			sa.SampleCount++
 			sa.ConfidenceDelta = (sa.ConfidenceDelta*float64(sa.SampleCount-1) + lightFailurePenaltyDelta) / float64(sa.SampleCount)

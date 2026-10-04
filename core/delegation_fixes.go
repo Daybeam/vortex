@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -151,6 +152,16 @@ func (s *DirectedEngine) FulfillDelegation(taskID, stepID string, result map[str
 		} else {
 			graph.Status = schemas.GraphRunning
 			s.doneChans[taskID] = make(chan struct{})
+			// audit L-N6: restart run() goroutine (same fix as L-7.1).
+			// Without this, delegation fulfillment silently stalls the
+			// task in GraphRunning with no executor.
+			if oldCancel, ok := s.cancelFuncs[taskID]; ok {
+				oldCancel()
+			}
+			runCtx, runCancel := context.WithCancel(s.lifecycleCtx)
+			s.cancelFuncs[taskID] = runCancel
+			// audit L-N6: startGraphExecutor handles UseSwarm branching.
+			s.startGraphExecutor(runCtx, taskID)
 		}
 	}
 	s.Mu.Unlock()

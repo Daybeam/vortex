@@ -20,10 +20,7 @@ import (
 // (bgWg.Wait() returns immediately, but goroutines are orphaned). With
 // goBackground, bgWg.Wait() waits for them to finish.
 func TestFinalize_GoroutinesTrackedByBgWg(t *testing.T) {
-	logger, err := NewLogger(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("NewLogger: %v", err)
-	}
+	logger := mustNewLogger(t, t.TempDir(), nil)
 	t.Cleanup(func() { logger.Close() })
 
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())

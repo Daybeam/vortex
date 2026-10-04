@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/daybeam/vortex/schemas"
@@ -29,9 +28,8 @@ func TestDepositExperienceEvolution(t *testing.T) {
 		AntiPatternStore: apStore,
 	}
 
-	tmpDir, _ := os.MkdirTemp("", "logtest")
-	defer os.RemoveAll(tmpDir)
-	logger, _ := NewLogger(tmpDir, nil)
+	tmpDir := t.TempDir()
+	logger := mustNewLogger(t, tmpDir, nil)
 	defer logger.Close()
 
 	engine := &DirectedEngine{

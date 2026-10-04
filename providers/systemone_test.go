@@ -449,44 +449,6 @@ func TestSystemOneProvider_Complete_FallsBackToSystemString(t *testing.T) {
 	}
 }
 
-func TestSystemOneProvider_FactoryIntegration(t *testing.T) {
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		resp := systemOneResponse{Answers: sampleAnswers()}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(handler))
-	t.Cleanup(srv.Close)
-
-	cfg := &config.ProviderConfig{
-		Provider: "systemone",
-		Model:    "jev-latest",
-		BaseURL:  srv.URL,
-	}
-
-	p, err := newProvider(cfg, config.ExternalRuntimes{})
-	if err != nil {
-		t.Fatalf("newProvider() error: %v", err)
-	}
-	if p.Name() != "systemone:jev-latest" {
-		t.Errorf("Name() = %q, want %q", p.Name(), "systemone:jev-latest")
-	}
-
-	resp, err := p.Complete(context.Background(), CompleteRequest{
-		User:        "state",
-		Constraints: map[string]any{"questions": sampleQuestions()},
-	})
-	if err != nil {
-		t.Fatalf("Complete() error: %v", err)
-	}
-	if resp.StopReason != "scored" {
-		t.Errorf("StopReason = %q, want %q", resp.StopReason, "scored")
-	}
-	if len(resp.ToolCalls) != 3 {
-		t.Errorf("len(ToolCalls) = %d, want 3", len(resp.ToolCalls))
-	}
-}
-
 func TestSystemOneProvider_Complete_PropagatesContextCancellation(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()

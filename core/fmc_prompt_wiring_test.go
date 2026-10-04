@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -28,10 +29,7 @@ import (
 func TestSpawner_ActiveContextAssembler_FiresWithoutSimilarTaskPatterns(t *testing.T) {
 	tmpDir := t.TempDir()
 	ts := store.NewTaskStore(store.NewFileTaskBackend(tmpDir))
-	es, err := store.NewExperienceStore(tmpDir, ts, &config.SystemSettings{}, nil, nil)
-	if err != nil {
-		t.Fatalf("NewExperienceStore: %v", err)
-	}
+	es := mustNewExperienceStore(t, tmpDir, ts, &config.SystemSettings{}, nil, nil)
 	// Deliberately do NOT register any TaskPatterns -- QuerySimilarPatterns
 	// must return empty, so resolveSimilarTaskExperience("coding") == "".
 	es.Nodes["n1"] = &store.ExperienceNode{
@@ -47,11 +45,11 @@ func TestSpawner_ActiveContextAssembler_FiresWithoutSimilarTaskPatterns(t *testi
 	es.RebuildNodeIndex()
 
 	reg := &config.Registry{}
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	spawner := NewSpawner(reg, ts, es, logger, nil, "outputs")
 
 	blocks, err := spawner.buildSystemPrompt(
-		nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
+		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "test-model"}, []string{}, nil, nil, false, nil,
 		"do the coding task", "operation timeout after 30s",
 	)
@@ -87,10 +85,7 @@ func TestSpawner_ActiveContextAssembler_FiresWithoutSimilarTaskPatterns(t *testi
 func TestSpawner_FailureModeProfileInjection(t *testing.T) {
 	tmpDir := t.TempDir()
 	ts := store.NewTaskStore(store.NewFileTaskBackend(tmpDir))
-	es, err := store.NewExperienceStore(tmpDir, ts, &config.SystemSettings{}, nil, nil)
-	if err != nil {
-		t.Fatalf("NewExperienceStore: %v", err)
-	}
+	es := mustNewExperienceStore(t, tmpDir, ts, &config.SystemSettings{}, nil, nil)
 	es.Nodes["n1"] = &store.ExperienceNode{NodeID: "n1", ModelID: "test-model", Outcome: "failure", FailureMode: "tool_selection_error"}
 	es.Nodes["n2"] = &store.ExperienceNode{NodeID: "n2", ModelID: "test-model", Outcome: "failure", FailureMode: "tool_selection_error"}
 	es.Nodes["n3"] = &store.ExperienceNode{NodeID: "n3", ModelID: "test-model", Outcome: "failure", FailureMode: "rate_limit_hit"}
@@ -98,11 +93,11 @@ func TestSpawner_FailureModeProfileInjection(t *testing.T) {
 	es.Nodes["n4"] = &store.ExperienceNode{NodeID: "n4", ModelID: "other-model", Outcome: "failure", FailureMode: "auth_permission_denied"}
 
 	reg := &config.Registry{}
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	spawner := NewSpawner(reg, ts, es, logger, nil, "outputs")
 
 	blocks, err := spawner.buildSystemPrompt(
-		nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
+		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "test-model"}, []string{}, nil, nil, false, nil,
 		"do the coding task", "",
 	)
@@ -136,17 +131,14 @@ func TestSpawner_FailureModeProfileInjection(t *testing.T) {
 func TestSpawner_FailureModeProfileInjection_NoDataIsSilent(t *testing.T) {
 	tmpDir := t.TempDir()
 	ts := store.NewTaskStore(store.NewFileTaskBackend(tmpDir))
-	es, err := store.NewExperienceStore(tmpDir, ts, &config.SystemSettings{}, nil, nil)
-	if err != nil {
-		t.Fatalf("NewExperienceStore: %v", err)
-	}
+	es := mustNewExperienceStore(t, tmpDir, ts, &config.SystemSettings{}, nil, nil)
 
 	reg := &config.Registry{}
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	spawner := NewSpawner(reg, ts, es, logger, nil, "outputs")
 
 	blocks, err := spawner.buildSystemPrompt(
-		nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
+		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "unseen-model"}, []string{}, nil, nil, false, nil,
 		"do the coding task", "",
 	)

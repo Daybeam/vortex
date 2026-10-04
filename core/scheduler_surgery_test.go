@@ -9,6 +9,13 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
+// -----------------------------------------------------------------------------
+// Feature: Dynamic DAG Surgery & Dead-End Node Refactoring
+// Invariant: Task state is irreversible, topology integrity is preserved
+// Scenario: After detecting an environmental dead-end, the node is retired
+// and the topology is hot-refactored
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Dynamic DAG Surgery
+// -----------------------------------------------------------------------------
 func TestDirectedEngine_MutateGraphTopology(t *testing.T) {
 	// Skip on Windows: t.TempDir() auto-cleanup fails when the engine's
 	// background goroutines still hold file handles (logger files).
@@ -25,7 +32,8 @@ func TestDirectedEngine_MutateGraphTopology(t *testing.T) {
 			ConfidenceThreshold: 0.8,
 		},
 	}
-	logger, _ := NewLogger(tmpDir, nil)
+	logger := mustNewLogger(t, tmpDir, nil)
+	var err error
 	defer logger.Close()
 	engine := &DirectedEngine{
 		graphs:    make(map[string]*schemas.TaskGraph),
@@ -77,7 +85,7 @@ func TestDirectedEngine_MutateGraphTopology(t *testing.T) {
 		},
 	}
 
-	err := engine.MutateGraphTopology("task1", surgery)
+	err = engine.MutateGraphTopology("task1", surgery)
 	if err != nil {
 		t.Fatalf("MutateGraphTopology failed: %v", err)
 	}

@@ -175,7 +175,7 @@ func TestCopyDir(t *testing.T) {
 
 func TestLogger_SubscribeEvents(t *testing.T) {
 	logDir := mkdirTemp(t)
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	defer logger.Close()
 
 	ch := logger.SubscribeEvents()
@@ -198,7 +198,7 @@ func TestLogger_SubscribeEvents(t *testing.T) {
 
 func TestLogger_UnsubscribeEvents(t *testing.T) {
 	logDir := mkdirTemp(t)
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	defer logger.Close()
 
 	ch := logger.SubscribeEvents()

@@ -13,7 +13,11 @@ import (
 	"github.com/daybeam/vortex/config"
 )
 
-func TestScriptProvider_Basic(t *testing.T) {
+// Feature: Zero-Token ScriptProvider
+// Scenario: Lua script executes via built-in interpreter, returns text and tool_calls
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Zero-Token ScriptProvider
+// -----------------------------------------------------------------------------
+func TestScriptProvider_LuaCompleteReturnsTextAndToolCalls(t *testing.T) {
 	tmpDir := t.TempDir()
 	scriptPath := filepath.Join(tmpDir, "test_provider.lua")
 

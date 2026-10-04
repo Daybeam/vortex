@@ -120,9 +120,16 @@ func main() {
 		go compactor.Start(rootCtx)
 	}
 
+	// ── Seed Built-ins (non-destructive) ───────────────────────────────────
+	rolesDir := filepath.Join(root, "workspace", "roles")
+	sopsDir := filepath.Join(root, "workspace", "sops")
+	skillsDir := filepath.Join(root, "workspace", "skills")
+	if err := reg.SeedBuiltins(rolesDir, sopsDir, skillsDir); err != nil {
+		log.Printf("[warning] seed builtins failed: %v", err)
+	}
+
 	// ── Bootstrap Config (File-First) ─────────────────────────────────────
 	if s.Config != nil {
-		rolesDir := filepath.Join(root, "workspace", "roles")
 		_ = os.MkdirAll(rolesDir, 0755)
 		syncedRoles, err := store.BootstrapConfigSync(s.Config, rolesDir)
 		if err == nil {
@@ -134,6 +141,9 @@ func main() {
 			reg.Mu.Unlock()
 		} else {
 			log.Printf("[warning] bootstrap config sync failed: %v", err)
+		}
+		if err := s.Config.SyncSOPsToDB(reg.SOPs); err != nil {
+			log.Printf("[warning] SOP version archive sync failed: %v", err)
 		}
 	}
 
@@ -181,6 +191,9 @@ func runExec(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBas
 
 	scheduler.JITSessions = core.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.TaskRegistry = s.TaskRegistry
+	if s.DB != nil {
+		scheduler.BaselineStore = store.NewBaselineStore(s.DB)
+	}
 	scheduler.Sessions = core.NewSessionManager(reg.System.Sandbox.AllowedWorkspaces, 0)
 	sm := core.NewScheduleManager(scheduler, es, ss, logger)
 
@@ -306,6 +319,9 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	scheduler.SetMemoryBankStore(mbStore)
 	scheduler.JITSessions = core.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.TaskRegistry = s.TaskRegistry
+	if s.DB != nil {
+		scheduler.BaselineStore = store.NewBaselineStore(s.DB)
+	}
 	scheduler.Sessions = core.NewSessionManager(reg.System.Sandbox.AllowedWorkspaces, 0)
 	// audit H10: wait for fire-and-forget DB saves to drain before db.Close.
 	// Must be deferred BEFORE scheduler.Stop so LIFO order runs it AFTER

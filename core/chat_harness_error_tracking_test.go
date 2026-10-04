@@ -46,9 +46,12 @@ func (m *mockFailingToolProvider) Name() string { return "mock-failing" }
 // "Stop using this tool") so it can learn the pattern and avoid it.
 //
 // Before the upgrade: after 3 failures, the result was
-//   "[TOOL X HAS FAILED 3 TIMES] Stop using this tool..."
+//
+//	"[TOOL X HAS FAILED 3 TIMES] Stop using this tool..."
+//
 // After the upgrade: after 3 failures, the result is
-//   "[TOOL X HAS FAILED 3 TIMES] Recent errors:\n<err1>\n<err2>\n<err3>..."
+//
+//	"[TOOL X HAS FAILED 3 TIMES] Recent errors:\n<err1>\n<err2>\n<err3>..."
 //
 // Reproduction: call a non-existent tool 4 times; verify the 3rd+ result
 // contains "Recent errors:" and the actual error text.

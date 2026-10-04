@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,20 +75,28 @@ func (r *IntentRouter) RefreshEmbeddings(ctx context.Context, reg *config.Regist
 			continue // Unchanged, skip re-embedding
 		}
 
-		// Build rich embedding text
-		text := "[SOP:" + id + "] " + sop.Description + " "
+		// M-7 (2026-10-04): Use strings.Builder instead of repeated += allocation.
+		var sb strings.Builder
+		sb.WriteString("[SOP:")
+		sb.WriteString(id)
+		sb.WriteString("] ")
+		sb.WriteString(sop.Description)
+		sb.WriteByte(' ')
 		for _, trigger := range sop.Triggers {
 			for _, kw := range trigger.Keywords {
-				text += kw + " "
+				sb.WriteString(kw)
+				sb.WriteByte(' ')
 			}
 		}
 		for _, t := range sop.TypicalTasks {
-			text += t + " "
+			sb.WriteString(t)
+			sb.WriteByte(' ')
 		}
 		for _, tag := range sop.Tags {
-			text += tag + " "
+			sb.WriteString(tag)
+			sb.WriteByte(' ')
 		}
-		pending = append(pending, pendingEmbed{id: id, versionKey: versionKey, text: text})
+		pending = append(pending, pendingEmbed{id: id, versionKey: versionKey, text: sb.String()})
 	}
 	r.mu.RUnlock()
 

@@ -431,6 +431,62 @@ func (es *ExperienceStore) QuerySkillRecommendations(ctx context.Context, capabi
 	return out
 }
 
+// QuerySkillRecommendationsBatch is the batch variant of QuerySkillRecommendations.
+// audit H-3: previously the caller looped over capabilities and called
+// QuerySkillRecommendations N times — each acquiring RLock and full-scanning
+// SkillAffinities (O(caps × affinities) with N lock cycles). This method
+// acquires RLock once and does a single pass, bucketing by capability.
+func (es *ExperienceStore) QuerySkillRecommendationsBatch(ctx context.Context, capabilities []string, minConfidence float64) map[string][]string {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	capSet := make(map[string]bool, len(capabilities))
+	for _, c := range capabilities {
+		capSet[c] = true
+	}
+
+	es.Mu.RLock()
+	defer es.Mu.RUnlock()
+
+	type scored struct {
+		skill string
+		delta float64
+	}
+	// Bucket candidates by capability in a single pass over SkillAffinities.
+	buckets := make(map[string][]scored)
+	threshold := es.getConfidenceThreshold()
+	for _, sa := range es.SkillAffinities {
+		if !capSet[sa.BaseCapability] {
+			continue
+		}
+		if !sa.IsSeed && sa.SampleCount < 2 {
+			continue
+		}
+		predicted := threshold + sa.ConfidenceDelta
+		if predicted >= minConfidence {
+			buckets[sa.BaseCapability] = append(buckets[sa.BaseCapability], scored{skill: sa.AddedSkill, delta: sa.ConfidenceDelta})
+		}
+	}
+
+	const maxRecommendations = 10
+	result := make(map[string][]string, len(buckets))
+	for cap, candidates := range buckets {
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].delta > candidates[j].delta })
+		if len(candidates) > maxRecommendations {
+			candidates = candidates[:maxRecommendations]
+		}
+		out := make([]string, len(candidates))
+		for i, c := range candidates {
+			out[i] = c.skill
+		}
+		result[cap] = out
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 // tokenizeStopwords are common short function words that carry almost no
 // distinguishing signal for keyword-overlap matching, but are short enough
 // to slip past a pure length filter (e.g. "the"/"of" are length 2-3, same

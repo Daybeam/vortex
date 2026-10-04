@@ -34,8 +34,7 @@ func TestSessionContext_IsExpired(t *testing.T) {
 }
 
 func TestSessionManager_CreateOrBind_PermissiveMode(t *testing.T) {
-	dir, _ := os.MkdirTemp("", "session_test_*")
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	mgr := NewSessionManager(nil, 0)
 	sc, err := mgr.CreateOrBind("sess1", dir)
@@ -51,10 +50,8 @@ func TestSessionManager_CreateOrBind_PermissiveMode(t *testing.T) {
 }
 
 func TestSessionManager_CreateOrBind_RestrictedMode(t *testing.T) {
-	allowed, _ := os.MkdirTemp("", "allowed_*")
-	defer os.RemoveAll(allowed)
-	disallowed, _ := os.MkdirTemp("", "disallowed_*")
-	defer os.RemoveAll(disallowed)
+	allowed := t.TempDir()
+	disallowed := t.TempDir()
 
 	mgr := NewSessionManager([]string{allowed}, 0)
 
@@ -70,8 +67,7 @@ func TestSessionManager_CreateOrBind_RestrictedMode(t *testing.T) {
 }
 
 func TestSessionManager_CreateOrBind_Idempotent(t *testing.T) {
-	dir, _ := os.MkdirTemp("", "session_test_*")
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	mgr := NewSessionManager(nil, 0)
 	sc1, _ := mgr.CreateOrBind("sess1", dir)
@@ -85,8 +81,7 @@ func TestSessionManager_CreateOrBind_Idempotent(t *testing.T) {
 }
 
 func TestSessionManager_Lookup(t *testing.T) {
-	dir, _ := os.MkdirTemp("", "session_test_*")
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	mgr := NewSessionManager(nil, 0)
 	_, _ = mgr.CreateOrBind("sess1", dir)
@@ -105,8 +100,7 @@ func TestSessionManager_Lookup(t *testing.T) {
 }
 
 func TestSessionManager_Lookup_Expired(t *testing.T) {
-	dir, _ := os.MkdirTemp("", "session_test_*")
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	mgr := NewSessionManager(nil, 100*time.Millisecond)
 	_, _ = mgr.CreateOrBind("sess1", dir)
@@ -155,10 +149,8 @@ func TestSeedTaskInputs_NoInputDir(t *testing.T) {
 }
 
 func TestSeedTaskInputs_CopiesFiles(t *testing.T) {
-	wsRoot, _ := os.MkdirTemp("", "wsroot_*")
-	defer os.RemoveAll(wsRoot)
-	outputBase, _ := os.MkdirTemp("", "outputbase_*")
-	defer os.RemoveAll(outputBase)
+	wsRoot := t.TempDir()
+	outputBase := t.TempDir()
 
 	srcDir := filepath.Join(wsRoot, "input_data")
 	os.MkdirAll(srcDir, 0755)
@@ -199,10 +191,8 @@ func TestSeedTaskInputs_CopiesFiles(t *testing.T) {
 }
 
 func TestSeedTaskInputs_SkipsMissingSource(t *testing.T) {
-	wsRoot, _ := os.MkdirTemp("", "wsroot_*")
-	defer os.RemoveAll(wsRoot)
-	outputBase, _ := os.MkdirTemp("", "outputbase_*")
-	defer os.RemoveAll(outputBase)
+	wsRoot := t.TempDir()
+	outputBase := t.TempDir()
 
 	engine := &DirectedEngine{
 		logger: newSessionTestLogger(),

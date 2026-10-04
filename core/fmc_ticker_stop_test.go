@@ -22,7 +22,7 @@ func TestFMCBatchTicker_Stop_Idempotent(t *testing.T) {
 	// Construct via NewFMCBatchTicker to get a properly initialized stopOnce.
 	reg := &config.Registry{}
 	es := newFMCTestExperienceStore(t)
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	defer logger.Close()
 
 	ticker := NewFMCBatchTicker(reg, config.ExternalRuntimes{}, es, logger)

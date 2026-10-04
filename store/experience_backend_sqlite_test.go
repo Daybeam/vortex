@@ -2,15 +2,13 @@ package store
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestSQLiteExperienceBackend(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "exp_store_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := InitDB(dbPath)

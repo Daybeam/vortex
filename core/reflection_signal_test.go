@@ -14,8 +14,8 @@ func TestReflectionEngine_SignalCapture(t *testing.T) {
 	tmpDir := t.TempDir()
 	reg, _ := config.NewRegistry(filepath.Join(tmpDir, "config.json"))
 	ts := &mockSignalTaskStore{}
-	es, _ := store.NewExperienceStore(tmpDir, nil, nil, nil, nil)
-	logger, _ := NewLogger(t.TempDir(), nil)
+	es := mustNewExperienceStore(t, tmpDir, nil, nil, nil, nil)
+	logger := mustNewLogger(t, t.TempDir(), nil)
 
 	re := NewReflectionEngine(es, ts, reg, nil, logger)
 
@@ -102,7 +102,9 @@ func (m *mockSignalTaskStore) GetByRef(ctx context.Context, ref string) (*store.
 	return nil, nil
 }
 
-func (m *mockSignalTaskStore) ClearTask(ctx context.Context, taskID string) (int, error) { return 0, nil }
+func (m *mockSignalTaskStore) ClearTask(ctx context.Context, taskID string) (int, error) {
+	return 0, nil
+}
 func (m *mockSignalTaskStore) Claim(ctx context.Context, taskID, stepID string) (bool, error) {
 	return true, nil
 }

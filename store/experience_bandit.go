@@ -141,18 +141,38 @@ func (es *ExperienceStore) experienceScore(roleID, modelID, capability, skillID 
 
 	// Similarity smoothing: scan SkillAffinities for this same skillID under
 	// a different, textually-similar capability phrasing.
+	// audit M-5: use skillAffinityBySkill index for O(affinities_for_this_skill)
+	// lookup instead of O(total_affinities) full scan. Fall back to the full
+	// scan if the index is empty (nil or initialized-but-not-populated, e.g.
+	// test setups that bypass updateSkillAffinities — can't rebuild here
+	// because caller holds only a read lock).
 	bestSim := 0.0
 	bestScore := 0.0
 	found := false
-	for _, sa := range es.SkillAffinities {
-		if sa.AddedSkill != skillID || sa.SampleCount == 0 {
-			continue
+	if len(es.skillAffinityBySkill) > 0 {
+		for _, affKey := range es.skillAffinityBySkill[skillID] {
+			sa := es.SkillAffinities[affKey]
+			if sa == nil || sa.SampleCount == 0 {
+				continue
+			}
+			sim := capabilitySimilarity(capability, sa.BaseCapability)
+			if sim >= similarityMinRatio && sim > bestSim {
+				bestSim = sim
+				bestScore = sa.ConfidenceDelta
+				found = true
+			}
 		}
-		sim := capabilitySimilarity(capability, sa.BaseCapability)
-		if sim >= similarityMinRatio && sim > bestSim {
-			bestSim = sim
-			bestScore = sa.ConfidenceDelta
-			found = true
+	} else {
+		for _, sa := range es.SkillAffinities {
+			if sa.AddedSkill != skillID || sa.SampleCount == 0 {
+				continue
+			}
+			sim := capabilitySimilarity(capability, sa.BaseCapability)
+			if sim >= similarityMinRatio && sim > bestSim {
+				bestSim = sim
+				bestScore = sa.ConfidenceDelta
+				found = true
+			}
 		}
 	}
 	// Also check RoutingMatrix across other capabilities for this same

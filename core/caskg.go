@@ -7,15 +7,17 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // SkillCausalEdge records the transition success rates between skills.
 type SkillCausalEdge struct {
-	SourceSkillID string  `json:"source_skill_id"`
-	TargetSkillID string  `json:"target_skill_id"`
-	SuccessCount  int     `json:"success_count"`
-	TotalCount    int     `json:"total_count"`
-	CausalLift    float64 `json:"causal_lift"`
+	SourceSkillID string    `json:"source_skill_id"`
+	TargetSkillID string    `json:"target_skill_id"`
+	SuccessCount  int       `json:"success_count"`
+	TotalCount    int       `json:"total_count"`
+	CausalLift    float64   `json:"causal_lift"`
+	LastUpdated   time.Time `json:"last_updated,omitempty"` // Last activation/reinforcement timestamp
 }
 
 // CausalSkillGraph is the persistent structure for causal reasoning.
@@ -26,10 +28,11 @@ type CausalSkillGraph struct {
 
 // CaSKGManager handles the autonomous updates and scoring for causal skill graphs.
 type CaSKGManager struct {
-	mu           sync.RWMutex
-	Graph        *CausalSkillGraph
-	PersistPath  string
-	taskTracking map[string][]string // taskID -> ordered list of skills
+	mu            sync.RWMutex
+	Graph         *CausalSkillGraph
+	PersistPath   string
+	taskTracking  map[string][]string // taskID -> ordered list of skills
+	lastPruneTime time.Time           // last metabolic pruning timestamp (throttle)
 }
 
 const maxTaskTrackingEntries = 1000 // cap on taskTracking map; clearing is safe (loses transitions for abandoned tasks)
@@ -41,8 +44,9 @@ func NewCaSKGManager(persistPath string) *CaSKGManager {
 			Nodes: make(map[string]int),
 			Edges: make(map[string]map[string]*SkillCausalEdge),
 		},
-		PersistPath:  persistPath,
-		taskTracking: make(map[string][]string),
+		PersistPath:   persistPath,
+		taskTracking:  make(map[string][]string),
+		lastPruneTime: time.Now(), // initialize so first Save() doesn't immediately prune
 	}
 	m.load()
 	return m
@@ -59,6 +63,16 @@ func (m *CaSKGManager) load() {
 }
 
 func (m *CaSKGManager) Save() error {
+	// Metabolic pruning: evict stale and low-performing edges periodically.
+	// Throttled to avoid pruning on every Save() call (which fires per task
+	// event). This prevents evicting edges that are actively being recorded.
+	m.mu.Lock()
+	if time.Since(m.lastPruneTime) > pruneInterval {
+		m.pruneStaleEdgesLocked(defaultStaleEdgeMaxAge, defaultMinSuccessRate)
+		m.lastPruneTime = time.Now()
+	}
+	m.mu.Unlock()
+
 	m.mu.RLock()
 	data, err := json.MarshalIndent(m.Graph, "", "  ")
 	m.mu.RUnlock()
@@ -161,6 +175,7 @@ func (m *CaSKGManager) recordTransition(source, target string, success bool) {
 	if success {
 		edge.SuccessCount++
 	}
+	edge.LastUpdated = time.Now()
 
 	// Calculate Causal Lift: P(Success | A->B) / P(Success | B)
 	// For simplicity in this implementation, we use: SuccessCount / TotalCount
@@ -172,6 +187,54 @@ func (m *CaSKGManager) recordTransition(source, target string, success bool) {
 	// without a global Success counter per node.
 	// For now, we use a conservative lift:
 	edge.CausalLift = pSuccessGivenA
+}
+
+// Default metabolic pruning parameters. Edges unused for 7 days or with
+// success rate below 30% (after ≥5 observations) are evicted periodically.
+const (
+	defaultStaleEdgeMaxAge      = 7 * 24 * time.Hour
+	defaultMinSuccessRate       = 0.3
+	staleEdgeMinTotalForPruning = 5  // don't prune edges with too few observations
+	pruneInterval               = 1 * time.Hour // throttle: prune at most once per hour
+)
+
+// PruneStaleEdges removes stale and low-performing edges from the causal skill
+// graph, mirroring ExperienceStore's metabolic ROI lifecycle.
+//
+// Rule 1 (time-decay): Edges whose LastUpdated exceeds maxAge are evicted.
+// Rule 2 (low-performing): Edges with TotalCount ≥ 5 and success rate below
+// minSuccessRate are evicted.
+//
+// Edges with zero LastUpdated (legacy data loaded from old JSON) are spared
+// from Rule 1 — they get stamped on the next recordTransition.
+func (m *CaSKGManager) PruneStaleEdges(maxAge time.Duration, minSuccessRate float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneStaleEdgesLocked(maxAge, minSuccessRate)
+}
+
+// pruneStaleEdgesLocked is the lock-free inner logic of PruneStaleEdges.
+// Caller MUST hold m.mu write lock.
+func (m *CaSKGManager) pruneStaleEdgesLocked(maxAge time.Duration, minSuccessRate float64) {
+	now := time.Now()
+	for source, targets := range m.Graph.Edges {
+		for target, edge := range targets {
+			// Rule 1: Time-decay eviction (stale paths unused beyond TTL).
+			// Zero LastUpdated = legacy edge from old JSON; spare it.
+			if !edge.LastUpdated.IsZero() && now.Sub(edge.LastUpdated) > maxAge {
+				delete(targets, target)
+				continue
+			}
+			// Rule 2: Low-performing eviction (metabolic ROI equivalent).
+			if edge.TotalCount >= staleEdgeMinTotalForPruning &&
+				float64(edge.SuccessCount)/float64(edge.TotalCount) < minSuccessRate {
+				delete(targets, target)
+			}
+		}
+		if len(targets) == 0 {
+			delete(m.Graph.Edges, source)
+		}
+	}
 }
 
 // GetCausalBoost returns the multiplier for a candidate skill given the predecessor.

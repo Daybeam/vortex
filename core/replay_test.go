@@ -50,8 +50,7 @@ func TestReplayer_LoadHistory(t *testing.T) {
 }
 
 func TestReplayer_Fork(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "replay_fork_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "global_trajectory.jsonl")
 	f, _ := os.Create(logPath)
 

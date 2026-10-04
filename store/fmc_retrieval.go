@@ -99,7 +99,7 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 	tier2Start := time.Now()
 	tier2Base := len(results)
 	if len(query) > 0 {
-		simResults := es.querySimilarNodesLocked(query, 5)
+		simResults := es.querySimilarNodesLocked(query, 5, capability)
 		for _, node := range simResults {
 			if !seen[node.NodeID] {
 				results = append(results, node)
@@ -213,7 +213,7 @@ func (es *ExperienceStore) predictFailureMode(err string) string {
 	return ""
 }
 
-func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int) []*ExperienceNode {
+func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int, capability string) []*ExperienceNode {
 	if len(query) == 0 {
 		return nil
 	}
@@ -234,23 +234,67 @@ func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int) [
 	}
 	queryNorm := math.Sqrt(queryNormSq)
 
-	for _, node := range es.Nodes {
-		if len(node.Embedding) == 0 || len(node.Embedding) != len(query) {
-			continue
-		}
+	// C-2 (2026-10-04): Two-pass capability pre-filter.
+	// Pass 1: scan only nodes with matching capability (or either is empty).
+	//         Reduces N by ~1/num_capabilities for the common case.
+	// Pass 2: scan remaining nodes only if pass 1 yielded < limit results,
+	//         preserving cross-capability experience reuse.
+	// The lock-during-HTTP issue was already fixed (P-2.3: RLock released
+	// before reranker call). This fix addresses the O(N×E) brute-force scan.
+	scanned := 0
+	scoreNode := func(node *ExperienceNode) {
+		scanned++
 		var dot, normB float64
 		for i := range query {
 			dot += float64(query[i]) * float64(node.Embedding[i])
 			normB += float64(node.Embedding[i]) * float64(node.Embedding[i])
 		}
 		if normB == 0 {
-			continue
+			return
 		}
 		score := dot / (queryNorm * math.Sqrt(normB))
 		if score > 0.7 {
 			scored = append(scored, scoredNode{node: node, score: score})
 		}
 	}
+
+	capMatches := func(node *ExperienceNode) bool {
+		return capability == "" || node.Capability == "" || node.Capability == capability
+	}
+
+	// Pass 1: matching-capability nodes.
+	for _, node := range es.Nodes {
+		if len(node.Embedding) == 0 || len(node.Embedding) != len(query) {
+			continue
+		}
+		if !capMatches(node) {
+			continue
+		}
+		scoreNode(node)
+	}
+
+	// Pass 2: non-matching nodes, only if pass 1 was insufficient.
+	twoPass := false
+	if len(scored) < limit {
+		twoPass = true
+		for _, node := range es.Nodes {
+			if len(node.Embedding) == 0 || len(node.Embedding) != len(query) {
+				continue
+			}
+			if capMatches(node) {
+				continue // already scanned in pass 1
+			}
+			scoreNode(node)
+		}
+	}
+
+	slog.Debug("tier2_embedding_scan",
+		"nodes_total", len(es.Nodes),
+		"nodes_scanned", scanned,
+		"candidates", len(scored),
+		"capability", capability,
+		"two_pass", twoPass,
+	)
 
 	sort.Slice(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score
@@ -265,22 +309,6 @@ func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int) [
 		out[i] = s.node
 	}
 	return out
-}
-
-func (es *ExperienceStore) cosineSimilarity(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		normA += float64(a[i]) * float64(a[i])
-		normB += float64(b[i]) * float64(b[i])
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
 // applyContextBonus re-sorts retrieval candidates by combining tier rank with

@@ -79,7 +79,7 @@ func (d *RemoteSSEDriver) Inspect(ctx context.Context) error {
 		endpoint = "https://" + endpoint
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("inspect %q: build request: %w", d.def.ID, err)
