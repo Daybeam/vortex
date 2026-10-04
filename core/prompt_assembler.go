@@ -45,6 +45,7 @@ func NewPromptAssembler(expStore store.IExperienceStore, loader *ResourceLoader,
 // Build generates the complete structured system prompt blocks for a subagent.
 // This is the body formerly known as Spawner.buildSystemPrompt.
 func (s *PromptAssembler) Build(
+	ctx context.Context, // L-2.1: propagated ctx for cancellation
 	hub *ContextHub,
 	role *config.Role,
 	skillIDs []string,
@@ -103,7 +104,7 @@ func (s *PromptAssembler) Build(
 	}
 
 	// Historical Similar Task Patterns injection
-	similarTaskText := s.resolveSimilarTaskExperience(capability)
+	similarTaskText := s.resolveSimilarTaskExperience(ctx, capability)
 	if similarTaskText != "" {
 		blocks = append(blocks, MarkProtected(schemas.ContentBlock{
 			Text:         similarTaskText,
@@ -117,9 +118,9 @@ func (s *PromptAssembler) Build(
 		// BuildPrompt has access to the ContextHub.
 		if s.expStore != nil && hub != nil {
 			if embedClient := hub.GetEmbeddingClient(); embedClient != nil {
-				_, currentModel, _ := embedClient.EmbedWithModel(context.Background(), "")
+				_, currentModel, _ := embedClient.EmbedWithModel(ctx, "")
 				if currentModel != "" {
-					patterns := s.expStore.QuerySimilarPatterns(context.Background(), []string{capability}, 2)
+					patterns := s.expStore.QuerySimilarPatterns(ctx, []string{capability}, 2)
 					for _, p := range patterns {
 						if p.EmbeddingModel != "" && p.EmbeddingModel != currentModel {
 							s.logger.Log("EventEmbeddingModelMismatch", "", "", map[string]any{
@@ -152,7 +153,7 @@ func (s *PromptAssembler) Build(
 	if s.expStore != nil {
 		assembler := NewActiveContextAssembler(s.expStore, nil, 2000)
 		// Pass real taskText and latestError into Hot Tier, capability/roleID into Warm/Cold tiers
-		if contextStr := assembler.Assemble(taskText, "", latestError, capability, roleID); contextStr != "" {
+		if contextStr := assembler.Assemble(ctx, taskText, "", latestError, capability, roleID); contextStr != "" {
 			blocks = append(blocks, MarkProtected(schemas.ContentBlock{
 				Text:         contextStr,
 				CacheControl: "ephemeral",
@@ -177,7 +178,7 @@ func (s *PromptAssembler) Build(
 	// Tier 2 (trimmable): per §4.3, only the TOC + capability anchor section
 	// is injected, never the full cookbook text.
 	if cookbookSource, ok := providerCfg.Extra["cookbook_source"].(string); ok && cookbookSource != "" {
-		if content, err := s.resourceLoader.Fetch(context.Background(), cookbookSource); err == nil {
+		if content, err := s.resourceLoader.Fetch(ctx, cookbookSource); err == nil {
 			indexed := s.budgetEnforcer.IndexCookbook(content, capability)
 			blocks = append(blocks, TagBlock(schemas.ContentBlock{
 				Text: fmt.Sprintf("# Model Execution Cookbook\n%s", indexed),
@@ -364,12 +365,12 @@ func (s *PromptAssembler) resolveAntiPatternWarnings(capability string, toolCons
 // resolveSimilarTaskExperience queries the ExperienceStore for similar past task
 // patterns using capability matching and graceful fallback, surfacing historical
 // success patterns for the current agent context. (ADDED 2026-09-06)
-func (s *PromptAssembler) resolveSimilarTaskExperience(capability string) string {
+func (s *PromptAssembler) resolveSimilarTaskExperience(ctx context.Context, capability string) string {
 	if s.expStore == nil {
 		return ""
 	}
 	caps := []string{capability}
-	patterns := s.expStore.QuerySimilarPatterns(context.Background(), caps, 2)
+	patterns := s.expStore.QuerySimilarPatterns(ctx, caps, 2)
 	if len(patterns) == 0 {
 		return ""
 	}

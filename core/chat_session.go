@@ -308,13 +308,13 @@ func (st *ChatSessionStore) Get(id string) *ChatSession {
 // returns no sessions, falls back to listing session JSON files from the
 // directory. This handles the case where SaveSession silently fails (e.g.
 // lifecycle context cancelled) but JSON files were still written.
-func (st *ChatSessionStore) ListSessions(ctx context.Context, limit int) ([]store.ChatSessionRow, error) {
+func (st *ChatSessionStore) ListSessions(ctx context.Context, limit, offset int) ([]store.ChatSessionRow, error) {
 	st.mu.Lock()
 	backend := st.backend
 	dir := st.dir
 	st.mu.Unlock()
 	if backend != nil {
-		rows, err := backend.ListSessions(ctx, limit)
+		rows, err := backend.ListSessions(ctx, limit, offset)
 		if err == nil && len(rows) > 0 {
 			return rows, nil
 		}
@@ -343,6 +343,12 @@ func (st *ChatSessionStore) ListSessions(ctx context.Context, limit int) ([]stor
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].CreatedAt.After(rows[j].CreatedAt)
 	})
+	// Apply offset then limit
+	if offset > 0 && offset < len(rows) {
+		rows = rows[offset:]
+	} else if offset > 0 {
+		return []store.ChatSessionRow{}, nil
+	}
 	if limit > 0 && len(rows) > limit {
 		rows = rows[:limit]
 	}
