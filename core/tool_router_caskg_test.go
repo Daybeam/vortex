@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"github.com/daybeam/vortex/config"
 	"path/filepath"
 	"testing"
@@ -41,7 +42,7 @@ func TestToolRouter_CausalBoost(t *testing.T) {
 
 	// This is tricky as RRF logic is complex.
 	// But simply checking if it runs and returns SkillB should be okay.
-	routed := router.Route(req)
+	routed := router.Route(context.Background(), req)
 	found := false
 	for _, b := range routed {
 		if b.MCPID == "mcp1" {

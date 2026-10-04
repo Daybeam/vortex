@@ -173,7 +173,7 @@ func (r *ToolRouter) SetSystemOneProvider(p *providers.SystemOneProvider, model 
 // scoreWithSystemOne asks the System One model to score tool relevance
 // semantically. Returns a rank map (toolID → probability). On any error
 // or timeout, returns nil (caller falls back to string-only matching).
-func (r *ToolRouter) scoreWithSystemOne(task string, tools []string) map[string]float64 {
+func (r *ToolRouter) scoreWithSystemOne(ctx context.Context, task string, tools []string) map[string]float64 {
 	questions := map[string]any{
 		"q1": map[string]any{
 			"type":     "choice",
@@ -187,7 +187,8 @@ func (r *ToolRouter) scoreWithSystemOne(task string, tools []string) map[string]
 		MaxTokens:   256,
 		Constraints: map[string]any{"questions": questions},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// L-2.1: derive from propagated ctx so cancellation propagates
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	resp, err := r.systemOneProvider.Complete(ctx, req)
 	if err != nil {
@@ -242,7 +243,8 @@ var privilegedToolBlocklist = map[string]bool{
 }
 
 // Route selects a subset of tools from the provided MCP bindings based on task relevance.
-func (r *ToolRouter) Route(req RouteRequest) []config.MCPBinding {
+// L-2.1: ctx propagates for embedding/system-one cancellation.
+func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBinding {
 	taskLower := strings.ToLower(req.Task)
 	var routed []config.MCPBinding
 
@@ -278,7 +280,7 @@ func (r *ToolRouter) Route(req RouteRequest) []config.MCPBinding {
 
 		// 2. Dense Channel: Embedding
 		if r.EmbedClient != nil {
-			if qVec, err := r.EmbedClient.Embed(context.Background(), req.Task); err == nil {
+			if qVec, err := r.EmbedClient.Embed(ctx, req.Task); err == nil {
 				candidates := make(map[string][]float32)
 				r.mu.RLock()
 				for _, tool := range available {
@@ -304,7 +306,7 @@ func (r *ToolRouter) Route(req RouteRequest) []config.MCPBinding {
 		// 4. System One Channel: Semantic scoring (when pool ≤ 20)
 		var systemOneRank map[string]float64
 		if r.systemOneProvider != nil && len(available) <= 20 {
-			systemOneRank = r.scoreWithSystemOne(req.Task, available)
+			systemOneRank = r.scoreWithSystemOne(ctx, req.Task, available)
 		}
 
 		// Fuse all channels

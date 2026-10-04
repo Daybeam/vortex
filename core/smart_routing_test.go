@@ -48,6 +48,7 @@ func buildSmartRoutingEngine(t *testing.T, requireReview bool) (*DirectedEngine,
 	ts := store.NewTaskStore(store.NewFileTaskBackend(filepath.Join(tmpDir, "tasks")))
 	es := mustNewExperienceStore(t, filepath.Join(tmpDir, "exp"), ts, nil, nil, nil)
 	logger := mustNewLogger(t, filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
+	t.Cleanup(func() { logger.Close() }) // drain logger goroutines before tmpDir cleanup
 
 	engine := NewDirectedEngine(reg, ts, es, nil, logger, nil, tmpDir, tmpDir, nil)
 	return engine, tmpDir
@@ -61,11 +62,15 @@ func waitForGraph(t *testing.T, engine *DirectedEngine, taskID string, cond func
 	for i := 0; i < 20; i++ {
 		engine.Mu.RLock()
 		graph, exists := engine.graphs[taskID]
-		if exists && graph != nil && (cond == nil || cond(graph)) {
-			engine.Mu.RUnlock()
+		// Evaluate cond(graph) under RLock to prevent data race on
+		// graph.Status — the background goroutine in scheduler_submit.go
+		// writes graph.Status under Mu.Lock(), so the reader must hold
+		// Mu.RLock() to establish a happens-before relationship.
+		done := exists && graph != nil && (cond == nil || cond(graph))
+		engine.Mu.RUnlock()
+		if done {
 			return graph
 		}
-		engine.Mu.RUnlock()
 		time.Sleep(100 * time.Millisecond)
 	}
 	return nil
