@@ -134,8 +134,8 @@ func classifyError(err error) FailureClass {
 }
 
 // classifyErrorWithSystemOne wraps classifyError with an optional System One
-// refinement. System One is not available in the open core; this stub returns
-// the base classification directly.
+// refinement. In the open core, System One is not available, so this is a
+// stub that returns classifyError(err) directly.
 func (s *DirectedEngine) classifyErrorWithSystemOne(err error, stepID, roleID, stepTask string) FailureClass {
 	return classifyError(err)
 }

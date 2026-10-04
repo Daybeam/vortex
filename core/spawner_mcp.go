@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -210,6 +211,15 @@ func (s *Spawner) buildMCPServers(
 						}
 					}
 				} else {
+					// #18 (eval §8.31): Surface tools/list failure at ERROR level
+					// so it is visible in standard log output, not just event logs.
+					// Without this, a failed discovery leaves FullToolDefinitions
+					// empty but the MCP is still added to the server list with 0
+					// tools — the engine silently assumes the MCP is usable.
+					slog.Error("MCP tools/list discovery failed — MCP will have 0 tools",
+						"mcp", mcp.ID,
+						"error", err.Error(),
+						"task", taskID)
 					s.logger.Log("EventMCPToolsDiscoveryFailed", taskID, "", map[string]any{
 						"mcp":   mcp.ID,
 						"error": err.Error(),
@@ -268,6 +278,12 @@ func (s *Spawner) buildMCPServers(
 					}
 					mcp.DiscoveryStatus = status
 
+					// #18 (eval §8.31): Surface remote tools/list failure at ERROR level.
+					slog.Error("MCP remote tools/list discovery failed — MCP will have 0 tools",
+						"mcp", mcp.ID,
+						"status", status,
+						"error", errStr,
+						"task", taskID)
 					s.logger.Log("EventMCPToolsDiscoveryFailed", taskID, "", map[string]any{
 						"mcp":    mcp.ID,
 						"status": status,
