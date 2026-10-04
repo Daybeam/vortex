@@ -82,6 +82,12 @@ func loadPromptOverrides(configPath string) PromptOverrides {
 func loadRoleInstructionOverrides(dir string) map[string]string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		// audit NEW-L2 (2026-10-04): log non-not-exist errors (e.g. permission
+		// denied) so operators know role overrides are silently disabled.
+		// A missing dir is expected (no overrides configured) — silent skip.
+		if !os.IsNotExist(err) {
+			log.Printf("warning: failed to read role overrides dir %s: %v", dir, err)
+		}
 		return nil
 	}
 	out := make(map[string]string)

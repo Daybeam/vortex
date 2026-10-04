@@ -12,19 +12,24 @@ import (
 
 // writeIfAbsent writes data to path only if the file does not already exist.
 // Returns true if it wrote (file was absent), false if it skipped (file existed).
+// Uses O_EXCL for an atomic create-or-skip — eliminates the TOCTOU race that
+// the prior Stat→Write sequence had (audit NEW-L1, 2026-10-04).
 func writeIfAbsent(path string, data []byte) (bool, error) {
-	if _, err := os.Stat(path); err == nil {
-		return false, nil
-	} else if !os.IsNotExist(err) {
-		return false, err
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		if os.IsExist(err) {
+			return false, nil // file already exists — skip
+		}
 		return false, err
 	}
-	return true, nil
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return false, err
+	}
+	return true, f.Close()
 }
 
 // SeedBuiltins writes built-in roles, SOPs, and skills to disk if they don't
@@ -57,6 +62,20 @@ Guidelines:
 4. Assign appropriate roles to each step.
 5. Output the SOP as valid JSON and submit via update_sop.`
 
+const decisionArbiterInstruction = `You are a decision arbiter for an autonomous task orchestration engine. A workflow step has blocked and requires a decision. You will receive the decision type, context, and available options. Choose exactly ONE option.
+
+Decision guidelines:
+- StepFailed: If the failure is recoverable (transient error, missing input, tool timeout), prefer retry or resume. If the failure is systemic (logic error, unrecoverable state), prefer skip to move past the failed step and preserve remaining work.
+- MaxTurnsExhausted: The step used its entire turn budget without completing. Prefer resume_more_turns if the step was making progress (partial results, converging). Prefer skip if the step was spinning without progress.
+- LowConfidence: The step reported low confidence in its output. Prefer skip to avoid propagating unreliable results, unless the task explicitly requires best-effort output.
+- AutonomousAbortRequested: A cost-governance sentinel fired. Prefer continue if the task is near completion or the cost is within budget. Prefer confirm_abort if the task is clearly diverging or the cost is unsustainable.
+- CapabilityRequired / EnvironmentMissing / DelegationRequired: These indicate missing prerequisites. Prefer skip — the step cannot succeed without the missing capability/environment/delegation.
+
+General principles:
+- Preserve completed work: prefer skip over abort when other steps have succeeded.
+- Don't loop: if the same decision has been made before, choose a different option.
+- Respond with ONLY the option name, nothing else.`
+
 // ── Built-in Roles ────────────────────────────────────────────────────────
 
 var builtinRoles = []Role{
@@ -68,6 +87,15 @@ var builtinRoles = []Role{
 		AllowDynamicSkills: true,
 		AllowDynamicMCPs:   true,
 		Generatable:        true,
+	},
+	{
+		ID:             "decision_arbiter",
+		Name:           "Decision Arbiter",
+		BaseCapability: "plan",
+		Instruction:    decisionArbiterInstruction,
+		Purpose:        "Resolves blocked decisions in non-interactive mode. Spawned when a step blocks and decision_decider_role is set to this role.",
+		BestFor:        "CI/batch eval, unattended deployments, autonomous decision resolution",
+		MutableByAgent: false, // users can edit the file on disk, but the agent shouldn't rewrite its own decision logic
 	},
 }
 
