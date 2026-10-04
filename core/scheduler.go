@@ -108,6 +108,11 @@ type DirectedEngine struct {
 	// concurrent step file-write isolation. See core/path_lock.go.
 	pathLocks *PathLockManager
 
+	// H-5 (2026-10-04): Debounce map for persistGraph — taskID → last persist
+	// time. Skips redundant persists within 200ms, eliminating the 3-4× per
+	// step lifecycle marshal overhead. sync.Map for lock-free access.
+	lastPersistAt sync.Map
+
 	UseSwarm    bool
 	agents      []interfaces.AutonomousProvider
 	convMonitor interfaces.ConvergenceMonitor
@@ -396,11 +401,8 @@ func (s *DirectedEngine) loadGraphs() {
 					if _, ok := s.doneChans[graph.TaskID]; !ok {
 						s.doneChans[graph.TaskID] = make(chan struct{})
 					}
-					if !s.UseSwarm {
-						// audit H3: use goBackground so Stop()'s bgWg.Wait()
-						// actually waits for resumed tasks to drain.
-						s.goBackground(func() { s.run(ctx, graph.TaskID) })
-					}
+					// audit H3/L-N4: startGraphExecutor handles UseSwarm branching.
+					s.startGraphExecutor(ctx, graph.TaskID)
 				}
 				s.Mu.Unlock()
 			}
@@ -437,6 +439,19 @@ func (s *DirectedEngine) detectReadDeps(graph *schemas.TaskGraph, stepID string,
 }
 
 func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
+	// H-5 (2026-10-04): Debounce — skip if the same graph was persisted
+	// < 200ms ago. Eliminates redundant persists at adjacent state
+	// transitions (e.g., scheduler_dag.go:147+162 are < 10ms apart).
+	// 200ms is conservative: step transitions involve LLM calls (> 1s),
+	// so meaningful persists are never skipped.
+	now := time.Now()
+	if last, ok := s.lastPersistAt.Load(graph.TaskID); ok {
+		if now.Sub(last.(time.Time)) < 200*time.Millisecond {
+			return
+		}
+	}
+	s.lastPersistAt.Store(graph.TaskID, now)
+
 	// P-H5 fix: marshal under lock, write to disk outside lock.
 	// This unblocks concurrent graph ops that were serializing on
 	// file I/O (10-100ms per persist) after every step state change.

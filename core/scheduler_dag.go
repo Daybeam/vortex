@@ -191,11 +191,11 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 		}
 
 		for _, step := range ready {
-		wg.Add(1)
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			wg.Done()
+			wg.Add(1)
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				wg.Done()
 				// audit C-10: wait for in-flight goroutines with grace period before
 				// returning, so previously launched steps can bail out cleanly.
 				wd := make(chan struct{})
@@ -207,7 +207,7 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 				return
 			}
 			go func(st *schemas.Step) {
-			defer wg.Done()
+				defer wg.Done()
 				defer func() { <-sem }()
 				defer func() {
 					if r := recover(); r != nil {
