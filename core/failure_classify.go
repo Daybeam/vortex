@@ -77,6 +77,11 @@ const (
 	// engine must NOT spawn a same-role follow-up (which would just repeat the
 	// same failing tool call). ADDED (2026-10-02, E2/E3 fix).
 	FailureClassDeterministicToolRefusal FailureClass = "deterministic_tool_refusal"
+
+	// FailureClassResourceNotFound: a 404-style response from an MCP tool.
+	// Handled by asking the user to verify the resource identifier.
+	// ADDED (2026-10-03) for SERF integration.
+	FailureClassResourceNotFound FailureClass = "resource_not_found"
 )
 
 // classifyError centralizes the failure-classification logic used by the

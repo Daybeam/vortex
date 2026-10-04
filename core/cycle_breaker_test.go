@@ -8,10 +8,7 @@ import (
 
 func newTestEngineForCycleBreaker(t *testing.T) *DirectedEngine {
 	t.Helper()
-	logger, err := NewLogger(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("NewLogger: %v", err)
-	}
+	logger := mustNewLogger(t, t.TempDir(), nil)
 	t.Cleanup(func() { logger.Close() })
 	return &DirectedEngine{
 		logger:     logger,

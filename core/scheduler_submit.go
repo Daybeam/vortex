@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -96,6 +97,14 @@ func sliceContains(slice []string, item string) bool {
 
 func (s *DirectedEngine) Submit(inputs []schemas.StepInput) (string, error) {
 	return s.SubmitWithSessionIR(inputs, nil, nil, nil, "", "", "", 0, 0, "")
+}
+
+// SubmitWithSession is a convenience wrapper that propagates sessionID to the
+// task graph so the WireTaskCompletionCallbacks callback can find the chat
+// session and notify it when the task completes. Without this, delegated tasks
+// have graph.SessionID="" and the completion callback silently returns.
+func (s *DirectedEngine) SubmitWithSession(inputs []schemas.StepInput, sessionID string) (string, error) {
+	return s.SubmitWithSessionIR(inputs, nil, nil, nil, "", sessionID, "", 0, 0, "")
 }
 
 func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles []*config.Role, skills []*config.Skill, providers []*config.ProviderConfig, mainProviderID string, sessionID string, workspaceRoot string, timeoutSecs int, tokenBudget int64, ownerID string) (string, error) {
@@ -243,6 +252,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		s.Mu.Unlock()
 
 		s.persistGraph(graph) // Re-enabled: needed for task visibility after restart (loadGraphs)
+		s.pinBaseline(taskID, inputs)
 		s.Broadcast()
 
 		hub := NewContextHub(s.registry, graph, s.expStore)
@@ -281,14 +291,16 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			fastPathHit := false
 			if isDeterministicContract(inp) {
 				if fpResult, fpErr := s.tryFastPath(ctx, inp, taskID, stepID); fpErr == nil {
-					finalResult = fpResult
-					finalErr = nil
-					fastPathHit = true
-					s.logger.Log("EventFastPathHit", taskID, stepID, map[string]any{
-						"path": inp.OutputContract.Path,
-					})
-				} else {
-					s.logger.Log("EventFastPathFallback", taskID, stepID, map[string]any{"err": fpErr.Error()})
+				finalResult = fpResult
+				finalErr = nil
+				fastPathHit = true
+				observability.GetGlobalMetrics().Inc("orchestrator.fast_path.hits", 1)
+				s.logger.Log("EventFastPathHit", taskID, stepID, map[string]any{
+					"path": inp.OutputContract.Path,
+				})
+			} else {
+				observability.GetGlobalMetrics().Inc("orchestrator.fast_path.misses", 1)
+				s.logger.Log("EventFastPathFallback", taskID, stepID, map[string]any{"err": fpErr.Error()})
 				}
 			}
 
@@ -572,6 +584,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	s.Mu.Unlock()
 
 	s.persistGraph(graph)
+	s.pinBaseline(taskID, inputs)
 	s.Broadcast()
 
 	s.logger.Log(EventTaskSubmitted, taskID, "", map[string]any{
@@ -579,11 +592,9 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		"require_review": requireReview,
 	})
 
-	if !s.UseSwarm && !requireReview {
-		// Each task graph runs in its own goroutine — no asyncio needed
-		s.goBackground(func() { s.run(ctx, taskID) }) // audit C1: use goBackground so Stop() drains
-	} else if s.UseSwarm && !requireReview {
-		s.goBackground(func() { s.swarmWatchdog(ctx, taskID) }) // audit C1: use goBackground so Stop() drains
+	if !requireReview {
+		// audit C1: startGraphExecutor handles UseSwarm branching.
+		s.startGraphExecutor(ctx, taskID)
 	}
 
 	return taskID, nil
@@ -618,4 +629,41 @@ func (s *DirectedEngine) tryFastPath(ctx context.Context, inp schemas.StepInput,
 		},
 		Ref: "fastpath:" + inp.OutputContract.Path,
 	}, nil
+}
+
+// pinBaseline records the SOP/Role version at task creation time so resume
+// uses the pinned version instead of the live registry. Nil-safe: skips
+// when BaselineStore is nil or no SOP/Role is referenced.
+// See docs/BASELINE_VERSION_PINNING_DESIGN.md Step 4.
+func (s *DirectedEngine) pinBaseline(taskID string, inputs []schemas.StepInput) {
+	if s.BaselineStore == nil || len(inputs) == 0 {
+		return
+	}
+
+	inp := inputs[0]
+	var sopID, sopVer, roleID, roleVer string
+
+	if inp.SOPRef != "" {
+		s.Mu.RLock()
+		if sop, ok := s.registry.SOPs[inp.SOPRef]; ok {
+			sopID, sopVer = sop.ID, sop.Version
+		}
+		s.Mu.RUnlock()
+	}
+	if inp.RoleID != "" {
+		s.Mu.RLock()
+		if role, ok := s.registry.Roles[inp.RoleID]; ok {
+			roleID, roleVer = role.ID, role.Version
+		}
+		s.Mu.RUnlock()
+	}
+
+	if sopID == "" && roleID == "" {
+		return
+	}
+
+	ctx := ContextWithTrace(s.lifecycleCtx, "", "")
+	if err := s.BaselineStore.PinBaseline(ctx, taskID, sopID, sopVer, roleID, roleVer); err != nil {
+		s.logger.Log("EventBaselinePinError", taskID, "", map[string]any{"error": err.Error()})
+	}
 }

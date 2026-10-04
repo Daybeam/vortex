@@ -2,6 +2,7 @@ package store
 
 import (
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // ConfigRepository is the storage abstraction for configuration data.
@@ -15,6 +16,10 @@ type ConfigRepository interface {
 	// SyncFileToDB bulk-upserts all roles from JSON files into the DB.
 	// Called during startup bootstrap to sync file → DB.
 	SyncFileToDB(roles map[string]*config.Role) error
+
+	// SyncSOPsToDB bulk-upserts SOP definitions into the sop_versions archive.
+	// Called during startup to maintain the version archive for baseline pinning.
+	SyncSOPsToDB(sops map[string]*schemas.SOP) error
 
 	// LoadRolesFromDB reads all roles from the DB (used when JSON files
 	// are missing or as a fallback read path).

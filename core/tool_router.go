@@ -5,29 +5,216 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
 
 // ToolRouter decides which tools should be exposed to the subagent based on the task description.
 type ToolRouter struct {
-	Registry    *config.Registry
-	BM25Corpus  *BM25Corpus // Unified Hybrid Search (ADDED 2026-09-01)
-	EmbedClient EmbeddingClient
-	CaSKG       *CaSKGManager
-	mu          sync.RWMutex
-	embeddings  map[string][]float32 // tool ID -> vec
+	Registry     *config.Registry
+	BM25Corpus   *BM25Corpus // Unified Hybrid Search (ADDED 2026-09-01)
+	EmbedClient  EmbeddingClient
+	CaSKG        *CaSKGManager
+	mu           sync.RWMutex
+	embeddings   map[string][]float32 // tool ID -> vec
+	toolVersions map[string]string    // tool ID -> version key
+
+	systemOneProvider *providers.SystemOneProvider
+	systemOneModel    string
 }
 
 func NewToolRouter(reg *config.Registry, caskg *CaSKGManager) *ToolRouter {
 	return &ToolRouter{
-		Registry:   reg,
-		CaSKG:      caskg,
-		embeddings: make(map[string][]float32),
+		Registry:     reg,
+		CaSKG:        caskg,
+		embeddings:   make(map[string][]float32),
+		toolVersions: make(map[string]string),
 	}
+}
+
+// SetEmbedClient wires the embedding client for semantic tool routing.
+func (r *ToolRouter) SetEmbedClient(c EmbeddingClient) {
+	r.EmbedClient = c
+}
+
+// RefreshToolEmbeddings builds or updates BM25 + embedding caches for all
+// registered MCP tools. Skips unchanged tools (versionKey unchanged).
+// Embedding I/O happens outside locks, mirroring IntentRouter.RefreshEmbeddings.
+func (r *ToolRouter) RefreshToolEmbeddings(ctx context.Context, reg *config.Registry) {
+	if reg == nil {
+		return
+	}
+
+	// Snapshot MCP definitions under registry read lock.
+	reg.Mu.RLock()
+	mcpCopy := make(map[string]*config.MCPDef, len(reg.MCPs))
+	for k, v := range reg.MCPs {
+		mcpCopy[k] = v
+	}
+	reg.Mu.RUnlock()
+
+	// Build rich embedding text and version key per tool.
+	type toolDoc struct {
+		id         string
+		versionKey string
+		text       string
+	}
+	var docs []toolDoc
+
+	for _, mcp := range mcpCopy {
+		if mcp == nil {
+			continue
+		}
+		for _, toolName := range mcp.AvailableTools {
+			// M-7 (2026-10-04): Use strings.Builder instead of repeated += allocation.
+			var sb strings.Builder
+			sb.WriteString("[Tool:")
+			sb.WriteString(toolName)
+			sb.WriteString("] ")
+			if mcp.Domain != "" {
+				sb.WriteString(mcp.Domain)
+				sb.WriteByte(' ')
+			}
+			sb.WriteString(mcp.ID)
+			sb.WriteByte(' ')
+			for _, p := range mcp.Provides {
+				sb.WriteString(p)
+				sb.WriteByte(' ')
+			}
+			// Pull description from full tool definitions if available.
+			for _, def := range mcp.FullToolDefinitions {
+				if def.Name == toolName && def.Description != "" {
+					sb.WriteString(def.Description)
+					sb.WriteByte(' ')
+					break
+				}
+			}
+			versionKey := mcp.Domain + "_" + strconv.Itoa(len(mcp.AvailableTools))
+			docs = append(docs, toolDoc{id: toolName, versionKey: versionKey, text: strings.TrimSpace(sb.String())})
+		}
+	}
+
+	if len(docs) == 0 {
+		return
+	}
+
+	// Build BM25 corpus from all tool docs.
+	bm25Docs := make(map[string]string, len(docs))
+	for _, d := range docs {
+		bm25Docs[d.id] = d.text
+	}
+	r.BM25Corpus = NewBM25Corpus(1.2, 0.75, bm25Docs)
+
+	if r.EmbedClient == nil {
+		return // BM25-only mode; no embedding to compute.
+	}
+
+	// Incremental: skip tools whose versionKey hasn't changed.
+	type pendingEmbed struct {
+		id         string
+		versionKey string
+		text       string
+	}
+	var pending []pendingEmbed
+
+	r.mu.RLock()
+	for _, d := range docs {
+		if r.toolVersions[d.id] == d.versionKey && r.embeddings[d.id] != nil {
+			continue
+		}
+		pending = append(pending, pendingEmbed{id: d.id, versionKey: d.versionKey, text: d.text})
+	}
+	r.mu.RUnlock()
+
+	if len(pending) == 0 {
+		return
+	}
+
+	// Compute embeddings outside any lock (network I/O).
+	type embedResult struct {
+		id         string
+		versionKey string
+		vec        []float32
+	}
+	var results []embedResult
+
+	for _, p := range pending {
+		embedCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if vec, err := r.EmbedClient.Embed(embedCtx, p.text); err == nil && len(vec) > 0 {
+			results = append(results, embedResult{id: p.id, versionKey: p.versionKey, vec: vec})
+		}
+		cancel()
+	}
+
+	// Batch-update maps under a short write lock.
+	if len(results) > 0 {
+		r.mu.Lock()
+		for _, res := range results {
+			r.embeddings[res.id] = res.vec
+			r.toolVersions[res.id] = res.versionKey
+		}
+		r.mu.Unlock()
+	}
+}
+
+// SetSystemOneProvider injects the System One decision model for semantic
+// tool scoring. Nil-safe: when nil, the router uses string-only matching.
+func (r *ToolRouter) SetSystemOneProvider(p *providers.SystemOneProvider, model string) {
+	r.systemOneProvider = p
+	r.systemOneModel = model
+}
+
+// scoreWithSystemOne asks the System One model to score tool relevance
+// semantically. Returns a rank map (toolID → probability). On any error
+// or timeout, returns nil (caller falls back to string-only matching).
+func (r *ToolRouter) scoreWithSystemOne(task string, tools []string) map[string]float64 {
+	questions := map[string]any{
+		"q1": map[string]any{
+			"type":     "choice",
+			"question": "Which tool is most relevant to this task?",
+			"options":  tools,
+		},
+	}
+	req := providers.CompleteRequest{
+		User:        "Task: " + task,
+		Model:       r.systemOneModel,
+		MaxTokens:   256,
+		Constraints: map[string]any{"questions": questions},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	resp, err := r.systemOneProvider.Complete(ctx, req)
+	if err != nil {
+		return nil
+	}
+	rank := make(map[string]float64)
+	for _, tc := range resp.ToolCalls {
+		if tc.Name != "q1" {
+			continue
+		}
+		if probs, ok := tc.Arguments["probabilities"].(map[string]any); ok {
+			for tool, p := range probs {
+				if score, ok := p.(float64); ok {
+					rank[tool] = score
+				}
+			}
+		}
+		if choice, ok := tc.Arguments["choice"].(string); ok {
+			if _, exists := rank[choice]; !exists {
+				rank[choice] = 1.0
+			}
+		}
+	}
+	if len(rank) == 0 {
+		return nil
+	}
+	return rank
 }
 
 // RouteRequest defines parameters for tool routing.
@@ -114,9 +301,15 @@ func (r *ToolRouter) Route(req RouteRequest) []config.MCPBinding {
 			}
 		}
 
+		// 4. System One Channel: Semantic scoring (when pool ≤ 20)
+		var systemOneRank map[string]float64
+		if r.systemOneProvider != nil && len(available) <= 20 {
+			systemOneRank = r.scoreWithSystemOne(req.Task, available)
+		}
+
 		// Fuse all channels
-		if len(bm25Rank) > 0 || len(denseRank) > 0 {
-			merged := RRFMerge(bm25Rank, denseRank, stringRank)
+		if len(bm25Rank) > 0 || len(denseRank) > 0 || len(systemOneRank) > 0 {
+			merged := RRFMerge(bm25Rank, denseRank, stringRank, systemOneRank)
 
 			// Apply Causal Boost
 			if r.CaSKG != nil && req.PredecessorSkillID != "" {

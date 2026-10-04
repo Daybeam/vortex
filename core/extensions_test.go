@@ -77,7 +77,7 @@ func TestLocalWorkspaceStore_ListFiles_EmptyDir(t *testing.T) {
 
 func TestLocalEventPublisher_PublishSubscribe(t *testing.T) {
 	logDir := mkdirTemp(t)
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	bus := NewEventBus()
 	pub := NewLocalEventPublisher(logger, bus)
 
@@ -108,10 +108,11 @@ func TestLocalEventPublisher_PublishSubscribe(t *testing.T) {
 
 func TestLocalEventPublisher_NilBus(t *testing.T) {
 	logDir := mkdirTemp(t)
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
+	var err error
 	pub := NewLocalEventPublisher(logger, nil)
 
-	err := pub.Publish("topic", LogEvent{
+	err = pub.Publish("topic", LogEvent{
 		Event:  EventType("topic"),
 		TaskID: "task-1",
 	})

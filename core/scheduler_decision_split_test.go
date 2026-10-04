@@ -165,8 +165,9 @@ func TestDiagnoseFault_HighConfidenceReturnsExecutionFailed(t *testing.T) {
 	step := &schemas.Step{ID: "s1"}
 
 	rootCause, _, _ := engine.diagnoseFault(output, step)
-	if rootCause != "execution_failed" {
-		t.Fatalf("expected 'execution_failed', got %v", rootCause)
+	// Changed from bare "execution_failed" to FailureClassTransient (SERF integration, 2026-10-03)
+	if rootCause != FailureClassTransient {
+		t.Fatalf("expected FailureClassTransient, got %v", rootCause)
 	}
 }
 
@@ -377,7 +378,23 @@ func TestRequestAutonomousAbort_NilGraphDoesNothing(t *testing.T) {
 
 	engine.RequestAutonomousAbort("nonexistent_task", "s1", FailureClassCostOverrun, "test")
 
-	// Should not panic and should not create any decisions
+	// audit T-N21: was vacuous (comment said "should not create any decisions"
+	// but didn't assert it). Added explicit assertions.
+	if len(engine.graphs) != 0 {
+		t.Fatalf("expected 0 graphs after abort on empty engine, got %d", len(engine.graphs))
+	}
+	// Verify no decisions were created on the engine.
+	engine.Mu.RLock()
+	decisionsCount := 0
+	for _, g := range engine.graphs {
+		if g.PendingDecisions != nil {
+			decisionsCount += len(g.PendingDecisions)
+		}
+	}
+	engine.Mu.RUnlock()
+	if decisionsCount != 0 {
+		t.Fatalf("expected 0 decisions created, got %d", decisionsCount)
+	}
 }
 
 func TestRequestAutonomousAbort_NilStepDoesNothing(t *testing.T) {

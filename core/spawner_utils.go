@@ -201,6 +201,67 @@ func toolFailFeedback(toolName, errMsg string, failCount int) string {
 	return fmt.Sprintf("[TOOL FAILED: %s] %s\nDo not abort. Either fix the arguments and retry, use a different tool, or answer directly.", toolName, errMsg)
 }
 
+// buildSERFRecovery constructs a structured recovery message from SERF error
+// metadata. Replaces the pure string concatenation of toolFailFeedback when
+// MCP tools return isError:true with SERF-parseable content.
+//
+// If serf is nil (no SERF metadata found), falls back to the original
+// toolFailFeedback behavior.
+func buildSERFRecovery(toolName string, serf *SERFError, errMsg string, failCount int) string {
+	if failCount >= toolFailCircuitBreakerThreshold {
+		return fmt.Sprintf("[TOOL %s HAS FAILED %d TIMES] Stop using this tool. Use an alternative approach or answer directly without tools.", toolName, failCount)
+	}
+
+	if serf == nil {
+		return fmt.Sprintf("[TOOL FAILED: %s] %s\nDo not abort. Either fix the arguments and retry, use a different tool, or answer directly.", toolName, errMsg)
+	}
+
+	var advice string
+	switch serf.Category {
+	case "INVALID_INPUT":
+		advice = "The arguments were invalid. Check the tool's input schema and retry with corrected parameters."
+	case "RESOURCE_NOT_FOUND":
+		advice = "The requested resource was not found. Verify the resource identifier (e.g. project_id, service_name) and retry, or ask the user to confirm the target."
+	case "RESOURCE_EXHAUSTED":
+		if serf.RetryAfterMs != nil {
+			advice = fmt.Sprintf("Rate limit reached. Wait %dms before retrying. If persistent, switch to an alternative resource.", *serf.RetryAfterMs)
+		} else {
+			advice = "Rate limit reached. Wait before retrying, or switch to an alternative resource."
+		}
+	case "PERMISSION_DENIED":
+		advice = "Permission denied. Do not retry with the same credentials. Escalate to the user to provide alternative access."
+	case "UPSTREAM_FAILURE":
+		if serf.Retryable {
+			advice = "Upstream service is temporarily unavailable. Retry with backoff."
+		} else {
+			advice = "Upstream service failure. Switch to an alternative resource or escalate."
+		}
+	case "INTERNAL_ERROR":
+		advice = "Internal server error. Do not retry — escalate to the user."
+	default:
+		advice = fmt.Sprintf("Tool error: %s. Consider fixing arguments, switching tools, or answering directly.", serf.RawMessage)
+	}
+
+	// M-7 (2026-10-04): Use strings.Builder instead of repeated += allocation.
+	var sb strings.Builder
+	sb.WriteString(advice)
+	for i, action := range serf.SuggestedActions {
+		switch action.Type {
+		case "SWITCH_RESOURCE":
+			field, _ := action.Params["field"].(string)
+			if field != "" {
+				fmt.Fprintf(&sb, "\n[OPTION %d]: Try switching %s to a different value.", i+1, field)
+			}
+		case "ESCALATE_TO_USER":
+			fmt.Fprintf(&sb, "\n[OPTION %d]: %s", i+1, action.Message)
+		case "RETRY":
+			fmt.Fprintf(&sb, "\n[OPTION %d]: Retry the call with adjusted parameters.", i+1)
+		}
+	}
+
+	return fmt.Sprintf("[TOOL FAILED: %s] Category: %s. %s", toolName, serf.Category, sb.String())
+}
+
 // RepeatedToolFailure returns the tool with the highest task-level failure
 // count for the task, so callers can decide whether a step failure is a
 // deterministic/environmental tool refusal rather than generative uncertainty.
@@ -302,14 +363,45 @@ func gatherToolFewShots(hub *ContextHub, bindings []config.MCPBinding) []string 
 // Extracted from spawner.go doSpawn during god-class split.
 func (s *Spawner) resolveContextRefs(ctx context.Context, req *SpawnRequest) map[string]any {
 	resolvedCtx := make(map[string]any)
+	if s.taskStore == nil || len(req.ContextRefs) == 0 {
+		return resolvedCtx
+	}
+
+	// M-1 (2026-10-04): Group refs by taskID for batch fetching via GetBatch,
+	// replacing the N+1 pattern (one ts.Get per ref) with one GetBatch per task.
+	type refEntry struct {
+		name   string
+		stepID string
+	}
+	byTask := make(map[string][]refEntry)
 	for name, ref := range req.ContextRefs {
 		if ref == "" {
 			continue
 		}
 		parts := strings.SplitN(ref, ":", 2)
 		if len(parts) == 2 {
-			if result := s.taskStoreGet(ctx, parts[0], parts[1]); result != nil {
-				resolvedCtx[name] = result.Data
+			byTask[parts[0]] = append(byTask[parts[0]], refEntry{name: name, stepID: parts[1]})
+		}
+	}
+
+	for taskID, refs := range byTask {
+		stepIDs := make([]string, len(refs))
+		for i, r := range refs {
+			stepIDs[i] = r.stepID
+		}
+		results, err := s.taskStore.GetBatch(ctx, taskID, stepIDs)
+		if err != nil {
+			// Fallback to individual gets on batch failure.
+			for _, r := range refs {
+				if result := s.taskStoreGet(ctx, taskID, r.stepID); result != nil {
+					resolvedCtx[r.name] = result.Data
+				}
+			}
+			continue
+		}
+		for _, r := range refs {
+			if result, ok := results[r.stepID]; ok {
+				resolvedCtx[r.name] = result.Data
 			}
 		}
 	}

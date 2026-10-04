@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,6 +61,7 @@ const (
 	EventDebateStarted           EventType = "debate_started"           // Cross-family debate (ADDED 2026-09-14)
 	EventDebateCritiqueReceived  EventType = "debate_critique_received" // Cross-family debate (ADDED 2026-09-14)
 	EventDebateConcluded         EventType = "debate_concluded"         // Cross-family debate (ADDED 2026-09-14)
+	EventHTTPRequest             EventType = "http_request"             // HTTP observability (ADDED 2026-10-03)
 )
 
 type LogEvent struct {
@@ -411,6 +414,81 @@ func (l *Logger) ReadTaskLogs(taskID string, args ...int) ([]map[string]any, err
 		}
 	}
 	return events, nil
+}
+
+// ReadAllLogs reads all log events from a given date's log directory, with
+// optional filtering by event_type and task_id. Returns events sorted by
+// timestamp descending (newest first). Supports limit/offset pagination.
+// If date is empty, defaults to today (UTC).
+func (l *Logger) ReadAllLogs(date, eventType, taskID string, limit, offset int) ([]map[string]any, error) {
+	if date == "" {
+		date = time.Now().UTC().Format("2006-01-02")
+	}
+	dir := filepath.Join(l.logDir, date)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return []map[string]any{}, nil
+	}
+
+	var allEvents []map[string]any
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		// If taskID filter is set, skip files that don't match (except the
+		// shared ".jsonl" file which contains events with empty task_id).
+		if taskID != "" && entry.Name() != taskID+".jsonl" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		for _, line := range splitLines(data) {
+			if len(line) == 0 {
+				continue
+			}
+			var ev map[string]any
+			if json.Unmarshal(line, &ev) != nil {
+				continue
+			}
+			// Filter by event_type
+			if eventType != "" {
+				if evEvent, ok := ev["event"].(string); !ok || evEvent != eventType {
+					continue
+				}
+			}
+			// Filter by task_id
+			if taskID != "" {
+				if evTaskID, ok := ev["task_id"].(string); !ok || evTaskID != taskID {
+					continue
+				}
+			}
+			allEvents = append(allEvents, ev)
+		}
+	}
+
+	// Sort by timestamp descending (newest first).
+	sort.Slice(allEvents, func(i, j int) bool {
+		tsI, _ := allEvents[i]["ts"].(float64)
+		tsJ, _ := allEvents[j]["ts"].(float64)
+		return tsI > tsJ
+	})
+
+	// Apply offset.
+	if offset > 0 {
+		if offset >= len(allEvents) {
+			return []map[string]any{}, nil
+		}
+		allEvents = allEvents[offset:]
+	}
+
+	// Apply limit.
+	if limit > 0 && len(allEvents) > limit {
+		allEvents = allEvents[:limit]
+	}
+
+	return allEvents, nil
 }
 
 func splitLines(data []byte) [][]byte {

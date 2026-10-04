@@ -18,10 +18,7 @@ import (
 // This test fails if goBackground is replaced with a plain `go` statement
 // (which was the bug in loadGraphs before the H3 fix).
 func TestGoBackground_StopWaits(t *testing.T) {
-	logger, err := NewLogger(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("NewLogger: %v", err)
-	}
+	logger := mustNewLogger(t, t.TempDir(), nil)
 	t.Cleanup(func() { logger.Close() })
 
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
@@ -74,10 +71,7 @@ func TestGoBackground_StopWaits(t *testing.T) {
 // TestGoBackground_ConcurrentLaunches verifies that multiple goBackground
 // goroutines are all tracked and Stop() waits for all of them.
 func TestGoBackground_ConcurrentLaunches(t *testing.T) {
-	logger, err := NewLogger(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("NewLogger: %v", err)
-	}
+	logger := mustNewLogger(t, t.TempDir(), nil)
 	t.Cleanup(func() { logger.Close() })
 
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())

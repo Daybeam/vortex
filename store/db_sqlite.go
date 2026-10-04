@@ -363,6 +363,45 @@ func runMigrations(db *sql.DB) error {
 		last_updated   DATETIME DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (model_id, capability)
 	);
+
+	-- P10 Baseline Version Pinning (ADDED 2026-10-03)
+	-- See docs/BASELINE_VERSION_PINNING_DESIGN.md
+	-- SOP version archive: immutable per-version snapshots for runtime pinning.
+	CREATE TABLE IF NOT EXISTS sop_versions (
+		id                TEXT NOT NULL,
+		version           TEXT NOT NULL,
+		author            TEXT NOT NULL DEFAULT 'system',
+		mutable_by_agent  BOOLEAN DEFAULT FALSE,
+		raw_json          TEXT NOT NULL,
+		created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (id, version)
+	);
+	CREATE INDEX IF NOT EXISTS idx_sop_versions_id ON sop_versions(id);
+
+	-- P10 Role version archive: extends roles_meta with versioning.
+	CREATE TABLE IF NOT EXISTS role_versions (
+		id                TEXT NOT NULL,
+		version           TEXT NOT NULL,
+		author            TEXT NOT NULL DEFAULT 'system',
+		mutable_by_agent  BOOLEAN DEFAULT FALSE,
+		raw_json          TEXT NOT NULL,
+		created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (id, version)
+	);
+	CREATE INDEX IF NOT EXISTS idx_role_versions_id ON role_versions(id);
+
+	-- P10 Task baseline pinning: records which SOP/Role version a task was
+	-- created against, so resume uses the pinned version instead of the live registry.
+	CREATE TABLE IF NOT EXISTS task_baselines (
+		task_id        TEXT PRIMARY KEY,
+		sop_id         TEXT,
+		sop_version    TEXT,
+		role_id        TEXT,
+		role_version   TEXT,
+		config_snapshot TEXT,
+		created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_task_baselines_sop ON task_baselines(sop_id, sop_version);
 	`)
 	return err
 }

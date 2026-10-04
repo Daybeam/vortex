@@ -2,14 +2,12 @@ package core
 
 import (
 	"github.com/daybeam/vortex/config"
-	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestToolRouter_CausalBoost(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "caskg_router_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "caskg.json")
 
 	manager := NewCaSKGManager(path)

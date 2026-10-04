@@ -75,10 +75,7 @@ func TestGenerateRoleObjects_EmptyRoleID_FailsCleanlyNotWithGhostID(t *testing.T
 		RoleCookbookSource: "github:anthropics/anthropic-cookbook",
 	}
 
-	logger, err := NewLogger(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("failed to create logger: %v", err)
-	}
+	logger := mustNewLogger(t, t.TempDir(), nil)
 	defer logger.Close()
 
 	gen := NewRoleGenerator(reg, nil, logger) // deliberately nil resourceLoader

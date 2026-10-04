@@ -11,8 +11,7 @@ import (
 )
 
 func TestDirectedEngine_DetectReadDeps_Versioning(t *testing.T) {
-	tempDir, _ := os.MkdirTemp("", "coordination_version_test")
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	taskID := "task_v1"
 	taskDir := filepath.Join(tempDir, taskID)

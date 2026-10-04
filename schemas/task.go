@@ -124,6 +124,7 @@ type Metadata struct {
 type StepInput struct {
 	ID                       string              `json:"id"`
 	RoleID                   string              `json:"role_id"`
+	SOPRef                   string              `json:"sop_ref,omitempty"`
 	Task                     string              `json:"task"`
 	DependsOn                []string            `json:"depends_on"`
 	AdditionalSkills         []string            `json:"additional_skills"`
@@ -543,7 +544,7 @@ type TaskGraph struct {
 	// OwnerID is set at submission time from the caller's resolved identity
 	// (tools.AuthOwnerKey). When empty (no APIKeys configured), all ownership
 	// checks are no-ops — backward compatible with single-operator deployments.
-	// See docs/architecture-task-ownership.md §2.3.
+	// See docs/completed/2026-10-02/architecture-task-ownership.md §2.3.
 	OwnerID string `json:"owner_id,omitempty"`
 
 	IsSmartRouted bool `json:"is_smart_routed,omitempty"`
@@ -953,6 +954,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 		"artifacts":           g.Artifacts,
 		"global_workspace":    sanitizedWorkspace,
 		"created_at":          g.CreatedAt.Format(time.RFC3339),
+		"session_id":          g.SessionID,
 		"session_roles":       g.SessionRoles,
 		"session_skills":      g.SessionSkills,
 		"coordination_edges":  g.CoordinationEdges,

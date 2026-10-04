@@ -1,7 +1,6 @@
 package core
 
 import (
-	"os"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -17,10 +16,10 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 	}
 	ts := &mockTaskStore{}
 
-	tasksDir, _ := os.MkdirTemp("", "odftp_test")
-	logger, _ := NewLogger(tasksDir, nil)
+	tasksDir := mustTempDir(t, "vortex-test")
+	logger := mustNewLogger(t, tasksDir, nil)
+	var err error
 	defer logger.Close()
-	defer os.RemoveAll(tasksDir)
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
 
@@ -65,7 +64,7 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 	decisionID := graph.PendingDecisions[0].ID
 
 	// Case 1: refine_and_retry
-	err := engine.SubmitDecision(taskID, decisionID, "refine_and_retry")
+	err = engine.SubmitDecision(taskID, decisionID, "refine_and_retry")
 	if err != nil {
 		t.Fatalf("SubmitDecision failed: %v", err)
 	}
@@ -114,10 +113,9 @@ func TestDirectedEngine_AutoFork_Trigger(t *testing.T) {
 	}
 	ts := &mockTaskStore{}
 
-	tasksDir, _ := os.MkdirTemp("", "odftp_fork")
-	logger, _ := NewLogger(tasksDir, nil)
+	tasksDir := mustTempDir(t, "vortex-test")
+	logger := mustNewLogger(t, tasksDir, nil)
 	defer logger.Close()
-	defer os.RemoveAll(tasksDir)
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
 	if engine == nil {

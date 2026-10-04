@@ -170,11 +170,11 @@ func (a *ContextArchive) BuildIndex() {
 
 	docs := make(map[string]string)
 	for _, item := range items {
-		text := item.Intent + " " + item.Goal + " " + item.Summary
-		for _, sk := range item.SourceKeys {
-			text += " " + sk
-		}
-		docs[item.NodeID] = text
+		// M-7 (2026-10-04): Use strings.Join instead of repeated += allocation.
+		parts := make([]string, 0, 3+len(item.SourceKeys))
+		parts = append(parts, item.Intent, item.Goal, item.Summary)
+		parts = append(parts, item.SourceKeys...)
+		docs[item.NodeID] = strings.Join(parts, " ")
 	}
 	a.index = search.NewBM25Corpus(1.2, 0.75, docs)
 

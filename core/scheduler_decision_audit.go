@@ -111,6 +111,13 @@ Output ONLY the revised result, no explanations.`, step.Task, currentContent, cr
 // Design ref: docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
 // Hard-capped at 2 rounds. Budget-guarded by the existing BudgetGuard.
 func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schemas.TaskGraph, step *schemas.Step, result *SpawnResult) (bool, string, schemas.VerificationFailureType) {
+	// L-N16 (2026-10-04): Guard against nil result. Without this, the
+	// result.Output access below panics. Spawn no longer returns (nil, nil)
+	// after L-N12, but this is defensive against future callers.
+	if result == nil {
+		return false, "", schemas.FailureNone
+	}
+
 	// audit L-3.4: ensure Result map is initialized to prevent nil map panic
 	// when writing debate_content at lines 147/169.
 	if result.Output.Result == nil {
@@ -156,9 +163,9 @@ func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schem
 		if r < rounds {
 			revised, err := s.runProposerSynthesize(ctx, graph, step, currentContent, critique)
 			if err != nil {
-			s.logger.Log(EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
-					"outcome":       "synthesize_error",
-					"error":          err.Error(),
+				s.logger.Log(EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
+					"outcome": "synthesize_error",
+					"error":   err.Error(),
 				})
 				return false, critique, failType
 			}
@@ -359,8 +366,8 @@ Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA`, step.Task, step.ExitC
 			if repaired, ok := jsonrepair.Repair(content); ok {
 				if err2 := json.Unmarshal([]byte(repaired), &j); err2 == nil {
 					s.logger.Log("EventJSONTruncationRepaired", graph.TaskID, step.ID, map[string]any{
-						"original_len": len(content),
-						"repaired_len": len(repaired),
+						"original_len":  len(content),
+						"repaired_len":  len(repaired),
 						"exit_criteria": step.ExitCriteria,
 					})
 					return true, "", schemas.FailureNone

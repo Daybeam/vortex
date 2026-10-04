@@ -91,7 +91,7 @@ func (s *DirectedEngine) diagnoseFault(output *schemas.SubagentOutput, step *sch
 	}
 
 	// Default to execution failure
-	return "execution_failed", "Escalate model tier or abort/skip.", nil
+	return FailureClassTransient, "Escalate model tier or abort/skip.", nil
 }
 
 // applyStepFailurePolicy honors a step's declared FailurePolicy.OnFailure

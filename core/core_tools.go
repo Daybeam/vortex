@@ -269,6 +269,15 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 		sandboxCleanup()
 	}
 
+	// #17 (eval §8.35): On success (exit_code == 0), return only stdout/stderr
+	// — omit exit_code/error so the model doesn't treat exit_code:0 as a domain
+	// success signal. On failure, include the full wrapper for diagnosis.
+	if cmd.ProcessState.ExitCode() == 0 {
+		return map[string]any{
+			"stdout": stdout.String(),
+			"stderr": stderr.String(),
+		}, nil
+	}
 	return map[string]any{
 		"stdout":    stdout.String(),
 		"stderr":    stderr.String(),

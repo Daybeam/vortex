@@ -23,12 +23,9 @@ func newGovernanceTestSpawner(t *testing.T) *Spawner {
 	t.Helper()
 	tmpDir := t.TempDir()
 	ts := store.NewTaskStore(store.NewFileTaskBackend(tmpDir))
-	es, err := store.NewExperienceStore(tmpDir, ts, &config.SystemSettings{}, nil, nil)
-	if err != nil {
-		t.Fatalf("NewExperienceStore: %v", err)
-	}
+	es := mustNewExperienceStore(t, tmpDir, ts, &config.SystemSettings{}, nil, nil)
 	reg := &config.Registry{}
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	t.Cleanup(func() { logger.Close() })
 	return NewSpawner(reg, ts, es, logger, nil, "outputs")
 }

@@ -453,8 +453,8 @@ func TestSubmitWithSessionIR_ZeroTimeoutUsesDefault(t *testing.T) {
 			{ID: "step_1", RoleID: "worker", Task: "work"},
 		},
 		nil, nil, nil, "", "", "",
-		0, // timeout = 0 (use default)
-		0, // token_budget = 0 (use default)
+		0,  // timeout = 0 (use default)
+		0,  // token_budget = 0 (use default)
 		"", // ownerID
 	)
 	if err != nil {

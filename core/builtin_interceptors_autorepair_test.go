@@ -69,10 +69,7 @@ func TestHealthCheckInterceptor_EnableAutoRepair_Gating(t *testing.T) {
 	}
 
 	t.Run("disabled (default): no repair attempt logged, MCP is degraded", func(t *testing.T) {
-		logger, err := NewLogger(t.TempDir(), nil)
-		if err != nil {
-			t.Fatalf("NewLogger: %v", err)
-		}
+		logger := mustNewLogger(t, t.TempDir(), nil)
 
 		reg := newRegistry(false)
 		interceptor := HealthCheckInterceptor(reg, logger)
@@ -99,10 +96,7 @@ func TestHealthCheckInterceptor_EnableAutoRepair_Gating(t *testing.T) {
 	})
 
 	t.Run("enabled: repair attempt is logged when a fix script exists", func(t *testing.T) {
-		logger, err := NewLogger(t.TempDir(), nil)
-		if err != nil {
-			t.Fatalf("NewLogger: %v", err)
-		}
+		logger := mustNewLogger(t, t.TempDir(), nil)
 
 		reg := newRegistry(true)
 		interceptor := HealthCheckInterceptor(reg, logger)
@@ -147,10 +141,7 @@ func TestHealthCheckInterceptor_EnableAutoRepair_Gating(t *testing.T) {
 			_ = os.WriteFile(fixScript, []byte(scriptBody), 0o755)
 		}()
 
-		logger, err := NewLogger(t.TempDir(), nil)
-		if err != nil {
-			t.Fatalf("NewLogger: %v", err)
-		}
+		logger := mustNewLogger(t, t.TempDir(), nil)
 
 		reg := newRegistry(true)
 		interceptor := HealthCheckInterceptor(reg, logger)

@@ -131,7 +131,7 @@ hook_result = {
 		t.Fatal(err)
 	}
 
-	logger, _ := NewLogger(filepath.Join(dir, "logs"), nil)
+	logger := mustNewLogger(t, filepath.Join(dir, "logs"), nil)
 	defer logger.Close()
 
 	hooks := []config.HookConfig{
@@ -157,7 +157,7 @@ hook_result = {
 // is logged and skipped without crashing.
 func TestHookRunner_FailSafe_NonexistentScript(t *testing.T) {
 	dir := t.TempDir()
-	logger, _ := NewLogger(filepath.Join(dir, "logs"), nil)
+	logger := mustNewLogger(t, filepath.Join(dir, "logs"), nil)
 	defer logger.Close()
 
 	hooks := []config.HookConfig{
@@ -186,7 +186,7 @@ func TestHookRunner_FilteredHookSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logger, _ := NewLogger(filepath.Join(dir, "logs"), nil)
+	logger := mustNewLogger(t, filepath.Join(dir, "logs"), nil)
 	defer logger.Close()
 
 	hooks := []config.HookConfig{

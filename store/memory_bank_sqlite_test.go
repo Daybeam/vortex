@@ -2,14 +2,12 @@ package store
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestSQLiteMemoryBankBackend(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "mb_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := InitDB(dbPath)

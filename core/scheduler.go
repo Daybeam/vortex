@@ -100,6 +100,10 @@ type DirectedEngine struct {
 	// When nil (tests, backward compat), the check is skipped.
 	Sessions *SessionManager
 
+	// BaselineStore pins SOP/Role versions at task creation time so resumed
+	// tasks use the same versions as the original run. Nil-safe.
+	BaselineStore store.BaselineStore
+
 	// pathLocks (ADDED 2026-09-13) — fine-grained per-path RWMutex for
 	// concurrent step file-write isolation. See core/path_lock.go.
 	pathLocks *PathLockManager
@@ -342,6 +346,16 @@ func (s *DirectedEngine) goBackground(fn func()) {
 func (s *DirectedEngine) Refresh() error {
 	s.loadGraphs()
 	return nil
+}
+
+// startGraphExecutor launches the appropriate executor goroutine (run or
+// swarmWatchdog) for a task graph, based on the UseSwarm flag.
+func (s *DirectedEngine) startGraphExecutor(ctx context.Context, taskID string) {
+	if !s.UseSwarm {
+		s.goBackground(func() { s.run(ctx, taskID) })
+	} else {
+		s.goBackground(func() { s.swarmWatchdog(ctx, taskID) })
+	}
 }
 
 func (s *DirectedEngine) loadGraphs() {

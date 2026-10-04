@@ -28,6 +28,25 @@ type TaskRegistry interface {
 	ListTasks(ctx context.Context, limit int) ([]TaskRow, error)
 }
 
+// BaselineStore pins and retrieves SOP/Role versions at task creation time.
+// Nil-safe: consumers must nil-check before use (mirrors TaskRegistry pattern).
+// See docs/BASELINE_VERSION_PINNING_DESIGN.md
+type BaselineStore interface {
+	PinBaseline(ctx context.Context, taskID, sopID, sopVer, roleID, roleVer string) error
+	GetBaseline(ctx context.Context, taskID string) (*TaskBaseline, error)
+	LoadPinnedSOP(ctx context.Context, sopID, sopVer string) (*schemas.SOP, error)
+	LoadPinnedRole(ctx context.Context, roleID, roleVer string) (*config.Role, error)
+}
+
+// TaskBaseline records which SOP/Role version a task was created against.
+type TaskBaseline struct {
+	TaskID      string
+	SOPID       string
+	SOPVersion  string
+	RoleID      string
+	RoleVersion string
+}
+
 // ITaskStore defines the interface for task-scoped persistent storage.
 type ITaskStore interface {
 	Set(ctx context.Context, taskID, stepID string, result *StepResult) error
@@ -192,9 +211,9 @@ type ChatMessageRow struct {
 
 // ChatSessionRow is the DB representation of a chat session.
 type ChatSessionRow struct {
-	ID           string
-	RootID       string
-	ActiveLeafID string
-	CreatedAt    time.Time
+	ID           string    `json:"id"`
+	RootID       string    `json:"root_id,omitempty"`
+	ActiveLeafID string    `json:"active_leaf_id,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 

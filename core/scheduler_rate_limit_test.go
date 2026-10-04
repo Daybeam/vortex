@@ -80,8 +80,8 @@ func TestScheduler_ProactiveRateLimiting(t *testing.T) {
 	}
 
 	ts := store.NewTaskStore(store.NewFileTaskBackend(filepath.Join(tmpDir, "tasks")))
-	es, _ := store.NewExperienceStore(filepath.Join(tmpDir, "exp"), ts, nil, nil, nil)
-	logger, _ := NewLogger(filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
+	es := mustNewExperienceStore(t, filepath.Join(tmpDir, "exp"), ts, nil, nil, nil)
+	logger := mustNewLogger(t, filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
 
 	engine := NewDirectedEngine(reg, ts, es, nil, logger, nil, tmpDir, tmpDir, nil)
 	defer engine.Stop()
@@ -96,8 +96,14 @@ func TestScheduler_ProactiveRateLimiting(t *testing.T) {
 		{ID: "step2", RoleID: "worker", Task: "test 2", ProviderOverride: "limited_p"},
 	}
 
-	id1, _ := engine.Submit(inputs)
-	id2, _ := engine.Submit(inputs)
+	id1, err := engine.Submit(inputs)
+	if err != nil { // audit T-3.2: check Submit error to avoid 10s timeout on silent failure
+		t.Fatalf("Submit 1: %v", err)
+	}
+	id2, err := engine.Submit(inputs)
+	if err != nil {
+		t.Fatalf("Submit 2: %v", err)
+	}
 
 	// Wait for completion (or timeout)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

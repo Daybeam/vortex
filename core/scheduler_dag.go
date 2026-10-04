@@ -30,6 +30,60 @@ func (s *DirectedEngine) runInterceptors(step *schemas.Step, output *SpawnResult
 	})
 }
 
+// estimateJSONSize approximates the JSON byte length of a value without
+// allocating a buffer (audit H-4: replaces json.Marshal in the per-step hot
+// loop, which was allocating + traversing the value tree purely to compute
+// len(bytes) for coordination-edge bookkeeping). Falls back to json.Marshal
+// only for uncommon types, preserving correctness for edge cases.
+func estimateJSONSize(v any) int64 {
+	switch val := v.(type) {
+	case nil:
+		return 4 // "null"
+	case string:
+		return int64(len(val) + 2) // quotes
+	case bool:
+		if val {
+			return 4 // "true"
+		}
+		return 5 // "false"
+	case int:
+		return int64(len(fmt.Sprintf("%d", val)))
+	case int64:
+		return int64(len(fmt.Sprintf("%d", val)))
+	case float64:
+		return int64(len(fmt.Sprintf("%v", val)))
+	case map[string]any:
+		size := int64(2) // {}
+		first := true
+		for k, vv := range val {
+			if !first {
+				size++ // comma
+			}
+			first = false
+			size += int64(len(k) + 3) // "key":
+			size += estimateJSONSize(vv)
+		}
+		return size
+	case []any:
+		size := int64(2) // []
+		first := true
+		for _, vv := range val {
+			if !first {
+				size++ // comma
+			}
+			first = false
+			size += estimateJSONSize(vv)
+		}
+		return size
+	default:
+		// Fallback: marshal for unknown types (correctness over speed).
+		if b, err := json.Marshal(val); err == nil {
+			return int64(len(b))
+		}
+		return 0
+	}
+}
+
 func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 	for {
 		select {
@@ -49,10 +103,15 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 		s.Mu.RUnlock()
 
 		if graphBlocked {
+			// audit H-6: wait for a broadcast event instead of busy-wait polling.
+			// The notify channel wakes instantly on state change; the 5s safety
+			// timeout handles edge cases where Broadcast isn't called.
+			notify := s.GetNotifyChan()
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(500 * time.Millisecond):
+			case <-notify:
+			case <-time.After(5 * time.Second):
 			}
 			continue
 		}
@@ -80,16 +139,19 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 						"upstream":    insufficient.UpstreamIDs,
 						"upstream_st": insufficient.UpstreamStatuses,
 					},
-				[]string{"skip", "abort"})
-			s.setGraphStatus(graph, schemas.GraphBlocked)
-			s.persistGraph(graph)
+					[]string{"skip", "abort"})
+				s.setGraphStatus(graph, schemas.GraphBlocked)
+				s.persistGraph(graph)
 				s.Broadcast()
 				continue
 			}
+			// audit H-6: wait for broadcast event instead of 200ms busy-wait.
+			notify := s.GetNotifyChan()
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(200 * time.Millisecond):
+			case <-notify:
+			case <-time.After(5 * time.Second):
 			}
 			continue
 		}
@@ -115,28 +177,35 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 		}
 		sem := make(chan struct{}, maxConcurrent) // Configurable max concurrent steps per graph
 
+		// audit H-1: hoist graph-status check out of the loop. Previously this
+		// acquired s.Mu.RLock/RUnlock on EVERY iteration (N lock cycles per
+		// scheduling tick), amplifying global mutex contention (C-1). The status
+		// can only change via a writer holding Lock; if it transitions to
+		// non-running mid-loop, the per-step ctx.Done() check (line 132) and
+		// executeStep's context propagation handle graceful bailout.
+		s.Mu.RLock()
+		graphRunning := graph.Status == schemas.GraphRunning
+		s.Mu.RUnlock()
+		if !graphRunning {
+			break
+		}
+
 		for _, step := range ready {
-			s.Mu.RLock()
-			graphRunning := graph.Status == schemas.GraphRunning
-			s.Mu.RUnlock()
-			if !graphRunning {
-				break
-			}
 		wg.Add(1)
-	select {
+		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
-		wg.Done()
-			// audit C-10: wait for in-flight goroutines with grace period before
-			// returning, so previously launched steps can bail out cleanly.
-			wd := make(chan struct{})
-			go func() { wg.Wait(); close(wd) }()
-			select {
-			case <-wd:
-			case <-time.After(5 * time.Second):
+			wg.Done()
+				// audit C-10: wait for in-flight goroutines with grace period before
+				// returning, so previously launched steps can bail out cleanly.
+				wd := make(chan struct{})
+				go func() { wg.Wait(); close(wd) }()
+				select {
+				case <-wd:
+				case <-time.After(5 * time.Second):
+				}
+				return
 			}
-			return
-		}
 			go func(st *schemas.Step) {
 			defer wg.Done()
 				defer func() { <-sem }()
@@ -526,13 +595,13 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			}
 			s.Mu.RUnlock()
 
-		// Phase 2: Outside lock, pre-fetch step results from DB
-		// (audit P-H1: was N+1 queries — now batched via GetBatch)
-		neededStepIDs := make([]string, 0, len(neededSteps))
-		for sid := range neededSteps {
-			neededStepIDs = append(neededStepIDs, sid)
-		}
-		stepResults, _ := s.taskStore.GetBatch(ctx, taskID, neededStepIDs) // audit P-H1: single batch query replaces N
+			// Phase 2: Outside lock, pre-fetch step results from DB
+			// (audit P-H1: was N+1 queries — now batched via GetBatch)
+			neededStepIDs := make([]string, 0, len(neededSteps))
+			for sid := range neededSteps {
+				neededStepIDs = append(neededStepIDs, sid)
+			}
+			stepResults, _ := s.taskStore.GetBatch(ctx, taskID, neededStepIDs) // audit P-H1: single batch query replaces N
 
 			// P-H7 fix: pre-compute payload sizes outside RLock to avoid
 			// json.Marshal allocations in the hot loop under lock.
@@ -550,10 +619,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					if res, ok := stepResults[parts[0]]; ok && res.Data != nil {
 						if m, ok := res.Data.(map[string]any); ok {
 							val := m[parts[1]]
-							payloadSize := int64(0)
-							if b, e := json.Marshal(val); e == nil {
-								payloadSize = int64(len(b))
-							}
+							payloadSize := estimateJSONSize(val) // audit H-4: no allocation
 							mappings = append(mappings, mappingEntry{arg, val, parts[0], "mapping", payloadSize})
 						}
 					}
@@ -573,10 +639,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				if len(parts) != 2 {
 					if val, ok := graph.GlobalWorkspace[path]; ok {
 						resolvedInputs[arg] = val
-						payloadSize := int64(0)
-						if b, e := json.Marshal(val); e == nil {
-							payloadSize = int64(len(b))
-						}
+						payloadSize := estimateJSONSize(val) // audit H-4: no allocation
 						s.recordCoordinationEdge(graph, "global_workspace", step.ID, "shared_vfs", payloadSize)
 					}
 				}
@@ -584,27 +647,27 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			s.Mu.RUnlock()
 		}
 
-	// ── Coordination Edge for ContextRefs (arXiv:2608.16801) ──
-	if len(step.ContextRefs) > 0 {
-		// audit P-H2: batch-fetch all referenced step results in one query.
-		refStepIDs := make([]string, 0, len(step.ContextRefs))
-		for _, ref := range step.ContextRefs {
-			parts := strings.SplitN(ref, ":", 2)
-			if len(parts) == 2 {
-				refStepIDs = append(refStepIDs, parts[0])
+		// ── Coordination Edge for ContextRefs (arXiv:2608.16801) ──
+		if len(step.ContextRefs) > 0 {
+			// audit P-H2: batch-fetch all referenced step results in one query.
+			refStepIDs := make([]string, 0, len(step.ContextRefs))
+			for _, ref := range step.ContextRefs {
+				parts := strings.SplitN(ref, ":", 2)
+				if len(parts) == 2 {
+					refStepIDs = append(refStepIDs, parts[0])
+				}
 			}
-		}
-		refResults, _ := s.taskStore.GetBatch(ctx, taskID, refStepIDs)
-		for _, ref := range step.ContextRefs {
-			parts := strings.SplitN(ref, ":", 2)
-			if len(parts) == 2 {
-				if res := refResults[parts[0]]; res != nil && res.Data != nil {
-					payloadSize := int64(0); if b, e := json.Marshal(res.Data); e == nil { payloadSize = int64(len(b)) }
-					s.recordCoordinationEdge(graph, parts[0], step.ID, "reference", payloadSize)
+			refResults, _ := s.taskStore.GetBatch(ctx, taskID, refStepIDs)
+			for _, ref := range step.ContextRefs {
+				parts := strings.SplitN(ref, ":", 2)
+				if len(parts) == 2 {
+					if res := refResults[parts[0]]; res != nil && res.Data != nil {
+						payloadSize := estimateJSONSize(res.Data) // audit H-4: no allocation
+						s.recordCoordinationEdge(graph, parts[0], step.ID, "reference", payloadSize)
+					}
 				}
 			}
 		}
-	}
 
 		// ── Phase 0.8: Tracing & Spans ─────────────────────────────
 		traceID := graph.TraceID
@@ -699,16 +762,16 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				step.LastError = err.Error()
 				s.Mu.Unlock()
 				s.logger.Log(EventDecisionRequired, taskID, step.ID, map[string]any{
-					"reason":       "max_tool_turns_exhausted",
-					"error":        err.Error(),
-					"retry_count":  step.RetryCount,
-					"resume_hint":  "choice 'retry' re-spawns this step from scratch; choose 'refine_and_retry' to inject additional_prompt_context carrying the partial progress",
+					"reason":      "max_tool_turns_exhausted",
+					"error":       err.Error(),
+					"retry_count": step.RetryCount,
+					"resume_hint": "choice 'retry' re-spawns this step from scratch; choose 'refine_and_retry' to inject additional_prompt_context carrying the partial progress",
 				})
 				s.addDecision(graph, step, schemas.DecisionMaxTurnsExhausted, map[string]any{
-					"error":            err.Error(),
-					"retry_count":      step.RetryCount,
-					"action_required":  "Step exhausted its tool-turn budget before producing a final answer. Choose an option to proceed.",
-					"partial_context":  "Prior tool interactions are recorded in this step's trace. Use refine_and_retry with feedback to carry that context forward.",
+					"error":           err.Error(),
+					"retry_count":     step.RetryCount,
+					"action_required": "Step exhausted its tool-turn budget before producing a final answer. Choose an option to proceed.",
+					"partial_context": "Prior tool interactions are recorded in this step's trace. Use refine_and_retry with feedback to carry that context forward.",
 				}, []string{"resume_more_turns", "refine_and_retry", "escalate_model", "retry", "skip", "abort"})
 				return
 			}
@@ -816,8 +879,8 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"error": err.Error(),
 					"role":  step.RoleID,
 				})
-			// CRITICAL: Update both step and graph status to ensure complete stop
-			s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphBlocked)
+				// CRITICAL: Update both step and graph status to ensure complete stop
+				s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphBlocked)
 
 				// ACAIS: Deposit critical signal for role missing
 				if s.SignalField != nil {
@@ -859,11 +922,11 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"error":      err.Error(),
 					"role":       step.RoleID,
 					"root_cause": string(FailureClassRoleMissing),
-			})
-			// Race fix: protect graph.Status with Mu.
-			s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphBlocked)
+				})
+				// Race fix: protect graph.Status with Mu.
+				s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphBlocked)
 
-			s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
+				s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 					"error":           "Infrastructure failure: " + err.Error(),
 					"action_required": "Please register the missing skill or remove it from the role's bound_skills",
 				}, []string{"create_skill", "retry", "skip", "abort"})

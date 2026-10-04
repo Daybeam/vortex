@@ -22,17 +22,14 @@ func newFMCTestExperienceStore(t *testing.T) *store.ExperienceStore {
 	t.Helper()
 	tmpDir := t.TempDir()
 	ts := store.NewTaskStore(store.NewFileTaskBackend(tmpDir))
-	es, err := store.NewExperienceStore(tmpDir, ts, &config.SystemSettings{}, nil, nil)
-	if err != nil {
-		t.Fatalf("NewExperienceStore: %v", err)
-	}
+	es := mustNewExperienceStore(t, tmpDir, ts, &config.SystemSettings{}, nil, nil)
 	return es
 }
 
 func TestFMCBatchTicker_Start_NoOpWhenWeakModelUnconfigured(t *testing.T) {
 	reg := &config.Registry{}
 	es := newFMCTestExperienceStore(t)
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	defer logger.Close()
 
 	ticker := NewFMCBatchTicker(reg, config.ExternalRuntimes{}, es, logger)
@@ -53,7 +50,7 @@ func TestFMCBatchTicker_RunOnce_SkipsWhenProviderNotFound(t *testing.T) {
 	}
 	es := newFMCTestExperienceStore(t)
 	logDir := t.TempDir()
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	defer logger.Close()
 
 	ticker := NewFMCBatchTicker(reg, config.ExternalRuntimes{}, es, logger)
@@ -82,7 +79,7 @@ func TestFMCBatchTicker_RunOnce_SkipsWhenExpStoreIsNotConcrete(t *testing.T) {
 			"weak": {Provider: "openai", Model: "gpt-4o-mini", BaseURL: "http://unused"},
 		},
 	}
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	defer logger.Close()
 
 	// A fake IExperienceStore (not the concrete *store.ExperienceStore type)
@@ -133,7 +130,7 @@ func TestFMCBatchTicker_RunOnce_CompletesAgainstRealProvider(t *testing.T) {
 		// FailureMode intentionally empty -- this is the "pending
 		// classification" state RunFMCBatch is meant to backfill.
 	}
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	defer logger.Close()
 
 	ticker := NewFMCBatchTicker(reg, config.ExternalRuntimes{}, es, logger)

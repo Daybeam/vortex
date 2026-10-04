@@ -41,6 +41,21 @@ type OpenAIProvider struct {
 
 func (p *OpenAIProvider) Name() string { return p.name }
 
+// disableThinking reports whether the request body should carry
+// `chat_template_kwargs: {"enable_thinking": false}`.
+//
+// Thinking models (e.g. Qwen3.5-4B) put their chain-of-thought into the
+// response's `reasoning_content` field, leaving `content` EMPTY. The engine then
+// parses an empty body, and on a parse failure the spawner spin-breaker path
+// (EVAL_ANTI_OVERFITTING P1) burns the whole turn budget before giving up.
+//
+// Off by default: Qwen3-4B-Instruct-2507 is a non-thinking model, and injecting
+// this field there would only add an unnecessary variable to the qwen3 run.
+func disableThinking() bool {
+	v := strings.TrimSpace(os.Getenv("VORTEX_DISABLE_THINKING"))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+}
+
 func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest, onChunk func(string) error) (*ProviderResponse, error) {
 	chatURL := getOpenAIEndpoint(p.cfg.BaseURL, "/v1/chat/completions")
 
@@ -79,6 +94,12 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 	}
 	if req.FrequencyPenalty != nil {
 		body["frequency_penalty"] = *req.FrequencyPenalty
+	}
+
+	// VORTEX_DISABLE_THINKING=1 → 让思考型模型（Qwen3.5-4B）直接给 content，
+	// 避免解析到空串触发 P1 自旋。默认关闭（qwen3-4b 是非思考模型）。
+	if disableThinking() {
+		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}
 
 	if len(req.MCPServers) > 0 {
@@ -282,6 +303,11 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 	}
 	if req.FrequencyPenalty != nil {
 		body["frequency_penalty"] = *req.FrequencyPenalty
+	}
+
+	// VORTEX_DISABLE_THINKING=1 → 同上，非流式路径也必须带（否则 Q3.5 仍能解析到空串）。
+	if disableThinking() {
+		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}
 
 	// Native Tools Support

@@ -2,12 +2,12 @@ package store
 
 import (
 	"context"
+	"github.com/daybeam/vortex/pkg/interfaces"
+	"github.com/daybeam/vortex/schemas"
 	"log"
 	"sort"
 	"strings"
 	"time"
-	"github.com/daybeam/vortex/pkg/interfaces"
-	"github.com/daybeam/vortex/schemas"
 )
 
 func (es *ExperienceStore) GetOrchestrationBrief(ctx context.Context, skillIDs []string) map[string]any {
@@ -70,11 +70,15 @@ func (es *ExperienceStore) GetOrchestrationBrief(ctx context.Context, skillIDs [
 		capabilities[sid] = true // treat skillIDs as capability seeds if provided
 	}
 
+	// audit H-3: use batch method — single RLock + single pass over
+	// SkillAffinities, instead of N separate calls with N lock cycles.
+	capsList := make([]string, 0, len(capabilities))
 	for cap := range capabilities {
-		recs := es.QuerySkillRecommendations(ctx, cap, 0.8)
-		if len(recs) > 0 {
-			skillRecs[cap] = recs
-		}
+		capsList = append(capsList, cap)
+	}
+	batchRecs := es.QuerySkillRecommendationsBatch(ctx, capsList, 0.8)
+	for cap, recs := range batchRecs {
+		skillRecs[cap] = recs
 	}
 	res["skill_recommendations_by_capability"] = skillRecs
 

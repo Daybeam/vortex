@@ -9,8 +9,7 @@ import (
 )
 
 func TestCaSKG_TransitionRecording(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "caskg_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "caskg.json")
 
 	manager := NewCaSKGManager(path)
@@ -66,8 +65,7 @@ func TestCaSKG_TransitionRecording(t *testing.T) {
 // across restarts. See: CaSKGManager Save() now calls os.MkdirAll.
 func TestCaSKG_Save_AutoCreatesDir(t *testing.T) {
 	// Use a deeply nested path that definitely doesn't exist.
-	tmpDir, _ := os.MkdirTemp("", "caskg_autodir_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "nested", "deep", "causal_skill_graph.json")
 
 	// Sanity: the parent directory does not exist yet.

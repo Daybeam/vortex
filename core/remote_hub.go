@@ -37,7 +37,7 @@ func NewRemoteTaskHub(baseURL, apiKey string, spawner *Spawner) *RemoteTaskHub {
 	h := &RemoteTaskHub{
 		BaseURL:    baseURL,
 		APIKey:     apiKey,
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}},
 		Spawner:    spawner,
 		notifyChan: make(chan struct{}),
 		stopChan:   make(chan struct{}),

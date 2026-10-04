@@ -113,6 +113,11 @@ func (am *AssetManager) Sentry(ctx context.Context, ts store.ITaskStore) {
 		}
 		ttl := time.Duration(retentionHours) * time.Hour
 
+		// M-2 (2026-10-04): N+1 ts.Get per directory entry. Acceptable because
+		// this Sentry runs once per hour (not a hot path), and ts.Get with empty
+		// stepID is a lightweight existence check. ITaskStore interface doesn't
+		// expose ListTasks — adding it would change the interface for a non-hot
+		// path. Revisit if task count grows > 10K.
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue

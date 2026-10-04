@@ -28,10 +28,7 @@ import (
 // If only the context bug is present, step 2 fails (bgWg.Wait() doesn't
 // return because swarmWatchdog's context isn't cancelled).
 func TestApprovePlan_GoroutineTrackedAndContextDerived(t *testing.T) {
-	logger, err := NewLogger(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("NewLogger: %v", err)
-	}
+	logger := mustNewLogger(t, t.TempDir(), nil)
 	t.Cleanup(func() { logger.Close() })
 
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())

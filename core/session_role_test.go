@@ -1,7 +1,6 @@
 package core
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,8 +10,7 @@ import (
 
 func TestSessionRoleResolution(t *testing.T) {
 	// 1. Setup minimal registry
-	tmpDir, _ := os.MkdirTemp("", "session_role_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	configPath := filepath.Join(tmpDir, "config.json")
 	reg, err := config.NewRegistry(configPath)

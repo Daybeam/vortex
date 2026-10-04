@@ -78,7 +78,7 @@ func TestSpawner_MultimodalFallbackDetection(t *testing.T) {
 
 	// 3. Setup Logger to capture events
 	logDir := t.TempDir()
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 
 	// 4. Setup Spawner using NewSpawner
 	loader := &ResourceLoader{}

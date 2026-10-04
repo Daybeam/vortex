@@ -1,7 +1,6 @@
 package core
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,8 +10,7 @@ import (
 
 func TestDispatchGroup_WithSessionIR(t *testing.T) {
 	// 1. Setup registry with a RoleGroup but NO roles
-	tmpDir, _ := os.MkdirTemp("", "group_ir_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	configPath := filepath.Join(tmpDir, "config.json")
 	reg, _ := config.NewRegistry(configPath)
@@ -31,7 +29,7 @@ func TestDispatchGroup_WithSessionIR(t *testing.T) {
 	}
 
 	// 2. Create Engine and Dispatcher
-	logger, _ := NewLogger(t.TempDir(), nil)
+	logger := mustNewLogger(t, t.TempDir(), nil)
 	defer logger.Close()
 	engine := NewDirectedEngine(reg, nil, nil, nil, logger, nil, t.TempDir(), t.TempDir(), nil)
 	engine.UseSwarm = true // avoid background run

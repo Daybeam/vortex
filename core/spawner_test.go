@@ -17,25 +17,25 @@ func TestSpawner_FailFast_MissingCapabilities(t *testing.T) {
 	reg := &config.Registry{
 		Roles: map[string]*config.Role{
 			"strict_role": {
-				ID: "strict_role",
-				Requires: []string{"pdf.extract", "fragment.search"},
+				ID:          "strict_role",
+				Requires:    []string{"pdf.extract", "fragment.search"},
 				Generatable: false,
 			},
 			"generatable_role": {
-				ID: "generatable_role",
-				Requires: []string{"pdf.extract"},
+				ID:          "generatable_role",
+				Requires:    []string{"pdf.extract"},
 				Generatable: true,
 			},
 		},
 		Skills: map[string]*config.Skill{},
-		MCPs: map[string]*config.MCPDef{},
+		MCPs:   map[string]*config.MCPDef{},
 	}
 	logDir, err := os.MkdirTemp("", "spawner-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	s := &Spawner{
 		registry: reg,
 		logger:   logger,
@@ -50,7 +50,7 @@ func TestSpawner_FailFast_MissingCapabilities(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Blocked") {
 		t.Errorf("expected Blocked error for strict_role, got %v", err)
 	}
-	
+
 	// Test dynamic escalation failure
 	req2 := &SpawnRequest{RoleID: "generatable_role", TaskID: "t1", StepID: "s2", Hub: hub}
 	_, err = s.doSpawn(ctx, req2)

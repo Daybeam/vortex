@@ -364,6 +364,9 @@ type RoleFallback struct {
 
 type Role struct {
 	ID                  string            `json:"id"`
+	Version             string            `json:"version,omitempty"`
+	Author              string            `json:"author,omitempty"`
+	MutableByAgent      bool              `json:"mutable_by_agent,omitempty"`
 	Name                string            `json:"name"`
 	BaseCapability      string            `json:"base_capability"`
 	BoundSkills         []string          `json:"bound_skills"`

@@ -21,8 +21,8 @@ func TestPromptWarehouse_Integration(t *testing.T) {
 	}
 
 	ts := store.NewTaskStore(store.NewFileTaskBackend("test_tasks"))
-	es, _ := store.NewExperienceStore("test_exp", ts, &reg.System, nil, nil)
-	logger, _ := NewLogger("test_logs", &reg.System)
+	es := mustNewExperienceStore(t, "test_exp", ts, &reg.System, nil, nil)
+	logger := mustNewLogger(t, "test_logs", &reg.System)
 	defer logger.Close()
 
 	spawner := NewSpawner(reg, ts, es, logger, NewResourceLoader(), "outputs")

@@ -31,7 +31,8 @@ func (m *precedentMockEmbeddingClient) EmbedWithModel(ctx context.Context, text 
 func TestExperienceStore_DecisionPrecedents(t *testing.T) {
 	tmpDir := t.TempDir()
 	ts := store.NewTaskStore(store.NewFileTaskBackend(tmpDir))
-	es, _ := store.NewExperienceStore(tmpDir, ts, &config.SystemSettings{}, nil, nil)
+	es := mustNewExperienceStore(t, tmpDir, ts, &config.SystemSettings{}, nil, nil)
+	var err error
 
 	client := &precedentMockEmbeddingClient{}
 	es.SetEmbeddingClient(client)
@@ -45,7 +46,7 @@ func TestExperienceStore_DecisionPrecedents(t *testing.T) {
 	}
 
 	// 1. Upsert
-	err := es.UpsertDecisionPrecedent(context.Background(), node1)
+	err = es.UpsertDecisionPrecedent(context.Background(), node1)
 	if err != nil {
 		t.Fatalf("Upsert failed: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestExperienceStore_DecisionPrecedents(t *testing.T) {
 func TestSpawner_PrecedentInjection(t *testing.T) {
 	reg := &config.Registry{}
 	ts := store.NewTaskStore(store.NewFileTaskBackend(t.TempDir()))
-	logger, _ := NewLogger(t.TempDir(), &config.SystemSettings{})
+	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	spawner := NewSpawner(reg, ts, nil, logger, nil, "outputs")
 
 	precedents := []*schemas.DecisionNode{

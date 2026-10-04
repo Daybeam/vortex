@@ -60,7 +60,7 @@ func (l *ResourceLoader) cacheSetLocked(key, value string) {
 
 func NewResourceLoader() *ResourceLoader {
 	return &ResourceLoader{
-		client:        &http.Client{Timeout: 30 * time.Second},
+		client:        &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}},
 		cache:         make(map[string]string),
 		githubAPIBase: "https://api.github.com",
 		githubRawBase: "https://raw.githubusercontent.com",

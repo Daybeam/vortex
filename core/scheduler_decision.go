@@ -9,6 +9,13 @@ func (s *DirectedEngine) handleOutput(
 	step *schemas.Step,
 	result *SpawnResult,
 ) {
+	// L-N15 (2026-10-04): Guard against nil result. Although Spawn no longer
+	// returns (nil, nil) after the L-N12 root-cause fix, defensive nil-check
+	// prevents a nil-deref panic if a future caller bypasses Spawn.
+	if result == nil {
+		return
+	}
+
 	// ── Phase 0.1: Token Budget Deduction (ADDED 2026-08-30) ─────────────
 	if result != nil && result.Output.Usage != nil && result.Output.Usage.TotalTokens > 0 && s.budgetGuard != nil {
 		// FIX (2026-08-31): DeductBudget mutates graph.TokensUsed/BudgetPaused,

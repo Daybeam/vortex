@@ -58,8 +58,7 @@ func TestStatePotentialPersistence_SQLite(t *testing.T) {
 }
 
 func TestExperienceStore_UpdateStatePotential(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "exptest")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	es, err := NewExperienceStore(tmpDir, nil, nil, nil, nil)
 	if err != nil {

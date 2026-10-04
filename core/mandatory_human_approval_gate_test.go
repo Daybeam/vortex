@@ -14,7 +14,8 @@ import (
 
 func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 	tmpDir := t.TempDir()
-	logger, _ := NewLogger(tmpDir, nil)
+	logger := mustNewLogger(t, tmpDir, nil)
+	var err error
 	defer logger.Close()
 	engine := &DirectedEngine{
 		graphs:      make(map[string]*schemas.TaskGraph),
@@ -48,7 +49,7 @@ func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 	engine.doneChans["task_human_1"] = make(chan struct{})
 
 	// 1. Test "approve"
-	err := engine.SubmitDecision("task_human_1", "dec_human_1", "approve")
+	err = engine.SubmitDecision("task_human_1", "dec_human_1", "approve")
 	if err != nil {
 		t.Fatalf("SubmitDecision approve failed: %v", err)
 	}

@@ -24,10 +24,9 @@ func TestPersistGraph_HashCacheConcurrentSafe(t *testing.T) {
 	}
 	ts := &mockTaskStore{}
 
-	tasksDir, _ := os.MkdirTemp("", "hashcache_race")
-	logger, _ := NewLogger(tasksDir, nil)
+	tasksDir := t.TempDir()
+	logger := mustNewLogger(t, tasksDir, nil)
 	defer logger.Close()
-	defer os.RemoveAll(tasksDir)
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
 	defer engine.Stop()

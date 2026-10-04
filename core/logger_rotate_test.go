@@ -18,10 +18,7 @@ import (
 // before Close returned).
 func TestLogger_RotateCompressionTrackedByWg(t *testing.T) {
 	logDir := t.TempDir()
-	logger, err := NewLogger(logDir, nil)
-	if err != nil {
-		t.Fatalf("NewLogger: %v", err)
-	}
+	logger := mustNewLogger(t, logDir, nil)
 
 	// Create a log file with content to rotate.
 	logPath := filepath.Join(logDir, "test.log")

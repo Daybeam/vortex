@@ -27,10 +27,10 @@ func TestEvoXCoordination(t *testing.T) {
 	defer os.RemoveAll("test_tasks_evox")
 
 	sys := &config.SystemSettings{}
-	es, _ := store.NewExperienceStore("test_exp_evox", ts, sys, nil, nil)
+	es := mustNewExperienceStore(t, "test_exp_evox", ts, sys, nil, nil)
 	defer os.RemoveAll("test_exp_evox")
 
-	logger, _ := NewLogger(t.TempDir(), sys)
+	logger := mustNewLogger(t, t.TempDir(), sys)
 	// FIX (playbook addendum): without this, the async Logger writer
 	// goroutine can still be draining a queued write when t.TempDir()'s
 	// registered cleanup runs, racing to delete a directory Windows still

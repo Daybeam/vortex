@@ -55,7 +55,7 @@ func NewSystemOneProvider(cfg *config.ProviderConfig) *SystemOneProvider {
 	return &SystemOneProvider{
 		cfg:            cfg,
 		name:           "systemone:" + cfg.Model,
-		client:         &http.Client{Timeout: timeout},
+		client:         SharedHTTPClient(timeout),
 		scoreThreshold: threshold,
 		envelope:       envelope,
 	}

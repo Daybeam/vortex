@@ -1,7 +1,6 @@
 package core
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,23 +10,22 @@ import (
 
 func TestContextHub_GetEmbeddingProvider_Fallback(t *testing.T) {
 	// 1. Setup Registry with two providers
-	tmpDir, _ := os.MkdirTemp("", "embed_fallback_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	configPath := filepath.Join(tmpDir, "config.json")
 	reg, _ := config.NewRegistry(configPath)
 
 	reg.Providers["primary"] = &config.ProviderConfig{
-		Provider: "openai",
-		Model:    "gpt-4o",
+		Provider:       "openai",
+		Model:          "gpt-4o",
 		EmbeddingModel: "text-embedding-3-small",
-		APIKeyEnv: "MISSING_KEY", // Force failure if called
+		APIKeyEnv:      "MISSING_KEY", // Force failure if called
 	}
 	reg.Providers["secondary"] = &config.ProviderConfig{
-		Provider: "ollama",
-		Model:    "llama3.1",
+		Provider:       "ollama",
+		Model:          "llama3.1",
 		EmbeddingModel: "embedding-gemma-300m",
-		BaseURL: "http://localhost:11434/v1",
+		BaseURL:        "http://localhost:11434/v1",
 	}
 
 	hub := NewContextHub(reg, nil, nil)

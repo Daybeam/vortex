@@ -74,8 +74,8 @@ func TestSubmit_TaskContextDerivedFromLifecycleCtx(t *testing.T) {
 	}
 
 	ts := store.NewTaskStore(store.NewFileTaskBackend(filepath.Join(tmpDir, "tasks")))
-	es, _ := store.NewExperienceStore(filepath.Join(tmpDir, "exp"), ts, nil, nil, nil)
-	logger, _ := NewLogger(filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
+	es := mustNewExperienceStore(t, filepath.Join(tmpDir, "exp"), ts, nil, nil, nil)
+	logger := mustNewLogger(t, filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
 	t.Cleanup(func() { logger.Close() })
 
 	engine := NewDirectedEngine(reg, ts, es, nil, logger, nil, tmpDir, tmpDir, nil)

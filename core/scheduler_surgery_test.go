@@ -25,7 +25,8 @@ func TestDirectedEngine_MutateGraphTopology(t *testing.T) {
 			ConfidenceThreshold: 0.8,
 		},
 	}
-	logger, _ := NewLogger(tmpDir, nil)
+	logger := mustNewLogger(t, tmpDir, nil)
+	var err error
 	defer logger.Close()
 	engine := &DirectedEngine{
 		graphs:    make(map[string]*schemas.TaskGraph),
@@ -77,7 +78,7 @@ func TestDirectedEngine_MutateGraphTopology(t *testing.T) {
 		},
 	}
 
-	err := engine.MutateGraphTopology("task1", surgery)
+	err = engine.MutateGraphTopology("task1", surgery)
 	if err != nil {
 		t.Fatalf("MutateGraphTopology failed: %v", err)
 	}

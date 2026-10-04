@@ -115,7 +115,7 @@ func TestSpawner_CausalChainCapture(t *testing.T) {
 
 	reg, _ := config.NewRegistry(configPath)
 	ts := store.NewTaskStore(store.NewFileTaskBackend(filepath.Join(tmpDir, "tasks")))
-	logger, _ := NewLogger(filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
+	logger := mustNewLogger(t, filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
 	defer logger.Close()
 	spawner := NewSpawner(reg, ts, nil, logger, nil, "outputs")
 

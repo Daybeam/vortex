@@ -72,8 +72,7 @@ func TestPromptManager_Cache(t *testing.T) {
 }
 
 func TestPromptManager_CookbookTemplating(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "cookbook_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	cookbookContent := "Strategy: {{.strategy}}"
 	cookbookPath := filepath.Join(tmpDir, "strategy.md")

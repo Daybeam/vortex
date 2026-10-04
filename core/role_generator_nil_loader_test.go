@@ -41,10 +41,8 @@ func TestGenerateRoleObjects_NilResourceLoader_ReturnsErrorNotPanic(t *testing.T
 		RoleCookbookSource: "github:anthropics/anthropic-cookbook",
 	}
 
-	logger, err := NewLogger(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("failed to create logger: %v", err)
-	}
+	logger := mustNewLogger(t, t.TempDir(), nil)
+	var err error
 	defer logger.Close()
 
 	// Deliberately nil resourceLoader -- reproduces the exact shape

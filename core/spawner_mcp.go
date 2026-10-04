@@ -122,12 +122,19 @@ func (s *Spawner) buildMCPServers(
 ) []providers.MCPServerDef {
 	var servers []providers.MCPServerDef
 
-	// Inject core tools (write_file, read_file, execute_code) as a virtual MCP server
-	servers = append(servers, providers.MCPServerDef{
+	// #1 (eval §8.31): Core tools (write_file, read_file, execute_code) as a
+	// virtual MCP server. Default: injected first (backward compat). Set
+	// VORTEX_CORE_TOOLS_ORDER=last to inject after domain MCPs so small
+	// models see domain tools first instead of biasing toward sandbox tools.
+	coreServer := providers.MCPServerDef{
 		Name:  "_core",
 		URL:   "core://internal",
 		Tools: CoreToolDefinitions(),
-	})
+	}
+	coreLast := os.Getenv("VORTEX_CORE_TOOLS_ORDER") == "last"
+	if !coreLast {
+		servers = append(servers, coreServer)
+	}
 
 	for _, b := range bindings {
 		mcp := hub.GetMCP(b.MCPID)
@@ -290,6 +297,10 @@ func (s *Spawner) buildMCPServers(
 			})
 		}
 		dLock.Unlock() // audit H8: release per-MCP discovery lock
+	}
+
+	if coreLast {
+		servers = append(servers, coreServer)
 	}
 	return servers
 }

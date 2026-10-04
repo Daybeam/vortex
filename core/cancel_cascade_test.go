@@ -24,11 +24,11 @@ import (
 //
 // This test verifies the mechanism that actually protects against the
 // "zombie swarm agent keeps working on a cancelled task" scenario:
-//   1. CancelTask sets GraphCancelled
-//   2. scheduler_dag.go skips any graph whose Status != GraphRunning
-//      (checked at lines 187 and 254), so a cancelled graph is invisible
-//   3. The task's cancelFunc is invoked, so any in-flight step goroutines
-//      spawned by run() also exit
+//  1. CancelTask sets GraphCancelled
+//  2. scheduler_dag.go skips any graph whose Status != GraphRunning
+//     (checked at lines 187 and 254), so a cancelled graph is invisible
+//  3. The task's cancelFunc is invoked, so any in-flight step goroutines
+//     spawned by run() also exit
 func TestCancelTask_SwarmProviderLoopNotKilledButTaskInvisible(t *testing.T) {
 	s, reg := newAbortTestEngine(t)
 	defer s.Stop()

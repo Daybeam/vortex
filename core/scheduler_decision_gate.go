@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -99,6 +100,14 @@ func (s *DirectedEngine) addDecision(
 	// Must unlock before broadcastDone (line 87) which takes Mu.Lock —
 	// sync.RWMutex is not reentrant.
 	s.Mu.Lock()
+	// P0 fix (2026-10-03, eval C6): Guard against terminal states.
+	// If the graph was cancelled or failed while this decision was being
+	// prepared, do not transition it back to blocked — that would silently
+	// lose the cancellation/failure. TestDelegationMode_CancelTask relies on this.
+	if isTerminalStatus(graph.Status) {
+		s.Mu.Unlock()
+		return
+	}
 	graph.PendingDecisions = append(graph.PendingDecisions, dec)
 	graph.Status = schemas.GraphBlocked
 	s.Mu.Unlock()
@@ -168,6 +177,7 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 ) string {
 	// Delegate strategy: spawn decider role to choose.
 	if deciderRole != "" && s.spawner != nil {
+		observability.GetGlobalMetrics().Inc("orchestrator.decision_gate.calls", 1)
 		if choice, ok := s.spawnDecider(deciderRole, taskID, stepID, dtype, ctx, options); ok {
 			return choice
 		}

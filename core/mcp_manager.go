@@ -47,7 +47,7 @@ func NewMCPConnectionManager(registry *config.Registry, logger *Logger) *MCPConn
 		mcpSpawnFailures:   make(map[string]time.Time),
 		registry:           registry,
 		logger:             logger,
-		httpClient:         &http.Client{Timeout: 60 * time.Second},
+		httpClient:         &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}},
 	}
 }
 

@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -212,9 +211,8 @@ func TestAutoRefine_InjectsAntiPatternOnRetry(t *testing.T) {
 	})
 	es := &store.ExperienceStore{AntiPatternStore: apStore}
 
-	tmpDir, _ := os.MkdirTemp("", "autorefine")
-	defer os.RemoveAll(tmpDir)
-	logger, _ := NewLogger(tmpDir, nil)
+	tmpDir := t.TempDir()
+	logger := mustNewLogger(t, tmpDir, nil)
 	defer logger.Close()
 
 	engine := &DirectedEngine{expStore: es, logger: logger}

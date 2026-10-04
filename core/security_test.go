@@ -1,8 +1,8 @@
 package core
 
 import (
-	"testing"
 	"strings"
+	"testing"
 )
 
 func TestScrubSecrets(t *testing.T) {

@@ -17,7 +17,7 @@ func TestDirectedEngine_ComplexityPreCheck(t *testing.T) {
 	reg.Roles["local-role"] = &config.Role{ID: "local-role", Provider: "local", BaseCapability: "test"}
 	reg.Roles["remote-role"] = &config.Role{ID: "remote-role", Provider: "anthropic", BaseCapability: "test"}
 
-	logger, _ := NewLogger("test_logs", nil)
+	logger := mustNewLogger(t, "test_logs", nil)
 	defer logger.Close()
 
 	engine := &DirectedEngine{

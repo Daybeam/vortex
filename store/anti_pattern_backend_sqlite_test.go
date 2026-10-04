@@ -2,15 +2,13 @@ package store
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestSQLiteAntiPatternBackend(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "ap_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := InitDB(dbPath)
@@ -59,8 +57,7 @@ func TestSQLiteAntiPatternBackend(t *testing.T) {
 }
 
 func TestMemoryBankVectorSearch(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "mb_search_test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := InitDB(dbPath)

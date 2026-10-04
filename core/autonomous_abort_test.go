@@ -16,11 +16,9 @@ func newAbortTestEngine(t *testing.T) (*DirectedEngine, *config.Registry) {
 		Providers: make(map[string]*config.ProviderConfig),
 		System:    config.SystemSettings{},
 	}
-	logDir, _ := os.MkdirTemp("", "abort-log-*")
-	outDir, _ := os.MkdirTemp("", "abort-out-*")
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
-	t.Cleanup(func() { _ = os.RemoveAll(outDir) })
-	logger, _ := NewLogger(logDir, &config.SystemSettings{})
+	logDir := mustTempDir(t, "vortex-test")
+	outDir := mustTempDir(t, "vortex-test")
+	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	s := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
 	return s, reg
 }
