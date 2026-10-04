@@ -13,8 +13,8 @@ func TestDebateFields_PropagatedFromStepInput(t *testing.T) {
 		Providers: make(map[string]*config.ProviderConfig),
 		System:    config.SystemSettings{},
 	}
-	logDir := t.TempDir()
-	outDir := t.TempDir()
+	logDir := mustTempDir(t, "debate-log")
+	outDir := mustTempDir(t, "debate-out")
 	logger := mustNewLogger(t, logDir, &reg.System)
 	s := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
 	defer s.Stop()
@@ -35,20 +35,24 @@ func TestDebateFields_PropagatedFromStepInput(t *testing.T) {
 
 	s.Mu.RLock()
 	graph := s.graphs[taskID]
-	s.Mu.RUnlock()
-
 	if graph == nil {
+		s.Mu.RUnlock()
 		t.Fatalf("graph not found")
 	}
 	step := graph.Steps["debate-step"]
 	if step == nil {
+		s.Mu.RUnlock()
 		t.Fatalf("step not found")
 	}
-	if !step.EnableDebate {
+	enableDebate := step.EnableDebate
+	maxDebateRounds := step.MaxDebateRounds
+	s.Mu.RUnlock()
+
+	if !enableDebate {
 		t.Errorf("expected EnableDebate=true on Step")
 	}
-	if step.MaxDebateRounds != 2 {
-		t.Errorf("expected MaxDebateRounds=2, got %d", step.MaxDebateRounds)
+	if maxDebateRounds != 2 {
+		t.Errorf("expected MaxDebateRounds=2, got %d", maxDebateRounds)
 	}
 }
 
@@ -58,8 +62,8 @@ func TestDebateFields_DefaultZero(t *testing.T) {
 		Providers: make(map[string]*config.ProviderConfig),
 		System:    config.SystemSettings{},
 	}
-	logDir := t.TempDir()
-	outDir := t.TempDir()
+	logDir := mustTempDir(t, "debate-log")
+	outDir := mustTempDir(t, "debate-out")
 	logger := mustNewLogger(t, logDir, &reg.System)
 	s := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
 	defer s.Stop()
@@ -73,14 +77,16 @@ func TestDebateFields_DefaultZero(t *testing.T) {
 
 	s.Mu.RLock()
 	graph := s.graphs[taskID]
+	step := graph.Steps["plain-step"]
+	enableDebate := step.EnableDebate
+	maxDebateRounds := step.MaxDebateRounds
 	s.Mu.RUnlock()
 
-	step := graph.Steps["plain-step"]
-	if step.EnableDebate {
+	if enableDebate {
 		t.Errorf("expected EnableDebate=false by default")
 	}
-	if step.MaxDebateRounds != 0 {
-		t.Errorf("expected MaxDebateRounds=0 by default, got %d", step.MaxDebateRounds)
+	if maxDebateRounds != 0 {
+		t.Errorf("expected MaxDebateRounds=0 by default, got %d", maxDebateRounds)
 	}
 }
 
