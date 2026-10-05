@@ -88,7 +88,10 @@ func TestExperienceStore_TemporalDecay(t *testing.T) {
 	// Force decay apply
 	es.applyTemporalDecayLocked()
 
-	gs, _ := es.GetGeneratedSkill(oldID)
+	gs, ok := es.GetGeneratedSkill(oldID)
+	if !ok {
+		t.Fatalf("GetGeneratedSkill(%q) not found", oldID)
+	}
 	if gs.SuccessRate >= 1.0 {
 		t.Errorf("Expected SuccessRate to decay, got %f", gs.SuccessRate)
 	}
@@ -96,7 +99,10 @@ func TestExperienceStore_TemporalDecay(t *testing.T) {
 		t.Errorf("Expected UsageCount to decay, got %d", gs.UsageCount)
 	}
 
-	freshGs, _ := es.GetGeneratedSkill(freshID)
+	freshGs, ok := es.GetGeneratedSkill(freshID)
+	if !ok {
+		t.Fatalf("GetGeneratedSkill(%q) not found", freshID)
+	}
 	if freshGs.SuccessRate < 1.0 {
 		t.Error("Did NOT expect fresh skill to decay")
 	}

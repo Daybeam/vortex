@@ -221,9 +221,9 @@ func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int, c
 		node  *ExperienceNode
 		score float64
 	}
-	// audit P-1.3: preallocate slice + precompute query norm once.
-	// Was: unsized slice + cosineSimilarity recomputed query norm per node.
-	scored := make([]scoredNode, 0, len(es.Nodes))
+	// audit P-1.3: precompute query norm once.
+	// audit P-12: cap=16 (limit is 5, only score>0.7 appended) — was cap=len(Nodes) = 160KB wasted per call.
+	scored := make([]scoredNode, 0, 16)
 
 	var queryNormSq float64
 	for _, v := range query {

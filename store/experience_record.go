@@ -12,8 +12,10 @@ import (
 )
 
 func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID string, records []StepRecord, overallConf float64, decisions []map[string]any, success bool, attributableFailure bool) error {
+	// audit P-2: previously held es.Mu.Lock across the entire function body
+	// including decision appending, blocking all readers for the full duration.
+	// Split into two locked sections: core updates + decision outcomes.
 	es.Mu.Lock()
-	defer es.Mu.Unlock()
 
 	taskType := deriveTaskType(records)
 	es.upsertTaskPattern(taskID, taskType, records, overallConf)
@@ -43,6 +45,11 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 		seenRoles[rec.RoleID] = true
 		es.updateRoleAffinityLocked(rec.RoleID, taskType, success)
 	}
+	es.Mu.Unlock()
+
+	// Decision outcomes — independent of the core updates above, so use a
+	// separate short lock to minimize reader block time (audit P-2).
+	es.Mu.Lock()
 
 	// FIX (2026-07-08): decisions was accepted as a parameter but never
 	// actually recorded anywhere, so DecisionOutcomes was permanently empty
@@ -73,6 +80,7 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 	if len(es.DecisionOutcomes) > es.getMaxDecisionOutcomes() {
 		es.DecisionOutcomes = es.DecisionOutcomes[len(es.DecisionOutcomes)-es.getMaxDecisionOutcomes():]
 	}
+	es.Mu.Unlock()
 
 	// Debounce persist: if one is already in flight, skip — the next
 	// persist that runs will pick up all accumulated changes. This
@@ -192,6 +200,8 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 			existing.AvgTurnsUsed = ((n-1)*existing.AvgTurnsUsed + avgTurns) / n
 			if fullSource != "" && existing.SourceText == "" {
 				existing.SourceText = fullSource
+				// audit P-5: SourceText changed → invalidate BM25 token cache.
+				es.patternTokensCache = nil
 			}
 			es.TaskPatterns[existingID] = existing
 			return
@@ -218,6 +228,8 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 	if key != "" {
 		es.sequenceKeyIndex[key] = patternID
 	}
+	// audit P-5: invalidate BM25 token cache — new/updated pattern changes tokens.
+	es.patternTokensCache = nil
 }
 
 // stepSequenceKey builds a canonical, order-preserving signature of a step

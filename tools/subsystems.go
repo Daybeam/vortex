@@ -168,6 +168,12 @@ func (r *SubsystemRegistry) Invoke(ctx context.Context, app *App, subsystem, act
 	resChan := make(chan result, 1)
 
 	go func() {
+		// audit R-2: recover prevents panic in handler from crashing the process.
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "PANIC in subsystem handler: %v\n", r)
+			}
+		}()
 		data, err := a.Handler(ictx, app, args)
 		resChan <- result{data, err}
 	}()
@@ -189,7 +195,15 @@ func (r *SubsystemRegistry) Invoke(ctx context.Context, app *App, subsystem, act
 		}
 		// Fire-and-forget usage tracking: promote frequently-used actions
 		if res.err == nil && app.Promoter != nil {
-			go app.Promoter.Record(subsystem, action, a)
+			// audit R-4: recover prevents panic in Promoter.Record from crashing process.
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Fprintf(os.Stderr, "PANIC in Promoter.Record: %v\n", r)
+					}
+				}()
+				app.Promoter.Record(subsystem, action, a)
+			}()
 		}
 		return res.data, res.err
 	case <-ictx.Done():
@@ -1534,6 +1548,12 @@ func registerProxySubsystem(app *App) {
 			// 4. Shadow Learning: Record experience asynchronously
 			if app.ExpStore != nil {
 				go func() {
+					// audit R-3: recover prevents panic in shadow learning from crashing process.
+					defer func() {
+						if r := recover(); r != nil {
+							fmt.Fprintf(os.Stderr, "PANIC in shadow learning: %v\n", r)
+						}
+					}()
 					// audit H2: bounded timeout prevents goroutine from
 					// hanging forever if RecordTaskCompletion blocks.
 					shadowCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
