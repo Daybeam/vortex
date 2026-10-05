@@ -193,6 +193,19 @@ func (s *ChatSession) ListBranches(parentID string) []string {
 	return children
 }
 
+// GetMessage returns a copy of the message with the given ID, or nil if not found.
+// Thread-safe. Used for exact reference lookup (e.g. reply-to).
+func (s *ChatSession) GetMessage(msgID string) *ChatMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.Messages[msgID]
+	if m == nil {
+		return nil
+	}
+	cp := *m
+	return &cp
+}
+
 // SnapshotMessages returns the active branch path (root → ActiveLeafID).
 func (s *ChatSession) SnapshotMessages() []ChatMessage {
 	s.mu.Lock()

@@ -106,3 +106,68 @@ func TestChatSessionBranching(t *testing.T) {
 		t.Fatalf("expected 2 branches at branch point, got %d", len(children))
 	}
 }
+
+// TestChatSessionGetMessage verifies that GetMessage returns the correct
+// message by ID, and nil for a non-existent ID.
+//
+// Regression test for the GetMessage method added for exact reference
+// (reply-to) support in plan/LONG_CONVERSATION_REFERENCE.md §4.1.
+func TestChatSessionGetMessage(t *testing.T) {
+	s := &ChatSession{ID: "s1", Messages: make(map[string]*ChatMessage), seenMsg: map[string]bool{}}
+
+	s.AppendUserMessage("u1", "first message", "")
+	s.AppendMessage(ChatMessage{Role: "assistant", Content: "first reply"}, "")
+
+	path := s.SnapshotMessages()
+	if len(path) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(path))
+	}
+
+	userMsgID := path[0].ID
+	assistantMsgID := path[1].ID
+
+	msg := s.GetMessage(userMsgID)
+	if msg == nil {
+		t.Fatal("expected non-nil for existing user message")
+	}
+	if msg.Content != "first message" {
+		t.Fatalf("expected 'first message', got %q", msg.Content)
+	}
+	if msg.Role != "user" {
+		t.Fatalf("expected role 'user', got %q", msg.Role)
+	}
+
+	msg = s.GetMessage(assistantMsgID)
+	if msg == nil {
+		t.Fatal("expected non-nil for existing assistant message")
+	}
+	if msg.Content != "first reply" {
+		t.Fatalf("expected 'first reply', got %q", msg.Content)
+	}
+
+	if msg := s.GetMessage("nonexistent_id"); msg != nil {
+		t.Fatal("expected nil for non-existent message ID")
+	}
+}
+
+// TestChatSessionGetMessageReturnsCopy verifies that GetMessage returns a
+// copy of the message, not a pointer to the internal map entry. Mutating
+// the returned message should not affect the session's internal state.
+func TestChatSessionGetMessageReturnsCopy(t *testing.T) {
+	s := &ChatSession{ID: "s1", Messages: make(map[string]*ChatMessage), seenMsg: map[string]bool{}}
+	s.AppendUserMessage("u1", "original", "")
+
+	path := s.SnapshotMessages()
+	msgID := path[0].ID
+
+	msg := s.GetMessage(msgID)
+	if msg == nil {
+		t.Fatal("expected non-nil message")
+	}
+	msg.Content = "mutated"
+
+	original := s.GetMessage(msgID)
+	if original.Content != "original" {
+		t.Fatalf("expected 'original' (unchanged), got %q", original.Content)
+	}
+}

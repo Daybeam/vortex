@@ -53,6 +53,10 @@ type ChatHarness struct {
 	// Sieve is an optional repetition detector. If nil, a lightweight
 	// signature-based fallback is used instead.
 	Sieve *Sieve
+	// Memory is an optional chat memory manager. If nil, full history
+	// is passed to the provider unchanged (legacy behavior). When set,
+	// history is windowed/summarized before the provider call.
+	Memory ChatMemoryManager
 }
 
 func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
@@ -176,6 +180,9 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	mcpServers := []schemas.MCPServerDef{{Name: "core", Tools: tools}}
 
 	messages := make([]ChatMessage, 0, len(history)+maxTurns)
+	if h.Memory != nil {
+		history = h.Memory.Process(ctx, taskID, history)
+	}
 	messages = append(messages, history...)
 
 	var finalText strings.Builder // audit H1: was `var finalText string` with += (O(n²))
