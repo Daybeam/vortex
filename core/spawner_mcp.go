@@ -132,7 +132,7 @@ func (s *Spawner) buildMCPServers(
 		URL:   "core://internal",
 		Tools: CoreToolDefinitions(),
 	}
-	coreLast := os.Getenv("VORTEX_CORE_TOOLS_ORDER") == "last"
+	coreLast := coreToolsOrderLast()
 	if !coreLast {
 		servers = append(servers, coreServer)
 	}

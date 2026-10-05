@@ -78,9 +78,13 @@ func TestEmbeddingConnectivity(t *testing.T) {
 		}
 	})
 
-	// Testing InternAI key
-	internKey := "sk-0Nv13beakzW0onkzqUr0RF5yGtFTwuvyi6LLrT4x9pSi254M"
+	// Testing InternAI key — read from env to avoid committing secrets.
+	// fixes audit T-CRIT-2: hardcoded live API key was a security violation.
+	internKey := os.Getenv("INTERN_API_KEY")
 	t.Run("InternAI_Embed", func(t *testing.T) {
+		if internKey == "" {
+			t.Skip("skipping InternAI test: INTERN_API_KEY env var not set")
+		}
 		pCfg := &config.ProviderConfig{
 			Provider:       "openai",
 			BaseURL:        "https://chat.intern-ai.org.cn/api/v1",

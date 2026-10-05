@@ -20,18 +20,23 @@ import (
 func (s *DirectedEngine) ForkTask(sourceTaskID, targetStepID string) (string, error) {
 	s.Mu.RLock()
 	sourceGraph, ok := s.graphs[sourceTaskID]
-	s.Mu.RUnlock()
 	if !ok {
+		s.Mu.RUnlock()
 		return "", fmt.Errorf("source task %q not found", sourceTaskID)
 	}
 
 	targetStep, exists := sourceGraph.Steps[targetStepID]
 	if !exists {
+		s.Mu.RUnlock()
 		return "", fmt.Errorf("step %q not found in task %q", targetStepID, sourceTaskID)
 	}
 
-	// Deep copy the graph via JSON round-trip
+	// Deep copy the graph via JSON round-trip.
+	// audit L-1: must hold RLock through marshal — concurrent MutateGraphTopology
+	// holds Mu.Lock and writes to graph.Steps map + mutates step.DependsOn slices
+	// in-place, which would fatal-panic on concurrent map read+write.
 	data, err := json.Marshal(sourceGraph)
+	s.Mu.RUnlock()
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal source graph: %w", err)
 	}
@@ -88,7 +93,8 @@ func (s *DirectedEngine) ForkTask(sourceTaskID, targetStepID string) (string, er
 	})
 
 	// Start execution
-	s.goBackground(func() { s.run(ctx, newTaskID) }) // audit M8: use goBackground so Stop() drains
+	// audit L-N9: use startGraphExecutor so swarm mode gets swarmWatchdog.
+	s.startGraphExecutor(ctx, newTaskID)
 
 	return newTaskID, nil
 }

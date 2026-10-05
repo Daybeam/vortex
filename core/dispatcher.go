@@ -12,6 +12,13 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
+// audit P-10: shared transport for webhook dispatch — reuses TCP connections
+// instead of creating a new transport (TLS handshake) per webhook call.
+var webhookTransport = &http.Transport{
+	MaxIdleConnsPerHost: 100,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventType EventType) {
 	// audit L-1.4: snapshot graph.Status + GlobalWorkspace and determine
 	// matching routes under RLock to prevent concurrent map iteration race
@@ -97,7 +104,7 @@ func sendWebhook(targetURL, secretEnv string, body []byte) {
 		}
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: webhookTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[webhook] dispatch failed for %s: %v\n", targetURL, err)

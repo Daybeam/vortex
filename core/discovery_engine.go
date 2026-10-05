@@ -9,22 +9,22 @@ import (
 type CandidateType string
 
 const (
-	CandidateRole       CandidateType = "role"
-	CandidateSkill      CandidateType = "skill"
-	CandidateGroup      CandidateType = "group"
-	CandidateSOP        CandidateType = "sop"
-	CandidateMCP        CandidateType = "mcp"
+	CandidateRole      CandidateType = "role"
+	CandidateSkill     CandidateType = "skill"
+	CandidateGroup     CandidateType = "group"
+	CandidateSOP       CandidateType = "sop"
+	CandidateMCP       CandidateType = "mcp"
 	CandidateCapability CandidateType = "capability"
 )
 
 // DiscoveryCandidate represents a single matched item in the discovery process.
 type DiscoveryCandidate struct {
-	ID          string         `json:"id"`
-	Type        CandidateType  `json:"type"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Confidence  float64        `json:"confidence"` // 0.0 to 1.0
-	Source      string         `json:"source"`     // e.g., "filter", "keyword", "semantic"
+	ID          string        `json:"id"`
+	Type        CandidateType `json:"type"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Confidence  float64       `json:"confidence"` // 0.0 to 1.0
+	Source      string        `json:"source"`     // e.g., "filter", "keyword", "semantic"
 	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
@@ -61,11 +61,20 @@ func (p *DiscoveryPipeline) Execute(ctx context.Context, query string, tags []st
 		candidates []DiscoveryCandidate
 	)
 
-	// Phase 1: Parallel Recall
+	// Phase 1: Parallel Recall — bounded to prevent goroutine storms.
+	// audit P-4: previously unbounded (one goroutine per retriever per call).
+	maxConcurrent := 8
+	if len(p.Retrievers) < maxConcurrent {
+		maxConcurrent = len(p.Retrievers)
+	}
+	sem := make(chan struct{}, maxConcurrent)
+
 	for _, r := range p.Retrievers {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(ret Retriever) {
-			defer wg.Add(-1)
+			defer wg.Done()
+			defer func() { <-sem }()
 			results := ret.Recall(ctx, query, tags)
 			mu.Lock()
 			candidates = append(candidates, results...)

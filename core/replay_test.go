@@ -52,7 +52,11 @@ func TestReplayer_LoadHistory(t *testing.T) {
 func TestReplayer_Fork(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "global_trajectory.jsonl")
-	f, _ := os.Create(logPath)
+	f, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("os.Create failed: %v", err)
+	}
+	defer f.Close()
 
 	events := []AgentEvent{
 		{TaskID: "T", StepID: "S1", EventType: "step_start"},

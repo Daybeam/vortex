@@ -10,9 +10,16 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-func newSessionTestLogger() *Logger {
-	dir, _ := os.MkdirTemp("", "session_test_log_*")
-	logger, _ := NewLogger(dir, &config.SystemSettings{})
+func newSessionTestLogger(t *testing.T) *Logger {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "session_test_log_*")
+	if err != nil {
+		t.Fatalf("os.MkdirTemp failed: %v", err)
+	}
+	logger, err := NewLogger(dir, &config.SystemSettings{})
+	if err != nil {
+		t.Fatalf("NewLogger failed: %v", err)
+	}
 	return logger
 }
 
@@ -121,7 +128,7 @@ func TestSessionManager_EmptySessionID(t *testing.T) {
 
 func TestSeedTaskInputs_NoWorkspaceRoot(t *testing.T) {
 	engine := &DirectedEngine{
-		logger: newSessionTestLogger(),
+		logger: newSessionTestLogger(t),
 	}
 	graph := &schemas.TaskGraph{
 		TaskID: "task1",
@@ -135,7 +142,7 @@ func TestSeedTaskInputs_NoWorkspaceRoot(t *testing.T) {
 
 func TestSeedTaskInputs_NoInputDir(t *testing.T) {
 	engine := &DirectedEngine{
-		logger: newSessionTestLogger(),
+		logger: newSessionTestLogger(t),
 	}
 	graph := &schemas.TaskGraph{
 		TaskID:        "task1",
@@ -158,7 +165,7 @@ func TestSeedTaskInputs_CopiesFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(srcDir, "file2.txt"), []byte("world"), 0644)
 
 	engine := &DirectedEngine{
-		logger: newSessionTestLogger(),
+		logger: newSessionTestLogger(t),
 	}
 	graph := &schemas.TaskGraph{
 		TaskID:        "task1",
@@ -195,7 +202,7 @@ func TestSeedTaskInputs_SkipsMissingSource(t *testing.T) {
 	outputBase := t.TempDir()
 
 	engine := &DirectedEngine{
-		logger: newSessionTestLogger(),
+		logger: newSessionTestLogger(t),
 	}
 	graph := &schemas.TaskGraph{
 		TaskID:        "task1",

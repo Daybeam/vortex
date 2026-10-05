@@ -407,8 +407,19 @@ func (s *Spawner) incrTaskToolFail(taskID, toolName string, stepCount int) int {
 		s.taskToolFailCount = make(map[string]map[string]int)
 	}
 	// Cap to prevent unbounded growth from abandoned tasks.
+	// audit L-3: previously cleared the ENTIRE map, losing circuit-breaker
+	// state for all active tasks. Now evicts ~25% of entries, preserving
+	// most active tasks' failure counts. Random map iteration ≈ random eviction.
 	if len(s.taskToolFailCount) > maxTaskToolFailEntries {
-		s.taskToolFailCount = make(map[string]map[string]int)
+		target := maxTaskToolFailEntries * 3 / 4
+		for k := range s.taskToolFailCount {
+			if len(s.taskToolFailCount) <= target {
+				break
+			}
+			if k != taskID {
+				delete(s.taskToolFailCount, k)
+			}
+		}
 	}
 	taskCounts := s.taskToolFailCount[taskID]
 	if taskCounts == nil {

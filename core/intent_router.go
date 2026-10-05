@@ -247,12 +247,15 @@ func (r *IntentRouter) Route(ctx context.Context, reg *config.Registry, userInpu
 		}
 	case kwRes := <-keywordChan:
 		// If keyword finished first, give a brief window for embedding to attempt superior match
+		// audit P-8: use NewTimer + Stop instead of time.After to avoid timer leak.
+		timer := time.NewTimer(250 * time.Millisecond)
 		select {
 		case embRes := <-embedChan:
+			timer.Stop()
 			if embRes.err == nil && len(embRes.results) > 0 {
 				return embRes.results, nil
 			}
-		case <-time.After(250 * time.Millisecond):
+		case <-timer.C:
 		}
 		if kwRes.err == nil {
 			return kwRes.results, nil
