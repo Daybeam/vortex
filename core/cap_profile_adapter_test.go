@@ -37,10 +37,10 @@ func TestRecordCapabilityOutcome_RecordsWhenStoreSet(t *testing.T) {
 	cps, cleanup := setupCapProfileStore(t)
 	defer cleanup()
 	if cps == nil {
-		t.Skip("CapabilityProfileStore nil")
+		t.Fatal("CapabilityProfileStore nil after successful init — constructor bug")
 	}
 
-	logger := mustNewLogger(t, "", nil)
+	logger := mustNewLogger(t, mustTempDir(t, "caplog"), nil)
 	s := &Spawner{capProfileStore: cps, logger: logger}
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}
 	result := &SpawnResult{
@@ -73,7 +73,7 @@ func TestRecordCapabilityOutcome_RecordsWhenStoreSet(t *testing.T) {
 // TestRecordCapabilityOutcome_SkipsWhenStoreNil verifies no panic when
 // the capability store is not wired (the default for existing callers).
 func TestRecordCapabilityOutcome_SkipsWhenStoreNil(t *testing.T) {
-	logger := mustNewLogger(t, "", nil)
+	logger := mustNewLogger(t, mustTempDir(t, "caplog"), nil)
 	s := &Spawner{logger: logger}
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}
 	result := &SpawnResult{
@@ -103,7 +103,7 @@ func TestRecalculateThetas_UpdatesFromSuccessRate(t *testing.T) {
 	cps, cleanup := setupCapProfileStore(t)
 	defer cleanup()
 	if cps == nil {
-		t.Skip("CapabilityProfileStore nil")
+		t.Fatal("CapabilityProfileStore nil after successful init — constructor bug")
 	}
 
 	ctx := context.Background()
@@ -114,7 +114,7 @@ func TestRecalculateThetas_UpdatesFromSuccessRate(t *testing.T) {
 		cps.RecordOutcome(ctx, "weak-model", "refactor", false, 10, 2000, 400)
 	}
 
-	logger := mustNewLogger(t, "", nil)
+	logger := mustNewLogger(t, mustTempDir(t, "caplog"), nil)
 	s := &Spawner{capProfileStore: cps, logger: logger}
 	updated, err := s.RecalculateThetas(ctx)
 	if err != nil {

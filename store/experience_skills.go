@@ -243,17 +243,30 @@ func (es *ExperienceStore) QuerySimilarPatterns(ctx context.Context, capabilitie
 	}
 	var totalLen float64
 	termDocFreqs := make(map[string]int)
-	patternTokensMap := make(map[string]map[string]int)
-
-	for id, p := range es.TaskPatterns {
-		tokens := tokenize(p.SourceText + " " + p.TaskType)
-		patternTokensMap[id] = tokens
-		docLen := 0
-		for term, count := range tokens {
-			docLen += count
-			termDocFreqs[term]++
+	// audit P-5: cache tokenized patterns to avoid O(N) re-tokenization on
+	// every query. Cache is invalidated on upsertTaskPattern.
+	if es.patternTokensCache == nil {
+		es.patternTokensCache = make(map[string]map[string]int, N)
+		for id, p := range es.TaskPatterns {
+			tokens := tokenize(p.SourceText + " " + p.TaskType)
+			es.patternTokensCache[id] = tokens
+			docLen := 0
+			for term, count := range tokens {
+				docLen += count
+				termDocFreqs[term]++
+			}
+			totalLen += float64(docLen)
 		}
-		totalLen += float64(docLen)
+	} else {
+		// Cache valid — derive termDocFreqs and totalLen from cached tokens.
+		for _, tokens := range es.patternTokensCache {
+			docLen := 0
+			for term, count := range tokens {
+				docLen += count
+				termDocFreqs[term]++
+			}
+			totalLen += float64(docLen)
+		}
 	}
 	avgdl := totalLen / float64(N)
 
@@ -265,7 +278,7 @@ func (es *ExperienceStore) QuerySimilarPatterns(ctx context.Context, capabilitie
 		// as the production retrieval mechanism.
 
 		// Phase 2: BM25 Scoring
-		tokens := patternTokensMap[id]
+		tokens := es.patternTokensCache[id]
 		docLen := 0.0
 		for _, count := range tokens {
 			docLen += float64(count)

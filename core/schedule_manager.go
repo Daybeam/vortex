@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +46,11 @@ func (sm *ScheduleManager) Start() {
 	sm.wg.Add(1)
 	go func() {
 		defer sm.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("PANIC in ScheduleManager.loop: %v\n%s", r, debug.Stack())
+			}
+		}()
 		sm.loop()
 	}()
 }
@@ -91,6 +98,11 @@ func (sm *ScheduleManager) scan() {
 				sm.wg.Add(1)
 				go func() {
 					defer sm.wg.Done()
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("PANIC in ScheduleManager.trigger: %v\n%s", r, debug.Stack())
+						}
+					}()
 					sm.trigger(s)
 				}()
 			} else {
@@ -198,6 +210,11 @@ func (sm *ScheduleManager) trigger(s *schemas.Schedule) {
 		sm.wg.Add(2)
 		go func() {
 			defer sm.wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("PANIC in ScheduleManager cancel-propagator: %v\n%s", r, debug.Stack())
+				}
+			}()
 			select {
 			case <-sm.stopChan:
 				cancel()
@@ -207,6 +224,11 @@ func (sm *ScheduleManager) trigger(s *schemas.Schedule) {
 		go func() {
 			defer sm.wg.Done()
 			defer cancel() // audit R-1: unblock the cancel-propagator goroutine when monitor exits
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("PANIC in ScheduleManager.monitorTask: %v\n%s", r, debug.Stack())
+				}
+			}()
 			sm.monitorTask(ctx, taskID, s.ID)
 		}()
 	}
@@ -234,10 +256,13 @@ func (sm *ScheduleManager) monitorTask(ctx context.Context, taskID string, sched
 		graphStatus, ok := result["status"].(schemas.GraphStatus)
 		if !ok {
 			// Status missing or wrong type — skip this iteration safely
+			// audit P-8-sibling: use NewTimer + Stop instead of time.After to avoid timer leak.
+			timer := time.NewTimer(5 * time.Second)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-time.After(5 * time.Second):
+			case <-timer.C:
 			}
 			continue
 		}
@@ -248,10 +273,13 @@ func (sm *ScheduleManager) monitorTask(ctx context.Context, taskID string, sched
 		// GraphBlocked: WaitTask returns immediately (fast path), so sleep
 		// to avoid busy-looping while waiting for a decision to unblock.
 		if graphStatus == schemas.GraphBlocked {
+			// audit P-8-sibling: use NewTimer + Stop instead of time.After.
+			timer := time.NewTimer(5 * time.Second)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-time.After(5 * time.Second):
+			case <-timer.C:
 			}
 		}
 	}

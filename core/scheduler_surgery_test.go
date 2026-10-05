@@ -1,7 +1,6 @@
 package core
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 
@@ -17,16 +16,13 @@ import (
 // Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Dynamic DAG Surgery
 // -----------------------------------------------------------------------------
 func TestDirectedEngine_MutateGraphTopology(t *testing.T) {
-	// Skip on Windows: t.TempDir() auto-cleanup fails when the engine's
-	// background goroutines still hold file handles (logger files).
-	// See: windows_tempdir_cleanup_engine_goroutines.md
-	// Non-regression: this tests graph topology mutation logic, not cleanup.
-	// Proper fix = use manual mkdirTemp instead of t.TempDir(), but that
-	// is a separate refactor. This skip preserves CI stability.
-	if runtime.GOOS == "windows" {
-		t.Skip("known Windows temp-dir cleanup race with engine goroutines; see windows_tempdir_cleanup_engine_goroutines.md")
-	}
-	tmpDir := t.TempDir()
+	// audit T-GATE-1 (2026-10-05 r2): was skipped on Windows via
+	// runtime.GOOS=="windows" → t.Skip, which meant the test NEVER RAN
+	// on the development platform (搬龙门). Root cause = t.TempDir()
+	// auto-cleanup races with engine bg goroutines holding logger files.
+	// Fix = use mustTempDir (added by T-CRIT-1) which uses os.MkdirTemp
+	// + t.Cleanup(os.RemoveAll) — same pattern as delegation_mode_test.go.
+	tmpDir := mustTempDir(t, "surgery")
 	reg := &config.Registry{
 		System: config.SystemSettings{
 			ConfidenceThreshold: 0.8,

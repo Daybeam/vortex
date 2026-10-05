@@ -160,6 +160,12 @@ type ExperienceStore struct {
 	// Not JSON-serialized — rebuilt on load.
 	nodeIndex map[string][]*ExperienceNode
 
+	// patternTokensCache caches tokenized TaskPatterns for BM25 scoring in
+	// QuerySimilarPatterns, avoiding O(N) re-tokenization of all patterns on
+	// every query (audit P-5). Invalidated on upsertTaskPattern.
+	// Not JSON-serialized — rebuilt lazily.
+	patternTokensCache map[string]map[string]int
+
 	// JIT Promotion Audit (ADDED 2026-09-06)
 	JITCandidates       map[string]*JITCandidate `json:"jit_candidates"`
 	PromotionAuditLogs  []PromotionAuditLog      `json:"promotion_audit_logs"`
@@ -485,10 +491,16 @@ func (es *ExperienceStore) PersistAll(ctx context.Context) error {
 	roleAffinitiesData, _ := json.MarshalIndent(es.RoleAffinities, "", "  ")
 	decisionPrecedentsData, _ := json.MarshalIndent(es.DecisionPrecedents, "", "  ")
 
-	// Snapshot DB iteration data (shallow copy — values are pointers, safe for read-only DB save)
+	// Snapshot DB iteration data — deep-copy node structs (including Embedding
+	// slice) under RLock to prevent concurrent writers from racing with DB save
+	// outside lock (audit L-5: was shallow pointer copy → inconsistent persisted state).
 	nodesCopy := make([]*ExperienceNode, 0, len(es.Nodes))
 	for _, n := range es.Nodes {
-		nodesCopy = append(nodesCopy, n)
+		cp := *n // copy struct values
+		if n.Embedding != nil {
+			cp.Embedding = append([]float32(nil), n.Embedding...)
+		}
+		nodesCopy = append(nodesCopy, &cp)
 	}
 	edgesCopy := append([]ExperienceEdge(nil), es.Edges...)
 	experienceNodesData, _ := json.MarshalIndent(es.Nodes, "", "  ")

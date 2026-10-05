@@ -106,12 +106,16 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 			// audit H-6: wait for a broadcast event instead of busy-wait polling.
 			// The notify channel wakes instantly on state change; the 5s safety
 			// timeout handles edge cases where Broadcast isn't called.
+			// audit P-8-sibling: use NewTimer + Stop instead of time.After to avoid timer leak.
 			notify := s.GetNotifyChan()
+			timer := time.NewTimer(5 * time.Second)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
 			case <-notify:
-			case <-time.After(5 * time.Second):
+				timer.Stop()
+			case <-timer.C:
 			}
 			continue
 		}
@@ -146,12 +150,16 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 				continue
 			}
 			// audit H-6: wait for broadcast event instead of 200ms busy-wait.
+			// audit P-8-sibling: use NewTimer + Stop instead of time.After.
 			notify := s.GetNotifyChan()
+			timer := time.NewTimer(5 * time.Second)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
 			case <-notify:
-			case <-time.After(5 * time.Second):
+				timer.Stop()
+			case <-timer.C:
 			}
 			continue
 		}

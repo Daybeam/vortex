@@ -465,22 +465,22 @@ type RetentionSettings struct {
 }
 
 type SystemSettings struct {
-	ConfidenceThreshold       float64         `json:"confidence_threshold"`
-	MaxDecisionOutcomes       int             `json:"max_decision_outcomes"`
-	MaxContextKeep            int             `json:"max_context_keep"`
-	MaxToolTurns              int             `json:"max_tool_turns,omitempty"`
-	MaxSpawnDepth             int             `json:"max_spawn_depth,omitempty"`
-	DefaultJITTTL             int             `json:"default_jit_ttl"`
-	SandboxedMemoryMB         int             `json:"sandboxed_memory_mb"`
-	SandboxedCPUSecs          int             `json:"sandboxed_cpu_secs"`
-	MaxLogSizeMB              int             `json:"max_log_size_mb"`
-	CookbookSyncIntervalHours int             `json:"cookbook_sync_interval_hours,omitempty"`
-	CookbookCacheEnabled      bool            `json:"cookbook_cache_enabled,omitempty"`
-	Bookmarks                 []string        `json:"bookmarks,omitempty"`
-	ExternalInterceptors      []string        `json:"external_interceptors,omitempty"`
-	SwarmFallbackDelay        int             `json:"swarm_fallback_delay,omitempty"`
-	SwarmAgentCount           int             `json:"swarm_agent_count,omitempty"` // audit L1: was hardcoded 5
-	DelegationMode            bool            `json:"delegation_mode,omitempty"`
+	ConfidenceThreshold       float64  `json:"confidence_threshold"`
+	MaxDecisionOutcomes       int      `json:"max_decision_outcomes"`
+	MaxContextKeep            int      `json:"max_context_keep"`
+	MaxToolTurns              int      `json:"max_tool_turns,omitempty"`
+	MaxSpawnDepth             int      `json:"max_spawn_depth,omitempty"`
+	DefaultJITTTL             int      `json:"default_jit_ttl"`
+	SandboxedMemoryMB         int      `json:"sandboxed_memory_mb"`
+	SandboxedCPUSecs          int      `json:"sandboxed_cpu_secs"`
+	MaxLogSizeMB              int      `json:"max_log_size_mb"`
+	CookbookSyncIntervalHours int      `json:"cookbook_sync_interval_hours,omitempty"`
+	CookbookCacheEnabled      bool     `json:"cookbook_cache_enabled,omitempty"`
+	Bookmarks                 []string `json:"bookmarks,omitempty"`
+	ExternalInterceptors      []string `json:"external_interceptors,omitempty"`
+	SwarmFallbackDelay        int      `json:"swarm_fallback_delay,omitempty"`
+	SwarmAgentCount           int      `json:"swarm_agent_count,omitempty"` // audit L1: was hardcoded 5
+	DelegationMode            bool     `json:"delegation_mode,omitempty"`
 	// NonInteractive enables unattended mode: when a step would block on a
 	// decision (step failure, low confidence, max-turns, autonomous abort),
 	// the engine auto-selects a conservative default instead of blocking
@@ -488,39 +488,51 @@ type SystemSettings struct {
 	// decisions. Default false = fully interactive (zero behavior change).
 	// human_approval_required is NEVER auto-resolved (deliberate safety gate).
 	// E5 fix (2026-10-02).
-	NonInteractive            bool            `json:"non_interactive,omitempty"`
+	NonInteractive bool `json:"non_interactive,omitempty"`
 	// DecisionDeciderRole: when NonInteractive is on and this is set, the engine
 	// spawns this role to evaluate each blocked decision and choose an option,
 	// instead of falling back to hardcoded conservative defaults. The decider
 	// role's Instruction carries domain-specific decision logic. Empty = use
 	// conservative defaults (defaultNonInteractiveChoice). E5 delegate strategy.
-	DecisionDeciderRole       string          `json:"decision_decider_role,omitempty"`
-	RefBasedHandoffThreshold  int64           `json:"ref_based_handoff_threshold,omitempty"`
-	AntiSlop                  AntiSlopConfig  `json:"anti_slop,omitempty"`
-	StagingEnabled            bool            `json:"staging_enabled,omitempty"`
-	Telemetry                 TelemetryConfig `json:"telemetry,omitempty"`
-	DefaultTaskTokenBudget    int64           `json:"default_task_token_budget,omitempty"`
-	ExperienceGraphBudget     int             `json:"experience_graph_budget,omitempty"`
-	StagingRetentionHours     int             `json:"staging_retention_hours,omitempty"`
+	DecisionDeciderRole string `json:"decision_decider_role,omitempty"`
+	// RequireWriteReason makes the write-reflection gate (#19) a hard veto
+	// instead of a nudge.
+	//
+	// The gate's purpose (see core/spawner.go) is to nudge the model into
+	// reflecting before it writes. Measured on a 4B model (eval §8.51.4-7,
+	// airline task 7): three rounds of prompt rewriting failed to get the
+	// model to supply a well-formed `_reason` argument, and the cost of
+	// continuing to block was that the write NEVER happened (Write Actions
+	// 0/3 in every arm). Default false = record the nudge, let the write
+	// proceed. Set true to restore hard blocking (e.g. when an external
+	// orchestrator does the authorization).
+	RequireWriteReason       bool            `json:"require_write_reason,omitempty"`
+	RefBasedHandoffThreshold int64           `json:"ref_based_handoff_threshold,omitempty"`
+	AntiSlop                 AntiSlopConfig  `json:"anti_slop,omitempty"`
+	StagingEnabled           bool            `json:"staging_enabled,omitempty"`
+	Telemetry                TelemetryConfig `json:"telemetry,omitempty"`
+	DefaultTaskTokenBudget   int64           `json:"default_task_token_budget,omitempty"`
+	ExperienceGraphBudget    int             `json:"experience_graph_budget,omitempty"`
+	StagingRetentionHours    int             `json:"staging_retention_hours,omitempty"`
 	// MaxConcurrentSteps caps the number of steps that may execute in parallel
 	// within a single task graph (audit finding M4). Defaults to 10 if unset.
-	MaxConcurrentSteps        int             `json:"max_concurrent_steps,omitempty"`
-	MaxTaskChars              int             `json:"max_task_chars,omitempty"`
-	ToolRepetitionThreshold   int             `json:"tool_repetition_threshold,omitempty"`
+	MaxConcurrentSteps      int `json:"max_concurrent_steps,omitempty"`
+	MaxTaskChars            int `json:"max_task_chars,omitempty"`
+	ToolRepetitionThreshold int `json:"tool_repetition_threshold,omitempty"`
 	// Reranker configures the optional System One experience reranker.
 	// When BaseURL is empty, the reranker is disabled and retrieval
 	// uses coarse tier ranking only (graceful degradation).
-	Reranker                   RerankerConfig  `json:"reranker,omitempty"`
+	Reranker RerankerConfig `json:"reranker,omitempty"`
 	// SystemOne configures the optional System One decision model for
 	// decision gate, tool router, and failure classification. When BaseURL
 	// is empty, all three points use their existing fallback logic
 	// (graceful degradation — zero behavior change).
-	SystemOne                  SystemOneConfig `json:"systemone,omitempty"`
+	SystemOne SystemOneConfig `json:"systemone,omitempty"`
 	// AllowedOrigins restricts CORS to these origins (audit S-M4). If empty,
 	// defaults to "*" for backward compat (single-machine). Set to explicit
 	// origins (e.g. ["https://app.example.com"]) for multi-tenant deployments.
-	AllowedOrigins            []string        `json:"allowed_origins,omitempty"`
-	Sandbox                   SandboxConfig   `json:"sandbox,omitempty"`
+	AllowedOrigins []string      `json:"allowed_origins,omitempty"`
+	Sandbox        SandboxConfig `json:"sandbox,omitempty"`
 	// EnableAutoRepair controls the VDA self-healing path in HealthCheckInterceptor.
 	// When false (default), missing MCP dependencies are logged and degraded
 	// without executing any local fix scripts. When true, the interceptor will
@@ -538,12 +550,12 @@ type SystemSettings struct {
 	FMCWeakModel string `json:"fmc_weak_model,omitempty"`
 	// FMCBatchIntervalHours controls how often the FMC batch ticker runs.
 	// Defaults to 6 hours if unset/zero, matching the design doc's guidance.
-	FMCBatchIntervalHours int             `json:"fmc_batch_interval_hours,omitempty"`
+	FMCBatchIntervalHours int                `json:"fmc_batch_interval_hours,omitempty"`
 	Notifications         NotificationConfig `json:"notifications,omitempty"`
-	Retention             RetentionSettings `json:"retention,omitempty"`
+	Retention             RetentionSettings  `json:"retention,omitempty"`
 	// OutputDir overrides the default "outputs" directory for task output.
 	// When empty (the default), "outputs" is used. Relative to project root.
-	OutputDir              string           `json:"output_dir,omitempty"`
+	OutputDir string `json:"output_dir,omitempty"`
 
 	// APIKeys enables named-key authentication with per-key owner identity.
 	// When empty (the default), behavior is identical to legacy env-var keys:
@@ -570,8 +582,8 @@ type SystemSettings struct {
 //	}
 type RerankerConfig struct {
 	BaseURL string `json:"base_url,omitempty"` // SystemOne/Jev/Laya endpoint (e.g. http://127.0.0.1:8000)
-	Model   string `json:"model,omitempty"`     // model name (e.g. "laya", "jev")
-	APIKey  string `json:"api_key,omitempty"`   // bearer token (optional for local self-hosted)
+	Model   string `json:"model,omitempty"`    // model name (e.g. "laya", "jev")
+	APIKey  string `json:"api_key,omitempty"`  // bearer token (optional for local self-hosted)
 }
 
 // SystemOneConfig configures the optional System One decision model for
@@ -606,18 +618,18 @@ type SystemOneConfig struct {
 // Script is the path to a .lua/.py/.js/.sh script; Filter optionally restricts
 // which tasks/steps/roles trigger the hook.
 type HookConfig struct {
-	Point    string     `json:"point"`              // chat_habit|chat_pre_turn|chat_post_turn|step_pre|step_post|task_completion|decision_required
-	Script   string     `json:"script"`             // path to hook script
-	TimeoutMs int       `json:"timeout_ms,omitempty"` // 0 = 10s default
-	Filter   HookFilter `json:"filter,omitempty"`
+	Point     string     `json:"point"`                // chat_habit|chat_pre_turn|chat_post_turn|step_pre|step_post|task_completion|decision_required
+	Script    string     `json:"script"`               // path to hook script
+	TimeoutMs int        `json:"timeout_ms,omitempty"` // 0 = 10s default
+	Filter    HookFilter `json:"filter,omitempty"`
 }
 
 // HookFilter restricts when a hook fires. All conditions must match (AND).
 type HookFilter struct {
-	RoleID       string `json:"role_id,omitempty"`        // exact match
-	TaskContains string `json:"task_contains,omitempty"`  // case-insensitive substring
-	TaskType     string `json:"task_type,omitempty"`      // matched against role BaseCapability
-	StepIDGlob   string `json:"step_id_glob,omitempty"`   // glob match on step ID
+	RoleID       string `json:"role_id,omitempty"`       // exact match
+	TaskContains string `json:"task_contains,omitempty"` // case-insensitive substring
+	TaskType     string `json:"task_type,omitempty"`     // matched against role BaseCapability
+	StepIDGlob   string `json:"step_id_glob,omitempty"`  // glob match on step ID
 }
 
 // NamedAPIKey pairs a bearer token with an owner identity and tier.

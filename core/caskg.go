@@ -102,10 +102,19 @@ func (m *CaSKGManager) HookEventBus(bus *EventBus) {
 			m.mu.Lock()
 			m.taskTracking[ev.TaskID] = append(m.taskTracking[ev.TaskID], skillID)
 			// Cap the map to prevent unbounded growth from abandoned tasks.
+			// audit L-2: previously cleared the ENTIRE map, losing tracking for
+			// all active tasks. Now evicts ~25% of entries, preserving the current
+			// task and most others. Random map iteration ≈ random eviction.
 			if len(m.taskTracking) > maxTaskTrackingEntries {
-				current := m.taskTracking[ev.TaskID]
-				m.taskTracking = make(map[string][]string)
-				m.taskTracking[ev.TaskID] = current
+				target := maxTaskTrackingEntries * 3 / 4
+				for k := range m.taskTracking {
+					if len(m.taskTracking) <= target {
+						break
+					}
+					if k != ev.TaskID {
+						delete(m.taskTracking, k)
+					}
+				}
 			}
 			m.mu.Unlock()
 		}

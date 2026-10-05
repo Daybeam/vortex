@@ -22,11 +22,20 @@ import (
 func TestReflectOnTask_CancelledLifecycleCtxReturnsPromptly(t *testing.T) {
 	// Use os.MkdirTemp for all dirs to avoid t.TempDir() auto-cleanup race
 	// with reflection engine goroutines on Windows.
-	tmpDir, _ := os.MkdirTemp("", "reflect-audit-")
-	reg, _ := config.NewRegistry(filepath.Join(tmpDir, "config.json"))
+	tmpDir, err := os.MkdirTemp("", "reflect-audit-")
+	if err != nil {
+		t.Fatalf("os.MkdirTemp failed: %v", err)
+	}
+	reg, err := config.NewRegistry(filepath.Join(tmpDir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
 	ts := &mockSignalTaskStore{}
 	es := mustNewExperienceStore(t, tmpDir, nil, nil, nil, nil)
-	loggerDir, _ := os.MkdirTemp("", "reflect-audit-log-")
+	loggerDir, err := os.MkdirTemp("", "reflect-audit-log-")
+	if err != nil {
+		t.Fatalf("os.MkdirTemp failed: %v", err)
+	}
 	logger := mustNewLogger(t, loggerDir, nil)
 	defer logger.Close()
 

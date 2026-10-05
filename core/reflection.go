@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -294,6 +296,11 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 	re.wg.Add(1)
 	go func() {
 		defer re.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("PANIC in ReflectionEngine crystallization: %v\n%s", r, debug.Stack())
+			}
+		}()
 		gctx, gcancel := context.WithTimeout(lifecycleCtx, 5*time.Minute)
 		defer gcancel()
 		re.ScanForHybridMerge(gctx)

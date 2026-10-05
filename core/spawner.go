@@ -23,6 +23,22 @@ import (
 // ── Package-level compiled regex (PB-3: avoid recompiling per turn) ────────
 var thoughtRe = regexp.MustCompile("(?s)<thought>(.*?)</thought>")
 
+// ── Cached env reads (audit P-3: os.Getenv in hot path does syscall + map
+// scan per call; cached once via sync.OnceValue for zero per-turn overhead.) ─
+var orchestratorDebug = sync.OnceValue(func() bool { return os.Getenv("VORTEX_DEBUG") != "" })
+var coreToolsOrderLast = sync.OnceValue(func() bool { return os.Getenv("VORTEX_CORE_TOOLS_ORDER") == "last" })
+
+// fsOnlyStreakLimitCache caches the ORCH_FS_ONLY_STREAK_LIMIT env var
+// (audit P-3-residual: was read via os.Getenv once per Spawn call).
+// Default 0 = disabled (metrics only).
+var fsOnlyStreakLimitCache = sync.OnceValue(func() int {
+	v := os.Getenv("ORCH_FS_ONLY_STREAK_LIMIT")
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return n
+	}
+	return 0
+})
+
 // ToolCallReasonLLMInitiated is the default reason string for LLM-initiated
 // tool calls. Extracted as a constant so tests can reference the production
 // value instead of a local literal (fixes audit T-C03 / C-15).
@@ -475,12 +491,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// Default 0 = disabled (metrics only). Set ORCH_FS_ONLY_STREAK_LIMIT=5
 	// to enable. Start conservative to avoid aborting legitimate long
 	// reasoning chains that use fs-only tools productively.
-	fsOnlyStreakLimit := 0
-	if v := os.Getenv("ORCH_FS_ONLY_STREAK_LIMIT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			fsOnlyStreakLimit = n
-		}
-	}
+	// audit P-3-residual: cached via fsOnlyStreakLimitCache (sync.OnceValue).
+	fsOnlyStreakLimit := fsOnlyStreakLimitCache()
 
 	maxTurns := s.calculateMaxTurns(ctx, req, role)
 	// applyStrategyBias is now handled inside calculateMaxTurns via PolicyDecider
@@ -617,7 +629,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				"candidate_idx":     candIdx,
 			})
 
-			if os.Getenv("VORTEX_DEBUG") != "" {
+			if orchestratorDebug() {
 				fmt.Fprintf(os.Stderr, "[DEBUG] Calling Provider %s for Task %s Turn %d (candidate %d)\n", pCfg.Model, req.TaskID, turn, candIdx)
 			}
 
@@ -780,13 +792,13 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 						continue // try next candidate provider/model
 					}
 					// No more candidates: fast-fail instead of looping
-				s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
-					"error":   "empty_response_zero_tokens",
-					"details": "all candidates returned 0 completion tokens; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter",
-				})
-				// Persist partial trace for observability (eval §8.48.6).
-				s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
-				return nil, fmt.Errorf("empty_response_zero_tokens")
+					s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+						"error":   "empty_response_zero_tokens",
+						"details": "all candidates returned 0 completion tokens; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter",
+					})
+					// Persist partial trace for observability (eval §8.48.6).
+					s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
+					return nil, fmt.Errorf("empty_response_zero_tokens")
 				}
 				effectiveProviderID = pCfg.PoolID
 				effectiveModelID = pCfg.Model
@@ -1164,6 +1176,14 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 			// StagedWorkspace provides rollback for file operations; this gate
 			// provides accountability for MCP operations that can't be rolled back.
 			if IsWriteMCPTool(call.Name) && reason == ToolCallReasonLLMInitiated {
+				// 🔴 audit DEAD-CODE (2026-10-04): the branch below could never
+				// fire. Reason was already consumed at :1151-1154, which does
+				// `delete(call.Arguments, "_reason")`; the type assertion here
+				// re-reads the SAME (now deleted) key, so hasReason was always
+				// false and EventWriteAuthAllowed was never emitted. The gate
+				// actually worked via the `reason` copy on the outer condition.
+				// Kept (not deleted) so the two paths can be distinguished again
+				// once the reason is captured before deletion.
 				if writeReason, hasReason := call.Arguments["_reason"].(string); hasReason && writeReason != "" {
 					// Model reflected and provided a reason — allow the write.
 					s.logger.Log("EventWriteAuthAllowed", req.TaskID, req.StepID, map[string]any{
@@ -1177,18 +1197,50 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 						"tool": call.Name,
 						"mcp":  mcpID,
 					})
-					res := fmt.Sprintf(
-						"[%s] This tool modifies external state. Before proceeding, reflect:\n"+
-							"  - What is the current state?\n"+
-							"  - Is this write necessary, or should I change strategy?\n"+
-							"To proceed, add a `_reason` argument to the tool call.\n"+
-							"Example: {\"_reason\": \"user confirmed; current status is pending\"}",
+					// 2026-10-04 (eval §8.51.4-§8.51.7, four prompt rounds measured):
+					//
+					// R1 prose + fragmentary example — model complied 18 times, all
+					//    rejected; it pasted the fragment into another argument's
+					//    VALUE with full-width quotes: {"reservation_id": "XEHM4B””, “_reason": "}
+					// R2 full example + two WRONG counter-examples — quotes fixed,
+					//    but it copied a counter-example: {"reservation_id": "XEHM4B", "}
+					// R3 ONE example, no counter-examples — full-width quotes came BACK,
+					//    so the counter-examples were never the cause.
+					//
+					// R4 (this one) — prompt, don't gate. The block comment above
+					// states the purpose is to NUDGE reflection ("What is the
+					// state? Should I change strategy? Is this call necessary?").
+					// It is not an authorization check — the engine has no way to
+					// know whether the customer consented. Three prompt rounds
+					// failed to make a 4B model satisfy the format, and the cost
+					// of continuing to block is that the write NEVER happens
+					// (airline task 7: Write Actions 0/3 across all four arms).
+					// So: keep the nudge in the tool result, record the intent,
+					// and let the call proceed. Guidance preserved, veto removed.
+					// Set system.require_write_reason=true to restore hard blocking.
+					nudge := fmt.Sprintf(
+						"[%s] This call changes external state. Before you rely on it, note: "+
+							"what is the current state, and is this write necessary? "+
+							"Proceeding without a `_reason`.",
 						call.Name)
-					interaction.Result = res
+					interaction.Result = nudge
 					trace = append(trace, interaction)
-					env := s.processor.Wrap(call.Name, res, "error", "orchestrator", reason)
-					toolResults = append(toolResults, env.ToMarkdown(call.Name))
-					continue
+					if s.registry != nil && s.registry.System.RequireWriteReason {
+						nudge = fmt.Sprintf(
+							"[%s] AUTHORIZATION REQUIRED — this call changes external state.\n"+
+								"Add a top-level key named \"_reason\" whose value is one short sentence.\n"+
+								"Call it again with this exact shape:\n"+
+								"  {\"reservation_id\": \"<the id>\", \"_reason\": \"<why this write is correct>\"}",
+							call.Name)
+						interaction.Result = nudge
+						env := s.processor.Wrap(call.Name, nudge, "error", "orchestrator", reason)
+						toolResults = append(toolResults, env.ToMarkdown(call.Name))
+						continue
+					}
+					s.logger.Log("EventWriteAuthNudged", req.TaskID, req.StepID, map[string]any{
+						"tool": call.Name,
+						"mcp":  mcpID,
+					})
 				}
 			}
 

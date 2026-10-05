@@ -116,41 +116,66 @@ func (es *ExperienceStore) RecordEnvironmentIssue(ctx context.Context, cmd strin
 // into orchestrator_invoke). It remains in the interface for future
 // admin re-embedding tool wiring.
 func (es *ExperienceStore) Reindex(ctx context.Context, provider interfaces.Provider, modelID string) error {
+	// audit P-1: previously held es.Mu.Lock (write lock) across the entire
+	// loop including provider.Embed network calls, blocking every reader and
+	// writer for the full duration (1K patterns × 200ms = 200s lockout).
+	// Also fixed latent deadlock: PersistAll acquires RLock which deadlocks
+	// while Lock is held by the same goroutine. Reindex has zero call sites
+	// today, so this was never triggered — but the fix prevents future hangs.
+
+	// Phase 1: snapshot patterns needing re-index under write lock.
+	type reindexItem struct {
+		id   string
+		text string
+	}
 	es.Mu.Lock()
-	defer es.Mu.Unlock()
-
 	total := len(es.TaskPatterns)
-	count := 0
-
+	var items []reindexItem
 	for id, p := range es.TaskPatterns {
-		// Only re-index if model changed OR embedding missing
 		if p.EmbeddingModel == modelID && len(p.Embedding) > 0 {
 			continue
 		}
-
 		text := p.SourceText
 		if text == "" {
-			// Fallback: use task type as source text if original is lost
-			text = p.TaskType
+			text = p.TaskType // fallback
 		}
+		items = append(items, reindexItem{id: id, text: text})
+	}
+	es.Mu.Unlock()
 
-		emb, err := provider.Embed(ctx, text)
+	// Phase 2: embed outside lock (network calls).
+	type reindexResult struct {
+		id   string
+		emb  []float32
+		text string
+	}
+	var results []reindexResult
+	for _, item := range items {
+		emb, err := provider.Embed(ctx, item.text)
 		if err != nil {
-			log.Printf("[ExperienceStore] Failed to re-index pattern %s: %v", id, err)
+			log.Printf("[ExperienceStore] Failed to re-index pattern %s: %v", item.id, err)
 			continue
 		}
-
-		p.Embedding = emb
-		p.EmbeddingModel = modelID
-		es.TaskPatterns[id] = p
-		count++
-
-		// Self-healing: Ensure SourceText is preserved for future migrations
-		if p.SourceText == "" {
-			p.SourceText = text
-			es.TaskPatterns[id] = p
-		}
+		results = append(results, reindexResult{id: item.id, emb: emb, text: item.text})
 	}
+
+	// Phase 3: write results back under write lock.
+	count := 0
+	es.Mu.Lock()
+	for _, r := range results {
+		p, ok := es.TaskPatterns[r.id]
+		if !ok {
+			continue // pattern was deleted concurrently
+		}
+		p.Embedding = r.emb
+		p.EmbeddingModel = modelID
+		if p.SourceText == "" {
+			p.SourceText = r.text
+		}
+		es.TaskPatterns[r.id] = p
+		count++
+	}
+	es.Mu.Unlock()
 
 	log.Printf("[ExperienceStore] Re-indexing complete. Migrated %d/%d patterns to %s", count, total, modelID)
 	return es.PersistAll(ctx)
