@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -124,6 +126,57 @@ func (r *Registry) loadWithFallbackLocked() error {
 	return nil
 }
 
+// validSystemKeys returns the set of valid JSON field names for SystemSettings,
+// extracted from struct tags via reflection. Computed once at init time.
+var validSystemKeys = func() map[string]bool {
+	m := make(map[string]bool)
+	t := reflect.TypeOf(SystemSettings{})
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		if tag == "-" || tag == "" {
+			continue
+		}
+		if idx := strings.IndexByte(tag, ','); idx >= 0 {
+			tag = tag[:idx]
+		}
+		if tag != "" {
+			m[tag] = true
+		}
+	}
+	return m
+}()
+
+// warnInvalidSystemKeys checks the raw config JSON for keys under "system" that
+// don't match any SystemSettings struct field. These are silently ignored by
+// encoding/json — the warning makes the misconfiguration visible at startup.
+// General: uses reflection, so it automatically covers all current and future
+// struct fields. Best-effort: parse errors are silently ignored.
+func warnInvalidSystemKeys(data []byte) {
+	var raw map[string]any
+	if json.Unmarshal(data, &raw) != nil {
+		return
+	}
+	sys, ok := raw["system"].(map[string]any)
+	if !ok {
+		return
+	}
+	for key := range sys {
+		if !validSystemKeys[key] {
+			log.Printf("WARN: config: system.%s is not a valid key and will be ignored. Valid system keys: %s", key, strings.Join(sortedSystemKeys(), ", "))
+		}
+	}
+}
+
+// sortedSystemKeys returns valid system keys sorted alphabetically for stable log output.
+func sortedSystemKeys() []string {
+	keys := make([]string, 0, len(validSystemKeys))
+	for k := range validSystemKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (r *Registry) loadLocked() error {
 	data, err := os.ReadFile(r.configPath)
 	if err != nil {
@@ -135,6 +188,11 @@ func (r *Registry) loadLocked() error {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}
+
+	// P1-3: warn if system.max_context_window is set — it's a non-existent key
+	// that gets silently ignored. The valid key is providers.*.max_context_window.
+	// (eval author hit this trap; general usability guard, no behavior change.)
+	warnInvalidSystemKeys(data)
 
 	if err := checkSplitLayoutVersion(cfg.SplitLayout); err != nil {
 		return err
