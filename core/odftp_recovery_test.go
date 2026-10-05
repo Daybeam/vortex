@@ -22,6 +22,11 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 	defer logger.Close()
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
+	// Cancel lifecycle context to prevent run() goroutines (started by
+	// SubmitDecision) from racing with this test's direct handleOutput calls.
+	// run() checks ctx.Done() at the top of each loop iteration and returns
+	// immediately, so it never touches graph/step state.
+	engine.lifecycleCancel()
 
 	taskID := "task_test_odftp"
 	stepID := "step_1"
@@ -74,6 +79,9 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 
 	// Reset and try retry_with_context
 	engine.handleOutput(graph, step, &SpawnResult{Output: *output})
+	if len(graph.PendingDecisions) == 0 {
+		t.Fatalf("Expected pending decision after handleOutput, got 0 (graph status: %s)", graph.Status)
+	}
 	decisionID = graph.PendingDecisions[0].ID
 
 	err = engine.SubmitDecision(taskID, decisionID, "retry_with_context:API_KEY_123")
@@ -86,6 +94,9 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 
 	// Reset and try escalate_model
 	engine.handleOutput(graph, step, &SpawnResult{Output: *output})
+	if len(graph.PendingDecisions) == 0 {
+		t.Fatalf("Expected pending decision after handleOutput, got 0 (graph status: %s)", graph.Status)
+	}
 	decisionID = graph.PendingDecisions[0].ID
 
 	err = engine.SubmitDecision(taskID, decisionID, "escalate_model:claude-3-5-sonnet")
