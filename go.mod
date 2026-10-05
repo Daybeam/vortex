@@ -7,7 +7,7 @@ require (
 	github.com/dop251/goja v0.0.0-20260911104922-fabc3b8078ad
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v1.1.1
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/seiflotfy/cuckoofilter v0.0.0-20240715131351-a2f2c23f1771
 	github.com/yuin/gopher-lua v1.1.2
 	golang.org/x/text v0.39.0
