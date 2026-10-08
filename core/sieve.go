@@ -1,13 +1,16 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/codeintel"
+	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -28,6 +31,14 @@ type Sieve struct {
 	// contracts, SOP rules, or invariant declarations from being silently
 	// AST-collapsed when they happen to carry a .go-looking value.
 	ProtectedPrefixes []string
+
+	// systemOneProvider is the optional System One decision model for the
+	// Sieve's Noul/Score safety check (M5). Nil-safe: set via
+	// SetSystemOneProvider. When non-nil and EnableSieve is true,
+	// InspectWithSystemOne asks the model a "noul" question to judge
+	// output safety. See docs/systemone-provider-design.md §6.2 + §8 M5.
+	systemOneProvider *providers.SystemOneProvider
+	systemOneCfg      config.SystemOneConfig
 }
 
 const (
@@ -329,7 +340,14 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 	// making tool calls, and ClearHistory is called on task completion.
 	if len(s.toolHistory) > maxToolHistoryTasks {
 		current := s.toolHistory[taskID]
-		s.toolHistory = make(map[string][]string)
+		// audit P-MED-8: partial eviction instead of full clear to prevent cache stampede
+		i := 0
+		for k := range s.toolHistory {
+			i++
+			if i%4 == 0 {
+				delete(s.toolHistory, k)
+			}
+		}
 		s.toolHistory[taskID] = current
 	}
 
@@ -343,4 +361,82 @@ func (s *Sieve) ClearHistory(taskID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.toolHistory, taskID)
+}
+
+// SetSystemOneProvider injects the System One decision model for the Sieve's
+// Noul/Score safety check (M5). Nil-safe: when provider is nil or EnableSieve
+// is false, InspectWithSystemOne degrades to the heuristic Inspect.
+func (s *Sieve) SetSystemOneProvider(p *providers.SystemOneProvider, cfg config.SystemOneConfig) {
+	if s == nil {
+		return
+	}
+	s.systemOneProvider = p
+	s.systemOneCfg = cfg
+}
+
+// InspectWithSystemOne runs the heuristic Inspect first, then — if the
+// heuristics pass and a System One provider is configured — asks the model
+// a "noul" question to judge whether the output is safe and correct.
+// Returns (isValid, reason). When System One is not configured or disabled,
+// this is equivalent to Inspect.
+func (s *Sieve) InspectWithSystemOne(ctx context.Context, text, requiredSchema string) (bool, string) {
+	// Step 1: heuristic checks (repetition, schema) — always run.
+	valid, reason := s.Inspect(text, requiredSchema)
+	if !valid {
+		return false, reason
+	}
+
+	// Step 2: System One Noul safety check (optional).
+	if s.systemOneProvider == nil || !s.systemOneCfg.EnableSieve {
+		return true, ""
+	}
+
+	// Build a "noul" question: "Is this output safe and correct?"
+	questions := map[string]any{
+		"safety": map[string]any{
+			"type":         "noul",
+			"instructions": "Is this output safe, correct, and free of errors or hallucinations?",
+			"criteria": map[string]string{
+				"true":  "output is safe and correct",
+				"false": "output is unsafe, incorrect, or contains errors",
+			},
+		},
+	}
+
+	req := providers.CompleteRequest{
+		User:        text,
+		Constraints: map[string]any{"questions": questions},
+	}
+
+	// 3s timeout — System One should be millisecond-level; this is a hard cap.
+	sctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	resp, err := s.systemOneProvider.Complete(sctx, req)
+	if err != nil {
+		// On error, trust the heuristic result (already passed).
+		return true, ""
+	}
+
+	minConf := s.systemOneCfg.MinConfidence
+	if minConf == 0 {
+		minConf = 0.5
+	}
+
+	for _, tc := range resp.ToolCalls {
+		if tc.Name != "safety" {
+			continue
+		}
+		noul, _ := tc.Arguments["noul"].(float64)
+		confidence, _ := tc.Arguments["confidence"].(float64)
+		if confidence < minConf {
+			// Low confidence — trust heuristics.
+			return true, ""
+		}
+		if noul < 0.5 {
+			return false, fmt.Sprintf("systemone sieve: output rejected (noul=%.2f, conf=%.2f)", noul, confidence)
+		}
+	}
+
+	return true, ""
 }

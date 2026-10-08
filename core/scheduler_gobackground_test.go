@@ -70,6 +70,8 @@ func TestGoBackground_StopWaits(t *testing.T) {
 
 // TestGoBackground_ConcurrentLaunches verifies that multiple goBackground
 // goroutines are all tracked and Stop() waits for all of them.
+// This test fails if goBackground is replaced with a plain `go` statement
+// (audit T-GATE-4: original test had zero assertions).
 func TestGoBackground_ConcurrentLaunches(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), nil)
 	t.Cleanup(func() { logger.Close() })
@@ -90,13 +92,52 @@ func TestGoBackground_ConcurrentLaunches(t *testing.T) {
 	var doneCount sync.WaitGroup
 	doneCount.Add(n)
 
+	// blocked ensures all goroutines are waiting on lifecycleCtx.Done()
+	// before we call Stop().
+	var blocked sync.WaitGroup
+	blocked.Add(n)
+
 	for i := 0; i < n; i++ {
 		engine.goBackground(func() {
+			blocked.Done()
 			<-lifecycleCtx.Done()
 			doneCount.Done()
 		})
 	}
+	blocked.Wait() // all goroutines are now blocking
 
-	engine.Stop()
-	doneCount.Wait()
+	// Stop() must NOT return before all goroutines drain.
+	stopDone := make(chan struct{})
+	go func() {
+		engine.Stop()
+		close(stopDone)
+	}()
+
+	allDone := make(chan struct{})
+	go func() {
+		doneCount.Wait()
+		close(allDone)
+	}()
+
+	select {
+	case <-stopDone:
+		// Stop() returned — verify goroutines already finished.
+		select {
+		case <-allDone:
+			// Success: goroutines drained before or with Stop().
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("Stop() returned before all background goroutines drained — " +
+				"goBackground is not tracking goroutines (audit T-GATE-4)")
+		}
+	case <-allDone:
+		// Goroutines finished first — Stop() should follow shortly.
+		select {
+		case <-stopDone:
+			// Success
+		case <-time.After(5 * time.Second):
+			t.Fatal("Stop() did not complete within 5s after goroutines drained")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("test timed out")
+	}
 }

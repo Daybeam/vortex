@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -36,6 +37,8 @@ const (
 	EventDecisionAutoResolved    EventType = "decision_auto_resolved"
 	EventTaskCompleted           EventType = "task_completed"
 	EventTaskFailed              EventType = "task_failed"
+	EventTaskSuspended           EventType = "task_suspended"
+	EventTaskResumed             EventType = "task_resumed"
 	EventProviderCallStarted     EventType = "provider_call_started"
 	EventProviderFallback        EventType = "provider_fallback"
 	EventSwarmWatchdogTriggered  EventType = "swarm_watchdog_triggered"
@@ -127,8 +130,8 @@ func NewLogger(logDir string, sys *config.SystemSettings) (*Logger, error) {
 
 func (l *Logger) Log(event EventType, taskID, stepID string, detail map[string]any) {
 	l.closedMu.RLock()
-	defer l.closedMu.RUnlock()
 	if l.closed {
+		l.closedMu.RUnlock()
 		return
 	}
 	select {
@@ -141,6 +144,19 @@ func (l *Logger) Log(event EventType, taskID, stepID string, detail map[string]a
 	}:
 	default:
 		atomic.AddUint64(&l.droppedEvents, 1)
+	}
+	l.closedMu.RUnlock()
+	// Audit L7 / observability: also broadcast to the global EventBus so
+	// fire-and-forget subscribers (webhook_notifier, chat callback, audit
+	// sinks) see every state transition, not just the handful that the
+	// scheduler calls s.publishEvent for explicitly. Logger is in package
+	// core, so DefaultBus is directly reachable. Publish is called after
+	// releasing closedMu to avoid holding the logger's read lock during
+	// subscriber callbacks (which could call logger.Close and deadlock).
+	// Events without a TaskID are skipped to avoid noise for internal
+	// logging.
+	if taskID != "" {
+		DefaultBus.Publish(NewAgentEvent(taskID, stepID, string(event), detail))
 	}
 }
 
@@ -229,6 +245,11 @@ func (l *Logger) UnsubscribeEvents(ch <-chan LogEvent) {
 }
 
 func (l *Logger) writer() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[logger] goroutine panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	defer l.wg.Done()
 	for ev := range l.ch {
 		l.write(ev)
@@ -242,7 +263,14 @@ func (l *Logger) recordFileSizeCacheEntry(path string) int64 {
 	cachedSize, hasSize := l.fileSizeCache[path]
 	if !hasSize {
 		if len(l.fileSizeCache) >= l.maxFileSizeCacheEntries {
-			l.fileSizeCache = make(map[string]int64)
+			// audit P-MED-8: partial eviction instead of full clear to prevent cache stampede
+			i := 0
+			for k := range l.fileSizeCache {
+				i++
+				if i%4 == 0 {
+					delete(l.fileSizeCache, k)
+				}
+			}
 		}
 		if info, err := os.Stat(path); err == nil {
 			cachedSize = info.Size()
@@ -333,6 +361,11 @@ func (l *Logger) rotate(path string) {
 	// audit M6: track with l.wg so Close() waits for compression to finish
 	l.wg.Add(1)
 	go func(src, dest string) {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[logger] goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		defer l.wg.Done()
 		// use timestamp to prevent overwrite
 		timestamp := time.Now().Format("20060102-150405")

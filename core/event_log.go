@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,11 +38,11 @@ func NewAgentEvent(taskID, stepID, eventType string, payload map[string]any) Age
 
 // GlobalEventLogger writes events to a central trajectory log file.
 type GlobalEventLogger struct {
-	path    string
-	ch      chan AgentEvent
-	wg      sync.WaitGroup
-	done    chan struct{}
-	closed  uint32 // atomic flag: 1 = closed (audit finding M3)
+	path   string
+	ch     chan AgentEvent
+	wg     sync.WaitGroup
+	done   chan struct{}
+	closed uint32 // atomic flag: 1 = closed (audit finding M3)
 	dropped uint64 // atomic counter for dropped events (audit finding M2)
 }
 
@@ -93,6 +94,11 @@ func (l *GlobalEventLogger) Close() {
 }
 
 func (l *GlobalEventLogger) writer() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[event-log] goroutine panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	defer l.wg.Done()
 	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {

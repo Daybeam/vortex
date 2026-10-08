@@ -6,11 +6,16 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daybeam/vortex/pkg/filters"
 	"github.com/daybeam/vortex/schemas"
 )
+
+// envAPIKeyCache caches os.Getenv results for API key env vars.
+// audit PERF-HIGH-2 (2026-10-08): eliminates per-LLM-request syscall.
+var envAPIKeyCache sync.Map
 
 func (p *ProviderConfig) ResolveAPIKey(sp schemas.SecretProvider) string {
 	if p.APIKey != "" {
@@ -21,7 +26,13 @@ func (p *ProviderConfig) ResolveAPIKey(sp schemas.SecretProvider) string {
 			val, _ := sp.GetSecret(p.APIKeyEnv)
 			return val
 		}
-		return os.Getenv(p.APIKeyEnv)
+		// audit PERF-HIGH-2: cache os.Getenv — called on every LLM request.
+		if v, ok := envAPIKeyCache.Load(p.APIKeyEnv); ok {
+			return v.(string)
+		}
+		val := os.Getenv(p.APIKeyEnv)
+		envAPIKeyCache.Store(p.APIKeyEnv, val)
+		return val
 	}
 	return ""
 }
@@ -197,7 +208,20 @@ type Skill struct {
 	PromptsDir    string        `json:"prompts_dir,omitempty"`
 	ToolsDir      string        `json:"tools_dir,omitempty"`
 
+	// Multi-capability tags (symmetric with MCP.Provides).
+	Provides []string `json:"provides,omitempty"`
+	// Directory content manifest — path list only, no file contents.
+	Manifest *SkillManifest `json:"manifest,omitempty"`
+
 	Filter filters.ToolFilter `json:"-"`
+}
+
+// SkillManifest is a path-only listing of a skill's directory contents.
+// It stores relative paths (e.g. "references/xxx.md"), never file contents.
+type SkillManifest struct {
+	References []string `json:"references,omitempty"` // "references/xxx.md"
+	Scripts    []string `json:"scripts,omitempty"`    // "scripts/xxx.sh"
+	Assets     []string `json:"assets,omitempty"`     // "assets/xxx.png"
 }
 
 func (m *MCPDef) ResolveForPlatform() (command string, args []string, dir string, env map[string]string) {
@@ -611,6 +635,7 @@ type SystemOneConfig struct {
 	EnableDecisionGate    bool    `json:"enable_decision_gate,omitempty"`
 	EnableToolRouter      bool    `json:"enable_tool_router,omitempty"`
 	EnableFailureClassify bool    `json:"enable_failure_classify,omitempty"`
+	EnableSieve           bool    `json:"enable_sieve,omitempty"`
 	MinConfidence         float64 `json:"min_confidence,omitempty"`
 }
 

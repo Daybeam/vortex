@@ -625,12 +625,12 @@ func (s *DirectedEngine) GetRoleAffinity(roleID, stepID string) float64 {
 
 	// Determine task type (capability)
 	taskType := "unknown"
-	s.Mu.RLock()
+	s.registry.Mu.RLock()
 	role := s.registry.Roles[targetStep.RoleID]
 	if role != nil {
 		taskType = role.BaseCapability
 	}
-	s.Mu.RUnlock()
+	s.registry.Mu.RUnlock()
 
 	return s.expStore.QueryRoleAffinity(s.lifecycleCtx, roleID, taskType)
 }

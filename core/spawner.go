@@ -28,6 +28,10 @@ var thoughtRe = regexp.MustCompile("(?s)<thought>(.*?)</thought>")
 var orchestratorDebug = sync.OnceValue(func() bool { return os.Getenv("VORTEX_DEBUG") != "" })
 var coreToolsOrderLast = sync.OnceValue(func() bool { return os.Getenv("VORTEX_CORE_TOOLS_ORDER") == "last" })
 
+// audit P-MED-4: cache env vars read per-turn in the spawner loop.
+var disableForceTool = sync.OnceValue(func() bool { return os.Getenv("ORCH_DISABLE_FORCE_TOOL") == "1" })
+var evalObsEnabled = sync.OnceValue(func() bool { return os.Getenv("ORCH_EVAL_OBS") != "" })
+
 // fsOnlyStreakLimitCache caches the ORCH_FS_ONLY_STREAK_LIMIT env var
 // (audit P-3-residual: was read via os.Getenv once per Spawn call).
 // Default 0 = disabled (metrics only).
@@ -159,12 +163,16 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 			esStore.SetEmbeddingClient(hub.GetEmbeddingClient())
 		}
 
-		// Wire up embedding client for ToolRouter hybrid search.
-		spawner.toolRouter.SetEmbedClient(NewHubEmbeddingClient(hub))
-		spawner.toolRouter.RefreshToolEmbeddings(context.Background(), reg)
-		reg.OnReload(func() {
-			spawner.toolRouter.RefreshToolEmbeddings(context.Background(), reg)
-		})
+	// Wire up embedding client for ToolRouter hybrid search.
+	spawner.toolRouter.SetEmbedClient(NewHubEmbeddingClient(hub))
+	refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
+	spawner.toolRouter.RefreshToolEmbeddings(refreshCtx, reg)
+	refreshCancel()
+	reg.OnReload(func() {
+		reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
+		defer reloadCancel()
+		spawner.toolRouter.RefreshToolEmbeddings(reloadCtx, reg)
+	})
 	}
 
 	spawner.CaSKG.HookEventBus(DefaultBus)
@@ -277,6 +285,22 @@ func (s *Spawner) Spawn(ctx context.Context, req *SpawnRequest) (*SpawnResult, e
 		s.recordCapabilityOutcome(ctx, req, result, time.Since(start))
 	}
 	return result, err
+}
+
+// shouldRetryEmptyResponse increments the empty-response retry counter and
+// decides whether the caller should retry the turn (returns true, nil) or
+// fail fast (returns false, err). The error is non-nil only when retries
+// are exhausted.
+//
+// Regression: eval §10.4 — Xunfei MaaS returns intermittent empty responses
+// (~40% of requests). Without retry, a single empty response kills the step.
+// With maxEmptyRespRetries=2, the effective failure rate drops to ~6.4%.
+func shouldRetryEmptyResponse(retries *int, max int) (bool, error) {
+	*retries++
+	if *retries <= max {
+		return true, nil
+	}
+	return false, fmt.Errorf("empty_response_zero_tokens: exhausted %d retries", max)
 }
 
 // doSpawn is the core spawning logic, wrapped by interceptors.
@@ -500,6 +524,13 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	var effectiveProviderID string
 	var effectiveModelID string
 
+	// Empty response retry: retry the turn when the provider returns HTTP 200
+	// but zero tokens (intermittent server-side empty response, e.g. Xunfei MaaS).
+	// See eval §10.4: ~40% of Xunfei responses had non-zero usage but empty content.
+	const maxEmptyRespRetries = 2
+	emptyRespRetries := 0
+
+turnLoop:
 	for turn := 0; turn < maxTurns; turn++ {
 		// Abort if the task context was cancelled (e.g. CancelTask or shutdown).
 		if ctx.Err() != nil {
@@ -597,7 +628,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 			// when the model writes text early, tell it to keep calling tools.
 			// This preserves the model's ability to decide when it's done.
 			constraints := make(map[string]any)
-			forceTool := turn < maxTurns-1 && len(trace) == 0
+			forceTool := turn < maxTurns-1 && len(trace) == 0 && !disableForceTool()
 			if forceTool {
 				toolCallSchema := map[string]any{
 					"type": "array",
@@ -788,17 +819,28 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 							return ""
 						}(),
 					})
-					if candIdx < len(candidateConfigs)-1 {
-						continue // try next candidate provider/model
-					}
-					// No more candidates: fast-fail instead of looping
-					s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
-						"error":   "empty_response_zero_tokens",
-						"details": "all candidates returned 0 completion tokens; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter",
+				if candIdx < len(candidateConfigs)-1 {
+					continue // try next candidate provider/model
+				}
+				// No more candidates: retry before giving up (handles intermittent
+				// server-side empty responses, e.g. Xunfei MaaS §10.4).
+				retry, exhaustErr := shouldRetryEmptyResponse(&emptyRespRetries, maxEmptyRespRetries)
+				if retry {
+					s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+						"error":  "empty_response_zero_tokens",
+						"retry":  emptyRespRetries,
+						"max":    maxEmptyRespRetries,
 					})
-					// Persist partial trace for observability (eval §8.48.6).
-					s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
-					return nil, fmt.Errorf("empty_response_zero_tokens")
+					continue turnLoop
+				}
+				// Retries exhausted: fast-fail
+				s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+					"error":   "empty_response_zero_tokens",
+					"details": fmt.Sprintf("all candidates returned 0 completion tokens after %d retries; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter, provider intermittent empty response", maxEmptyRespRetries),
+				})
+				// Persist partial trace for observability (eval §8.48.6).
+				s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
+				return nil, exhaustErr
 				}
 				effectiveProviderID = pCfg.PoolID
 				effectiveModelID = pCfg.Model
@@ -938,6 +980,24 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 				consecutiveParseFailures = 0
 			}
 
+			// [EVAL-OBS] 2026-10-07 观测打印：定位「一个 τ² turn 内引擎到底跑了几轮、
+			// 每轮调了什么、为什么没退出」。由 ORCH_EVAL_OBS 环境变量开启，默认关闭。
+			if evalObsEnabled() {
+				fmt.Fprintf(os.Stderr, "[EVAL-OBS] task=%s step=%s turn=%d/%d calls=%d trace=%d status=%s conf=%.2f parse=%v(consec=%d) noTool=%v lowConf=%v\n",
+					req.TaskID, req.StepID, turn+1, maxTurns, len(resp.ToolCalls), len(trace),
+					output.Status, output.Confidence, parseFailed, consecutiveParseFailures, noToolCallsYet, selfReportedLowConfidence)
+				for _, tc := range resp.ToolCalls {
+					fmt.Fprintf(os.Stderr, "[EVAL-OBS]   -> %s %v\n", tc.Name, tc.Arguments)
+				}
+				if strings.TrimSpace(cleanText) != "" {
+					txt := strings.TrimSpace(cleanText)
+					if len(txt) > 200 {
+						txt = txt[:200]
+					}
+					fmt.Fprintf(os.Stderr, "[EVAL-OBS]   text: %s\n", strings.ReplaceAll(txt, "\n", " | "))
+				}
+			}
+
 			// P1 fix (2026-10-03, eval §0.5): Spin breaker.
 			// After N consecutive parse failures, stop spinning and return the
 			// best partial result. Burning the entire turn budget on identical
@@ -980,7 +1040,11 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 			// results at the exit gate and trigger auto-refine. This preserves
 			// the model's ability to reason between tool calls, which is
 			// essential for multi-step DAGs.
-			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) {
+			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) && !disableForceTool() {
+				if evalObsEnabled() {
+					fmt.Fprintf(os.Stderr, "[EVAL-OBS] NUDGE triggered turn=%d noTool=%v lowConf=%v parse=%v\n",
+						turn+1, noToolCallsYet, selfReportedLowConfidence, parseFailed)
+				}
 				msg := "[SYSTEM]: You have not executed any tools yet. Please proceed to actually call the necessary tool(s) now."
 				if output.Status == schemas.StatusCapabilityRequired && len(output.RequiredCapabilities) > 0 {
 					msg = fmt.Sprintf("[SYSTEM]: Before finalizing capability_required, double-check your bound tools. If none fulfill %v, explain and finalize.", output.RequiredCapabilities)

@@ -20,6 +20,19 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
+// mcpEnvCache caches os.Getenv results for MCP API key env vars
+// (audit P-MED-5: was called per remote MCP tool invocation).
+var mcpEnvCache sync.Map
+
+func cachedGetenv(key string) string {
+	if v, ok := mcpEnvCache.Load(key); ok {
+		return v.(string)
+	}
+	v := os.Getenv(key)
+	mcpEnvCache.Store(key, v)
+	return v
+}
+
 // MCPConnectionManager isolates all stdio subprocess handling and JSON-RPC
 // transport from the agent execution loop. Extracted from Spawner (Phase 2
 // of SPAWNER_REFACTORING_PLAN.md) to improve maintainability and testability.
@@ -150,7 +163,7 @@ func resolveMCPURL(mcp *config.MCPDef) (string, error) {
 	if mcp.APIKeyEnv == "" {
 		return "", fmt.Errorf("mcp %q has url_auth_placeholder set but no api_key_env configured", mcp.ID)
 	}
-	secret := os.Getenv(mcp.APIKeyEnv)
+	secret := cachedGetenv(mcp.APIKeyEnv)
 	if secret == "" {
 		return "", fmt.Errorf("mcp %q requires env var %q for its URL auth placeholder, but it is unset or empty", mcp.ID, mcp.APIKeyEnv)
 	}
@@ -212,7 +225,7 @@ func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mc
 		if mcp.AuthHeaderName == "" || mcp.APIKeyEnv == "" {
 			return
 		}
-		if secret := os.Getenv(mcp.APIKeyEnv); secret != "" {
+		if secret := cachedGetenv(mcp.APIKeyEnv); secret != "" {
 			req.Header.Set(mcp.AuthHeaderName, mcp.AuthHeaderPrefix+secret)
 		}
 	}
@@ -308,7 +321,7 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 		if mcp.APIKeyEnv == "" {
 			return nil, fmt.Errorf("discoverRemoteMCPTools: mcp %q has auth_header_name set but no api_key_env configured", mcp.ID)
 		}
-		secret := os.Getenv(mcp.APIKeyEnv)
+		secret := cachedGetenv(mcp.APIKeyEnv)
 		if secret == "" {
 			return nil, fmt.Errorf("discoverRemoteMCPTools: mcp %q requires env var %q for auth, but it is unset or empty", mcp.ID, mcp.APIKeyEnv)
 		}
@@ -412,7 +425,7 @@ func (m *MCPConnectionManager) callRemoteMCPTool(ctx context.Context, mcp *confi
 		if mcp.APIKeyEnv == "" {
 			return nil, fmt.Errorf("callRemoteMCPTool: mcp %q has auth_header_name set but no api_key_env configured", mcp.ID)
 		}
-		secret := os.Getenv(mcp.APIKeyEnv)
+		secret := cachedGetenv(mcp.APIKeyEnv)
 		if secret == "" {
 			return nil, fmt.Errorf("callRemoteMCPTool: mcp %q requires env var %q for auth, but it is unset or empty", mcp.ID, mcp.APIKeyEnv)
 		}

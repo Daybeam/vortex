@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -90,6 +93,11 @@ func (t *FMCBatchTicker) Stop() {
 }
 
 func (t *FMCBatchTicker) loop() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[fmc-ticker] goroutine panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	ticker := time.NewTicker(t.interval)
 	defer ticker.Stop()
 	for {

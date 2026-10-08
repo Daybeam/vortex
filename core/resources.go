@@ -53,7 +53,14 @@ const maxResourceCacheEntries = 1000 // cap on in-memory cache; clearing is safe
 func (l *ResourceLoader) cacheSetLocked(key, value string) {
 	l.cache[key] = value
 	if len(l.cache) > maxResourceCacheEntries {
-		l.cache = make(map[string]string)
+		// audit P-MED-8: partial eviction instead of full clear to prevent cache stampede
+		i := 0
+		for k := range l.cache {
+			i++
+			if i%4 == 0 {
+				delete(l.cache, k)
+			}
+		}
 		l.cache[key] = value
 	}
 }
