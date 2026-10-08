@@ -19,6 +19,7 @@ const (
 	chatEventBufferSize = 256
 	maxSeenMsgEntries   = 10000 // cap on idempotency key set; clearing is safe (worst case: a very old retry gets reprocessed)
 	maxCachedSessions   = 1000  // cap on in-memory session cache; sessions are persisted to disk/SQLite so eviction is safe
+	maxChatMessages     = 5000  // audit P-MED-9: cap on in-memory messages; persisted to disk/SQLite so eviction is safe
 )
 
 // ChatSession holds a chat thread's messages as a tree (map by ID) and its
@@ -104,7 +105,14 @@ func (s *ChatSession) AppendUserMessage(messageID, content, parentID string) boo
 		// Clearing is safe: the worst case is a very old retry gets
 		// reprocessed, which just appends a duplicate message.
 		if len(s.seenMsg) > maxSeenMsgEntries {
-			s.seenMsg = make(map[string]bool)
+			// audit P-MED-8: partial eviction instead of full clear to prevent cache stampede
+			i := 0
+			for k := range s.seenMsg {
+				i++
+				if i%4 == 0 {
+					delete(s.seenMsg, k)
+				}
+			}
 			s.seenMsg[messageID] = true
 		}
 	}
@@ -119,6 +127,23 @@ func (s *ChatSession) AppendUserMessage(messageID, content, parentID string) boo
 		CreatedAt: time.Now(),
 	}
 	s.Messages[msg.ID] = msg
+	// audit P-MED-9: cap in-memory messages to prevent unbounded growth.
+	// Messages are persisted to disk/SQLite, so eviction is safe.
+	if len(s.Messages) > maxChatMessages {
+		type msgTime struct {
+			id string
+			ts time.Time
+		}
+		all := make([]msgTime, 0, len(s.Messages))
+		for id, m := range s.Messages {
+			all = append(all, msgTime{id, m.CreatedAt})
+		}
+		sort.Slice(all, func(i, j int) bool { return all[i].ts.Before(all[j].ts) })
+		evict := len(all) / 4 // evict oldest 25%
+		for i := 0; i < evict; i++ {
+			delete(s.Messages, all[i].id)
+		}
+	}
 	s.dirtyMsgs = append(s.dirtyMsgs, msg.ID) // audit PERF-6: track new messages for incremental persist
 	if s.RootID == "" {
 		s.RootID = msg.ID
