@@ -387,7 +387,9 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 	for _, tc := range msg.ToolCalls {
 		if tc.Type == "function" {
 			var args map[string]any
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				log.Printf("[openai] unmarshal tool call args: %v", err)
+			}
 			toolCalls = append(toolCalls, ToolCall{
 				CallID:    tc.ID,
 				Name:      tc.Function.Name,

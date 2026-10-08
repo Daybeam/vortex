@@ -213,7 +213,9 @@ func (p *AnthropicProvider) StreamComplete(ctx context.Context, req CompleteRequ
 		case "content_block_stop":
 			if currentToolCall != nil {
 				var args map[string]any
-				_ = json.Unmarshal([]byte(currentInput.String()), &args)
+				if err := json.Unmarshal([]byte(currentInput.String()), &args); err != nil {
+				fmt.Fprintf(os.Stderr, "[anthropic] unmarshal tool call args: %v\n", err)
+			}
 				if args == nil {
 					args = make(map[string]any)
 				}

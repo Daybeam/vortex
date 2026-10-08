@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -88,6 +90,11 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 	if es.persistInFlight.CompareAndSwap(false, true) {
 		es.saveWg.Add(1) // regression for audit LEAK-2: was not tracked → data loss on shutdown
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "[experience-record] goroutine panic: %v\n%s", r, debug.Stack())
+				}
+			}()
 			defer es.saveWg.Done()
 			defer es.persistInFlight.Store(false)
 			// audit C-14: use detached context — caller's ctx may be cancelled
@@ -209,6 +216,23 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 	}
 
 	patternID := "pat_" + uuid.New().String()[:8]
+	// audit P-MED-12: cap TaskPatterns to prevent unbounded growth + cache stampede.
+	if len(es.TaskPatterns) >= 5000 {
+		type patTime struct {
+			id string
+			ts time.Time
+		}
+		all := make([]patTime, 0, len(es.TaskPatterns))
+		for id, p := range es.TaskPatterns {
+			all = append(all, patTime{id, p.LastSeen})
+		}
+		sort.Slice(all, func(i, j int) bool { return all[i].ts.Before(all[j].ts) })
+		evict := len(all) / 4
+		for i := 0; i < evict; i++ {
+			delete(es.TaskPatterns, all[i].id)
+		}
+		es.patternTokensCache = nil // invalidate cache
+	}
 	es.TaskPatterns[patternID] = TaskPattern{
 		ID:             patternID,
 		TaskID:         taskID,
@@ -341,6 +365,11 @@ func (es *ExperienceStore) updateStatePotentialsLocked(ctx context.Context, rec 
 	if len(toSave) > 0 {
 		es.saveWg.Add(1)
 		go func(ctx context.Context, pots []*StatePotential) {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "[experience-record] goroutine panic: %v\n%s", r, debug.Stack())
+				}
+			}()
 			defer es.saveWg.Done()
 			for _, sp := range pots {
 				es.backend.SaveStatePotential(ctx, sp)
@@ -380,6 +409,11 @@ func (es *ExperienceStore) trackCooccurrencesLocked(ctx context.Context, records
 	if len(toSave) > 0 {
 		es.saveWg.Add(1)
 		go func(ctx context.Context, entries []*CooccurrenceEntry) {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "[experience-record] goroutine panic: %v\n%s", r, debug.Stack())
+				}
+			}()
 			defer es.saveWg.Done()
 			for _, entry := range entries {
 				es.backend.SaveCooccurrence(ctx, entry)

@@ -1120,16 +1120,33 @@ func registerAdminSubsystem(app *App) {
 			nodeMap := make(map[string]bool)
 
 			for _, e := range edgesRaw {
-				edge := e.(map[string]any)
-				payload := int64(edge["payload"].(float64))
+				// audit CRIT-4 (2026-10-08): use comma-ok checks instead of unchecked
+				// type assertions — panics on malformed coordination-edge data.
+				edge, ok := e.(map[string]any)
+				if !ok {
+					continue
+				}
+				payloadF, ok := edge["payload"].(float64)
+				if !ok {
+					continue
+				}
+				payload := int64(payloadF)
 				totalPayload += payload
 				if edge["type"] == "shared_vfs" {
 					sharedPayload += payload
 				} else {
 					messagePayload += payload
 				}
-				nodeMap[edge["source"].(string)] = true
-				nodeMap[edge["target"].(string)] = true
+				src, ok := edge["source"].(string)
+				if !ok {
+					continue
+				}
+				tgt, ok := edge["target"].(string)
+				if !ok {
+					continue
+				}
+				nodeMap[src] = true
+				nodeMap[tgt] = true
 			}
 
 			numNodes := len(nodeMap)
