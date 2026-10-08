@@ -17,8 +17,11 @@ var (
 
 func ClearCache() {
 	mu.Lock()
-	defer mu.Unlock()
 	cache = make(map[string]interfaces.Provider)
+	mu.Unlock()
+	GlobalRouter.mu.Lock()
+	GlobalRouter.slots = make(map[string]*ProviderSlot)
+	GlobalRouter.mu.Unlock()
 }
 
 // providerCacheKey computes the cache/router-slot key for a ProviderConfig.
