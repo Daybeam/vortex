@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -149,6 +150,11 @@ func (app *App) InitArchive(outputBase string) {
 	app.archiveStop = make(chan struct{})
 	stop := app.archiveStop
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[archive] pruning ticker panic: %v", r)
+			}
+		}()
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for {

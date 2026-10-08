@@ -93,6 +93,11 @@ func runGoja(ctx context.Context, code string) (*EmbeddedRunResult, error) {
 	}
 	outCh := make(chan execOutcome, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				outCh <- execOutcome{nil, fmt.Errorf("js runtime panic: %v", r)}
+			}
+		}()
 		val, err := vm.RunString(code)
 		outCh <- execOutcome{val, err}
 	}()
@@ -208,6 +213,11 @@ func runGopherLua(ctx context.Context, code string) (*EmbeddedRunResult, error) 
 	}
 	outCh := make(chan execOutcome, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				outCh <- execOutcome{fmt.Errorf("lua runtime panic: %v", r)}
+			}
+		}()
 		err := L.DoString(code)
 		outCh <- execOutcome{err}
 	}()

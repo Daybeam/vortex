@@ -60,6 +60,9 @@ func (idx *CapabilityIndex) Rebuild(reg *config.Registry) {
 	// Skills
 	for _, s := range reg.Skills {
 		addTokens(s.Capability)
+		for _, p := range s.Provides {
+			addTokens(p)
+		}
 	}
 
 	// MCPs

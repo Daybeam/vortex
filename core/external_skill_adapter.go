@@ -12,7 +12,7 @@ import (
 )
 
 // ExternalSkillAdapter imports external agentskills.io compliant SKILL.md bundles
-// into Vortex's native config.Skill and SOP registries.
+// into Orchestrator's native config.Skill and SOP registries.
 type ExternalSkillAdapter struct {
 	Registry *config.Registry
 }
@@ -25,10 +25,11 @@ type ExternalSkillMeta struct {
 	Name        string
 	Description string
 	Body        string
+	Provides    []string
 }
 
 // ImportSkillDirectory scans a directory of skills (e.g. mattpocock/skills/skills/)
-// and registers them into the Vortex registry.
+// and registers them into the Orchestrator registry.
 func (a *ExternalSkillAdapter) ImportSkillDirectory(rootPath string) (int, error) {
 	if _, err := os.Stat(rootPath); os.IsNotExist(err) {
 		return 0, fmt.Errorf("skill directory not found: %s", rootPath)
@@ -53,15 +54,18 @@ func (a *ExternalSkillAdapter) ImportSkillDirectory(rootPath string) (int, error
 		skillID = strings.ReplaceAll(skillID, "-", "_")
 
 		// 1. Register as native Skill
+		skillDir := filepath.Dir(path)
 		skill := &config.Skill{
-			ID:            skillID,
-			Name:          meta.Name,
-			Description:   meta.Description,
-			Capability:    "external_discipline",
-			Domain:        "EXTERNAL",
+			ID:          skillID,
+			Name:        meta.Name,
+			Description: meta.Description,
+			Capability:  "external_discipline",
+			Domain:      "EXTERNAL",
 			TokenEstimate: 500,
 			ExecutionMode: config.ExecutionModeDirectory,
-			SkillDir:      filepath.Dir(path),
+			SkillDir:      skillDir,
+			Provides:      meta.Provides,
+			Manifest:      scanSkillDir(skillDir),
 		}
 
 		a.Registry.Mu.Lock()
@@ -136,6 +140,7 @@ func parseExternalSkillFile(path string) (*ExternalSkillMeta, error) {
 
 	name := filepath.Base(filepath.Dir(path))
 	description := ""
+	var provides []string
 
 	for _, fl := range frontmatterLines {
 		parts := strings.SplitN(fl, ":", 2)
@@ -147,6 +152,8 @@ func parseExternalSkillFile(path string) (*ExternalSkillMeta, error) {
 				name = v
 			} else if k == "description" {
 				description = v
+			} else if k == "provides" {
+				provides = parseProvidesList(v)
 			}
 		}
 	}
@@ -155,5 +162,72 @@ func parseExternalSkillFile(path string) (*ExternalSkillMeta, error) {
 		Name:        name,
 		Description: description,
 		Body:        strings.Join(bodyLines, "\n"),
+		Provides:    provides,
 	}, nil
+}
+
+// parseProvidesList parses a YAML-style list value like "[a, b, c]" or "a, b, c".
+func parseProvidesList(v string) []string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "[")
+	v = strings.TrimSuffix(v, "]")
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		p = strings.Trim(p, "\"'")
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// scanSkillDir builds a SkillManifest by scanning references/, scripts/, assets/
+// subdirectories. Only one level deep (no recursion). Capped at 50 total items.
+func scanSkillDir(rootDir string) *config.SkillManifest {
+	m := &config.SkillManifest{}
+	total := 0
+	const maxItems = 50
+
+	for _, sub := range []struct{ dir, field string }{
+		{"references", "references"},
+		{"scripts", "scripts"},
+		{"assets", "assets"},
+	} {
+		if total >= maxItems {
+			break
+		}
+		entries, err := os.ReadDir(filepath.Join(rootDir, sub.dir))
+		if err != nil {
+			continue // dir doesn't exist or unreadable — skip
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue // one level deep only
+			}
+			if total >= maxItems {
+				break
+			}
+			relPath := filepath.Join(sub.dir, e.Name())
+			switch sub.field {
+			case "references":
+				m.References = append(m.References, relPath)
+			case "scripts":
+				m.Scripts = append(m.Scripts, relPath)
+			case "assets":
+				m.Assets = append(m.Assets, relPath)
+			}
+			total++
+		}
+	}
+
+	// Return nil if manifest is empty (keeps Skill struct clean)
+	if total == 0 {
+		return nil
+	}
+	return m
 }
