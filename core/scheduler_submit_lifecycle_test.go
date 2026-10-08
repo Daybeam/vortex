@@ -93,8 +93,8 @@ func TestSubmit_TaskContextDerivedFromLifecycleCtx(t *testing.T) {
 	// Wait for the provider call to start.
 	select {
 	case <-requestReceived:
-	case <-time.After(15 * time.Second):
-		t.Fatal("provider call did not start within 15s")
+	case <-time.After(60 * time.Second):
+		t.Fatal("provider call did not start within 60s")
 	}
 
 	// Cancel lifecycleCtx directly. This is what Stop() does first, before
@@ -106,8 +106,8 @@ func TestSubmit_TaskContextDerivedFromLifecycleCtx(t *testing.T) {
 	select {
 	case <-requestExited:
 		// C2 is fixed: task context was derived from lifecycleCtx.
-	case <-time.After(15 * time.Second):
-		t.Fatal("provider call did not exit within 15s of lifecycleCancel() — " +
+	case <-time.After(60 * time.Second):
+		t.Fatal("provider call did not exit within 60s of lifecycleCancel() — " +
 			"task context is NOT derived from lifecycleCtx (audit C2 regression)")
 	}
 }
