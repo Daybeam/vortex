@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"runtime/debug"
 	"sync"
 )
 
@@ -73,6 +76,11 @@ func (p *DiscoveryPipeline) Execute(ctx context.Context, query string, tags []st
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(ret Retriever) {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "[discovery-engine] goroutine panic: %v\n%s", r, debug.Stack())
+				}
+			}()
 			defer wg.Done()
 			defer func() { <-sem }()
 			results := ret.Recall(ctx, query, tags)

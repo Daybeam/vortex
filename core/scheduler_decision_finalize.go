@@ -97,22 +97,49 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 }
 
 func (s *DirectedEngine) deliverArtifacts(graph *schemas.TaskGraph) {
-	// audit L-1.3: hold Lock during artifact iteration + status writes to
-	// prevent race with persistGraph (marshals Artifacts under Lock) and
-	// handleStepSuccess (appends to OutputFiles under Lock). Unlock before
-	// persistGraph since it acquires Mu.Lock internally.
+	// audit P-MED-11: Snapshot artifacts + output files under Lock (O(a+o)),
+	// then do the O(a×o) matching + logging + delivery simulation outside the
+	// lock, then re-acquire Lock for the brief status write-back.
+	// (audit L-1.3: Lock still protects snapshot consistency and write-back
+	// against persistGraph and handleStepSuccess.)
+	type artifactSnap struct {
+		index     int
+		path      string
+		status    string
+		ownerStep string
+	}
+	type outputSnap struct {
+		path    string
+		deliver string
+	}
+
 	s.Mu.Lock()
+	arts := make([]artifactSnap, len(graph.Artifacts))
 	for i := range graph.Artifacts {
-		art := &graph.Artifacts[i]
-		if art.Status == "published" {
+		a := &graph.Artifacts[i]
+		arts[i] = artifactSnap{i, a.Path, a.Status, a.OwnerStep}
+	}
+	ofs := make([]outputSnap, len(graph.OutputFiles))
+	for i, of := range graph.OutputFiles {
+		ofs[i] = outputSnap{of.Path, of.Deliver}
+	}
+	s.Mu.Unlock()
+
+	// O(artifacts×outputs) matching + logging + delivery — outside lock
+	type statusUpdate struct {
+		index int
+	}
+	var updates []statusUpdate
+
+	for _, a := range arts {
+		if a.status == "published" {
 			continue
 		}
 
-		// Find the corresponding OutputFile to get Deliver hint
 		var deliverHint string
-		for _, of := range graph.OutputFiles {
-			if of.Path == art.Path {
-				deliverHint = of.Deliver
+		for _, of := range ofs {
+			if of.path == a.path {
+				deliverHint = of.deliver
 				break
 			}
 		}
@@ -121,27 +148,23 @@ func (s *DirectedEngine) deliverArtifacts(graph *schemas.TaskGraph) {
 			continue
 		}
 
-		s.logger.Log("EventArtifactDeliveryStarted", graph.TaskID, art.OwnerStep, map[string]any{
-			"path":    art.Path,
+		s.logger.Log("EventArtifactDeliveryStarted", graph.TaskID, a.ownerStep, map[string]any{
+			"path":    a.path,
 			"deliver": deliverHint,
 		})
 
-		// Implement actual delivery logic (e.g., upload to S3, send webhook, etc.)
-		// For now, we simulate success for registered delivery channels.
 		success := false
 		switch {
 		case strings.HasPrefix(deliverHint, "webhook:"):
-			// Delivery not yet implemented — log simulated success.
-			s.logger.Log("EventArtifactDeliverySimulated", graph.TaskID, art.OwnerStep, map[string]any{
-				"path":    art.Path,
+			s.logger.Log("EventArtifactDeliverySimulated", graph.TaskID, a.ownerStep, map[string]any{
+				"path":    a.path,
 				"channel": "webhook",
 				"target":  strings.TrimPrefix(deliverHint, "webhook:"),
 			})
 			success = true
 		case strings.HasPrefix(deliverHint, "s3:"):
-			// Delivery not yet implemented — log simulated success.
-			s.logger.Log("EventArtifactDeliverySimulated", graph.TaskID, art.OwnerStep, map[string]any{
-				"path":    art.Path,
+			s.logger.Log("EventArtifactDeliverySimulated", graph.TaskID, a.ownerStep, map[string]any{
+				"path":    a.path,
 				"channel": "s3",
 				"target":  strings.TrimPrefix(deliverHint, "s3:"),
 			})
@@ -149,20 +172,26 @@ func (s *DirectedEngine) deliverArtifacts(graph *schemas.TaskGraph) {
 		case deliverHint == "local":
 			success = true
 		default:
-			s.logger.Log("EventArtifactDeliverySkipped", graph.TaskID, art.OwnerStep, map[string]any{
-				"path":   art.Path,
+			s.logger.Log("EventArtifactDeliverySkipped", graph.TaskID, a.ownerStep, map[string]any{
+				"path":   a.path,
 				"reason": "unknown delivery channel: " + deliverHint,
 			})
 		}
 
 		if success {
-			art.Status = "published"
-			art.DeliveryStatus = "delivered"
-			s.logger.Log("EventArtifactDelivered", graph.TaskID, art.OwnerStep, map[string]any{
-				"path":    art.Path,
+			updates = append(updates, statusUpdate{a.index})
+			s.logger.Log("EventArtifactDelivered", graph.TaskID, a.ownerStep, map[string]any{
+				"path":    a.path,
 				"channel": deliverHint,
 			})
 		}
+	}
+
+	// Brief write-back under Lock
+	s.Mu.Lock()
+	for _, u := range updates {
+		graph.Artifacts[u.index].Status = "published"
+		graph.Artifacts[u.index].DeliveryStatus = "delivered"
 	}
 	s.Mu.Unlock()
 

@@ -122,6 +122,9 @@ func getMaxSafeTaskChars(registry *config.Registry) int {
 	if registry == nil {
 		return fallback
 	}
+	// audit L-9 (2026-10-08): lock registry reads — races with config watcher.
+	registry.Mu.RLock()
+	defer registry.Mu.RUnlock()
 	// (1) Config override
 	if registry.System.MaxTaskChars > 0 {
 		return registry.System.MaxTaskChars

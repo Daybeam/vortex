@@ -93,8 +93,12 @@ func TestLogInterceptor_RoleExistsViaSessionRole_NoGenerationAttempted(t *testin
 func TestLogInterceptor_MissingRole_EphemeralFails_FallsBackToDefaultRole(t *testing.T) {
 	// EnableEphemeralRoleGen=true, Hub present: the ephemeral path is tried
 	// FIRST and fails (nil resourceLoader). The interceptor must then fall
-	// back to the built-in "orchestrator_default" role, storing it in the
-	// session under the original role ID, and continue to next().
+	// back to the built-in "orchestrator_default" role, rewrite req.RoleID
+	// to it, store it in the session under its own id, and continue to
+	// next(). (E16.10-B1 fix: previously the session entry was stored under
+	// the ORIGINAL role id and req.RoleID was left untouched, so
+	// ContextHub.GetRole("") / GetRole(missing) still failed right after
+	// the fallback "succeeded" — measured on chat delegate spawns.)
 	reg, logger, gen := newTestLogInterceptorDeps(t, true, true)
 	graph := &schemas.TaskGraph{}
 	hub := NewContextHub(reg, graph, nil)
@@ -110,9 +114,12 @@ func TestLogInterceptor_MissingRole_EphemeralFails_FallsBackToDefaultRole(t *tes
 	if !called {
 		t.Error("next() should be called after successful fallback to default role")
 	}
-	sessionRole, ok := graph.GetSessionRole("missing_role")
+	if req.RoleID != "orchestrator_default" {
+		t.Errorf("expected req.RoleID rewritten to orchestrator_default, got %s", req.RoleID)
+	}
+	sessionRole, ok := graph.GetSessionRole("orchestrator_default")
 	if !ok {
-		t.Fatal("expected default role to be stored in session under original role ID")
+		t.Fatal("expected default role to be stored in session under its own id")
 	}
 	role, ok := sessionRole.(*config.Role)
 	if !ok || role.ID != "orchestrator_default" {

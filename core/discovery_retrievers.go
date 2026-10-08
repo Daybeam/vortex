@@ -55,6 +55,22 @@ func (r *FilterRetriever) Recall(ctx context.Context, query string, tags []strin
 				}
 			}
 		}
+
+		// Exact match search in Skill Provides
+		for id, sk := range r.Registry.Skills {
+			for _, p := range sk.Provides {
+				if strings.EqualFold(p, tag) {
+					candidates = append(candidates, DiscoveryCandidate{
+						ID:          id,
+						Type:        CandidateSkill,
+						Name:        sk.Name,
+						Description: sk.Description,
+						Confidence:  0.9,
+						Source:      "filter",
+					})
+				}
+			}
+		}
 	}
 
 	return candidates
@@ -135,6 +151,21 @@ func (r *KeywordRetriever) Recall(ctx context.Context, query string, tags []stri
 		}
 	}
 
+	// Search Skills
+	for id, sk := range r.Registry.Skills {
+		if strings.Contains(strings.ToLower(sk.Name), lowerQuery) ||
+			strings.Contains(strings.ToLower(sk.Description), lowerQuery) {
+			candidates = append(candidates, DiscoveryCandidate{
+				ID:          id,
+				Type:        CandidateSkill,
+				Name:        sk.Name,
+				Description: sk.Description,
+				Confidence:  0.8,
+				Source:      "keyword",
+			})
+		}
+	}
+
 	return candidates
 }
 
@@ -147,9 +178,10 @@ type SemanticRetriever struct {
 func (r *SemanticRetriever) Recall(ctx context.Context, query string, tags []string) []DiscoveryCandidate {
 	var candidates []DiscoveryCandidate
 
-	// 1. Expand tags via Graph
+	// 1. Expand tags via Graph (include original tags in the expanded set)
 	expanded := make(map[string]bool)
 	for _, t := range tags {
+		expanded[t] = true
 		for _, related := range r.Graph.GetRelated(t) {
 			expanded[related] = true
 		}
@@ -174,9 +206,20 @@ func (r *SemanticRetriever) Recall(ctx context.Context, query string, tags []str
 			}
 		}
 
-		// Match against Skills
+		// Match against Skills (multi-value Provides with legacy Capability fallback)
 		for id, skill := range r.Registry.Skills {
-			if strings.EqualFold(skill.Capability, tag) {
+			matched := false
+			for _, skProv := range skill.Provides {
+				if strings.EqualFold(skProv, tag) {
+					matched = true
+					break
+				}
+			}
+			// Legacy fallback: if Provides is empty, match on single Capability
+			if !matched && len(skill.Provides) == 0 && strings.EqualFold(skill.Capability, tag) {
+				matched = true
+			}
+			if matched {
 				candidates = append(candidates, DiscoveryCandidate{
 					ID:          id,
 					Type:        CandidateSkill,

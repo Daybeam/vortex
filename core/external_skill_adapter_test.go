@@ -57,3 +57,130 @@ func TestImportSkillDirectory_RegistersSOPWithIDAndTriggers(t *testing.T) {
 		}
 	}
 }
+
+// --- scanSkillDir tests ---
+
+func TestScanSkillDir_FindsReferences(t *testing.T) {
+	tmpDir := t.TempDir()
+	refDir := filepath.Join(tmpDir, "references")
+	if err := os.MkdirAll(refDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(refDir, "guide.md"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(refDir, "scorecard.md"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := scanSkillDir(tmpDir)
+	if m == nil {
+		t.Fatal("expected non-nil manifest")
+	}
+	if len(m.References) != 2 {
+		t.Errorf("expected 2 references, got %d", len(m.References))
+	}
+}
+
+func TestScanSkillDir_FindsAllCategories(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	for _, sub := range []string{"references", "scripts", "assets"} {
+		dir := filepath.Join(tmpDir, sub)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m := scanSkillDir(tmpDir)
+	if m == nil {
+		t.Fatal("expected non-nil manifest")
+	}
+	if len(m.References) != 1 || len(m.Scripts) != 1 || len(m.Assets) != 1 {
+		t.Errorf("expected 1/1/1, got %d/%d/%d",
+			len(m.References), len(m.Scripts), len(m.Assets))
+	}
+}
+
+func TestScanSkillDir_IgnoresNestedDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	refDir := filepath.Join(tmpDir, "references")
+	nestedDir := filepath.Join(refDir, "nested")
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a file in the nested dir — should be ignored (one level deep only)
+	if err := os.WriteFile(filepath.Join(nestedDir, "deep.md"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Write a file at the top level — should be found
+	if err := os.WriteFile(filepath.Join(refDir, "top.md"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := scanSkillDir(tmpDir)
+	if m == nil {
+		t.Fatal("expected non-nil manifest")
+	}
+	if len(m.References) != 1 {
+		t.Errorf("expected 1 reference (nested dir ignored), got %d: %v",
+			len(m.References), m.References)
+	}
+}
+
+func TestScanSkillDir_EmptyDirReturnsNil(t *testing.T) {
+	tmpDir := t.TempDir()
+	m := scanSkillDir(tmpDir)
+	if m != nil {
+		t.Error("expected nil manifest for empty dir")
+	}
+}
+
+func TestScanSkillDir_NoSkillDirReturnsNil(t *testing.T) {
+	m := scanSkillDir("/nonexistent/path/that/does/not/exist")
+	if m != nil {
+		t.Error("expected nil manifest for non-existent dir")
+	}
+}
+
+// --- parseProvidesList tests ---
+
+func TestParseProvidesList_Brackets(t *testing.T) {
+	result := parseProvidesList("[game, threejs, 3d]")
+	if len(result) != 3 {
+		t.Fatalf("expected 3 items, got %d: %v", len(result), result)
+	}
+	expected := []string{"game", "threejs", "3d"}
+	for i, v := range expected {
+		if result[i] != v {
+			t.Errorf("expected[%d]=%s, got %s", i, v, result[i])
+		}
+	}
+}
+
+func TestParseProvidesList_CommaSeparated(t *testing.T) {
+	result := parseProvidesList("game, threejs, 3d")
+	if len(result) != 3 {
+		t.Fatalf("expected 3 items, got %d: %v", len(result), result)
+	}
+}
+
+func TestParseProvidesList_Empty(t *testing.T) {
+	result := parseProvidesList("")
+	if result != nil {
+		t.Errorf("expected nil for empty input, got %v", result)
+	}
+}
+
+func TestParseProvidesList_QuotedValues(t *testing.T) {
+	result := parseProvidesList(`["game", "threejs"]`)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 items, got %d: %v", len(result), result)
+	}
+	if result[0] != "game" || result[1] != "threejs" {
+		t.Errorf("expected game/threejs, got %v", result)
+	}
+}

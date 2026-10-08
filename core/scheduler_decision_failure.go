@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/google/uuid"
 	"github.com/daybeam/vortex/pkg/types"
@@ -109,6 +110,11 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	s.Mu.Lock()
 	step.Status = schemas.StepBlocked
 	s.Mu.Unlock()
+	// [EVAL-OBS] 2026-10-07：blocked 是决策仲裁的直接上游，必须能看到根因分类。
+	if os.Getenv("ORCH_EVAL_OBS") != "" {
+		fmt.Fprintf(os.Stderr, "[EVAL-OBS] BLOCKED task=%s step=%s cause=%s conf=%.2f spawnDepth=%d maxSpawn=%d suggestion=%q\n",
+			taskID, step.ID, string(cause), conf, step.SpawnDepth, s.registry.System.MaxSpawnDepth, suggestion)
+	}
 	// E4 fix: enrich step_failed payload with role_id, suggestion, confidence.
 	// All values are already in scope; this is purely additive — the thin
 	// {blocked, root_cause} payload made external observability impossible.

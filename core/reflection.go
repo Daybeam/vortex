@@ -90,7 +90,9 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 	var completedCaps []string
 	for _, step := range graph.Steps {
 		if step.Status != schemas.StepPending && step.Status != schemas.StepRunning {
+			re.registry.Mu.RLock()
 			role := re.registry.Roles[step.RoleID]
+			re.registry.Mu.RUnlock()
 			if role != nil {
 				completedCaps = append(completedCaps, role.BaseCapability)
 			}
@@ -118,10 +120,12 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 		// Resolve capability and skills via registry
 		capability := "unknown"
 		skills := []string{}
+		re.registry.Mu.RLock()
 		if role, ok := re.registry.Roles[step.RoleID]; ok {
 			capability = role.BaseCapability
 			skills = append([]string{}, role.BoundSkills...)
 		}
+		re.registry.Mu.RUnlock()
 		skills = append(skills, step.AdditionalSkills...)
 
 		conf := 0.0
@@ -333,9 +337,14 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 				select {
 				case crystSem <- struct{}{}:
 					re.wg.Add(1)
-					go func(r store.StepRecord) {
-						defer re.wg.Done()
-						defer func() { <-crystSem }()
+				go func(r store.StepRecord) {
+					defer func() {
+						if r := recover(); r != nil {
+							fmt.Fprintf(os.Stderr, "[reflection] goroutine panic: %v\n%s", r, debug.Stack())
+						}
+					}()
+					defer re.wg.Done()
+					defer func() { <-crystSem }()
 						gctx, gcancel := context.WithTimeout(lifecycleCtx, 5*time.Minute)
 						defer gcancel()
 						re.CrystallizeStepToSkill(gctx, r)
@@ -794,7 +803,11 @@ func (re *ReflectionEngine) ScanAndPromoteCompoundSkills(ctx context.Context) {
 
 		skillID := fmt.Sprintf("compound_%s_%s", c.ToolA, c.ToolB)
 
-		if _, exists := re.registry.Skills[skillID]; exists {
+		// audit CRIT-3 (2026-10-08): lock registry.Skills read — races with config watcher.
+		re.registry.Mu.RLock()
+		_, exists := re.registry.Skills[skillID]
+		re.registry.Mu.RUnlock()
+		if exists {
 			continue
 		}
 
@@ -827,7 +840,10 @@ func (re *ReflectionEngine) ScanAndPromoteCompoundSkills(ctx context.Context) {
 		}
 
 		skill.InitFilter()
+		// audit CRIT-2 (2026-10-08): lock registry.Skills write — races with config watcher.
+		re.registry.Mu.Lock()
 		re.registry.Skills[skillID] = &skill
+		re.registry.Mu.Unlock()
 
 		re.logger.Log("EventCompoundSkillPromoted", "", "", map[string]any{
 			"skill_id":     skillID,
@@ -868,9 +884,11 @@ func (re *ReflectionEngine) extractUserProfile(ctx context.Context, graph *schem
 			continue
 		}
 		if step.RoleID != "" {
+			re.registry.Mu.RLock()
 			if role := re.registry.Roles[step.RoleID]; role != nil && role.BaseCapability != "" {
 				up.Expertise = appendUnique(up.Expertise, role.BaseCapability, 10)
 			}
+			re.registry.Mu.RUnlock()
 		}
 		// Extract preferences from task description keywords.
 		taskLower := strings.ToLower(step.Task)
@@ -897,7 +915,9 @@ func (re *ReflectionEngine) extractUserProfile(ctx context.Context, graph *schem
 	if len(up.Expertise) != len(mb.UserProfile.Expertise) ||
 		len(up.Preferences) != len(mb.UserProfile.Preferences) ||
 		len(up.PastDelegations) != len(mb.UserProfile.PastDelegations) {
-		_ = re.mbStore.SaveUserProfile(up)
+		if err := re.mbStore.SaveUserProfile(up); err != nil {
+			log.Printf("[reflection] SaveUserProfile failed: %v", err)
+		}
 	}
 }
 

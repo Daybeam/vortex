@@ -2,39 +2,24 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"strings"
-	"time"
 )
 
-// ChatMemoryManager transforms raw chat history into a bounded-context
-// history before it's sent to the provider. Implementations may apply
-// sliding windows, rolling summaries, fact extraction, etc.
-//
-// This interface is deliberately minimal to allow third-party
-// implementations (e.g., mem0, Letta, Zep) to adapt via a thin wrapper.
-// The default implementation is RollingWindowMemory, which reuses the
-// existing context_manager primitives (applySemanticPruning, applySessionDedup,
-// applyRTK) for rule-based compression — no LLM calls required.
+// ChatMemoryManager transforms raw chat history into a bounded-context history
+// before it is sent to the provider. Implementations may apply sliding
+// windows, rolling summaries, etc.
 type ChatMemoryManager interface {
-	// Process takes the full session history and returns a bounded
-	// history suitable for the provider call. The returned slice
-	// may be shorter than the input (windowed/summarized) but must
-	// preserve conversation coherence.
 	Process(ctx context.Context, sessionID string, history []ChatMessage) []ChatMessage
 }
 
-// RollingWindowMemory is the default ChatMemoryManager.
-// It keeps the most recent WindowSize messages as raw text and compresses
-// older messages into a single summary using existing context_manager
-// primitives. When WindowSize <= 0, defaults to 10.
-//
-// Reuses: applySemanticPruning (head+tail turn retention),
-// applySessionDedup (long-line dedup), applyRTK (timestamp/noise strip).
-// All are pure functions in core/context_manager.go — no LLM calls.
+// RollingWindowMemory keeps the most recent WindowSize turns raw and
+// compresses older turns using rule-based pruning.
 type RollingWindowMemory struct {
-	WindowSize int
+	WindowSize int // Number of recent turns kept raw (default: 10)
 }
 
+// NewRollingWindowMemory creates a RollingWindowMemory manager.
 func NewRollingWindowMemory(windowSize int) *RollingWindowMemory {
 	if windowSize <= 0 {
 		windowSize = 10
@@ -42,44 +27,35 @@ func NewRollingWindowMemory(windowSize int) *RollingWindowMemory {
 	return &RollingWindowMemory{WindowSize: windowSize}
 }
 
-func (m *RollingWindowMemory) Process(_ context.Context, _ string, history []ChatMessage) []ChatMessage {
+// Process implements ChatMemoryManager.
+func (m *RollingWindowMemory) Process(ctx context.Context, sessionID string, history []ChatMessage) []ChatMessage {
 	if len(history) <= m.WindowSize {
-		return history
+		return history // Short conversation — no compression needed
 	}
 
+	// 1. Keep the most recent WindowSize turns
 	recent := history[len(history)-m.WindowSize:]
 	older := history[:len(history)-m.WindowSize]
 
-	summary := m.summarizeOlder(older)
-
-	result := make([]ChatMessage, 0, len(recent)+1)
-	result = append(result, ChatMessage{
-		Role:      "system",
-		Content:   summary,
-		CreatedAt: time.Now(),
-	})
-	result = append(result, recent...)
-	return result
-}
-
-func (m *RollingWindowMemory) summarizeOlder(older []ChatMessage) string {
-	var b strings.Builder
-	b.WriteString("## Conversation Summary (older turns compressed)\n\n")
+	// 2. Compress older turns into a single summary message
+	var olderText strings.Builder
 	for _, msg := range older {
-		switch msg.Role {
-		case "user":
-			b.WriteString("User: " + msg.Content + "\n")
-		case "assistant":
-			b.WriteString("Assistant: " + msg.Content + "\n")
-		default:
-			b.WriteString(msg.Content + "\n")
-		}
+		olderText.WriteString(msg.Role)
+		olderText.WriteString(": ")
+		olderText.WriteString(msg.Content)
+		olderText.WriteString("\n")
 	}
 
-	text := b.String()
-	text = applyRTK(text)
-	text = applySessionDedup(text)
-	text = applySemanticPruning(text)
+	compressedOlder := applySemanticPruning(olderText.String())
 
-	return text
+	summaryMsg := ChatMessage{
+		ID:      fmt.Sprintf("msg_summary_%s", sessionID),
+		Role:    "system",
+		Content: "Prior Conversation Summary:\n" + compressedOlder,
+	}
+
+	result := make([]ChatMessage, 0, len(recent)+1)
+	result = append(result, summaryMsg)
+	result = append(result, recent...)
+	return result
 }

@@ -72,7 +72,14 @@ func (pm *PromptManager) Render(ref string, rawPrompt string, context any) (stri
 		pm.templates[ref] = tmpl
 		// Cap the template cache to prevent unbounded growth.
 		if len(pm.templates) > maxTemplateCacheEntries {
-			pm.templates = make(map[string]*template.Template)
+			// audit P-MED-8: partial eviction instead of full clear to prevent cache stampede
+			i := 0
+			for k := range pm.templates {
+				i++
+				if i%4 == 0 {
+					delete(pm.templates, k)
+				}
+			}
 			pm.templates[ref] = tmpl
 		}
 		pm.mu.Unlock()

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -290,6 +291,25 @@ func (es *ExperienceStore) load() {
 	} else {
 		readJSON(filepath.Join(es.dir, "experience_nodes.json"), &es.Nodes)
 	}
+	// audit PERF-HIGH-3 (2026-10-08): cap in-memory Nodes to prevent unbounded
+	// memory growth. Evict oldest entries by Timestamp if count exceeds cap.
+	const maxExperienceNodes = 10000
+	if len(es.Nodes) > maxExperienceNodes {
+		type nodeTime struct {
+			id string
+			ts time.Time
+		}
+		times := make([]nodeTime, 0, len(es.Nodes))
+		for id, n := range es.Nodes {
+			times = append(times, nodeTime{id, n.Timestamp})
+		}
+		sort.Slice(times, func(i, j int) bool { return times[i].ts.Before(times[j].ts) })
+		evict := len(es.Nodes) - maxExperienceNodes
+		for i := 0; i < evict && i < len(times); i++ {
+			delete(es.Nodes, times[i].id)
+		}
+		log.Printf("[experience] PERF-HIGH-3: evicted %d oldest nodes (cap=%d)", evict, maxExperienceNodes)
+	}
 	if dbEdges, err := es.backend.LoadExperienceEdges(context.Background()); err == nil && len(dbEdges) > 0 {
 		es.Edges = dbEdges
 	} else {
@@ -477,42 +497,142 @@ func (es *ExperienceStore) seedCanonicalAntiPatterns(ctx context.Context) {
 }
 
 func (es *ExperienceStore) PersistAll(ctx context.Context) error {
-	// Phase 1: Marshal to JSON + snapshot DB data under RLock.
-	// (audit: was RLock held during 13+ file writes + DB saves, blocking all writers.)
+	// audit P-MED-3: Snapshot all data under RLock via fast struct copies,
+	// then marshal outside the lock. Struct copies are O(n) with cheap memory
+	// copies vs O(n) with expensive reflection + string encoding for JSON
+	// marshal, significantly reducing lock hold time. Shallow struct copies
+	// suffice for read-only marshaling (finding guidance).
 	es.Mu.RLock()
 
-	taskPatternsData, _ := json.MarshalIndent(es.TaskPatterns, "", "  ")
-	roleProfilesData, _ := json.MarshalIndent(es.RoleProfiles, "", "  ")
-	skillAffinitiesData, _ := json.MarshalIndent(es.SkillAffinities, "", "  ")
-	routingMatrixData, _ := json.MarshalIndent(es.RoutingMatrix, "", "  ")
-	generatedSkillsData, _ := json.MarshalIndent(es.GeneratedSkills, "", "  ")
-	archivedSkillsData, _ := json.MarshalIndent(es.ArchivedSkills, "", "  ")
-	environmentIssuesData, _ := json.MarshalIndent(es.EnvironmentIssues, "", "  ")
-	roleAffinitiesData, _ := json.MarshalIndent(es.RoleAffinities, "", "  ")
-	decisionPrecedentsData, _ := json.MarshalIndent(es.DecisionPrecedents, "", "  ")
+	// 1. TaskPatterns (map[string]TaskPattern — struct values)
+	taskPatternsCopy := make(map[string]TaskPattern, len(es.TaskPatterns))
+	for k, v := range es.TaskPatterns {
+		taskPatternsCopy[k] = v
+	}
 
-	// Snapshot DB iteration data — deep-copy node structs (including Embedding
-	// slice) under RLock to prevent concurrent writers from racing with DB save
-	// outside lock (audit L-5: was shallow pointer copy → inconsistent persisted state).
-	nodesCopy := make([]*ExperienceNode, 0, len(es.Nodes))
-	for _, n := range es.Nodes {
-		cp := *n // copy struct values
+	// 2. RoleProfiles (map[string]*RoleProfile — pointer values)
+	roleProfilesCopy := make(map[string]*RoleProfile, len(es.RoleProfiles))
+	for k, v := range es.RoleProfiles {
+		cp := *v
+		roleProfilesCopy[k] = &cp
+	}
+
+	// 3. SkillAffinities (map[string]*SkillAffinity)
+	skillAffinitiesCopy := make(map[string]*SkillAffinity, len(es.SkillAffinities))
+	for k, v := range es.SkillAffinities {
+		cp := *v
+		skillAffinitiesCopy[k] = &cp
+	}
+
+	// 4. RoutingMatrix (4-level nested map)
+	routingMatrixCopy := make(map[string]map[string]map[string]map[string]*RouteWeight, len(es.RoutingMatrix))
+	for k1, v1 := range es.RoutingMatrix {
+		m1 := make(map[string]map[string]map[string]*RouteWeight, len(v1))
+		for k2, v2 := range v1 {
+			m2 := make(map[string]map[string]*RouteWeight, len(v2))
+			for k3, v3 := range v2 {
+				m3 := make(map[string]*RouteWeight, len(v3))
+				for k4, v4 := range v3 {
+					cp := *v4
+					m3[k4] = &cp
+				}
+				m2[k3] = m3
+			}
+			m1[k2] = m2
+		}
+		routingMatrixCopy[k1] = m1
+	}
+
+	// 5. GeneratedSkills (map[string]*GeneratedSkill)
+	generatedSkillsCopy := make(map[string]*GeneratedSkill, len(es.GeneratedSkills))
+	for k, v := range es.GeneratedSkills {
+		cp := *v
+		generatedSkillsCopy[k] = &cp
+	}
+
+	// 6. ArchivedSkills (map[string]*GeneratedSkill)
+	archivedSkillsCopy := make(map[string]*GeneratedSkill, len(es.ArchivedSkills))
+	for k, v := range es.ArchivedSkills {
+		cp := *v
+		archivedSkillsCopy[k] = &cp
+	}
+
+	// 7. EnvironmentIssues (map[string]*EnvironmentIssue)
+	environmentIssuesCopy := make(map[string]*EnvironmentIssue, len(es.EnvironmentIssues))
+	for k, v := range es.EnvironmentIssues {
+		cp := *v
+		environmentIssuesCopy[k] = &cp
+	}
+
+	// 8. RoleAffinities (map[string]map[string]float64 — 2-level, primitives)
+	roleAffinitiesCopy := make(map[string]map[string]float64, len(es.RoleAffinities))
+	for k1, v1 := range es.RoleAffinities {
+		m1 := make(map[string]float64, len(v1))
+		for k2, v2 := range v1 {
+			m1[k2] = v2
+		}
+		roleAffinitiesCopy[k1] = m1
+	}
+
+	// 9. DecisionPrecedents (map[string]*schemas.DecisionNode)
+	decisionPrecedentsCopy := make(map[string]*schemas.DecisionNode, len(es.DecisionPrecedents))
+	for k, v := range es.DecisionPrecedents {
+		cp := *v
+		decisionPrecedentsCopy[k] = &cp
+	}
+
+	// 10. Nodes — deep-copy Embedding slice (audit L-5). Build both a map
+	// copy (for file marshal) and a slice copy (for DB batch save) from the
+	// same struct copies to avoid double work.
+	nodesMapCopy := make(map[string]*ExperienceNode, len(es.Nodes))
+	nodesSliceCopy := make([]*ExperienceNode, 0, len(es.Nodes))
+	for k, n := range es.Nodes {
+		cp := *n
 		if n.Embedding != nil {
 			cp.Embedding = append([]float32(nil), n.Embedding...)
 		}
-		nodesCopy = append(nodesCopy, &cp)
+		nodesMapCopy[k] = &cp
+		nodesSliceCopy = append(nodesSliceCopy, &cp)
 	}
+
+	// 11. Edges ([]ExperienceEdge)
 	edgesCopy := append([]ExperienceEdge(nil), es.Edges...)
-	experienceNodesData, _ := json.MarshalIndent(es.Nodes, "", "  ")
-	experienceEdgesData, _ := json.MarshalIndent(es.Edges, "", "  ")
-	jitCandidatesData, _ := json.MarshalIndent(es.JITCandidates, "", "  ")
+
+	// 12. JITCandidates (map[string]*JITCandidate)
+	jitCandidatesCopy := make(map[string]*JITCandidate, len(es.JITCandidates))
+	for k, v := range es.JITCandidates {
+		cp := *v
+		jitCandidatesCopy[k] = &cp
+	}
+
+	// 13. PromotionAuditLogs ([]PromotionAuditLog)
 	logsCopy := append([]PromotionAuditLog(nil), es.PromotionAuditLogs...)
-	promotionAuditLogsData, _ := json.MarshalIndent(es.PromotionAuditLogs, "", "  ")
-	statePotentialsData, _ := json.MarshalIndent(es.StatePotentials, "", "  ")
+
+	// 14. StatePotentials (map[string]*StatePotential)
+	statePotentialsCopy := make(map[string]*StatePotential, len(es.StatePotentials))
+	for k, v := range es.StatePotentials {
+		cp := *v
+		statePotentialsCopy[k] = &cp
+	}
 
 	es.Mu.RUnlock()
 
-	// Phase 2: Write to disk + DB outside lock (slow I/O, no lock needed)
+	// Phase 2: Marshal + write to disk + DB — all outside lock (slow I/O + reflection)
+	taskPatternsData, _ := json.MarshalIndent(taskPatternsCopy, "", "  ")
+	roleProfilesData, _ := json.MarshalIndent(roleProfilesCopy, "", "  ")
+	skillAffinitiesData, _ := json.MarshalIndent(skillAffinitiesCopy, "", "  ")
+	routingMatrixData, _ := json.MarshalIndent(routingMatrixCopy, "", "  ")
+	generatedSkillsData, _ := json.MarshalIndent(generatedSkillsCopy, "", "  ")
+	archivedSkillsData, _ := json.MarshalIndent(archivedSkillsCopy, "", "  ")
+	environmentIssuesData, _ := json.MarshalIndent(environmentIssuesCopy, "", "  ")
+	roleAffinitiesData, _ := json.MarshalIndent(roleAffinitiesCopy, "", "  ")
+	decisionPrecedentsData, _ := json.MarshalIndent(decisionPrecedentsCopy, "", "  ")
+	experienceNodesData, _ := json.MarshalIndent(nodesMapCopy, "", "  ")
+	experienceEdgesData, _ := json.MarshalIndent(edgesCopy, "", "  ")
+	jitCandidatesData, _ := json.MarshalIndent(jitCandidatesCopy, "", "  ")
+	promotionAuditLogsData, _ := json.MarshalIndent(logsCopy, "", "  ")
+	statePotentialsData, _ := json.MarshalIndent(statePotentialsCopy, "", "  ")
+
 	writeBytes(filepath.Join(es.dir, "task_patterns.json"), taskPatternsData)
 	writeBytes(filepath.Join(es.dir, "role_profiles.json"), roleProfilesData)
 	writeBytes(filepath.Join(es.dir, "skill_affinity.json"), skillAffinitiesData)
@@ -525,7 +645,7 @@ func (es *ExperienceStore) PersistAll(ctx context.Context) error {
 	// A28 DB collapse: save experience graph to SQLite backend + file fallback
 	// audit PERF-1: was N+1 individual SaveExperienceNode/Edge/Log calls (5000-10000
 	// sequential DB writes). Now a single transaction via SaveExperienceBatch.
-	if err := es.backend.SaveExperienceBatch(ctx, nodesCopy, edgesCopy, logsCopy); err != nil {
+	if err := es.backend.SaveExperienceBatch(ctx, nodesSliceCopy, edgesCopy, logsCopy); err != nil {
 		log.Printf("WARN: PersistAll: SaveExperienceBatch failed: %v", err)
 	}
 	writeBytes(filepath.Join(es.dir, "experience_nodes.json"), experienceNodesData)

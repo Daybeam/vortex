@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +31,11 @@ func NewCompactor(reg *Registry) *Compactor {
 
 // Start runs the compaction loop in a background goroutine.
 func (c *Compactor) Start(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[config-compactor] goroutine panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 

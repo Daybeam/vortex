@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
+	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -44,6 +46,11 @@ func (s *CookbookSyncer) Stop() {
 }
 
 func (s *CookbookSyncer) loop() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[cookbook-syncer] goroutine panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	interval := time.Duration(s.registry.System.CookbookSyncIntervalHours) * time.Hour
 	if interval <= 0 {
 		interval = 24 * time.Hour

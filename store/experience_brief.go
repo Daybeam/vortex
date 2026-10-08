@@ -2,6 +2,10 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"runtime/debug"
+
 	"github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/schemas"
 	"log"
@@ -11,9 +15,10 @@ import (
 )
 
 func (es *ExperienceStore) GetOrchestrationBrief(ctx context.Context, skillIDs []string) map[string]any {
-	es.Mu.RLock()
-	defer es.Mu.RUnlock()
-
+	// audit CRIT-1 (2026-10-08): removed outer es.Mu.RLock() — it caused a nested
+	// RLock self-deadlock because QuerySimilarPatterns/QuerySkillRecommendationsBatch/
+	// GetEnvironmentAlerts each re-acquire es.Mu.RLock() on the same RWMutex.
+	// Each sub-method manages its own locking; we only need a narrow scope for RoleProfiles.
 	res := make(map[string]any)
 	patterns := es.QuerySimilarPatterns(ctx, skillIDs, 3)
 
@@ -39,8 +44,9 @@ func (es *ExperienceStore) GetOrchestrationBrief(ctx context.Context, skillIDs [
 
 	res["similar_patterns"] = enrichedPatterns
 
-	// Populate Role Advice
+	// Populate Role Advice — narrow RLock scope (audit CRIT-1).
 	roleAdvice := make(map[string]any)
+	es.Mu.RLock()
 	for _, rp := range es.RoleProfiles {
 		if rp.TotalRuns < 2 {
 			continue
@@ -54,6 +60,7 @@ func (es *ExperienceStore) GetOrchestrationBrief(ctx context.Context, skillIDs [
 		}
 		roleAdvice[rp.RoleID] = advice
 	}
+	es.Mu.RUnlock()
 	res["role_advice"] = roleAdvice
 
 	// Populate Skill Recommendations by Capability
@@ -269,6 +276,11 @@ func (s *ExperienceStore) UpsertDecisionPrecedent(ctx context.Context, node *sch
 		// audit M13: track with saveWg so WaitAsyncSaves drains this goroutine
 		s.saveWg.Add(1)
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "[experience-brief] goroutine panic: %v\n%s", r, debug.Stack())
+				}
+			}()
 			defer s.saveWg.Done()
 			parent := s.lifecycleCtx
 			if parent == nil {

@@ -20,12 +20,14 @@ func TestPromptWarehouse_Integration(t *testing.T) {
 		return
 	}
 
-	ts := store.NewTaskStore(store.NewFileTaskBackend("test_tasks"))
-	es := mustNewExperienceStore(t, "test_exp", ts, &reg.System, nil, nil)
-	logger := mustNewLogger(t, "test_logs", &reg.System)
+	// audit T-PATH-1: use t.TempDir() instead of hardcoded relative paths.
+	tmp := t.TempDir()
+	ts := store.NewTaskStore(store.NewFileTaskBackend(filepath.Join(tmp, "tasks")))
+	es := mustNewExperienceStore(t, filepath.Join(tmp, "exp"), ts, &reg.System, nil, nil)
+	logger := mustNewLogger(t, filepath.Join(tmp, "logs"), &reg.System)
 	defer logger.Close()
 
-	spawner := NewSpawner(reg, ts, es, logger, NewResourceLoader(), "outputs")
+	spawner := NewSpawner(reg, ts, es, logger, NewResourceLoader(), filepath.Join(tmp, "outputs"))
 
 	// fixes audit T-C24: the original test only checked spawner != nil.
 	// Now we verify the spawner was wired with the registry's providers.

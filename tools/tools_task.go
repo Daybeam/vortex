@@ -355,6 +355,21 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			}
 		}
 
+		// Skill Discovery & Activation — run DiscoveryPipeline, activate top-3 skills.
+		// Appends skill descriptions + manifest summaries to the task, following the
+		// same pattern as SOP/JIT hints above.
+		if app.Navigator != nil && len(inputs) > 0 && inputs[0].Task != "" {
+			tags := app.Navigator.ClassifyIntent(ctx, inputs[0].Task)
+			candidates := app.Navigator.Pipeline.Execute(ctx, inputs[0].Task, tags)
+			skillHint := core.ActivateTopSkills(app.Registry, candidates, 3)
+			if skillHint != "" {
+				inputs[0].Task += skillHint
+				app.Logger.Log("EventSkillsActivated", "", "", map[string]any{
+					"candidate_count": len(candidates),
+				})
+			}
+		}
+
 		id, err := app.Scheduler.SubmitWithSessionIR(inputs, sessionRoles, sessionSkills, nil, "", sessionID, workspaceRoot, timeoutSecs, tokenBudget, CallerIdentity(ctx))
 		if err != nil {
 			return errResult(err.Error())

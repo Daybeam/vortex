@@ -136,6 +136,11 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 	// Write initial input if provided
 	if len(input) > 0 {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "[executor] stdin writer panic: %v\n", r)
+				}
+			}()
 			if _, err := stdinPipe.Write(input); err != nil {
 				fmt.Fprintf(os.Stderr, "executor: stdin write failed: %v\n", err)
 			}
@@ -177,6 +182,11 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 	var lastReadAt atomic.Int64
 	lastReadAt.Store(time.Now().UnixNano())
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[executor] stdout monitor panic: %v\n", r)
+			}
+		}()
 		defer wg.Done()
 		reader := bufio.NewReader(stdoutPipe)
 		buf := make([]byte, 4096)
@@ -196,8 +206,13 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 							desc := p.Description + ": " + output
 							select {
 							case confirmSem <- struct{}{}:
-								go func(matchedAt int64, desc string) {
-									defer func() { <-confirmSem }()
+							go func(matchedAt int64, desc string) {
+								defer func() {
+									if r := recover(); r != nil {
+										fmt.Fprintf(os.Stderr, "[executor] pattern confirm panic: %v\n", r)
+									}
+								}()
+								defer func() { <-confirmSem }()
 									timer := time.NewTimer(stdinConfirmDelay)
 									defer timer.Stop()
 									<-timer.C
@@ -225,12 +240,22 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 
 	// Monitor Stderr
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[executor] stderr monitor panic: %v\n", r)
+			}
+		}()
 		defer wg.Done()
 		io.Copy(&stderrBuf, stderrPipe)
 	}()
 
 	// Wait for process completion
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[executor] process wait panic: %v\n", r)
+			}
+		}()
 		done <- cmd.Wait()
 	}()
 

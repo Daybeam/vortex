@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -391,6 +392,11 @@ func (r *Registry) StartCompactor(ctx context.Context) {
 
 func (r *Registry) StartWatcher(ctx context.Context) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[config-watcher] goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		info, err := os.Stat(r.configPath)
 		var lastMod time.Time
 		if err == nil {
@@ -673,7 +679,9 @@ func loadFolderRoles(rolesDir string) (map[string]*Role, error) {
 		role := &Role{ID: roleID}
 		metaPath := filepath.Join(dirPath, "role.json")
 		if data, err := os.ReadFile(metaPath); err == nil {
-			_ = json.Unmarshal(data, role)
+			if err := json.Unmarshal(data, role); err != nil {
+				log.Printf("[loader] unmarshal role metadata %s: %v", metaPath, err)
+			}
 		}
 		// FIX (2026-09-03): restored agent.md/rules.md reading, dropped during
 		// the loader.go split -- a folder-based role's Instruction/Rules

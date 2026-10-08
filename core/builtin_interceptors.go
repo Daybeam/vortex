@@ -139,10 +139,17 @@ func tryDefaultRoleFallback(registry *config.Registry, logger *Logger, req *Spaw
 			"level":   "WARN",
 		})
 	}
+	// E16.10-B1 fix (2026-10-07): the Graph path previously stored the
+	// fallback role under the ORIGINAL role id (often "") and left
+	// req.RoleID untouched — ContextHub.GetRole returns nil for ""
+	// unconditionally, so every empty-RoleID spawn (e.g. chat
+	// delegate_to_orchestrator -> SubmitWithSession without a role) died
+	// with `role "" not found` right after this fallback "succeeded".
+	// Rewrite req.RoleID unconditionally and cache the role under its own
+	// id so both lookup paths agree.
+	req.RoleID = defaultRole.ID
 	if req.Hub != nil && req.Hub.Graph != nil {
-		req.Hub.Graph.SetSessionRole(req.RoleID, defaultRole)
-	} else {
-		req.RoleID = "orchestrator_default"
+		req.Hub.Graph.SetSessionRole(defaultRole.ID, defaultRole)
 	}
 	return true
 }

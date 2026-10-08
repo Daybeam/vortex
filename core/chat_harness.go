@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -161,7 +162,7 @@ func (h *ChatHarness) buildSystem(query, taskID string) string {
 
 // Run executes the agent loop and streams events via emit. It returns the
 // final assistant text (for persistence) and any error.
-func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMessage, emit func(ChatEvent) error) (string, error) {
+func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMessage, emit func(ChatEvent) error) (output string, err error) {
 	maxTurns := h.MaxTurns
 	if maxTurns <= 0 {
 		maxTurns = 6
@@ -188,6 +189,12 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	var finalText strings.Builder // audit H1: was `var finalText string` with += (O(n²))
 	var prevSig string
 	toolFailErrors := make(map[string][]string) // per-tool recent error messages (capped at 5)
+
+	defer func() {
+		if err == nil && finalText.Len() > 0 && query != "" {
+			h.indexTurn(ctx, taskID, query, finalText.String())
+		}
+	}()
 
 	for turn := 0; turn < maxTurns; turn++ {
 		// Abort if the context was cancelled (e.g. client disconnect or shutdown).
@@ -298,6 +305,26 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 
 	emit(ChatEvent{Type: "error", Data: fmt.Sprintf("max turns (%d) exceeded", maxTurns)})
 	return finalText.String(), fmt.Errorf("max turns (%d) exceeded", maxTurns)
+}
+
+func (h *ChatHarness) indexTurn(ctx context.Context, sessionID, userQuery, assistantResponse string) {
+	if h.Archive == nil || h.Embed == nil {
+		return
+	}
+	embCtx, embCancel := context.WithTimeout(ctx, 30*time.Second) // audit L-MED-7: derive timeout from parent context to avoid goroutine leak
+	defer embCancel()
+	vec, embErr := h.Embed.Embed(embCtx, userQuery)
+	if embErr != nil {
+		return
+	}
+	_ = h.Archive.Append(MemoryItem{
+		TaskID:    "chat_" + sessionID,
+		NodeID:    "chat_" + sessionID + "_" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		Intent:    userQuery,
+		Summary:   assistantResponse,
+		Embedding: vec,
+		Timestamp: time.Now(),
+	})
 }
 
 func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string]any, taskID string) (string, error) {

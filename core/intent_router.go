@@ -3,7 +3,10 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
+	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -144,6 +147,11 @@ func (r *IntentRouter) Route(ctx context.Context, reg *config.Registry, userInpu
 
 	// Race 1: Semantic Embedding Matching
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[intent-router] goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		r.mu.RLock()
 		hasClient := r.embedClient != nil
 		hasEmbeddings := len(r.embeddings) > 0
@@ -213,6 +221,11 @@ func (r *IntentRouter) Route(ctx context.Context, reg *config.Registry, userInpu
 
 	// Race 2: Keyword Fallback (Instant & Reliable)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[intent-router] goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		candidates := MatchSOPCandidates(reg, userInput, maxResults)
 		if len(candidates) == 0 {
 			keywordChan <- raceResult{err: errors.New("no keyword matches")}

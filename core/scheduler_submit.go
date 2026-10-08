@@ -22,9 +22,9 @@ func (s *DirectedEngine) validateTaskComplexity(inputs []schemas.StepInput) erro
 	// These are high-overhead and should be done directly by the caller.
 	if len(inputs) == 1 {
 		inp := inputs[0]
-		s.Mu.RLock()
+		s.registry.Mu.RLock()
 		role := s.registry.Roles[inp.RoleID]
-		s.Mu.RUnlock()
+		s.registry.Mu.RUnlock()
 
 		isLocal := false
 		if role != nil && role.Provider == "local" {
@@ -412,6 +412,18 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 			s.persistGraph(graph)
 			s.broadcastDone(taskID) // safe close under Mu with double-close guard
+			// §3 fix: publish terminal event for single-step fast-path tasks.
+			// Without this, webhook/callback subscribers never hear about these
+			// tasks (the common case). See docs/TASK_WEBHOOK_CALLBACK_DESIGN.md §3.
+			s.Mu.Lock()
+			conf := graph.ComputeConfidence()
+			isFailed := graph.Status == schemas.GraphFailed
+			s.Mu.Unlock()
+			if isFailed {
+				s.publishEvent(taskID, "", EventTaskFailed, map[string]any{"confidence": conf})
+			} else {
+				s.publishEvent(taskID, "", EventTaskCompleted, map[string]any{"confidence": conf})
+			}
 			s.Broadcast()
 		}) // audit C1: goBackground closing
 
@@ -644,18 +656,18 @@ func (s *DirectedEngine) pinBaseline(taskID string, inputs []schemas.StepInput) 
 	var sopID, sopVer, roleID, roleVer string
 
 	if inp.SOPRef != "" {
-		s.Mu.RLock()
+		s.registry.Mu.RLock()
 		if sop, ok := s.registry.SOPs[inp.SOPRef]; ok {
 			sopID, sopVer = sop.ID, sop.Version
 		}
-		s.Mu.RUnlock()
+		s.registry.Mu.RUnlock()
 	}
 	if inp.RoleID != "" {
-		s.Mu.RLock()
+		s.registry.Mu.RLock()
 		if role, ok := s.registry.Roles[inp.RoleID]; ok {
 			roleID, roleVer = role.ID, role.Version
 		}
-		s.Mu.RUnlock()
+		s.registry.Mu.RUnlock()
 	}
 
 	if sopID == "" && roleID == "" {

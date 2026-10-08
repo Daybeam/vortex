@@ -19,6 +19,8 @@ import (
 
 func (s *DirectedEngine) retryWait(role *config.Role, attempt int) int {
 	if role != nil {
+		s.registry.Mu.RLock()
+		defer s.registry.Mu.RUnlock()
 		for _, mcpID := range role.BoundMCPIDs() {
 			if mcp := s.registry.MCPs[mcpID]; mcp != nil && mcp.RateLimit != nil {
 				waits := mcp.RateLimit.RetryWaitSeconds
@@ -183,7 +185,6 @@ func (s *DirectedEngine) foldNode(taskID, nodeID string) {
 	})
 
 	s.Mu.Lock()
-	defer s.Mu.Unlock()
 	node.Checksum = checksum // audit L-1.6: write checksum under Lock
 	if err == nil {
 		node.Summary = fmt.Sprintf("%v", res.Output.Result)
@@ -193,7 +194,8 @@ func (s *DirectedEngine) foldNode(taskID, nodeID string) {
 		node.Status = schemas.NodeAbandoned
 		s.logger.Log("EventNodeFoldingFailed", taskID, "", map[string]any{"node_id": nodeID, "error": err.Error()})
 	}
-	s.persistGraphLocked(graph)
+	s.Mu.Unlock()
+	s.persistGraph(graph) // audit PERF-HIGH-1: I/O outside lock (was persistGraphLocked)
 }
 
 // archiveStep ingests a MemoryItem into the ContextArchive after step completion.
