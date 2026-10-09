@@ -75,6 +75,9 @@ func MainLogic() string {
 		t.Fatalf("expected string output for code/module.go, got %T", out["workspace/code/module.go"])
 	}
 	// If compression happened, the output will differ from input
+	if got == "" {
+		t.Error("expected non-empty output for unprotected key — key was skipped")
+	}
 	if got == goSource {
 		t.Log("AST compressor did not compress (file may be below 100-line trigger) — acceptable; key path is unblocked")
 		// Accept either: the compressor only triggers > 100 lines; our fixture

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -189,6 +190,9 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	var finalText strings.Builder // audit H1: was `var finalText string` with += (O(n²))
 	var prevSig string
 	toolFailErrors := make(map[string][]string) // per-tool recent error messages (capped at 5)
+	noTextTurns := 0                            // consecutive turns with tool calls but no text output
+
+	log.Printf("[chat-harness] task=%s sieve_nil=%v turns=%d", taskID, h.Sieve == nil, maxTurns)
 
 	defer func() {
 		if err == nil && finalText.Len() > 0 && query != "" {
@@ -202,6 +206,8 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			emit(ChatEvent{Type: "error", Data: fmt.Sprintf("context cancelled: %v", ctx.Err())})
 			return finalText.String(), ctx.Err()
 		}
+
+		prevLen := finalText.Len()
 
 		req := providers.CompleteRequest{
 			System:     system,
@@ -230,10 +236,29 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			return finalText.String(), nil
 		}
 
-		// Loop-guard: detect repetitive tool calls and force a no-tools
-		// completion to break the cycle. Uses the Sieve if available
-		// (production-grade, threshold=3), else a lightweight signature check.
-		shouldForce := false
+		// Steer: if the model keeps making tool calls without producing any
+		// visible text for the user, nudge it toward converging. This catches
+		// "reasoning-only loops" where the model churns through tool calls
+		// without ever generating a response. Non-latching: the turn continues
+		// normally after the nudge.
+		if finalText.Len()-prevLen == 0 {
+			noTextTurns++
+		} else {
+			noTextTurns = 0
+		}
+		if noTextTurns >= 3 {
+			emit(ChatEvent{Type: "steer", Data: fmt.Sprintf("no text output for %d consecutive turns", noTextTurns)})
+			messages = append(messages, ChatMessage{
+				Role:    "user",
+				Content: "[You have been making tool calls without producing a response for 3 turns. Provide a direct answer to the user now.]",
+			})
+			noTextTurns = 0
+		}
+
+		// Loop detection: log repetitive tool calls for observability.
+		// Consequence is cache replay (in the execution loop below), not
+		// force-termination — force-terminate causes small models to panic
+		// (empty turns / transfer-to-human) instead of continuing.
 		if h.Sieve != nil {
 			interactions := make([]store.ToolInteraction, len(resp.ToolCalls))
 			for i, tc := range resp.ToolCalls {
@@ -241,38 +266,32 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			}
 			if ok, reason := h.Sieve.InspectToolCalls(taskID, interactions); !ok {
 				emit(ChatEvent{Type: "loop_guard", Data: reason})
-				shouldForce = true
 			}
 		} else {
 			sig := toolCallSignature(resp.ToolCalls)
 			if sig != "" && sig == prevSig {
-				emit(ChatEvent{Type: "loop_guard", Data: "identical tool calls repeated; forcing final answer"})
-				shouldForce = true
+				emit(ChatEvent{Type: "loop_guard", Data: "identical tool calls repeated"})
 			}
 			prevSig = sig
 		}
 
-		if shouldForce {
-			noToolReq := req
-			noToolReq.MCPServers = nil
-			if r2, e2 := h.Provider.StreamComplete(ctx, noToolReq, func(chunk string) error {
-				if chunk != "" {
-					finalText.WriteString(chunk) // audit H1: was += (O(n²) string concat)
-					if e := emit(ChatEvent{Type: "delta", Data: chunk}); e != nil {
-						return e // audit H5: abort stream if client disconnected
-					}
-				}
-				return nil
-			}); e2 == nil && r2.Text != "" {
-				emit(ChatEvent{Type: "done"})
-				return finalText.String(), nil
-			}
-			emit(ChatEvent{Type: "done"})
-			return finalText.String(), nil
-		}
-
 		for _, tc := range resp.ToolCalls {
 			emit(ChatEvent{Type: "tool_call", Data: tc.Name, Meta: map[string]any{"args": tc.Arguments}})
+
+			// Cache replay: if this exact read was executed before, return
+			// the cached result instead of re-executing. Breaks repetition
+			// loops without force-terminating the conversation.
+			if h.Sieve != nil {
+				if cached, found := h.Sieve.GetCachedResult(taskID, tc.Name, tc.Arguments); found {
+					log.Printf("[chat-harness] cache_replay HIT task=%s tool=%s", taskID, tc.Name)
+					result := cached + "\n\n[CACHED REPLAY — same query as before; no database changes since last call.]"
+					emit(ChatEvent{Type: "cache_replay", Data: tc.Name})
+					emit(ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": tc.Name, "cached": true}})
+					messages = append(messages, ChatMessage{Role: "tool", Content: fmt.Sprintf("[tool %s result]\n%s", tc.Name, result)})
+					continue
+				}
+			}
+
 			result, derr := h.execTool(ctx, tc.Name, tc.Arguments, taskID)
 			if derr != nil {
 				// Track error messages (not just count) so we can inject them
@@ -297,6 +316,19 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				}
 			} else {
 				toolFailErrors[tc.Name] = nil
+				if h.Sieve != nil {
+					if isPollerTool(tc.Name) {
+						// poller: always execute fresh, don't disturb cache
+					} else if !isReadTool(tc.Name) {
+						h.Sieve.ClearResultCache(taskID)
+					} else {
+						h.Sieve.CacheToolResult(taskID, tc.Name, tc.Arguments, result)
+						if h.Sieve.CheckResultRepetition(taskID, result) {
+							result = "[RESULT REPETITION] You are receiving the same result from different queries. The data is not changing. Stop re-querying and provide a direct answer based on the information you already have.\n\n" + result
+							emit(ChatEvent{Type: "result_repetition", Data: tc.Name})
+						}
+					}
+				}
 			}
 			emit(ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": tc.Name}})
 			messages = append(messages, ChatMessage{Role: "tool", Content: fmt.Sprintf("[tool %s result]\n%s", tc.Name, result)})
@@ -317,14 +349,16 @@ func (h *ChatHarness) indexTurn(ctx context.Context, sessionID, userQuery, assis
 	if embErr != nil {
 		return
 	}
-	_ = h.Archive.Append(MemoryItem{
+	if err := h.Archive.Append(MemoryItem{
 		TaskID:    "chat_" + sessionID,
 		NodeID:    "chat_" + sessionID + "_" + strconv.FormatInt(time.Now().UnixNano(), 36),
 		Intent:    userQuery,
 		Summary:   assistantResponse,
 		Embedding: vec,
 		Timestamp: time.Now(),
-	})
+	}); err != nil {
+		log.Printf("WARN: chat_harness: failed to archive memory item: %v", err)
+	}
 }
 
 func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string]any, taskID string) (string, error) {
