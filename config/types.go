@@ -519,6 +519,18 @@ type SystemSettings struct {
 	// role's Instruction carries domain-specific decision logic. Empty = use
 	// conservative defaults (defaultNonInteractiveChoice). E5 delegate strategy.
 	DecisionDeciderRole string `json:"decision_decider_role,omitempty"`
+	// MaxConsecutiveSkips caps how many decisions in a row can be auto-resolved
+	// as "skip" before "skip" is filtered out of options. Prevents silent
+	// cascade where every dependent step gets skipped, making decisions
+	// effectively useless. 0 = default 3. Only applies when NonInteractive=true.
+	MaxConsecutiveSkips int `json:"max_consecutive_skips,omitempty"`
+	// ChatMemoryWindowSize controls how many recent turns RollingWindowMemory
+	// keeps raw before compressing older turns. 0 = default 10.
+	ChatMemoryWindowSize int `json:"chat_memory_window_size,omitempty"`
+	// ChatMemoryMaxTokens sets an optional token budget for chat history.
+	// When > 0, oldest messages are dropped when the budget is exceeded.
+	// 0 = no token budget (disabled).
+	ChatMemoryMaxTokens int `json:"chat_memory_max_tokens,omitempty"`
 	// RequireWriteReason makes the write-reflection gate (#19) a hard veto
 	// instead of a nudge.
 	//
