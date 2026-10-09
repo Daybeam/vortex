@@ -571,6 +571,13 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 		}
 	}
 
+	// Track consecutive skips for cascade guard (filterSkipOptions).
+	if choice == "skip" {
+		graph.ConsecutiveSkips++
+	} else {
+		graph.ConsecutiveSkips = 0
+	}
+
 	// Remove decision from pending
 	filtered := graph.PendingDecisions[:0]
 	for _, d := range graph.PendingDecisions {
