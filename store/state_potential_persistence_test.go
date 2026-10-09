@@ -2,7 +2,7 @@ package store
 
 import (
 	"context"
-	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,8 +10,7 @@ import (
 )
 
 func TestStatePotentialPersistence_SQLite(t *testing.T) {
-	dbFile := "test_experience_potential.db"
-	defer os.Remove(dbFile)
+	dbFile := filepath.Join(t.TempDir(), "test.db")
 
 	db, err := InitDB(dbFile)
 	if err != nil {

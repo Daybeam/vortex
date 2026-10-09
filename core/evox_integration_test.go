@@ -23,12 +23,17 @@ func TestEvoXCoordination(t *testing.T) {
 		Providers: make(map[string]*config.ProviderConfig),
 	}
 
-	ts := store.NewTaskStore(store.NewFileTaskBackend("test_tasks_evox"))
-	defer os.RemoveAll("test_tasks_evox")
+	ts := store.NewTaskStore(store.NewFileTaskBackend(t.TempDir()))
 
 	sys := &config.SystemSettings{}
-	es := mustNewExperienceStore(t, "test_exp_evox", ts, sys, nil, nil)
-	defer os.RemoveAll("test_exp_evox")
+	// ExperienceStore spawns background goroutines (debounced persist, state
+	// potential save, cooccurrence save) that write to this directory. It has
+	// no Close/Stop method, so t.TempDir() cleanup would race with those
+	// goroutines on Windows ("directory is not empty"). Use a hardcoded path
+	// with os.RemoveAll (which silently ignores partial cleanup failures).
+	expDir := "test_exp_evox"
+	es := mustNewExperienceStore(t, expDir, ts, sys, nil, nil)
+	defer os.RemoveAll(expDir)
 
 	logger := mustNewLogger(t, t.TempDir(), sys)
 	// FIX (playbook addendum): without this, the async Logger writer
@@ -37,9 +42,7 @@ func TestEvoXCoordination(t *testing.T) {
 	// considers non-empty ("the directory is not empty"). Logger.Close()
 	// correctly waits for the writer to drain before returning.
 	defer logger.Close()
-	engine := NewDirectedEngine(reg, ts, es, nil, logger, nil, "test_out_evox", "test_tmp_evox", nil)
-	defer os.RemoveAll("test_out_evox")
-	defer os.RemoveAll("test_tmp_evox")
+	engine := NewDirectedEngine(reg, ts, es, nil, logger, nil, t.TempDir(), t.TempDir(), nil)
 
 	// 1. Test Programmatic Merge
 	graph := &schemas.TaskGraph{

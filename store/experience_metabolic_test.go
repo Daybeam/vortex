@@ -75,9 +75,9 @@ func TestUpdateSkillMetabolicCost_FailureLowersSuccessRate(t *testing.T) {
 	if gs.SuccessRate > 0.85 {
 		t.Errorf("SuccessRate = %f, should be < 0.85 after failure", gs.SuccessRate)
 	}
-	if gs.MetabolicROI < 0.2 {
-		t.Logf("ROI = %f (low ROI as expected for high-cost failure)", gs.MetabolicROI)
-	}
+	// ROI depends on the metabolic cost formula; the key assertion is
+	// SuccessRate above. Log ROI for diagnostic visibility.
+	t.Logf("ROI = %f (metabolic cost applied)", gs.MetabolicROI)
 }
 
 func TestPruneByMetabolicROI_MarksDormant(t *testing.T) {
