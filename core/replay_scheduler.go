@@ -615,7 +615,9 @@ func (rs *replayScheduler) writeBack(ctx context.Context, candidateID string, v 
 		CreatedAt:      time.Now(),
 		LastSeen:       time.Now(),
 	}
-	_ = rs.expStore.AddJITCandidate(ctx, candidate)
+	if err := rs.expStore.AddJITCandidate(ctx, candidate); err != nil {
+		log.Printf("WARN: replay_scheduler: failed to add JIT candidate: %v", err)
+	}
 
 	// L5 fix (docs/RSI_AUTONOMY_LEVELS_ASSESSMENT.md): also write to TaskPatterns
 	// so QueryJITCandidates -> QuerySimilarPatterns can find the pattern.
