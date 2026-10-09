@@ -82,6 +82,18 @@ func (s *DirectedEngine) addDecision(
 		}
 	}
 
+	// Skip cascade guard + scenario-aware filtering: remove "skip" from
+	// options when (1) consecutive skips have reached the limit, or
+	// (2) root_cause indicates downstream steps will just fail too.
+	maxSkips := 3
+	if s.registry != nil && s.registry.System.MaxConsecutiveSkips > 0 {
+		maxSkips = s.registry.System.MaxConsecutiveSkips
+	}
+	s.Mu.RLock()
+	consecutiveSkips := graph.ConsecutiveSkips
+	s.Mu.RUnlock()
+	options = filterSkipOptions(consecutiveSkips, maxSkips, ctx, options)
+
 	dec := &schemas.Decision{
 		ID:      schemas.NewDecisionID(),
 		StepID:  step.ID,
@@ -243,8 +255,8 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 	return "", false
 }
 
-// askSystemOneForDecision uses the System One decision model to pick an option.
-// System One is not available in the open core; this stub always returns false.
+// askSystemOneForDecision is a stub in the open core. The full implementation
+// uses the System One decision model to pick an option for a blocked decision.
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,
@@ -254,37 +266,76 @@ func (s *DirectedEngine) askSystemOneForDecision(
 	return "", false
 }
 
+// filterSkipOptions removes "skip" from options when the skip cascade would
+// make the decision useless. Two triggers:
+//   - consecutiveSkips >= maxSkips: too many skips in a row, force a real choice
+//   - root_cause is "capability_required" or "context_deficit": skipping won't
+//     help because downstream steps need the same capability/context
+// "abort" is always added as a last resort if "skip" is removed and no other
+// terminal option remains.
+func filterSkipOptions(consecutiveSkips, maxSkips int, ctx map[string]any, options []string) []string {
+	removeSkip := false
+	if consecutiveSkips >= maxSkips {
+		removeSkip = true
+	}
+	if rootCause, ok := ctx["root_cause"].(string); ok {
+		if rootCause == "capability_required" || rootCause == "context_deficit" {
+			removeSkip = true
+		}
+	}
+	if !removeSkip {
+		return options
+	}
+	filtered := make([]string, 0, len(options))
+	for _, o := range options {
+		if o != "skip" {
+			filtered = append(filtered, o)
+		}
+	}
+	hasAbort := false
+	for _, o := range filtered {
+		if o == "abort" {
+			hasAbort = true
+			break
+		}
+	}
+	if !hasAbort && len(filtered) > 0 {
+		filtered = append(filtered, "abort")
+	}
+	return filtered
+}
+
 // defaultNonInteractiveChoice returns the conservative default choice to use
 // when NonInteractive mode must resolve a decision without a human, or
 // ("", false) if the decision type must NOT be auto-resolved.
 //
-// Conservative bias: prefer "skip" (don't kill the whole task, don't loop).
+// Preference chain: skip → retry → refine_and_retry → abort.
+// "skip" is preferred (conservative: don't kill the whole task) but may be
+// filtered out by the cascade guard or scenario-aware filtering. When "skip"
+// is unavailable, we fall back to "retry" (fresh attempt), then
+// "refine_and_retry" (attempt with feedback), then "abort" (give up).
 // human_approval_required is deliberately excluded — it is an explicit safety
 // gate and must always wait for a human, even unattended.
 func defaultNonInteractiveChoice(dtype schemas.DecisionType, options []string) (string, bool) {
-	var want string
+	var preferences []string
 	switch dtype {
 	case schemas.DecisionStepFailed, schemas.DecisionCapabilityRequired,
 		schemas.DecisionLowConfidence, schemas.DecisionEnvironmentMissing,
 		schemas.DecisionDelegationRequired, schemas.DecisionUpstreamInsufficient,
 		schemas.DecisionBudgetExhausted:
-		want = "skip"
+		preferences = []string{"skip", "retry", "refine_and_retry", "abort"}
 	case schemas.DecisionMaxTurnsExhausted:
-		// Bounded by the existing TurnsBudgetBonus cap; grants the stuck step
-		// one more chunk of turns rather than silently skipping it.
-		want = "resume_more_turns"
+		preferences = []string{"resume_more_turns"}
 	case schemas.DecisionAutonomousAbortRequested:
-		// Cost-governance abort request: in unattended mode, "continue" keeps
-		// running (the budget sentinel fired once per tier, so this is bounded).
-		want = "continue"
+		preferences = []string{"continue"}
 	default:
-		// human_approval_required, rewrite_dag (needs a surgery payload), etc.
 		return "", false
 	}
-	// The chosen default must actually be an offered option.
-	for _, o := range options {
-		if o == want {
-			return want, true
+	for _, want := range preferences {
+		for _, o := range options {
+			if o == want {
+				return want, true
+			}
 		}
 	}
 	return "", false

@@ -25,7 +25,9 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 		if req.Hub != nil {
 			roleExists = req.Hub.GetRole(req.RoleID) != nil
 		} else {
+			registry.Mu.RLock()
 			_, roleExists = registry.Roles[req.RoleID]
+			registry.Mu.RUnlock()
 		}
 
 	if !roleExists {
@@ -121,7 +123,9 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 // Returns true if the fallback succeeded (caller should break/continue),
 // false if no default role is available (caller should return the error).
 func tryDefaultRoleFallback(registry *config.Registry, logger *Logger, req *SpawnRequest, genErr error) bool {
+	registry.Mu.RLock()
 	defaultRole := registry.Roles["orchestrator_default"]
+	registry.Mu.RUnlock()
 	if defaultRole == nil {
 		return false
 	}
@@ -160,7 +164,9 @@ func tryDefaultRoleFallback(registry *config.Registry, logger *Logger, req *Spaw
 // one MCP's binary is unavailable (e.g. pyright/lsmcp not installed on Linux).
 func HealthCheckInterceptor(registry *config.Registry, logger *Logger) Interceptor {
 	return func(ctx context.Context, req *SpawnRequest, next SpawnerHandler) (*SpawnResult, error) {
+		registry.Mu.RLock()
 		role := registry.Roles[req.RoleID]
+		registry.Mu.RUnlock()
 		if role != nil {
 			mcpIDs := role.BoundMCPIDs()
 			mcpIDs = append(mcpIDs, req.AdditionalMCPs...)

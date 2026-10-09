@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -140,6 +142,11 @@ func NewMCPClient(command string, args []string, dir string, env map[string]stri
 
 	// Capture stderr in a buffer (thread-safe via stderrMu)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[mcp-client] stderr reader goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		buf := make([]byte, 4096)
 		for {
 			n, err := stderr.Read(buf)
@@ -351,7 +358,7 @@ func (c *MCPClient) Initialize(ctx context.Context, protocolVersion string) erro
 	initReq := map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "orchestrator-mcp-go", "version": "1.0.0"},
+		"clientInfo":      map[string]any{"name": "vortex", "version": "1.0.0"},
 	}
 
 	_, err := c.SendRequest(ctx, "initialize", initReq)

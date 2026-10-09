@@ -36,6 +36,7 @@ func (r *SkillRouter) Route(req SkillRouteRequest) []string {
 	})
 
 	var routed []string
+	r.Registry.Mu.RLock()
 	for _, id := range req.AvailableSkills {
 		skill := r.Registry.Skills[id]
 		if skill == nil {
@@ -81,6 +82,7 @@ func (r *SkillRouter) Route(req SkillRouteRequest) []string {
 			}
 		}
 	}
+	r.Registry.Mu.RUnlock()
 
 	// FIX (2026-08-18): remove the arbitrary "first 3" fallback. If nothing
 	// matched, return an empty set to avoid polluting the prompt with

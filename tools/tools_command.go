@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +42,11 @@ var activeSandboxRuns sync.Map
 func startSandboxRunCleaner() {
 	sandboxRunCleanerOnce.Do(func() {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[sandbox-cleaner] goroutine panic: %v\n%s", r, debug.Stack())
+				}
+			}()
 			ticker := time.NewTicker(sandboxRunCheckInterval)
 			defer ticker.Stop()
 			for range ticker.C {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -294,7 +295,9 @@ func (l *ResourceLoader) FetchCookbook(ctx context.Context, source, taskHint str
 
 	// Save to disk if enabled (ADDED 2026-07-14)
 	if l.cacheEnabled && l.cacheDir != "" {
-		_ = l.saveCookbookToDisk(source, taskHint, result)
+		if err := l.saveCookbookToDisk(source, taskHint, result); err != nil {
+			log.Printf("WARN: resources: failed to save cookbook to disk: %v", err)
+		}
 	}
 
 	l.Mu.Lock()

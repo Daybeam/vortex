@@ -31,7 +31,9 @@ func TestDefaultNonInteractiveChoice(t *testing.T) {
 		// rewrite_dag needs a surgery payload → not auto-resolvable.
 		{"rewrite_dag → no auto", schemas.DecisionRewriteDAG, []string{"rewrite_dag", "skip"}, "", false},
 		// Guard: default must be an offered option.
-		{"skip not offered → no auto", schemas.DecisionStepFailed, []string{"abort"}, "", false},
+		{"skip not offered → abort fallback", schemas.DecisionStepFailed, []string{"abort"}, "abort", true},
+		{"skip not offered → retry fallback", schemas.DecisionStepFailed, []string{"retry", "abort"}, "retry", true},
+		{"skip not offered → refine fallback", schemas.DecisionStepFailed, []string{"refine_and_retry", "abort"}, "refine_and_retry", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

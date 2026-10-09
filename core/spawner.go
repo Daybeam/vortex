@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -79,6 +80,7 @@ type Spawner struct {
 	constraintAdapter *ConstraintAdapter
 	sieve             *Sieve
 	contextManager    *ContextManager
+	domainReadCache   *DomainToolReadCache // #2-universal (eval §23): replay cached read results
 	CaSKG             *CaSKGManager
 	watchdog          *GatewayWatchdog
 	healer            *Healer
@@ -144,6 +146,7 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		CaSKG:             caskg,
 		sieve:             newSieveFromConfig(reg.System),
 		contextManager:    NewContextManager(reg),
+		domainReadCache:   NewDomainToolReadCache(), // #2-universal: replay cached read results
 		watchdog:          NewGatewayWatchdog(reg),
 		healer:            NewHealer(),
 		pa:                NewPromptAssembler(es, loader, reg, logger),
@@ -1320,19 +1323,45 @@ turnLoop:
 				continue
 			}
 
-			if isStateChangingTool(call.Name) {
-				needsVerification = true
-			}
+		if isStateChangingTool(call.Name) {
+			needsVerification = true
+		}
 
-			// Bookmark_List Routing: Inject trusted domains into search-like tools
-			if strings.Contains(strings.ToLower(call.Name), "search") && len(req.Hub.Registry.System.Bookmarks) > 0 {
-				if call.Arguments == nil {
-					call.Arguments = make(map[string]any)
-				}
-				call.Arguments["_bookmarks"] = req.Hub.Registry.System.Bookmarks
-			}
+		// #2-universal (eval §23): a state-changing (write) call invalidates
+		// every cached read for this MCP server, keeping the read cache
+		// coherent with external state. Generic: any write verb prefix
+		// (cancel_/update_/create_/...) or known state-changing tool.
+		if s.domainReadCache != nil && (IsWriteMCPTool(call.Name) || isStateChangingTool(call.Name)) {
+			s.domainReadCache.Invalidate(mcpID)
+		}
 
-			if mcpDef.Command != "" {
+		// Bookmark_List Routing: Inject trusted domains into search-like tools
+		if strings.Contains(strings.ToLower(call.Name), "search") && len(req.Hub.Registry.System.Bookmarks) > 0 {
+			if call.Arguments == nil {
+				call.Arguments = make(map[string]any)
+			}
+			call.Arguments["_bookmarks"] = req.Hub.Registry.System.Bookmarks
+		}
+
+		// #2-universal (eval §23): replay cached read results to break
+		// repetition loops (execution amplification) without force-terminating
+		// the conversation. Generic: any read-only domain tool (get_/list_/
+		// search_/query_/read_/fetch_/check_/is_/has_*) is eligible; pollers
+		// (progress/health/wait) and state-changing tools are excluded. The
+		// model receives the identical previously-computed markdown, so the
+		// repeated call costs zero extra tool execution.
+		if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
+			if cachedMD, ok := s.domainReadCache.Get(mcpID, call.Name, call.Arguments); ok {
+				log.Printf("[spawner] read_cache HIT task=%s step=%s tool=%s mcp=%s", req.TaskID, req.StepID, call.Name, mcpID)
+				observability.GetGlobalMetrics().Inc("orchestrator.read_cache.hit", 1)
+				interaction.Result = cachedMD
+				trace = append(trace, interaction)
+				toolResults = append(toolResults, cachedMD)
+				continue
+			}
+		}
+
+		if mcpDef.Command != "" {
 				var finalRes any
 				var execErr error
 
@@ -1422,12 +1451,17 @@ turnLoop:
 						env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
 						md := env.ToMarkdown(call.Name)
 
-						// Apply Sieve Pruning to reduce token noise for large tool outputs
-						if len(md) > 2000 {
-							md = s.sieve.PruneOutput(md, req.Task)
-						}
-						toolResults = append(toolResults, md)
+					// Apply Sieve Pruning to reduce token noise for large tool outputs
+					if len(md) > 2000 {
+						md = s.sieve.PruneOutput(md, req.Task)
 					}
+					toolResults = append(toolResults, md)
+					// #2-universal (eval §23): cache the successful read result
+					// for replay on identical future calls within this server.
+					if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
+						s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
+					}
+				}
 				}
 			} else if mcpDef.URL != "" {
 				toolCtx, cancelTool := context.WithTimeout(ctx, 60*time.Second)
@@ -1469,6 +1503,10 @@ turnLoop:
 							md = s.sieve.PruneOutput(md, req.Task)
 						}
 						toolResults = append(toolResults, md)
+						// #2-universal (eval §23): cache the successful read result.
+						if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
+							s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
+						}
 					}
 				}
 			} else {

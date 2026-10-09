@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -44,6 +46,11 @@ func NewRemoteTaskHub(baseURL, apiKey string, spawner *Spawner) *RemoteTaskHub {
 	}
 	// Background "pulse" to trigger sensing if Hub doesn't support push notifications yet
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[remote_hub] pulse goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {

@@ -57,7 +57,9 @@ func (p *GeminiProvider) buildGeminiBody(req CompleteRequest) map[string]any {
 		"generationConfig": map[string]any{"maxOutputTokens": req.MaxTokens},
 	}
 	if req.Temperature != nil {
-		body["generationConfig"].(map[string]any)["temperature"] = *req.Temperature
+		if gc, ok := body["generationConfig"].(map[string]any); ok {
+			gc["temperature"] = *req.Temperature
+		}
 	}
 
 	// Native Tools Support

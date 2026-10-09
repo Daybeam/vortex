@@ -523,6 +523,12 @@ type TaskGraph struct {
 	// ADDED (2026-09-19): see DELEGATION_AND_SUBMIT_DEFECTS.md §2.3.
 	TimeoutSecs int `json:"timeout_secs,omitempty"`
 
+	// ConsecutiveSkips tracks how many decisions in a row were auto-resolved
+	// as "skip". When this reaches MaxConsecutiveSkips, "skip" is filtered
+	// out of subsequent decision options to prevent silent cascade through
+	// the remaining DAG. Reset on any non-skip choice.
+	ConsecutiveSkips int `json:"consecutive_skips,omitempty"`
+
 	// DecisionHistory tracks structured autonomous reasoning points.
 	// ADDED (2026-08-26): see Priority 5 roadmap.
 	DecisionHistory map[string]*DecisionNode `json:"decision_history,omitempty"`

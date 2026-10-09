@@ -111,8 +111,8 @@ func (n *CapabilityNavigator) ClassifyIntent(ctx context.Context, query string) 
 			strings.Join(knownTags, ", "), query)
 
 		resp, err := provider.Complete(ctx, providers.CompleteRequest{
-			System:  "You are an intent classifier for an autonomous agent orchestrator.",
-			User:    prompt,
+			System: "You are an intent classifier for an autonomous agent orchestrator.",
+			User:   prompt,
 			Secrets: n.Registry.Secrets,
 		})
 
@@ -134,18 +134,17 @@ func (n *CapabilityNavigator) ClassifyIntent(ctx context.Context, query string) 
 	sort.Strings(res)
 	return res
 }
-
 type NavigatorView struct {
-	Capabilities map[string][]RoleSummary     `json:"capabilities"`
-	Workflows    map[string][]WorkflowSummary `json:"workflows"`
+	Capabilities map[string][]RoleSummary      `json:"capabilities"`
+	Workflows    map[string][]WorkflowSummary  `json:"workflows"`
 }
 
 type RoleSummary struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	Purpose  string   `json:"purpose"`
-	BestFor  string   `json:"best_for"`
-	Examples []string `json:"examples,omitempty"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Purpose     string   `json:"purpose"`
+	BestFor     string   `json:"best_for"`
+	Examples    []string `json:"examples,omitempty"`
 }
 
 type WorkflowSummary struct {
@@ -334,6 +333,7 @@ func (n *CapabilityNavigator) Search(ctx context.Context, query string) string {
 	return sb.String()
 }
 
+
 func (n *CapabilityNavigator) formatRoleDetail(r *config.Role) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Role: %s (%s)\n", r.Name, r.ID))
@@ -369,6 +369,50 @@ func (n *CapabilityNavigator) formatRoleDetail(r *config.Role) string {
 
 	sb.WriteString("### Bound Skills\n")
 	sb.WriteString(strings.Join(r.BoundSkills, ", ") + "\n\n")
+
+	if len(r.BoundMCPBindings) > 0 {
+		sb.WriteString("### Bound MCP Servers & Tools\n")
+		for _, b := range r.BoundMCPBindings {
+			mcp, ok := n.Registry.MCPs[b.MCPID]
+			if !ok {
+				mcp, ok = n.Registry.DynamicMCPs[b.MCPID]
+			}
+			if !ok {
+				if b.IsRestricted() {
+					sb.WriteString(fmt.Sprintf("- `%s` (not loaded) — allowed: %s\n", b.MCPID, strings.Join(b.AllowedTools, ", ")))
+				} else {
+					sb.WriteString(fmt.Sprintf("- `%s` (not loaded, unrestricted)\n", b.MCPID))
+				}
+				continue
+			}
+			if b.IsRestricted() {
+				sb.WriteString(fmt.Sprintf("- `%s` (restricted to %d tools):\n", b.MCPID, len(b.AllowedTools)))
+				for _, t := range b.AllowedTools {
+					desc := ""
+					for _, dt := range mcp.FullToolDefinitions {
+						if dt.Name == t {
+							desc = " - " + dt.Description
+							break
+						}
+					}
+					sb.WriteString(fmt.Sprintf("  - `%s`%s\n", t, desc))
+				}
+			} else {
+				sb.WriteString(fmt.Sprintf("- `%s` (unrestricted, %d tools):\n", b.MCPID, len(mcp.AvailableTools)))
+				for _, t := range mcp.AvailableTools {
+					desc := ""
+					for _, dt := range mcp.FullToolDefinitions {
+						if dt.Name == t {
+							desc = " - " + dt.Description
+							break
+						}
+					}
+					sb.WriteString(fmt.Sprintf("  - `%s`%s\n", t, desc))
+				}
+			}
+		}
+		sb.WriteString("\n")
+	}
 
 	return sb.String()
 }
@@ -459,7 +503,7 @@ func (n *CapabilityNavigator) GenerateDynamicMenu(reg *config.Registry) string {
 	defer reg.Mu.RUnlock()
 
 	var sb strings.Builder
-	sb.WriteString("# 🚀 Vortex Dynamic Capability Menu\n\n")
+	sb.WriteString("# 🚀 Orchestrator Dynamic Capability Menu\n\n")
 	sb.WriteString("> *Live view of active roles and hot-pluggable MCP modules. When you describe a task, I will automatically route it to the most relevant role and dynamically mount the required MCP modules.*\n\n")
 
 	// Roles
