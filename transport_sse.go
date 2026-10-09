@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -38,7 +39,7 @@ func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "[vortex] SSE mode on %s (BaseURL: %s)\n", addr, baseURL)
+	fmt.Fprintf(os.Stderr, "[orchestrator] SSE mode on %s (BaseURL: %s)\n", addr, baseURL)
 
 	sse := server.NewSSEServer(
 		mcpServer,
@@ -70,21 +71,26 @@ func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 	defer stop()
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[sse] server goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			// Don't use log.Fatalf — os.Exit skips deferred cleanup in
 			// main.go (CloseMCPConnections, JITSessions.CloseAll, etc.).
 			// Log the error and trigger graceful shutdown instead.
-			log.Printf("[vortex] SSE server error: %v", err)
+			log.Printf("[orchestrator] SSE server error: %v", err)
 			stop()
 		}
 	}()
 
 	<-sigCtx.Done()
-	log.Println("[vortex] shutdown signal received, draining connections...")
+	log.Println("[orchestrator] shutdown signal received, draining connections...")
 	rootCancel() // audit L4: stop background goroutines before HTTP shutdown
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[vortex] server shutdown error: %v", err)
+		log.Printf("[orchestrator] server shutdown error: %v", err)
 	}
 }

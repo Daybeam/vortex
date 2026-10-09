@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -162,6 +163,11 @@ func (m *JITManager) registerManagedTool(script, lang string, ttl time.Duration,
 // exits early if Close() is called before the TTL expires (audit M6).
 func (m *JITManager) scheduleCleanup(id, path string, ttl time.Duration) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[jit] TTL cleanup goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		timer := time.NewTimer(ttl)
 		defer timer.Stop()
 		select {

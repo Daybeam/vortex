@@ -3,7 +3,9 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -198,6 +200,11 @@ func (m *JITSessionManager) GetOrCreateSession(sessionID, lang string, ttl time.
 
 	// TTL cleanup, mirroring JITManager.RegisterTool's own goroutine pattern.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[jit-session] TTL cleanup goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		timer := time.NewTimer(ttl)
 		defer timer.Stop()
 		select {
