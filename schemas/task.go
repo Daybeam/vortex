@@ -113,6 +113,32 @@ func DetermineRiskTier(task string, mcpList []string) (RiskTier, float64) {
 	return RiskTierLight, 0.1
 }
 
+// DetermineComplexity (ADDED 2026-10-10): heuristic判断 a step task is complex
+// enough to warrant an explicit planning phase. Zero-cost keyword matching.
+// See docs/STEP_PLAN_MODE_DESIGN.md §9.2 (方案 A).
+func DetermineComplexity(task string, stepCount int) bool {
+	lower := strings.ToLower(task)
+	// Multi-file operations → need a plan
+	if strings.Contains(lower, "multiple files") || strings.Contains(lower, "multi-file") ||
+		strings.Contains(lower, "across files") || strings.Contains(lower, "cross-file") {
+		return true
+	}
+	// Multi-phase operations → need a plan
+	if strings.Count(lower, "then") > 1 || strings.Count(lower, "接着") > 1 {
+		return true
+	}
+	// Very long task description → likely complex
+	if len(task) > 500 {
+		return true
+	}
+	// Refactor / migrate / rewrite keywords → inherently multi-step
+	if strings.Contains(lower, "refactor") || strings.Contains(lower, "migrate") ||
+		strings.Contains(lower, "rewrite") || strings.Contains(lower, "restructure") {
+		return true
+	}
+	return false
+}
+
 type Metadata struct {
 	Namespace string      `json:"namespace"`
 	Version   string      `json:"version"`
@@ -148,6 +174,8 @@ type StepInput struct {
 	// See docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
 	EnableDebate    bool `json:"enable_debate,omitempty"`
 	MaxDebateRounds int  `json:"max_debate_rounds,omitempty"` // hard-capped at 2
+	// EnableStepPlan (ADDED 2026-10-10): see Step.EnableStepPlan.
+	EnableStepPlan bool `json:"enable_step_plan,omitempty"`
 	// DynamicRubrics are task-specific audit constraints (Phase 2 of Self-Evolution).
 	// If empty, the engine may generate them dynamically during audit.
 	DynamicRubrics []string `json:"dynamic_rubrics,omitempty"`
@@ -284,6 +312,12 @@ type Step struct {
 	// See docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
 	EnableDebate    bool `json:"enable_debate,omitempty"`
 	MaxDebateRounds int  `json:"max_debate_rounds,omitempty"` // hard-capped at 2
+
+	// EnableStepPlan (ADDED 2026-10-10): forces this Step through a Planner
+	// Phase before execution. The Planner generates a markdown plan using
+	// read-only tools; the Executor then receives the plan as context.
+	// See docs/STEP_PLAN_MODE_DESIGN.md.
+	EnableStepPlan bool `json:"enable_step_plan,omitempty"`
 
 	// OutputContract mirrors StepInput.OutputContract — the deterministic schema
 	// this step's artifact must satisfy. Set at Submit time, immutable after.

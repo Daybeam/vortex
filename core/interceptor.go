@@ -111,6 +111,12 @@ type SpawnRequest struct {
 
 	// ODFTP-native recovery context (ADDED 2026-08-30)
 	AdditionalPromptContext string
+
+	// EnableStepPlan (ADDED 2026-10-10): forces a Planner Phase before
+	// execution. The planner generates a markdown plan; the plan is
+	// injected into AdditionalPromptContext for the executor.
+	// See docs/STEP_PLAN_MODE_DESIGN.md.
+	EnableStepPlan bool
 }
 
 // SpawnerHandler is the core function signature for spawning a subagent.

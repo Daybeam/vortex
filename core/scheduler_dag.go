@@ -123,10 +123,28 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 		if len(ready) == 0 {
 			s.Mu.RLock()
 			isTerminal := graph.IsTerminal()
+			pendingDecs := len(graph.PendingDecisions)
 			s.Mu.RUnlock()
-			if isTerminal {
+			if isTerminal && pendingDecs == 0 {
 				s.finalize(graph)
 				return
+			}
+			// If there are pending decisions, wait for resolution rather than
+			// firing detectUpstreamInsufficient (which would create spurious
+			// decisions for steps that are simply waiting for a decision to
+			// unblock their upstream).
+			if pendingDecs > 0 {
+				notify := s.GetNotifyChan()
+				timer := time.NewTimer(5 * time.Second)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-notify:
+					timer.Stop()
+				case <-timer.C:
+				}
+				continue
 			}
 			// Smart Routing Decision Node (ADDED 2026-08-27):
 			// No ready steps but graph not terminal means downstream steps
@@ -144,7 +162,6 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 						"upstream_st": insufficient.UpstreamStatuses,
 					},
 					[]string{"skip", "abort"})
-				s.setGraphStatus(graph, schemas.GraphBlocked)
 				s.persistGraph(graph)
 				s.Broadcast()
 				continue
@@ -722,6 +739,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			InputMapping:            resolvedInputs,
 			Isolation:               step.Isolation,
 			AdditionalPromptContext: step.AdditionalPromptContext,
+			EnableStepPlan:          step.EnableStepPlan,
 		})
 
 		if err == nil {
@@ -887,8 +905,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"error": err.Error(),
 					"role":  step.RoleID,
 				})
-				// CRITICAL: Update both step and graph status to ensure complete stop
-				s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphBlocked)
+			// CRITICAL: Mark step as blocked (prevents re-dispatch via ReadySteps).
+			// Graph stays GraphRunning — independent branches continue.
+			s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphRunning)
 
 				// ACAIS: Deposit critical signal for role missing
 				if s.SignalField != nil {
@@ -899,9 +918,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				// this failure class, if the caller declared one -- see
 				// schemas/task.go's FailurePolicy type. A nil FailurePolicy (the
 				// default) falls straight through to the unchanged decision_
-				// required behavior below. Note graph.Status was already set to
-				// GraphBlocked above; applyStepFailurePolicy's "abort" case will
-				// correctly override it to GraphFailed, matching what a caller
+				// required behavior below. Graph stays GraphRunning (step is
+				// StepBlocked); applyStepFailurePolicy's "abort" case will
+				// correctly override to GraphFailed, matching what a caller
 				// submitting choice="abort" against the decision below would
 				// have produced.
 				if s.applyStepFailurePolicy(graph, step, taskID, FailureClassRoleMissing) {
@@ -931,8 +950,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"role":       step.RoleID,
 					"root_cause": string(FailureClassRoleMissing),
 				})
-				// Race fix: protect graph.Status with Mu.
-				s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphBlocked)
+			// Race fix: protect graph.Status with Mu.
+			// Step is blocked; graph stays running for independent branches.
+			s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphRunning)
 
 				s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 					"error":           "Infrastructure failure: " + err.Error(),
@@ -968,7 +988,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			requiredSchema = "json"
 		}
 
-		if valid, reason := s.sieve.Inspect(outputText, requiredSchema); !valid {
+		if valid, reason := s.sieve.InspectWithSystemOne(s.lifecycleCtx, outputText, requiredSchema); !valid {
 			s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
 				"error":      "Sieve Guardian intercepted",
 				"reason":     reason,
@@ -1050,7 +1070,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					}
 
 					// Adjust prompt for refinement
-					step.Task = fmt.Sprintf("%s\n\n[REFINEMENT REQUIRED]\nYour previous output failed verification.\nFailure Category: %s\nReason: %s\nAdvice: %s", step.Task, failType, reason, recoveryAdvice)
+					step.Task = fmt.Sprintf("%s\n\n%s\nYour previous output failed verification.\nFailure Category: %s\nReason: %s\nAdvice: %s", step.Task, MarkerRefinementRequired, failType, reason, recoveryAdvice)
 					continue
 				} else {
 					s.Mu.Lock()

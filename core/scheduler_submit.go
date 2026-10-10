@@ -190,6 +190,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			MaxAutoRefine:    inp.MaxAutoRefine,
 			EnableDebate:     inp.EnableDebate,
 			MaxDebateRounds:  inp.MaxDebateRounds,
+			EnableStepPlan:   inp.EnableStepPlan,
 			SpawnDepth:       inp.SpawnDepth,
 			MaxSpawnDepth:    inp.MaxSpawnDepth,
 			AutoRefineCount:  0,
@@ -273,6 +274,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			SessionRoot:              workspaceRoot,
 			Hub:                      hub,
 			Isolation:                inp.Isolation,
+			EnableStepPlan:           inp.EnableStepPlan,
 		}
 
 		// Execute asynchronously — same fire-and-forget semantics as
@@ -462,6 +464,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			MaxAutoRefine:            inp.MaxAutoRefine,
 			EnableDebate:             inp.EnableDebate,
 			MaxDebateRounds:          inp.MaxDebateRounds,
+			EnableStepPlan:           inp.EnableStepPlan,
 			OutputContract:           inp.OutputContract,
 			Deliver:                  inp.Deliver, // ADDED 2026-08-30
 			ProviderOverride:         inp.ProviderOverride,

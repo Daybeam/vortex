@@ -531,6 +531,11 @@ type SystemSettings struct {
 	// When > 0, oldest messages are dropped when the budget is exceeded.
 	// 0 = no token budget (disabled).
 	ChatMemoryMaxTokens int `json:"chat_memory_max_tokens,omitempty"`
+	// ReadinessGateSoft softens the delegation readiness gate language from
+	// "NEVER blindly delegate" to a suggestion. Set true for weak models (≤7B)
+	// that over-apply the hard rule and ask excessive clarifying questions
+	// instead of acting. Default false = strict (for strong models).
+	ReadinessGateSoft bool `json:"readiness_gate_soft,omitempty"`
 	// RequireWriteReason makes the write-reflection gate (#19) a hard veto
 	// instead of a nudge.
 	//
@@ -592,6 +597,15 @@ type SystemSettings struct {
 	// OutputDir overrides the default "outputs" directory for task output.
 	// When empty (the default), "outputs" is used. Relative to project root.
 	OutputDir string `json:"output_dir,omitempty"`
+
+	// WarmContextBudgetTokens (ADDED 2026-10-10): token budget for the
+	// Warm layer in PromptAssembler (ActiveContextAssembler). Default 2000.
+	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §5.
+	WarmContextBudgetTokens int `json:"warm_context_budget_tokens,omitempty"`
+	// WarmContextEmbedEnabled (ADDED 2026-10-10): when true, the Warm layer
+	// uses vector recall via the embedding client from ContextHub. When
+	// false, degrades to keyword matching. Default true.
+	WarmContextEmbedEnabled bool `json:"warm_context_embed_enabled,omitempty"`
 
 	// APIKeys enables named-key authentication with per-key owner identity.
 	// When empty (the default), behavior is identical to legacy env-var keys:
@@ -743,4 +757,18 @@ type Config struct {
 	// replayed a second time on restart, which is NOT safe for RFC 6902
 	// "add"/"remove" ops on slices (insert/delete-by-index are non-idempotent).
 	WALCheckpoint string `json:"wal_checkpoint,omitempty"`
+
+	// StepPlan (ADDED 2026-10-10): configures automatic step-plan mode.
+	// See docs/STEP_PLAN_MODE_DESIGN.md §9.
+	StepPlan StepPlanConfig `json:"step_plan,omitempty"`
+}
+
+// StepPlanConfig controls automatic step-plan mode activation.
+// When EnableProbe is true, a System One provider is used to classify
+// task complexity for steps in the "fuzzy zone" (keyword matching
+// inconclusive). FallbackMode controls behavior when the probe is
+// unavailable: "keyword" (default) or "off".
+type StepPlanConfig struct {
+	EnableProbe bool   `json:"enable_probe"`
+	FallbackMode string `json:"fallback_mode,omitempty"` // "keyword" (default) | "off"
 }
