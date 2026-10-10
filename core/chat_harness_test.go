@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/schemas"
@@ -263,5 +264,136 @@ func TestChatHarnessWriteToolNotCached(t *testing.T) {
 		if ev.Type == "cache_replay" && ev.Data == "write_file" {
 			t.Fatalf("write_file should never be cached; got cache_replay event: %v", events)
 		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Feature: Mid-Stream Chunk Repetition Detection
+// Invariant: Repetitive streaming output triggers steer+retry, not fatal error
+// Scenario: Provider emits 65 identical chunks → detector fires → harness steers → retry succeeds
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: 流式输出重复检测与恢复
+// -----------------------------------------------------------------------------
+
+type repetitiveStreamProvider struct {
+	calls int
+}
+
+func (m *repetitiveStreamProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+	return m.StreamComplete(ctx, req, func(string) error { return nil })
+}
+
+func (m *repetitiveStreamProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		// First call: emit 65 identical chunks — detector fires at 60
+		for i := 0; i < 65; i++ {
+			if err := onChunk("repeat"); err != nil {
+				return nil, err // propagate ErrRepetitiveOutput
+			}
+		}
+		return &schemas.ProviderResponse{Text: "repeat"}, nil
+	}
+	// Second call (after steer): normal varied output
+	onChunk("Recovered answer.")
+	return &schemas.ProviderResponse{Text: "Recovered answer."}, nil
+}
+
+func (m *repetitiveStreamProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	return nil, nil
+}
+func (m *repetitiveStreamProvider) CountTokens(ctx context.Context, text string) (int, error) {
+	return 0, nil
+}
+func (m *repetitiveStreamProvider) Name() string { return "repetitive_mock" }
+
+func TestChatHarnessStreamRepetitionRecovery(t *testing.T) {
+	h := &ChatHarness{
+		Provider:   &repetitiveStreamProvider{},
+		Model:      "mock",
+		OutputBase: t.TempDir(),
+		MaxTurns:   5,
+	}
+
+	var events []ChatEvent
+	final, err := h.Run(context.Background(), "task1",
+		[]ChatMessage{{Role: "user", Content: "test"}},
+		func(ev ChatEvent) error { events = append(events, ev); return nil })
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	// Final text should be the recovered answer, not the repetitive output
+	if final != "Recovered answer." {
+		t.Fatalf("expected 'Recovered answer.', got %q", final)
+	}
+
+	// Verify loop_guard and steer events were emitted
+	var sawLoopGuard, sawSteer bool
+	for _, ev := range events {
+		switch ev.Type {
+		case "loop_guard":
+			sawLoopGuard = true
+		case "steer":
+			sawSteer = true
+		}
+	}
+	if !sawLoopGuard {
+		t.Error("expected loop_guard event, not found")
+	}
+	if !sawSteer {
+		t.Error("expected steer event, not found")
+	}
+}
+
+// Fix ④: Non-read tools that succeed should get [ACTION COMPLETED] prefix
+// so the model can distinguish write results from read results.
+// See eval-kit/docs/28-engine-path-analysis.md §2 claim ④.
+func TestChatHarness_WriteToolActionResultHasActionCompleted(t *testing.T) {
+	h := &ChatHarness{
+		Provider:   &writeCacheBugProvider{},
+		Model:      "mock",
+		OutputBase: t.TempDir(),
+		MaxTurns:   5,
+		Sieve:      NewSieve(100),
+	}
+	var events []ChatEvent
+	h.Run(context.Background(), "task-ac",
+		[]ChatMessage{{Role: "user", Content: "test"}},
+		func(ev ChatEvent) error { events = append(events, ev); return nil })
+
+	foundActionCompleted := false
+	for _, ev := range events {
+		if ev.Type == "tool_result" && ev.Meta["tool"] == "write_file" {
+			if strings.HasPrefix(ev.Data, "[ACTION COMPLETED]") {
+				foundActionCompleted = true
+			}
+		}
+	}
+	if !foundActionCompleted {
+		t.Error("write_file tool_result should have [ACTION COMPLETED] prefix")
+	}
+}
+
+// Fix ②: ReadinessGateSoft should soften the delegation readiness gate language.
+// Default (false) keeps the strict "NEVER blindly delegate" wording.
+// See eval-kit/docs/28-engine-path-analysis.md §2 claim ②.
+func TestChatHarness_ReadinessGateSoft_ChangesPromptLanguage(t *testing.T) {
+	h := &ChatHarness{Model: "test", OutputBase: t.TempDir()}
+
+	strict := h.buildSystem("do something", "task1")
+	if !strings.Contains(strict, "NEVER blindly delegate") {
+		t.Error("strict mode should contain 'NEVER blindly delegate'")
+	}
+	if strings.Contains(strict, "consider asking the user for clarification") {
+		t.Error("strict mode should NOT contain soft language")
+	}
+
+	h.ReadinessGateSoft = true
+	soft := h.buildSystem("do something", "task1")
+	if !strings.Contains(soft, "consider asking the user for clarification") {
+		t.Error("soft mode should contain 'consider asking the user for clarification'")
+	}
+	if strings.Contains(soft, "NEVER blindly delegate") {
+		t.Error("soft mode should NOT contain 'NEVER blindly delegate'")
 	}
 }

@@ -3,10 +3,12 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daybeam/vortex/config"
@@ -59,6 +61,31 @@ type ChatHarness struct {
 	// is passed to the provider unchanged (legacy behavior). When set,
 	// history is windowed/summarized before the provider call.
 	Memory ChatMemoryManager
+	// Attachments are image/file attachments passed to the VLM provider
+	// (e.g. split segments of a long screenshot). Set per-request via
+	// shallow copy in ProcessMessage. Paths must be absolute.
+	Attachments []schemas.Attachment
+
+	// PendingSteer (ADDED 2026-10-10): non-blocking plan-drift correction
+	// message. When non-empty, it is appended to the last tool result in
+	// the current batch so the model sees it on the next turn.
+	// See docs/STEP_PLAN_MODE_DESIGN.md §10.3.
+	PendingSteer string
+	SteerLock    sync.Mutex
+
+	// ReadinessGateSoft (ADDED 2026-10-10): when true, softens the
+	// delegation readiness gate language from "NEVER blindly delegate"
+	// to a suggestion. Weak models (≤7B) over-apply the hard rule and
+	// ask excessive clarifying questions instead of acting. Default
+	// false = strict (current behavior for strong models).
+	// See eval-kit/docs/28-engine-path-analysis.md §2 claim ②.
+	ReadinessGateSoft bool
+
+	// Segments (ADDED 2026-10-10): optional topic segment manager for
+	// chat memory. When non-nil, each indexed turn is also processed by
+	// the SegmentManager for topic segmentation (STAY/SEAL decisions).
+	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
+	Segments *SegmentManager
 }
 
 func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
@@ -103,12 +130,12 @@ func (h *ChatHarness) buildSystem(query, taskID string) string {
 	// When a role is set, its Instruction defines the persona; the base
 	// prompt below provides safety guardrails on top.
 	if h.Role != nil && h.Role.Instruction != "" {
-		b.WriteString(fmt.Sprintf("# Role: %s\n%s\n\n", h.Role.Name, h.Role.Instruction))
+		b.WriteString(fmt.Sprintf(ChatHarnessRolePrefix, h.Role.Name, h.Role.Instruction))
 	}
 
-	b.WriteString("You are a concise, helpful assistant in a standalone chat harness.\n")
-	b.WriteString("You have a small toolset: write_file, read_file, execute_code, delegate_to_orchestrator.\n")
-	b.WriteString("Use tools when they help; answer directly otherwise. Do not call tools you do not need.\n")
+	b.WriteString(ChatHarnessDefaultIdentity)
+	b.WriteString(ChatHarnessToolsetDesc)
+	b.WriteString(ChatHarnessUsageGuidance)
 
 	// ── Readiness Gate (Two-Tier Clarification Design, Module 1) ──────────────
 	// Hard rule: the strong model (this harness) is the user-facing gateway. It
@@ -117,12 +144,16 @@ func (h *ChatHarness) buildSystem(query, taskID string) string {
 	// the executor and burns retry budget on garbage inputs. See
 	// docs/architecture/TWO_TIER_CLARIFICATION_AND_READINESS_DESIGN.md
 	b.WriteString("\n## DELEGATION READINESS GATE (HARD RULE)\n")
-	b.WriteString("Before calling delegate_to_orchestrator, you MUST verify the task is fully specified:\n")
-	b.WriteString("1. All required parameters (paths, identifiers, formats) are concrete — no <TBD>/placeholder.\n")
-	b.WriteString("2. No algorithmic ambiguity (e.g. 'sort it' without specifying key/order).\n")
-	b.WriteString("3. No path or identifier contradictions across the request.\n")
+	b.WriteString(ChatHarnessDelegatePrefix)
+	b.WriteString(ChatHarnessDelegateRule1)
+	b.WriteString(ChatHarnessDelegateRule2)
+	b.WriteString(ChatHarnessDelegateRule3)
 	b.WriteString("4. The expected outcome / success criteria is explicit.\n")
-	b.WriteString("If ANY of these fail, ask the user clarifying questions FIRST. NEVER blindly delegate a vague task.\n")
+	if h.ReadinessGateSoft {
+		b.WriteString("If any of these are unclear, consider asking the user for clarification before delegating.\n")
+	} else {
+		b.WriteString("If ANY of these fail, ask the user clarifying questions FIRST. NEVER blindly delegate a vague task.\n")
+	}
 
 	if h.Archive != nil {
 		if forest, err := h.Archive.SearchForest(query, h.Embed, 5, 0.9, "", taskID); err == nil && len(forest.Nodes) > 0 {
@@ -210,15 +241,24 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		prevLen := finalText.Len()
 
 		req := providers.CompleteRequest{
-			System:     system,
-			User:       flattenChatMessages(messages),
-			Model:      h.Model,
-			MaxTokens:  2048,
-			MCPServers: mcpServers,
+			System:      system,
+			User:        flattenChatMessages(messages),
+			Model:       h.Model,
+			MaxTokens:   2048,
+			MCPServers:  mcpServers,
+			Attachments: h.Attachments,
 		}
 
+		// Stream chunk detector (per-turn, per-call): catches intra-call
+		// repetitive output that tool-call-centric guards cannot see — e.g.
+		// a weak model emitting dozens of identical reasoning/text chunks
+		// without any tool calls. Inspired by Cordis thinking-loop-guard.
+		chunkDetector := NewStreamChunkDetector()
 		resp, err := h.Provider.StreamComplete(ctx, req, func(chunk string) error {
 			if chunk != "" {
+				if e := chunkDetector.Check(chunk); e != nil {
+					return e // abort stream; handled below as steer, not fatal
+				}
 				finalText.WriteString(chunk) // audit H1: was += (O(n²) string concat)
 				if e := emit(ChatEvent{Type: "delta", Data: chunk}); e != nil {
 					return e // audit H5: abort stream if client disconnected
@@ -227,6 +267,22 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			return nil
 		})
 		if err != nil {
+			if errors.Is(err, ErrRepetitiveOutput) {
+				// Steer: undo this turn's partial text, inject guidance,
+				// and retry. Non-latching — the turn continues normally.
+				if finalText.Len() > prevLen {
+					s := finalText.String()[:prevLen]
+					finalText.Reset()
+					finalText.WriteString(s)
+				}
+				emit(ChatEvent{Type: "loop_guard", Data: "repetitive streaming output detected"})
+				emit(ChatEvent{Type: "steer", Data: "repetitive output detected, refocus"})
+				messages = append(messages, ChatMessage{
+					Role:    "user",
+					Content: MarkerRepetitiveOutput,
+				})
+				continue
+			}
 			emit(ChatEvent{Type: "error", Data: err.Error()})
 			return finalText.String(), err
 		}
@@ -250,7 +306,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			emit(ChatEvent{Type: "steer", Data: fmt.Sprintf("no text output for %d consecutive turns", noTextTurns)})
 			messages = append(messages, ChatMessage{
 				Role:    "user",
-				Content: "[You have been making tool calls without producing a response for 3 turns. Provide a direct answer to the user now.]",
+				Content: MarkerNoTextResponse,
 			})
 			noTextTurns = 0
 		}
@@ -275,8 +331,22 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			prevSig = sig
 		}
 
-		for _, tc := range resp.ToolCalls {
+		for i, tc := range resp.ToolCalls {
 			emit(ChatEvent{Type: "tool_call", Data: tc.Name, Meta: map[string]any{"args": tc.Arguments}})
+
+			// Plan drift detection (#4 + #10, ADDED 2026-10-10):
+			// Check the first tool call in the batch against the step
+			// plan. If drift is detected, set PendingSteer — it will be
+			// appended to the last tool result below.
+			// See docs/STEP_PLAN_MODE_DESIGN.md §10.3.
+			if i == 0 && h.Sieve != nil && h.PendingSteer == "" {
+				if msg := h.Sieve.DetectPlanDrift(taskID, tc); msg != "" {
+					h.SteerLock.Lock()
+					h.PendingSteer = msg
+					h.SteerLock.Unlock()
+					emit(ChatEvent{Type: "plan_drift", Data: tc.Name})
+				}
+			}
 
 			// Cache replay: if this exact read was executed before, return
 			// the cached result instead of re-executing. Breaks repetition
@@ -312,7 +382,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				if failCount >= 3 {
 					result = fmt.Sprintf("[TOOL %s HAS FAILED %d TIMES] Recent errors:\n%s\nDo not repeat the same approach. Try a different strategy or answer directly.", tc.Name, failCount, strings.Join(toolFailErrors[tc.Name], "\n"))
 				} else {
-					result = fmt.Sprintf("[TOOL FAILED: %s] %s\nDo not abort. Either fix the arguments and retry, use a different tool, or answer directly.", tc.Name, derr.Error())
+					result = fmt.Sprintf(ToolFailOnceFmt, tc.Name, derr.Error())
 				}
 			} else {
 				toolFailErrors[tc.Name] = nil
@@ -321,6 +391,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 						// poller: always execute fresh, don't disturb cache
 					} else if !isReadTool(tc.Name) {
 						h.Sieve.ClearResultCache(taskID)
+						result = "[ACTION COMPLETED] " + result
 					} else {
 						h.Sieve.CacheToolResult(taskID, tc.Name, tc.Arguments, result)
 						if h.Sieve.CheckResultRepetition(taskID, result) {
@@ -330,6 +401,20 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 					}
 				}
 			}
+
+			// Append PendingSteer to the last tool result in this batch.
+			// Aligns with Hermes steer semantics: the model sees the
+			// correction after all tool results, maximizing its weight.
+			isLast := i == len(resp.ToolCalls)-1
+			if isLast {
+				h.SteerLock.Lock()
+				if h.PendingSteer != "" {
+					result += "\n\n" + h.PendingSteer
+					h.PendingSteer = ""
+				}
+				h.SteerLock.Unlock()
+			}
+
 			emit(ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": tc.Name}})
 			messages = append(messages, ChatMessage{Role: "tool", Content: fmt.Sprintf("[tool %s result]\n%s", tc.Name, result)})
 		}
@@ -358,6 +443,20 @@ func (h *ChatHarness) indexTurn(ctx context.Context, sessionID, userQuery, assis
 		Timestamp: time.Now(),
 	}); err != nil {
 		log.Printf("WARN: chat_harness: failed to archive memory item: %v", err)
+	}
+
+	// P1-8 (2026-10-10): Path A — feed the turn into the SegmentManager
+	// for topic segmentation. The SegmentManager decides whether the item
+	// stays in the current segment or seals it and starts a new one.
+	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
+	if h.Segments != nil {
+		h.Segments.AddItem(MemoryItem{
+			TaskID:    "chat_" + sessionID,
+			NodeID:    "chat_" + sessionID + "_" + strconv.FormatInt(time.Now().UnixNano(), 36),
+			Intent:    userQuery,
+			Summary:   assistantResponse,
+			Timestamp: time.Now(),
+		}, "chat_"+sessionID)
 	}
 }
 
