@@ -111,7 +111,7 @@ func (n *CapabilityNavigator) ClassifyIntent(ctx context.Context, query string) 
 			strings.Join(knownTags, ", "), query)
 
 		resp, err := provider.Complete(ctx, providers.CompleteRequest{
-			System: "You are an intent classifier for an autonomous agent orchestrator.",
+			System: SysPromptIntentClassifier,
 			User:   prompt,
 			Secrets: n.Registry.Secrets,
 		})
