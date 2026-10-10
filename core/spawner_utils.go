@@ -179,7 +179,7 @@ func compressUserBlocks(blocks []schemas.ContentBlock) []schemas.ContentBlock {
 	compressed := make([]schemas.ContentBlock, 0, keepFirst+keepLast+1)
 	compressed = append(compressed, blocks[:keepFirst]...)
 	compressed = append(compressed, schemas.ContentBlock{
-		Text: "[... earlier conversation history compressed to fit within context budget ...]",
+		Text: MarkerHistoryCompressed,
 	})
 	compressed = append(compressed, blocks[len(blocks)-keepLast:]...)
 	return compressed
@@ -310,9 +310,9 @@ const toolFailCircuitBreakerThreshold = 3
 // Moved from spawner.go during god-class split.
 func toolFailFeedback(toolName, errMsg string, failCount int) string {
 	if failCount >= toolFailCircuitBreakerThreshold {
-		return fmt.Sprintf("[TOOL %s HAS FAILED %d TIMES] Stop using this tool. Use an alternative approach or answer directly without tools.", toolName, failCount)
+		return fmt.Sprintf(ToolFailRepeatedFmt, toolName, failCount)
 	}
-	return fmt.Sprintf("[TOOL FAILED: %s] %s\nDo not abort. Either fix the arguments and retry, use a different tool, or answer directly.", toolName, errMsg)
+	return fmt.Sprintf(ToolFailOnceFmt, toolName, errMsg)
 }
 
 // buildSERFRecovery constructs a structured recovery message from SERF error
@@ -323,11 +323,11 @@ func toolFailFeedback(toolName, errMsg string, failCount int) string {
 // toolFailFeedback behavior.
 func buildSERFRecovery(toolName string, serf *SERFError, errMsg string, failCount int) string {
 	if failCount >= toolFailCircuitBreakerThreshold {
-		return fmt.Sprintf("[TOOL %s HAS FAILED %d TIMES] Stop using this tool. Use an alternative approach or answer directly without tools.", toolName, failCount)
+		return fmt.Sprintf(ToolFailRepeatedFmt, toolName, failCount)
 	}
 
 	if serf == nil {
-		return fmt.Sprintf("[TOOL FAILED: %s] %s\nDo not abort. Either fix the arguments and retry, use a different tool, or answer directly.", toolName, errMsg)
+		return fmt.Sprintf(ToolFailOnceFmt, toolName, errMsg)
 	}
 
 	var advice string
@@ -373,7 +373,7 @@ func buildSERFRecovery(toolName string, serf *SERFError, errMsg string, failCoun
 		}
 	}
 
-	return fmt.Sprintf("[TOOL FAILED: %s] Category: %s. %s", toolName, serf.Category, sb.String())
+	return fmt.Sprintf(ToolFailSERFFmt, toolName, serf.Category, sb.String())
 }
 
 // RepeatedToolFailure returns the tool with the highest task-level failure
@@ -714,7 +714,7 @@ func (s *Spawner) tryDelegationMode(ctx context.Context, req *SpawnRequest, role
 	// Defect 3 fix: redact sensitive context in delegation mode
 	delegationCtx := redactContextForDelegation(mergedContext)
 	delegationPrecedents := []*schemas.DecisionNode{}
-	systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "")
+	systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "", req.TaskID)
 	if err != nil {
 		return nil, false
 	}

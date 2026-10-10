@@ -139,7 +139,7 @@ func (s *DirectedEngine) FulfillDelegation(taskID, stepID string, result map[str
 	s.Mu.Lock()
 	graph.PendingDecisions = filterDelegationDecisions(graph.PendingDecisions, stepID)
 
-	if len(graph.PendingDecisions) == 0 && graph.Status == schemas.GraphBlocked {
+	if len(graph.PendingDecisions) == 0 {
 		if graph.IsSmartRouted {
 			graph.Status = schemas.GraphCompleted
 			if ch, ok := s.doneChans[taskID]; ok {

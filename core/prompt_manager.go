@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 )
 
 // PromptManager manages external prompt assets and their rendering.
@@ -44,7 +45,10 @@ func (pm *PromptManager) GetPrompt(ref string) (string, error) {
 		}
 	}
 
-	return pm.loader.Fetch(context.Background(), target)
+	// audit L-NEW-12: add timeout to prevent blocking forever on remote URL fetch.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return pm.loader.Fetch(ctx, target)
 }
 
 // GetAndRender fetches a prompt (local or remote) and renders it with context.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/providers"
@@ -94,11 +95,15 @@ func (s *Spawner) buildSystemPrompt(
 	precedents []*schemas.DecisionNode,
 	taskText string,
 	latestError string,
+	taskID string, // P1-5: for Archive Path D query
 ) ([]schemas.ContentBlock, error) {
 	if s.pa == nil {
 		s.pa = NewPromptAssembler(s.expStore, s.ResourceLoader, s.registry, s.logger)
 	}
-	return s.pa.Build(ctx, hub, role, skillIDs, capability, providerCfg, toolConstraints, mergedContext, fewShots, isolation, precedents, taskText, latestError)
+	if s.archive != nil {
+		s.pa.SetArchive(s.archive)
+	}
+	return s.pa.Build(ctx, hub, role, skillIDs, capability, providerCfg, toolConstraints, mergedContext, fewShots, isolation, precedents, taskText, latestError, taskID)
 }
 
 // PreviewPrompt assembles and returns the full system prompt for a role/task
@@ -110,7 +115,10 @@ func (s *Spawner) PreviewPrompt(roleID, task string, ctxMap map[string]any) (str
 	if role == nil {
 		return "", fmt.Errorf("role %s not found", roleID)
 	}
-	blocks, err := s.buildSystemPrompt(context.Background(), hub, role, []string{}, role.BaseCapability, &config.ProviderConfig{}, []string{}, ctxMap, []string{}, false, nil, task, "")
+	// audit L-NEW-13: add timeout to prevent blocking forever on I/O during prompt construction.
+	promptCtx, promptCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer promptCancel()
+	blocks, err := s.buildSystemPrompt(promptCtx, hub, role, []string{}, role.BaseCapability, &config.ProviderConfig{}, []string{}, ctxMap, []string{}, false, nil, task, "", "")
 	if err != nil {
 		return "", err
 	}
