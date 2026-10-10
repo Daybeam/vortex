@@ -189,7 +189,8 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
 					ToolCalls []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id"`
@@ -215,6 +216,17 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 			fullText.WriteString(delta.Content)
 			if onChunk != nil {
 				if err := onChunk(delta.Content); err != nil {
+					return nil, err
+				}
+			}
+		}
+		// Pipe reasoning_content (chain-of-thought from thinking models like
+		// DeepSeek/Qwen3) to onChunk so the stream chunk detector can catch
+		// repetitive reasoning loops. Not written to fullText — it's not
+		// the actual response content, just internal reasoning.
+		if delta.ReasoningContent != "" {
+			if onChunk != nil {
+				if err := onChunk(delta.ReasoningContent); err != nil {
 					return nil, err
 				}
 			}

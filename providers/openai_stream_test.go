@@ -35,9 +35,9 @@ func TestOpenAIStreamComplete_TextTokens(t *testing.T) {
 	p := &OpenAIProvider{cfg: cfg, name: "openai", client: server.Client()}
 
 	resp, err := p.StreamComplete(context.Background(), CompleteRequest{
-		Model:     "gpt-4",
-		System:    "test",
-		User:      "hi",
+		Model:    "gpt-4",
+		System:   "test",
+		User:     "hi",
 		MaxTokens: 100,
 	}, func(chunk string) error {
 		chunks = append(chunks, chunk)
@@ -83,9 +83,9 @@ func TestOpenAIStreamComplete_ToolCalls(t *testing.T) {
 	p := &OpenAIProvider{cfg: cfg, name: "openai", client: server.Client()}
 
 	resp, err := p.StreamComplete(context.Background(), CompleteRequest{
-		Model:     "gpt-4",
-		System:    "test",
-		User:      "write a file",
+		Model:    "gpt-4",
+		System:   "test",
+		User:     "write a file",
 		MaxTokens: 100,
 	}, nil)
 	if err != nil {
@@ -122,12 +122,71 @@ func TestOpenAIStreamComplete_ErrorFallback(t *testing.T) {
 	p := &OpenAIProvider{cfg: cfg, name: "openai", client: server.Client()}
 
 	_, err := p.StreamComplete(context.Background(), CompleteRequest{
-		Model:     "gpt-4",
-		System:    "test",
-		User:      "hi",
+		Model:    "gpt-4",
+		System:   "test",
+		User:     "hi",
 		MaxTokens: 100,
 	}, nil)
 	if err == nil {
 		t.Fatal("expected error on HTTP 500")
+	}
+}
+
+func TestOpenAIStreamComplete_ReasoningContent(t *testing.T) {
+	var chunks []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		events := []string{
+			`data: {"choices":[{"delta":{"reasoning_content":"Let me think..."}}]}`,
+			`data: {"choices":[{"delta":{"reasoning_content":" about the answer."}}]}`,
+			`data: {"choices":[{"delta":{"content":"Hello"}}]}`,
+			`data: {"choices":[{"delta":{"content":" world!"}}]}`,
+			`data: [DONE]`,
+		}
+		for _, e := range events {
+			fmt.Fprintln(w, e)
+			fmt.Fprintln(w)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.ProviderConfig{Provider: "openai", Model: "deepseek-r1", BaseURL: server.URL}
+	p := &OpenAIProvider{cfg: cfg, name: "openai", client: server.Client()}
+
+	resp, err := p.StreamComplete(context.Background(), CompleteRequest{
+		Model:    "deepseek-r1",
+		System:   "test",
+		User:     "hi",
+		MaxTokens: 100,
+	}, func(chunk string) error {
+		chunks = append(chunks, chunk)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamComplete failed: %v", err)
+	}
+	// resp.Text must contain ONLY content, NOT reasoning_content
+	if resp.Text != "Hello world!" {
+		t.Errorf("expected text 'Hello world!', got %q", resp.Text)
+	}
+	// onChunk must receive ALL 4 chunks (2 reasoning + 2 content)
+	if len(chunks) != 4 {
+		t.Fatalf("expected 4 onChunk calls, got %d: %v", len(chunks), chunks)
+	}
+	// First two chunks are reasoning_content
+	if chunks[0] != "Let me think..." {
+		t.Errorf("chunk[0] expected reasoning, got %q", chunks[0])
+	}
+	if chunks[1] != " about the answer." {
+		t.Errorf("chunk[1] expected reasoning, got %q", chunks[1])
+	}
+	// Last two chunks are content
+	if chunks[2] != "Hello" || chunks[3] != " world!" {
+		t.Errorf("content chunks mismatch: %v", chunks[2:])
 	}
 }

@@ -62,7 +62,7 @@ func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: 0, // SSE connections need unlimited write time (60s kills them)
 		IdleTimeout:  120 * time.Second,
 	}
 

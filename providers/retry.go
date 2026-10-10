@@ -121,8 +121,11 @@ func (rp *RetryingProvider) wait(ctx context.Context, attempt int, err error) er
 		wait += jitter
 	}
 
+	// audit P-NEW-4: use NewTimer + Stop instead of time.After to avoid timer leak.
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
 	select {
-	case <-time.After(wait):
+	case <-timer.C:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
