@@ -25,21 +25,21 @@ func (h *Healer) Diagnose(err string) string {
 
 	switch {
 	case strings.Contains(lower, "element not interactable") || strings.Contains(lower, "not visible"):
-		advice = "The UI element you tried to interact with is hidden or not ready. Try calling 'wait_for_selector' or taking a 'screenshot' to re-verify the page state before retrying."
+		advice = HealerAdviceElementNotInteractable
 	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded"):
-		advice = "The operation timed out. This could be due to slow network or heavy page load. Consider increasing the timeout parameter or breaking the task into smaller sub-steps."
+		advice = HealerAdviceTimeout
 	case strings.Contains(lower, "selector not found") || strings.Contains(lower, "no such element"):
-		advice = "The CSS selector you provided was not found on the page. Use 'get_page_source' or 'screenshot' to check if the page structure has changed or if you are on the wrong URL."
+		advice = HealerAdviceSelectorNotFound
 	case strings.Contains(lower, "permission denied") || strings.Contains(lower, "unauthorized"):
-		advice = "You hit a permission barrier. Check if you are correctly logged in or if you need to request elevated access for this specific tool."
+		advice = HealerAdvicePermissionDenied
 	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "429"):
-		advice = "Rate limit reached. Please pause for a few seconds before retrying, or reduce the frequency of your requests."
+		advice = HealerAdviceRateLimit
 	case strings.Contains(lower, "context window") || strings.Contains(lower, "too many tokens"):
-		advice = "Context overflow risk. Try summarizing the previous steps or removing redundant logs from your next action."
+		advice = HealerAdviceContextWindow
 	}
 
 	if advice != "" {
-		return fmt.Sprintf("\n\n[SYSTEM SELF-HEALING ADVICE]\n%s", advice)
+		return fmt.Sprintf("\n\n%s\n%s", MarkerSystemSelfHealing, advice)
 	}
 
 	return ""

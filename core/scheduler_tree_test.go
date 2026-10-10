@@ -126,7 +126,7 @@ func TestSpawner_BuildSystemPrompt_WithTree(t *testing.T) {
 	}
 
 	hub := NewContextHub(reg, nil, nil)
-	blocks, err := s.buildSystemPrompt(context.Background(), hub, nil, []string{}, "code", &config.ProviderConfig{}, []string{}, mergedContext, []string{}, false, nil, "test task", "")
+	blocks, err := s.buildSystemPrompt(context.Background(), hub, nil, []string{}, "code", &config.ProviderConfig{}, []string{}, mergedContext, []string{}, false, nil, "test task", "", "")
 	if err != nil {
 		t.Fatalf("buildSystemPrompt failed: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestSpawner_BuildSystemPrompt_Diffusion(t *testing.T) {
 	}
 
 	hub := NewContextHub(reg, nil, nil)
-	blocksD, err := s.buildSystemPrompt(context.Background(), hub, nil, []string{}, "code", cfg, []string{}, mergedContext, []string{}, false, nil, "test task", "")
+	blocksD, err := s.buildSystemPrompt(context.Background(), hub, nil, []string{}, "code", cfg, []string{}, mergedContext, []string{}, false, nil, "test task", "", "")
 	if err != nil {
 		t.Fatalf("buildSystemPrompt failed: %v", err)
 	}

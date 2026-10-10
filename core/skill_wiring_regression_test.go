@@ -117,7 +117,7 @@ func TestPromptAssembler_DirectorySkillInjectsLightweightMetadata(t *testing.T) 
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), hub, nil, []string{"dir_skill"}, "coding",
 		&config.ProviderConfig{Model: "test-model"}, []string{}, nil, nil, false, nil,
-		"review the code", "",
+		"review the code", "", "",
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)

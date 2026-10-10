@@ -217,6 +217,7 @@ func (r *Registry) loadLocked() error {
 	r.EnableEphemeralRoleGen = cfg.EnableEphemeralRoleGen
 	r.RequirePlanReview = cfg.RequirePlanReview
 	r.SwarmModeEnabled = cfg.SwarmModeEnabled
+	r.StepPlan = cfg.StepPlan
 	r.RoleCookbookSource = cfg.RoleCookbookSource
 	r.RoleCookbookSources = cfg.RoleCookbookSources
 	r.SkillsDir = cfg.SkillsDir

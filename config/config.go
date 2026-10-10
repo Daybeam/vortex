@@ -26,6 +26,7 @@ type Registry struct {
 	EnableEphemeralRoleGen   bool
 	RequirePlanReview        bool
 	SwarmModeEnabled         bool
+	StepPlan                 StepPlanConfig
 	RoleCookbookSource       string
 	RoleCookbookSources      map[string]string
 	SkillsDir                string

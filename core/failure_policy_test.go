@@ -54,9 +54,9 @@ func TestApplyStepFailurePolicy_UnrecognizedOnFailureFallsThrough(t *testing.T) 
 
 func TestApplyStepFailurePolicy_Abort(t *testing.T) {
 	engine := newTestEngineForFailurePolicy(t)
-	// Mirror the real call sites: graph.Status is already GraphBlocked and
-	// step.Status is already StepBlocked by the time this is called.
-	graph := &schemas.TaskGraph{Status: schemas.GraphBlocked}
+	// Mirror the real call sites: graph.Status is GraphRunning (step-level
+	// blocking) and step.Status is already StepBlocked by the time this is called.
+	graph := &schemas.TaskGraph{Status: schemas.GraphRunning}
 	step := &schemas.Step{
 		ID:            "s1",
 		Status:        schemas.StepBlocked,
@@ -80,7 +80,7 @@ func TestApplyStepFailurePolicy_Abort(t *testing.T) {
 
 func TestApplyStepFailurePolicy_Skip(t *testing.T) {
 	engine := newTestEngineForFailurePolicy(t)
-	graph := &schemas.TaskGraph{Status: schemas.GraphBlocked}
+	graph := &schemas.TaskGraph{Status: schemas.GraphRunning}
 	step := &schemas.Step{
 		ID:            "s1",
 		Status:        schemas.StepBlocked,
@@ -100,7 +100,7 @@ func TestApplyStepFailurePolicy_Skip(t *testing.T) {
 	if step.Status != schemas.StepSkipped {
 		t.Fatalf("expected step.Status == StepSkipped, got %v", step.Status)
 	}
-	if graph.Status != schemas.GraphBlocked {
+	if graph.Status != schemas.GraphRunning {
 		t.Fatalf("expected graph.Status left untouched by the skip case, got %v", graph.Status)
 	}
 }

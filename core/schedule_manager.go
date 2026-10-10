@@ -270,9 +270,10 @@ func (sm *ScheduleManager) monitorTask(ctx context.Context, taskID string, sched
 			sm.afterRun(scheduleID, graphStatus == schemas.GraphCompleted)
 			return
 		}
-		// GraphBlocked: WaitTask returns immediately (fast path), so sleep
+		// Non-terminal status (GraphRunning with pending decisions or
+		// GraphBlocked): WaitTask returns immediately (fast path), so sleep
 		// to avoid busy-looping while waiting for a decision to unblock.
-		if graphStatus == schemas.GraphBlocked {
+		if graphStatus != schemas.GraphCompleted && graphStatus != schemas.GraphFailed {
 			// audit P-8-sibling: use NewTimer + Stop instead of time.After.
 			timer := time.NewTimer(5 * time.Second)
 			select {

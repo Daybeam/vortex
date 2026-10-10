@@ -51,10 +51,19 @@ func TestGoBackground_StopWaits(t *testing.T) {
 
 	// Stop() should NOT return before the background goroutine finishes.
 	// If it does, the H3 fix has been reverted.
+	// Race-safe: both channels may be ready simultaneously (goroutineDone
+	// is closed before bgWg.Done, but the scheduler may not run the
+	// select until both are pending). Use a non-blocking check on
+	// goroutineDone when stopDone fires.
 	select {
 	case <-stopDone:
-		t.Fatal("Stop() returned before background goroutine drained — " +
-			"goBackground is not tracking the goroutine (audit H3 regression)")
+		select {
+		case <-goroutineDone:
+			// Both finished — select just picked stopDone first. OK.
+		default:
+			t.Fatal("Stop() returned before background goroutine drained — " +
+				"goBackground is not tracking the goroutine (audit H3 regression)")
+		}
 	case <-goroutineDone:
 		// Expected: the goroutine finished first (or simultaneously)
 	}

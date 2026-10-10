@@ -47,8 +47,11 @@ func (s *DirectedEngine) swarmWatchdog(ctx context.Context, taskID string) {
 		delay = 10
 	}
 
+	// audit P-NEW-3: use NewTimer + Stop instead of time.After to avoid timer leak.
+	timer := time.NewTimer(time.Duration(delay) * time.Second)
+	defer timer.Stop()
 	select {
-	case <-time.After(time.Duration(delay) * time.Second):
+	case <-timer.C:
 	case <-ctx.Done():
 		return
 	}

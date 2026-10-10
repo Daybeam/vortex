@@ -16,7 +16,7 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 	}
 	ts := &mockTaskStore{}
 
-	tasksDir := mustTempDir(t, "vortex-test")
+	tasksDir := t.TempDir()
 	logger := mustNewLogger(t, tasksDir, nil)
 	var err error
 	defer logger.Close()
@@ -24,8 +24,6 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
 	// Cancel lifecycle context to prevent run() goroutines (started by
 	// SubmitDecision) from racing with this test's direct handleOutput calls.
-	// run() checks ctx.Done() at the top of each loop iteration and returns
-	// immediately, so it never touches graph/step state.
 	engine.lifecycleCancel()
 
 	taskID := "task_test_odftp"
@@ -59,9 +57,6 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 	engine.handleOutput(graph, step, &SpawnResult{Output: *output})
 
 	// Verify decision was created
-	if graph.Status != schemas.GraphBlocked {
-		t.Fatalf("Expected graph to be blocked, got %s", graph.Status)
-	}
 	if len(graph.PendingDecisions) != 1 {
 		t.Fatalf("Expected 1 pending decision, got %d", len(graph.PendingDecisions))
 	}
@@ -124,7 +119,7 @@ func TestDirectedEngine_AutoFork_Trigger(t *testing.T) {
 	}
 	ts := &mockTaskStore{}
 
-	tasksDir := mustTempDir(t, "vortex-test")
+	tasksDir := t.TempDir()
 	logger := mustNewLogger(t, tasksDir, nil)
 	defer logger.Close()
 
