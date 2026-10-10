@@ -73,7 +73,7 @@ func (a *ActiveContextAssembler) Assemble(
 
 		nodes := a.Graph.RetrieveRelevantExperience(ctx, query, capability, latestError, warmBudget)
 		if len(nodes) > 0 {
-			sb.WriteString("\n\n[LEARNED EXPERIENCE PRECEDENT]\n")
+			sb.WriteString("\n\n" + MarkerLearnedExperience + "\n")
 			for _, n := range nodes {
 				if n.Outcome == "failure" {
 					if n.FailureMode != "" {
@@ -97,7 +97,7 @@ func (a *ActiveContextAssembler) Assemble(
 		// === TIER 3: AntiPatterns (Protected Zone) ===
 		aps := a.Graph.QueryRelevantAntiPatterns(stepInput+" "+latestError, 3)
 		if len(aps) > 0 {
-			sb.WriteString("\n\n[HISTORICAL PITFALL WARNING]\n")
+			sb.WriteString("\n\n" + MarkerHistoricalPitfall + "\n")
 			for _, p := range aps {
 				sb.WriteString(fmt.Sprintf("- ⚠️ Anti-Pattern: %s\n", p.AntiPattern))
 				sb.WriteString(fmt.Sprintf("  Symptom: %s\n", p.Symptom))

@@ -69,7 +69,7 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
-		blocked := graph != nil && graph.Status == schemas.GraphBlocked
+		blocked := graph != nil && len(graph.PendingDecisions) > 0
 		engine.Mu.RUnlock()
 		if blocked {
 			break
@@ -82,17 +82,13 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 		engine.Mu.RUnlock()
 		t.Fatalf("graph not found")
 	}
-	if graph.Status != schemas.GraphBlocked {
+	if len(graph.PendingDecisions) == 0 {
 		engine.Mu.RUnlock()
-		t.Fatalf("expected graph blocked, got %v", graph.Status)
+		t.Fatalf("expected pending decision (step-level blocking), got none")
 	}
 	if !graph.IsSmartRouted {
 		engine.Mu.RUnlock()
 		t.Errorf("expected smart-routed graph")
-	}
-	if len(graph.PendingDecisions) == 0 {
-		engine.Mu.RUnlock()
-		t.Fatalf("expected pending decision")
 	}
 	dec := graph.PendingDecisions[0]
 	engine.Mu.RUnlock()
@@ -194,7 +190,7 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
-		blocked := graph != nil && graph.Status == schemas.GraphBlocked
+		blocked := graph != nil && len(graph.PendingDecisions) > 0
 		engine.Mu.RUnlock()
 		if blocked {
 			break
@@ -207,13 +203,9 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 		engine.Mu.RUnlock()
 		t.Fatalf("graph not found")
 	}
-	if graph.Status != schemas.GraphBlocked {
-		engine.Mu.RUnlock()
-		t.Fatalf("expected graph blocked, got %v", graph.Status)
-	}
 	if len(graph.PendingDecisions) == 0 {
 		engine.Mu.RUnlock()
-		t.Fatalf("expected pending decision")
+		t.Fatalf("expected pending decision (step-level blocking), got none")
 	}
 	dec := graph.PendingDecisions[0]
 	engine.Mu.RUnlock()
@@ -296,15 +288,15 @@ func newDelegationEngine(t *testing.T) (*DirectedEngine, *config.Registry) {
 	return engine, reg
 }
 
-// waitForBlocked polls the graph until it reaches GraphBlocked with at least one
-// pending decision, or fails the test after a timeout.
+// waitForBlocked polls the graph until it has at least one pending decision
+// (step-level blocking), or fails the test after a timeout.
 func waitForBlocked(t *testing.T, engine *DirectedEngine, taskID string) *schemas.TaskGraph {
 	t.Helper()
 	var graph *schemas.TaskGraph
 	for i := 0; i < 30; i++ {
 		engine.Mu.RLock()
 		graph = engine.graphs[taskID]
-		blocked := graph != nil && graph.Status == schemas.GraphBlocked && len(graph.PendingDecisions) > 0
+		blocked := graph != nil && len(graph.PendingDecisions) > 0
 		engine.Mu.RUnlock()
 		if blocked {
 			return graph
@@ -635,8 +627,8 @@ func TestDelegationMode_GetStatus(t *testing.T) {
 	// status is stored as a typed GraphStatus, not a plain string, so compare
 	// via string conversion rather than a .(string) type assertion.
 	gotStatus := fmt.Sprintf("%v", status["status"])
-	if gotStatus != string(schemas.GraphBlocked) {
-		t.Errorf("expected status=blocked, got %q", gotStatus)
+	if gotStatus != string(schemas.GraphRunning) {
+		t.Errorf("expected status=running (step-level blocking, not graph-level), got %q", gotStatus)
 	}
 }
 

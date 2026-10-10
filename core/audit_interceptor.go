@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/daybeam/vortex/pkg/observability"
@@ -19,8 +20,8 @@ func AuditInterceptor(logger *Logger) Interceptor {
 		metrics.Inc("orchestrator_subagent_calls_total", 1)
 
 		logger.LogCtx(ctx, "audit_entry", req.TaskID, req.StepID, map[string]any{
-			"role_id":  req.RoleID,
-			"task":     req.Task,
+			"role_id": req.RoleID,
+			"task":    req.Task,
 			"trace_id": traceID,
 			"span_id":  spanID,
 		})
@@ -41,6 +42,11 @@ func AuditInterceptor(logger *Logger) Interceptor {
 			detail["error"] = err.Error()
 			logger.LogCtx(ctx, "audit_exit_error", req.TaskID, req.StepID, detail)
 			return res, err
+		}
+		// audit L-NEW-6: Spawn can return (nil, nil) when an external
+		// interceptor short-circuits. Guard to prevent nil deref panic.
+		if res == nil {
+			return nil, fmt.Errorf("audit_interceptor: spawn returned nil result for step %s", req.StepID)
 		}
 
 		detail["status"] = res.Output.Status

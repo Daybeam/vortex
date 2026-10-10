@@ -82,7 +82,7 @@ func TestNonInteractive_AutoResolvesDecision(t *testing.T) {
 	for time.Now().Before(deadline) {
 		s.Mu.RLock()
 		pending := len(graph.PendingDecisions)
-		blocked := graph.Status == schemas.GraphBlocked
+		blocked := len(graph.PendingDecisions) > 0
 		s.Mu.RUnlock()
 		if pending == 0 && !blocked {
 			return // success: no decision blocked the task
@@ -131,7 +131,7 @@ func TestNonInteractive_Disabled_StillBlocks(t *testing.T) {
 	if pending != 1 {
 		t.Fatalf("expected 1 pending decision when NonInteractive=false, got %d", pending)
 	}
-	if status != schemas.GraphBlocked {
-		t.Fatalf("expected GraphBlocked when NonInteractive=false, got %s", status)
+	if status != schemas.GraphRunning {
+		t.Fatalf("expected GraphRunning (step-level blocking, not graph-level) when NonInteractive=false, got %s", status)
 	}
 }

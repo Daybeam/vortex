@@ -60,7 +60,7 @@ const (
 	instructionHeadParagraphs = 3
 	instructionTailParagraphs = 2
 
-	instructionCompressedPlaceholder = "[... instruction body compressed for brevity ...]"
+	instructionCompressedPlaceholder = MarkerCompressedPlaceholder
 )
 
 // PromptBudgetEnforcer applies the model-aware System Prompt budget.
@@ -339,9 +339,9 @@ func (e *PromptBudgetEnforcer) SlidingWindowTreePath(path []map[string]any) []ma
 		intent, _ := node["intent"].(string)
 		summary, _ := node["summary"].(string)
 		collapsed := map[string]any{
-			"intent":      intent,
-			"status":      node["status"],
-			"summary":     summary,
+			"intent":  intent,
+			"status":  node["status"],
+			"summary": summary,
 			"__collapsed": fmt.Sprintf("ASSERT [%s]: %s", intent, summary),
 		}
 		result = append(result, collapsed)
@@ -544,8 +544,8 @@ func (e *PromptBudgetEnforcer) logTrim(original, final, budget int, strategy str
 		return
 	}
 	e.logger.Log(EventCacheInefficiency, "", "", map[string]any{
-		"event":           "prompt_budget_trimmed",
-		"strategy":        strategy,
+		"event":    "prompt_budget_trimmed",
+		"strategy": strategy,
 		"original_tokens": original,
 		"final_tokens":    final,
 		"budget_tokens":   budget,

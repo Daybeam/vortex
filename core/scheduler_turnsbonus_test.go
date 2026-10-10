@@ -19,11 +19,14 @@ func TestSubmitDecision_TurnsBudgetBonusCapped(t *testing.T) {
 		Providers: make(map[string]*config.ProviderConfig),
 		System:    config.SystemSettings{MaxToolTurns: 50},
 	}
-	logDir := mustTempDir(t, "turnsbonus-log")
-	outDir := mustTempDir(t, "turnsbonus-out")
+	// Use mkdirTemp (best-effort cleanup) instead of t.TempDir() to avoid
+	// Windows flaky cleanup failures when engine goroutines hold files.
+	logDir := mkdirTemp(t)
+	outDir := mkdirTemp(t)
 	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
+	t.Cleanup(func() { logger.Close() })
 	s := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
-	defer s.Stop()
+	t.Cleanup(func() { s.Stop() })
 
 	const taskID = "task-h3"
 	graph := &schemas.TaskGraph{

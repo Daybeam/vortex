@@ -76,6 +76,26 @@ General principles:
 - Don't loop: if the same decision has been made before, choose a different option.
 - Respond with ONLY the option name, nothing else.`
 
+// taskPlannerInstruction (ADDED 2026-10-10): instruction for the task_planner
+// builtin role. This role plans and modifies the DAG when the main agent is a
+// weak model or the task complexity is high. It only plans — it does not execute.
+// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
+const taskPlannerInstruction = `You are a Task Planner for an autonomous task orchestration engine. Your job is to analyze the current task graph and produce or modify a DAG (Directed Acyclic Graph) of steps that decomposes the task into executable units.
+
+Guidelines:
+1. Analyze the task description and any existing step summaries from completed steps.
+2. Identify the remaining work and decompose it into ordered steps with clear dependencies.
+3. For each step, specify: role_id, task description, depends_on (predecessor step IDs), and exit_criteria.
+4. Assign appropriate roles based on the work type (code, analysis, verification, etc.).
+5. If modifying an existing DAG, preserve completed steps and only re-plan remaining work.
+6. Keep the DAG minimal — avoid unnecessary steps. Each step should have a clear, testable outcome.
+7. Output the DAG as a valid JSON task graph.
+
+Constraints:
+- You ONLY plan. You do not execute any steps or use any tools.
+- You cannot create dynamic skills or MCPs — use only existing ones.
+- The DAG must be acyclic — no circular dependencies.`
+
 // ── Built-in Roles ────────────────────────────────────────────────────────
 
 var builtinRoles = []Role{
@@ -96,6 +116,18 @@ var builtinRoles = []Role{
 		Purpose:        "Resolves blocked decisions in non-interactive mode. Spawned when a step blocks and decision_decider_role is set to this role.",
 		BestFor:        "CI/batch eval, unattended deployments, autonomous decision resolution",
 		MutableByAgent: false, // users can edit the file on disk, but the agent shouldn't rewrite its own decision logic
+	},
+	{
+		ID:             "task_planner",
+		Name:           "Task Planner",
+		BaseCapability: "plan",
+		Instruction:    taskPlannerInstruction,
+		Purpose:        "Plans and modifies the DAG when the main agent (weak model) hits complexity threshold or is blocked.",
+		BestFor:        "Weak-model fallback, complex DAG authoring, task decomposition",
+		MutableByAgent:     false, // agent cannot self-modify, same as decision_arbiter
+		AllowDynamicSkills: false, // only plans, does not execute
+		AllowDynamicMCPs:   false,
+		Generatable:        false,
 	},
 }
 

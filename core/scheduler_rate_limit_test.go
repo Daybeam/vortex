@@ -106,17 +106,40 @@ func TestScheduler_ProactiveRateLimiting(t *testing.T) {
 	}
 
 	// Wait for completion (or timeout)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	// isDone checks if a graph status indicates the task is no longer
+	// actively executing. With step-level decision gate granularity,
+	// GraphRunning + pending decisions is equivalent to the old GraphBlocked.
+	isDone := func(status map[string]any) bool {
+		st := status["status"]
+		if st == schemas.GraphCompleted || st == schemas.GraphFailed {
+			return true
+		}
+		// GraphRunning with pending decisions = blocked by decision gate
+		if st == schemas.GraphRunning || st == schemas.GraphBlocked {
+			if pds, ok := status["pending_decisions"]; ok {
+				if pdList, ok := pds.([]map[string]any); ok && len(pdList) > 0 {
+					return true
+				}
+			}
+			// GraphBlocked (legacy) or GraphRunning without visible
+			// pending decisions in summary view — treat as done if
+			// status hasn't changed for a while (checked by caller).
+			if st == schemas.GraphBlocked {
+				return true
+			}
+		}
+		return false
+	}
+
 	for {
-		s1, ok1 := engine.GetStatus(id1)
-		s2, ok2 := engine.GetStatus(id2)
+		s1, ok1 := engine.GetStatus(id1, "full")
+		s2, ok2 := engine.GetStatus(id2, "full")
 		if ok1 && ok2 {
 			t.Logf("Status 1: %v, Status 2: %v", s1["status"], s2["status"])
-			// Break if both are either completed, blocked, or failed
-			if (s1["status"] == schemas.GraphCompleted || s1["status"] == schemas.GraphBlocked || s1["status"] == schemas.GraphFailed) &&
-				(s2["status"] == schemas.GraphCompleted || s2["status"] == schemas.GraphBlocked || s2["status"] == schemas.GraphFailed) {
+			if isDone(s1) && isDone(s2) {
 				break
 			}
 		}

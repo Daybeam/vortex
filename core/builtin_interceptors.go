@@ -103,6 +103,11 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 			})
 			return res, err
 		}
+		// audit L-NEW-7: Spawn can return (nil, nil) when an external
+		// interceptor short-circuits. Guard to prevent nil deref panic.
+		if res == nil {
+			return nil, fmt.Errorf("log_interceptor: spawn returned nil result for step %s", req.StepID)
+		}
 
 		logger.Log(EventStepCompleted, req.TaskID, req.StepID, map[string]any{
 			"message": fmt.Sprintf("Interceptor: Execution completed for role %s with status %s", req.RoleID, res.Output.Status),

@@ -48,11 +48,11 @@ func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.St
 
 	if currentRound <= step.MaxLoopRounds {
 		feedback := fmt.Sprintf(
-			"[SYSTEM FEEDBACK]\n"+
+			"%s\n"+
 				"下游步骤 %s 报告以下信息缺失，请在本轮输出中补充：\n%s\n\n"+
 				"上一轮你的输出被下游判定为不足。请尝试不同的数据源或分析角度。\n"+
 				"本轮是第 %d/%d 轮，如仍无法满足，系统将强制降级。",
-			step.ID, strings.Join(output.MissingContext, "\n"), currentRound, step.MaxLoopRounds,
+			MarkerSystemFeedback, step.ID, strings.Join(output.MissingContext, "\n"), currentRound, step.MaxLoopRounds,
 		)
 
 		for _, depID := range step.DependsOn {
@@ -87,8 +87,8 @@ func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.St
 	}
 	step.Status = schemas.StepSuspended
 	step.AdditionalPromptContext = fmt.Sprintf(
-		"[SYSTEM DEGRADE] 已达到最大补充轮次(%d轮)，请根据现有信息尽力生成最终输出。",
-		step.MaxLoopRounds,
+		"%s 已达到最大补充轮次(%d轮)，请根据现有信息尽力生成最终输出。",
+		MarkerSystemDegrade, step.MaxLoopRounds,
 	)
 	delete(graph.CycleCounters, cycleID)
 

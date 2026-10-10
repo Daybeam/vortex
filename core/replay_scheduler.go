@@ -590,6 +590,11 @@ Respond ONLY with 'PASS' or 'FAIL: <reason>'.`, toolName, v.Type, string(payload
 	if err != nil {
 		return false, "cross_family_spawn_error: " + err.Error()
 	}
+	// audit L-NEW-8: Spawn can return (nil, nil) when an external
+	// interceptor short-circuits. Guard to prevent nil deref panic.
+	if res == nil {
+		return false, "cross_family_spawn_error: spawn returned nil result"
+	}
 	auditText := fmt.Sprintf("%v", res.Output.Result)
 	if strings.HasPrefix(strings.ToUpper(auditText), "PASS") {
 		return true, "cross_family_verified:" + providerID

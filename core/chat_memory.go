@@ -89,7 +89,7 @@ func (m *RollingWindowMemory) summarize(ctx context.Context, older []ChatMessage
 	}
 
 	resp, err := m.SummaryModel.Complete(ctx, schemas.CompleteRequest{
-		System: "Summarize the following conversation concisely, preserving key decisions, file paths, and constraints.",
+		System: SysPromptChatSummary,
 		User:   text,
 	})
 	if err != nil || resp == nil || resp.Text == "" {

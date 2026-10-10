@@ -307,8 +307,8 @@ func TestAddDecision_CreatesDecisionWithCorrectType(t *testing.T) {
 	if dec.StepID != "s1" {
 		t.Fatalf("expected StepID 's1', got %q", dec.StepID)
 	}
-	if graph.Status != schemas.GraphBlocked {
-		t.Fatalf("expected GraphBlocked, got %v", graph.Status)
+	if len(graph.PendingDecisions) == 0 {
+		t.Fatalf("expected pending decision (step-level blocking), got none")
 	}
 }
 

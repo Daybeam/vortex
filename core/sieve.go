@@ -13,6 +13,7 @@ import (
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/codeintel"
 	"github.com/daybeam/vortex/providers"
+	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -43,11 +44,39 @@ type Sieve struct {
 	// output safety. See docs/systemone-provider-design.md §6.2 + §8 M5.
 	systemOneProvider *providers.SystemOneProvider
 	systemOneCfg      config.SystemOneConfig
+
+	// plans (ADDED 2026-10-10): step plan text per taskID for plan-drift
+	// detection. See docs/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
+	plans map[string]string
+
+	// Adaptive threshold (#13, ADDED 2026-10-10): tracks intercept stats
+	// per task to auto-tune ToolRepetitionThreshold.
+	// See docs/STEP_PLAN_MODE_DESIGN.md §13.2.
+	interceptStats       map[string]*interceptStat // taskID → stats
+	consecutiveCleanTasks int                      // tasks with 0 intercepts since last threshold change
 }
+
+// interceptStat tracks per-task interception statistics for adaptive
+// threshold tuning. When a task accumulates ≥2 distinct intercepted hashes,
+// the model is "varying the pattern but still looping" → threshold is too
+// loose → tighten. Relaxation happens across tasks: 10 consecutive tasks
+// with 0 intercepts → loosen by 1.
+type interceptStat struct {
+	interceptedHashes map[string]bool
+	distinctIntercepts int
+	totalIntercepts    int
+}
+
+const (
+	adaptiveThresholdMin     = 2  // floor for ToolRepetitionThreshold
+	adaptiveThresholdMax     = 6  // ceiling for ToolRepetitionThreshold
+	adaptiveRelaxConsecutive = 10 // consecutive clean tasks to relax by 1
+)
 
 const (
 	maxToolHistoryPerTask = 100  // cap per-task tool call history (only need last N for consecutive-repetition check)
 	maxToolHistoryTasks   = 1000 // cap on number of tasks tracked in toolHistory map
+	maxCachePerTask       = 50   // #16: cap cached read results per task (drop-oldest when exceeded)
 )
 
 func NewSieve(maxKeep int) *Sieve {
@@ -319,6 +348,7 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 				}
 			}
 			if consecutiveCount >= s.ToolRepetitionThreshold {
+				s.recordInterceptLocked(taskID, hash)
 				return false, "InfiniteLoopDetected"
 			}
 
@@ -335,6 +365,7 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 			}
 			if totalInWindow >= s.ToolRepetitionThreshold && windowSize > 0 {
 				if float64(totalInWindow)/float64(windowSize) >= 0.5 {
+					s.recordInterceptLocked(taskID, hash)
 					return false, "InfiniteLoopDetected"
 				}
 			}
@@ -351,6 +382,7 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 				}
 			}
 			if totalCount >= s.ToolRepetitionThreshold*2 {
+				s.recordInterceptLocked(taskID, hash)
 				return false, "InfiniteLoopDetected"
 			}
 		}
@@ -374,6 +406,7 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 				delete(s.toolHistory, k)
 				delete(s.toolResultCache, k)
 				delete(s.resultContentHistory, k)
+				delete(s.interceptStats, k)
 			}
 		}
 		s.toolHistory[taskID] = current
@@ -391,6 +424,52 @@ func (s *Sieve) ClearHistory(taskID string) {
 	delete(s.toolHistory, taskID)
 	delete(s.toolResultCache, taskID)
 	delete(s.resultContentHistory, taskID)
+	delete(s.plans, taskID) // also clear step plan (#4)
+
+	// Adaptive threshold relaxation/tightening (#13): evaluate the completed
+	// task's intercept stats and adjust the global threshold.
+	stats := s.interceptStats[taskID]
+	if stats == nil || stats.totalIntercepts == 0 {
+		// Clean task — increment consecutive counter for relaxation.
+		s.consecutiveCleanTasks++
+		if s.consecutiveCleanTasks >= adaptiveRelaxConsecutive && s.ToolRepetitionThreshold > adaptiveThresholdMin {
+			s.ToolRepetitionThreshold--
+			s.consecutiveCleanTasks = 0
+		}
+	} else {
+		// Intercepting task — reset clean counter.
+		s.consecutiveCleanTasks = 0
+		// Tighten if ≥2 distinct hashes (deferred from recordInterceptLocked
+		// to avoid changing behavior mid-task).
+		if stats.distinctIntercepts >= 2 && s.ToolRepetitionThreshold < adaptiveThresholdMax {
+			s.ToolRepetitionThreshold++
+		}
+	}
+	delete(s.interceptStats, taskID)
+}
+
+// recordInterceptLocked records an interception for adaptive threshold
+// tuning. Must be called with s.mu held. When a task accumulates ≥2
+// distinct intercepted hashes, the model is "varying the pattern but
+// still looping" → mark the task for threshold tightening.
+//
+// The actual threshold change is deferred to ClearHistory (task completion)
+// to avoid changing loop detection behavior mid-task — tightening within
+// the same task could cause the current task's loops to go undetected.
+func (s *Sieve) recordInterceptLocked(taskID, hash string) {
+	if s.interceptStats == nil {
+		s.interceptStats = make(map[string]*interceptStat)
+	}
+	stats := s.interceptStats[taskID]
+	if stats == nil {
+		stats = &interceptStat{interceptedHashes: make(map[string]bool)}
+		s.interceptStats[taskID] = stats
+	}
+	stats.totalIntercepts++
+	if !stats.interceptedHashes[hash] {
+		stats.interceptedHashes[hash] = true
+		stats.distinctIntercepts++
+	}
 }
 
 // GetCachedResult returns a previously cached result for the exact same
@@ -419,6 +498,13 @@ func (s *Sieve) CacheToolResult(taskID, toolName string, args map[string]any, re
 	defer s.mu.Unlock()
 	hash := toolCallHash(toolName, args)
 	if s.toolResultCache[taskID] == nil {
+		s.toolResultCache[taskID] = make(map[string]string)
+	}
+	// #16: Cache backpressure — when per-task cache exceeds maxCachePerTask,
+	// clear the entire cache for this task (drop-oldest semantics: the
+	// oldest entries are from earlier turns; if the model needs them,
+	// it's already lost). This prevents unbounded memory growth.
+	if len(s.toolResultCache[taskID]) >= maxCachePerTask {
 		s.toolResultCache[taskID] = make(map[string]string)
 	}
 	s.toolResultCache[taskID][hash] = result
@@ -581,3 +667,96 @@ func (s *Sieve) InspectWithSystemOne(ctx context.Context, text, requiredSchema s
 
 	return true, ""
 }
+
+// ─── Plan Drift Detection (#4, ADDED 2026-10-10) ──────────────────────────
+//
+// See docs/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
+// Advisory (non-blocking): detects when a tool call deviates from the
+// step plan and returns a steer message. The ChatHarness appends this
+// to the last tool result so the model sees it on the next turn.
+
+// SetPlan stores the step plan text for a task. Called by the Spawner
+// after the Planner Phase generates a plan.
+func (s *Sieve) SetPlan(taskID, plan string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.plans == nil {
+		s.plans = make(map[string]string)
+	}
+	s.plans[taskID] = plan
+}
+
+// ClearPlan removes the plan for a task (call on step completion).
+func (s *Sieve) ClearPlan(taskID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.plans, taskID)
+}
+
+// LoadPlan returns the stored plan for a task, or "" if none.
+func (s *Sieve) LoadPlan(taskID string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.plans[taskID]
+}
+
+// DetectPlanDrift checks whether a single tool call deviates from the
+// stored step plan. Returns a non-empty steer message if drift is
+// detected, or "" if the call is consistent with the plan (or no plan
+// exists).
+//
+// Heuristic: if the tool is a mutating tool (write/edit/exec/commit/
+// delete/move/create) and neither the tool name nor its primary argument
+// appears in the plan text, the call is likely out of scope.
+//
+// This is intentionally conservative — read tools never trigger drift
+// (reading is always safe), and mutating tools only trigger if neither
+// the tool name nor any argument value appears in the plan.
+func (s *Sieve) DetectPlanDrift(taskID string, tc schemas.ToolCall) string {
+	if s == nil {
+		return ""
+	}
+	plan := s.LoadPlan(taskID)
+	if plan == "" {
+		return "" // no plan → no drift detection
+	}
+
+	toolName := strings.ToLower(tc.Name)
+
+	// Read-only tools never drift — reading is always within scope.
+	if isReadTool(toolName) || isPollerTool(toolName) {
+		return ""
+	}
+
+	// Check if the tool name appears in the plan.
+	if strings.Contains(strings.ToLower(plan), toolName) {
+		return "" // tool name mentioned in plan → likely in scope
+	}
+
+	// Check if any argument value appears in the plan.
+	for _, v := range tc.Arguments {
+		if str, ok := v.(string); ok && str != "" {
+			if strings.Contains(strings.ToLower(plan), strings.ToLower(str)) {
+				return "" // argument value mentioned in plan → likely in scope
+			}
+		}
+	}
+
+	// Mutating tool with no mention in plan → drift.
+	return fmt.Sprintf(
+		"[PLAN DRIFT] Tool %q was called but is not mentioned in the step plan. "+
+			"Review the plan and ensure this action is necessary. If it is, "+
+			"continue; if not, return to the planned steps.",
+		tc.Name,
+	)
+}
+

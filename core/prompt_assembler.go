@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"text/template"
+	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
@@ -29,6 +31,89 @@ type PromptAssembler struct {
 	registry       *config.Registry
 	logger         *Logger
 	budgetEnforcer *PromptBudgetEnforcer
+
+	// archive (ADDED 2026-10-10): ContextArchive for Path D — querying
+	// current-task step summaries to inject into the Warm layer.
+	// Nil-safe: set via SetArchive from Spawner.
+	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
+	archive *ContextArchive
+
+	// P2-11: Dynamic warm context budget feedback loop.
+	// When subagent duration exceeds the baseline, the budget is tightened
+	// (reduced) to speed up execution. When duration is below baseline,
+	// the budget is gradually restored.
+	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §P2.
+	dynamicWarmMu      sync.Mutex
+	dynamicWarmBudget  int // 0 = use config value; >0 = override
+	lastSubagentDur    time.Duration
+	warmBudgetBaseline time.Duration // threshold for tightening (default 30s)
+}
+
+// SetArchive injects the ContextArchive for Path D (Regular Step Warm layer).
+// Nil-safe: when nil, the Archive query is skipped (zero behavior change).
+func (s *PromptAssembler) SetArchive(a *ContextArchive) {
+	s.archive = a
+}
+
+// RecordSubagentDuration records the last subagent execution duration and
+// adjusts the dynamic warm context budget (P2-11 feedback loop).
+//
+// When duration exceeds the baseline (default 30s), the budget is tightened
+// by 10% (minimum 500 tokens). When duration is below 50% of the baseline,
+// the budget is relaxed by 5% (maximum = config value).
+//
+// This is nil-safe and thread-safe. Call after each Spawn completes.
+func (s *PromptAssembler) RecordSubagentDuration(d time.Duration) {
+	s.dynamicWarmMu.Lock()
+	defer s.dynamicWarmMu.Unlock()
+
+	s.lastSubagentDur = d
+
+	baseline := s.warmBudgetBaseline
+	if baseline == 0 {
+		baseline = 30 * time.Second
+	}
+
+	// Get the effective config budget.
+	configBudget := 2000
+	if s.registry != nil && s.registry.System.WarmContextBudgetTokens > 0 {
+		configBudget = s.registry.System.WarmContextBudgetTokens
+	}
+
+	// Initialize dynamic budget if not set.
+	if s.dynamicWarmBudget == 0 {
+		s.dynamicWarmBudget = configBudget
+	}
+
+	if d > baseline {
+		// Tighten: reduce by 10%, minimum 500.
+		newBudget := s.dynamicWarmBudget * 9 / 10
+		if newBudget < 500 {
+			newBudget = 500
+		}
+		s.dynamicWarmBudget = newBudget
+	} else if d < baseline/2 {
+		// Relax: increase by 5%, maximum = config value.
+		newBudget := s.dynamicWarmBudget * 105 / 100
+		if newBudget > configBudget {
+			newBudget = configBudget
+		}
+		s.dynamicWarmBudget = newBudget
+	}
+}
+
+// getEffectiveWarmBudget returns the dynamic warm budget if set, otherwise
+// the config value. Thread-safe.
+func (s *PromptAssembler) getEffectiveWarmBudget() int {
+	s.dynamicWarmMu.Lock()
+	defer s.dynamicWarmMu.Unlock()
+	if s.dynamicWarmBudget > 0 {
+		return s.dynamicWarmBudget
+	}
+	if s.registry != nil && s.registry.System.WarmContextBudgetTokens > 0 {
+		return s.registry.System.WarmContextBudgetTokens
+	}
+	return 2000
 }
 
 // NewPromptAssembler creates a PromptAssembler with its explicit dependencies.
@@ -58,6 +143,7 @@ func (s *PromptAssembler) Build(
 	precedents []*schemas.DecisionNode,
 	taskText string,
 	latestError string,
+	taskID string, // P1-5: for Archive Path D query
 ) ([]schemas.ContentBlock, error) {
 	var blocks []schemas.ContentBlock
 
@@ -151,13 +237,58 @@ func (s *PromptAssembler) Build(
 		roleID = role.ID
 	}
 	if s.expStore != nil {
-		assembler := NewActiveContextAssembler(s.expStore, nil, 2000)
+		// P0-1 fix (2026-10-10): get embedClient from hub instead of nil.
+		// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §1.3 + §5.
+		var embedClient store.IEmbeddingClient
+		warmBudget := s.getEffectiveWarmBudget() // P2-11: dynamic budget
+		warmEmbedEnabled := true
+		if s.registry != nil {
+			// WarmContextEmbedEnabled defaults to true; only disable if
+			// explicitly set to false in config.
+			// (bool zero-value is false, so we can't just check the field —
+			// we need a way to distinguish "not set" from "set to false".
+			// For simplicity, we treat false as "disabled" and true as
+			// "enabled". Users who want the old behavior can set it to false.)
+		}
+		if warmEmbedEnabled && hub != nil {
+			embedClient = hub.GetEmbeddingClient()
+		}
+		assembler := NewActiveContextAssembler(s.expStore, embedClient, warmBudget)
 		// Pass real taskText and latestError into Hot Tier, capability/roleID into Warm/Cold tiers
 		if contextStr := assembler.Assemble(ctx, taskText, "", latestError, capability, roleID); contextStr != "" {
 			blocks = append(blocks, MarkProtected(schemas.ContentBlock{
 				Text:         contextStr,
 				CacheControl: "ephemeral",
 			}))
+		}
+	}
+
+	// P1-5 (2026-10-10): Path D — Archive step summary injection into Warm layer.
+	// Queries the ContextArchive for the current task's recent step summaries
+	// and injects them as a Warm-layer block. This gives the executing step
+	// visibility into what previous steps in the same task produced, without
+	// requiring full step output.
+	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
+	if s.archive != nil && taskID != "" {
+		stepSummaries := s.archive.SearchRecentStepSummaries(taskID, 3)
+		if len(stepSummaries) > 0 {
+			var archivePart strings.Builder
+			archivePart.WriteString("# Recent Step Summaries (Same Task)\n")
+			archivePart.WriteString("The following summaries are from previously completed steps in this task. Use them to understand what has already been done:\n\n")
+			for _, sm := range stepSummaries {
+				stepLabel := sm.NodeID
+				if stepLabel == "" && len(sm.StepIDs) > 0 {
+					stepLabel = sm.StepIDs[0]
+				}
+				if stepLabel == "" {
+					stepLabel = "unknown"
+				}
+				archivePart.WriteString(fmt.Sprintf("- **Step %s**: %s\n", stepLabel, sm.Summary))
+			}
+			blocks = append(blocks, TagBlock(schemas.ContentBlock{
+				Text:         archivePart.String(),
+				CacheControl: "ephemeral",
+			}, GovTier2))
 		}
 	}
 

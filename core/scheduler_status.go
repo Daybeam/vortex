@@ -128,19 +128,19 @@ func (s *DirectedEngine) WaitTask(ctx context.Context, taskID string, timeout ti
 		return nil, false
 	}
 
-	// audit L-N8: graph.Status and graph.ToStatusDictView (which iterates
-	// graph.Steps map) must be read under RLock — MutateGraphTopology can
-	// add steps concurrently, and concurrent map iteration + write can
+	// audit L-N8: graph.Status, graph.PendingDecisions, and graph.ToStatusDictView
+	// (which iterates graph.Steps map) must be read under RLock — MutateGraphTopology
+	// can add steps concurrently, and concurrent map iteration + write can
 	// fatal-panic. Use a snapshot helper to avoid repeating lock/unlock.
-	snapshotStatus := func() (map[string]any, schemas.GraphStatus) {
+	snapshotStatus := func() (map[string]any, schemas.GraphStatus, int) {
 		s.Mu.RLock()
 		defer s.Mu.RUnlock()
-		return graph.ToStatusDictView(v), graph.Status
+		return graph.ToStatusDictView(v), graph.Status, len(graph.PendingDecisions)
 	}
 
-	// Fast path: check if already terminal
-	status, graphStatus := snapshotStatus()
-	if graphStatus == schemas.GraphCompleted || graphStatus == schemas.GraphFailed || graphStatus == schemas.GraphBlocked {
+	// Fast path: check if already terminal or has pending decisions
+	status, graphStatus, pendingDecs := snapshotStatus()
+	if graphStatus == schemas.GraphCompleted || graphStatus == schemas.GraphFailed || graphStatus == schemas.GraphBlocked || pendingDecs > 0 {
 		return status, true
 	}
 
@@ -149,15 +149,16 @@ func (s *DirectedEngine) WaitTask(ctx context.Context, taskID string, timeout ti
 
 	select {
 	case <-ch:
-		status, _ := snapshotStatus()
+		status, _, _ := snapshotStatus()
 		return status, true
 	case <-ctx.Done():
-		status, _ := snapshotStatus()
+		status, _, _ := snapshotStatus()
 		return status, true
 	case <-timer.C:
-		status, graphStatus := snapshotStatus()
-		// Behavior Contract: return STILL_RUNNING if timeout reached and still running
-		if graphStatus == schemas.GraphRunning {
+		status, graphStatus, pendingDecs := snapshotStatus()
+		// Behavior Contract: return STILL_RUNNING if timeout reached and
+		// still running with no pending decisions.
+		if graphStatus == schemas.GraphRunning && pendingDecs == 0 {
 			status["wait_status"] = "STILL_RUNNING"
 		}
 		return status, true
@@ -376,7 +377,7 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 	graph.PendingDecisions = append(graph.PendingDecisions[:decIdx], graph.PendingDecisions[decIdx+1:]...)
 
 	// Resume graph if no other pending decisions
-	if len(graph.PendingDecisions) == 0 && graph.Status == schemas.GraphBlocked {
+	if len(graph.PendingDecisions) == 0 {
 		if graph.IsSmartRouted {
 			graph.Status = schemas.GraphCompleted
 			if ch, ok := s.doneChans[taskID]; ok {
@@ -387,24 +388,18 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 				}
 			}
 		} else {
-			graph.Status = schemas.GraphRunning
+			// Graph is already GraphRunning (step-level blocking never set
+			// GraphBlocked). Create a fresh done channel so WaitTask callers
+			// can wait for the next terminal state, and Broadcast to wake
+			// the run() loop which is waiting for decision resolution.
 			s.doneChans[taskID] = make(chan struct{})
-			// audit L-N5: restart run() goroutine (same fix as L-7.1).
-			// Without this, if the previous run exited when the graph
-			// blocked, the task silently stalls in GraphRunning with no
-			// executor — WaitTask hangs until timeout.
-			if oldCancel, ok := s.cancelFuncs[taskID]; ok {
-				oldCancel()
-			}
-			runCtx, runCancel := context.WithCancel(s.lifecycleCtx)
-			s.cancelFuncs[taskID] = runCancel
-			// audit L-N5: startGraphExecutor handles UseSwarm branching.
-			s.startGraphExecutor(runCtx, taskID)
 		}
 	}
 
 	s.Mu.Unlock()
 	s.persistGraph(graph)
+	// Wake the run() loop to check for newly-ready steps after decision resolution.
+	s.Broadcast()
 	return nil
 }
 
@@ -588,28 +583,20 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 	graph.PendingDecisions = filtered
 
 	// Resume if no more pending decisions
-	if graph.Status == schemas.GraphBlocked && len(graph.PendingDecisions) == 0 {
-		graph.Status = schemas.GraphRunning
-		// Create a new done channel for the resumed task session
+	if len(graph.PendingDecisions) == 0 {
+		// Graph is already GraphRunning (step-level blocking never set
+		// GraphBlocked). Create a fresh done channel so WaitTask callers
+		// can wait for the next terminal state, and Broadcast to wake
+		// the run() loop which is waiting for decision resolution.
 		s.doneChans[taskID] = make(chan struct{})
-		// audit L-7.1: restart run() goroutine. Without this, if the previous
-		// run exited (context cancelled, panic), the graph stalls in
-		// GraphRunning with no executor — WaitTask hangs until timeout.
-		// Cancel the old context (no-op if already dead), derive a fresh
-		// one from lifecycleCtx so Stop() can still cancel it.
-		if oldCancel, ok := s.cancelFuncs[taskID]; ok {
-			oldCancel()
-		}
-		runCtx, runCancel := context.WithCancel(s.lifecycleCtx)
-		s.cancelFuncs[taskID] = runCancel
-		// audit L-7.1: startGraphExecutor handles UseSwarm branching.
-		s.startGraphExecutor(runCtx, taskID)
 	}
 
 	s.logger.Log(EventDecisionSubmitted, taskID, dec.StepID, map[string]any{
 		"decision_id": decisionID,
 		"choice":      choice,
 	})
+	// Wake the run() loop to check for newly-ready steps after decision resolution.
+	s.Broadcast()
 	return nil
 }
 

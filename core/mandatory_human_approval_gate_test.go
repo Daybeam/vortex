@@ -22,13 +22,14 @@ func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 		logger:      logger,
 		doneChans:   make(map[string]chan struct{}),
 		cancelFuncs: make(map[string]context.CancelFunc),
+		notifyChan:  make(chan struct{}, 1),
 	}
 	engine.lifecycleCtx, engine.lifecycleCancel = context.WithCancel(context.Background())
 	defer engine.lifecycleCancel()
 
 	graph := &schemas.TaskGraph{
 		TaskID: "task_human_1",
-		Status: schemas.GraphBlocked,
+		Status: schemas.GraphRunning,
 		Steps: map[string]*schemas.Step{
 			"s1": {
 				ID:                   "s1",

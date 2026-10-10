@@ -73,8 +73,8 @@ func TestExecuteStep_BudgetExceeded_DoesNotDeadlock(t *testing.T) {
 	if graph.PendingDecisions[0].Type != schemas.DecisionBudgetExhausted {
 		t.Fatalf("expected DecisionBudgetExhausted, got %v", graph.PendingDecisions[0].Type)
 	}
-	if graph.Status != schemas.GraphBlocked {
-		t.Fatalf("expected graph.Status == GraphBlocked (set by addDecision), got %v", graph.Status)
+	if graph.Status == schemas.GraphBlocked {
+		t.Fatalf("expected graph.Status != GraphBlocked (step-level blocking only), got %v", graph.Status)
 	}
 }
 

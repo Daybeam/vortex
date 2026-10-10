@@ -153,6 +153,11 @@ type DirectedEngine struct {
 	// (step_post, task_completion, decision_required). Nil-safe: set by
 	// WireHooks after construction. See core/hook_runner.go.
 	hookRunner *HookRunner
+
+	// recentDecisions (#14): per-step decision timestamp for rate limiting
+	// non-critical auto-resolved decisions (30s cooldown per step).
+	recentDecisions   map[string]time.Time
+	recentDecisionsMu sync.Mutex
 }
 
 const defaultMaxHashCacheEntries = 10000
@@ -200,6 +205,7 @@ func NewDirectedEngine(
 		pathLocks:           NewPathLockManager(),
 		hashCache:           make(map[string]string),
 		maxHashCacheEntries: defaultMaxHashCacheEntries,
+		recentDecisions:     make(map[string]time.Time),
 		UseSwarm:            os.Getenv("ACAIS_MODE") == "1",
 		notifyChan:          make(chan struct{}),
 	}
@@ -746,6 +752,13 @@ func (e *DirectedEngine) GetCrossFamilyVerifier(providerID string) string {
 func (s *DirectedEngine) SetMemoryBankStore(mb *store.MemoryBankStore) {
 	if s.reflection != nil {
 		s.reflection.SetMemoryBankStore(mb)
+	}
+}
+
+func (s *DirectedEngine) SetArchive(a *ContextArchive) {
+	s.Archive = a
+	if s.spawner != nil {
+		s.spawner.SetArchive(a)
 	}
 }
 

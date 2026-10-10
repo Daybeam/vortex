@@ -201,8 +201,8 @@ func TestTryBacktrack_Fuse_SuspendsAndBlocks(t *testing.T) {
 	if downstream.AdditionalPromptContext == "" {
 		t.Fatal("expected degraded prompt injected")
 	}
-	if graph.Status != schemas.GraphBlocked {
-		t.Fatalf("expected GraphBlocked, got %v", graph.Status)
+	if graph.Status == schemas.GraphBlocked {
+		t.Fatalf("expected graph NOT GraphBlocked (step-level blocking only), got %v", graph.Status)
 	}
 	if len(graph.PendingDecisions) != 1 {
 		t.Fatalf("expected 1 pending decision, got %d", len(graph.PendingDecisions))

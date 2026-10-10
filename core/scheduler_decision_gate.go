@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -121,13 +122,17 @@ func (s *DirectedEngine) addDecision(
 		return
 	}
 	graph.PendingDecisions = append(graph.PendingDecisions, dec)
-	graph.Status = schemas.GraphBlocked
+	// Step-level blocking: the step is already StepFailed/StepBlocked by
+	// maybeBlock/handleDefaultFailure. We do NOT set graph.Status = GraphBlocked
+	// here — that would stall independent parallel branches. The graph stays
+	// GraphRunning; ReadySteps() naturally excludes blocked steps.
 	s.Mu.Unlock()
 
-	// Persist the blocked state immediately to prevent restart loops
+	// Persist the decision state immediately to prevent restart loops
 	s.persistGraph(graph)
 
-	// Notify waiters that task is blocked (terminal for waiting purposes)
+	// Notify WaitTask callers that the graph state changed (pending decision
+	// available). WaitTask's fast path checks len(PendingDecisions) > 0.
 	s.broadcastDone(graph.TaskID)
 
 	s.logger.Log(EventDecisionRequired, graph.TaskID, step.ID, map[string]any{
@@ -153,7 +158,36 @@ func (s *DirectedEngine) addDecision(
 	//                 if the decider errors or returns an invalid choice.
 	//   conservative — no decider role: use defaultNonInteractiveChoice (hardcoded
 	//                  safe defaults). Guaranteed to terminate.
+	//
+	// #14 (ADDED 2026-10-10): RiskTier-based rate limiting.
+	// - RiskTierCritical (browser/payment/deploy) → never auto-resolve.
+	// - Non-critical → 30s rate limit per step; if same step had a decision
+	//   within 30s, skip auto-resolution (let maxTurns exhaust naturally).
+	// See docs/STEP_PLAN_MODE_DESIGN.md §13.3.
 	if s.registry != nil && s.registry.System.NonInteractive {
+		// #14: Critical tier never auto-resolves — must wait for human.
+		tier, _ := schemas.DetermineRiskTier(step.Task, step.AdditionalMCPs)
+		if tier == schemas.RiskTierCritical {
+			s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+				"decision_id": dec.ID,
+				"skipped":     "risk_tier_critical",
+			})
+			return
+		}
+
+		// #14: Rate limit non-critical decisions — 30s per step.
+		rlKey := graph.TaskID + ":" + step.ID
+		s.recentDecisionsMu.Lock()
+		if last, ok := s.recentDecisions[rlKey]; ok && time.Since(last) < 30*time.Second {
+			s.recentDecisionsMu.Unlock()
+			s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+				"decision_id": dec.ID,
+				"skipped":     "rate_limited",
+			})
+			return
+		}
+		s.recentDecisions[rlKey] = time.Now()
+		s.recentDecisionsMu.Unlock()
 		taskID, decID := graph.TaskID, dec.ID
 		deciderRole := s.registry.System.DecisionDeciderRole
 		s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
@@ -255,8 +289,8 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 	return "", false
 }
 
-// askSystemOneForDecision is a stub in the open core. The full implementation
-// uses the System One decision model to pick an option for a blocked decision.
+// askSystemOneForDecision uses the System One decision model to pick an option
+// for a blocked decision. Stubbed in open core — System One is not available.
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,
@@ -359,9 +393,102 @@ func (s *DirectedEngine) RequestAutonomousAbort(taskID, stepID string, failureCl
 	if step == nil {
 		return
 	}
-	s.addDecision(graph, step, schemas.DecisionAutonomousAbortRequested, map[string]any{
+
+	// P1-7 (2026-10-10): Path B — before aborting, attempt to re-plan with
+	// the task_planner role. If the planner produces a new plan, the abort
+	// decision includes it as a "replan" option.
+	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
+	replanResult := s.tryPlannerReplan(taskID, stepID, reason)
+
+	decisionCtx := map[string]any{
 		"failure_class": string(failureClass),
 		"reason":        reason,
 		"requested_by":  "main_agent",
-	}, []string{"confirm_abort", "continue"})
+	}
+	options := []string{"confirm_abort", "continue"}
+	if replanResult != "" {
+		decisionCtx["planner_replan"] = replanResult
+		options = append([]string{"replan"}, options...)
+	}
+	s.addDecision(graph, step, schemas.DecisionAutonomousAbortRequested, decisionCtx, options)
+}
+
+// tryPlannerReplan attempts to spawn the task_planner role to re-plan the DAG
+// when the main agent is blocked or requests an abort. Returns the planner's
+// output (a markdown plan) or empty string if planning fails or is not configured.
+//
+// Path B (Planner Role): uses SearchAllStepSummaries to get full task history.
+// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
+func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string) string {
+	// Check if task_planner role exists in registry.
+	if s.registry == nil {
+		return ""
+	}
+	s.registry.Mu.RLock()
+	_, plannerExists := s.registry.Roles["task_planner"]
+	s.registry.Mu.RUnlock()
+	if !plannerExists {
+		return ""
+	}
+
+	// Build context: task graph + archive step summaries.
+	s.Mu.RLock()
+	graph := s.graphs[taskID]
+	s.Mu.RUnlock()
+	if graph == nil {
+		return ""
+	}
+
+	// Query Archive for all step summaries in this task (Path B).
+	var summariesText string
+	if s.Archive != nil {
+		summaries := s.Archive.SearchAllStepSummaries(taskID, reason, 10)
+		if len(summaries) > 0 {
+			var sb strings.Builder
+			sb.WriteString("\n\n## Completed Step Summaries\n")
+			for _, sm := range summaries {
+				stepLabel := sm.NodeID
+				if stepLabel == "" && len(sm.StepIDs) > 0 {
+					stepLabel = sm.StepIDs[0]
+				}
+				if stepLabel == "" {
+					stepLabel = "unknown"
+				}
+				sb.WriteString(fmt.Sprintf("- **Step %s**: %s\n", stepLabel, sm.Summary))
+			}
+			summariesText = sb.String()
+		}
+	}
+
+	// Build planning prompt.
+	prompt := fmt.Sprintf(`You are a Task Planner. The current execution has hit a problem and needs re-planning.
+
+Task ID: %s
+Problem Step: %s
+Reason for re-plan: %s
+
+Current DAG status: %s
+Steps: %d
+
+Analyze the situation and produce a revised execution plan. Consider what has already been done and what needs to change.%s
+
+Output your revised plan as markdown.`,
+		taskID, stepID, reason, graph.Status, len(graph.Steps), summariesText)
+
+	// Spawn the planner role.
+	plannerCtx, cancel := context.WithTimeout(s.lifecycleCtx, 60*time.Second)
+	defer cancel()
+
+	res, err := s.spawner.Spawn(plannerCtx, &SpawnRequest{
+		TaskID:      taskID,
+		StepID:      stepID + "_planner",
+		RoleID:      "task_planner",
+		Task:        prompt,
+		RoutingMode: schemas.RoutingModeLegacy,
+	})
+	if err != nil || res == nil {
+		return ""
+	}
+
+	return fmt.Sprintf("%v", res.Output.Result)
 }

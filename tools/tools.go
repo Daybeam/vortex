@@ -145,7 +145,7 @@ type App struct {
 func (app *App) InitArchive(outputBase string) {
 	app.Archive = core.NewContextArchive(filepath.Join(outputBase, "memory", "context.jsonl"))
 	if app.Scheduler != nil {
-		app.Scheduler.Archive = app.Archive
+		app.Scheduler.SetArchive(app.Archive)
 	}
 	app.archiveStop = make(chan struct{})
 	stop := app.archiveStop

@@ -243,9 +243,12 @@ func (a *ContextArchive) Search(query string, embedClient EmbeddingClient, k int
 
 	denseRank := map[string]float64{}
 	if embedClient != nil && len(embeds) > 0 {
-		if qVec, err := embedClient.Embed(context.Background(), query); err == nil {
+		// audit L-NEW-11: add timeout to prevent blocking forever if embedding service hangs.
+		embedCtx, embedCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if qVec, err := embedClient.Embed(embedCtx, query); err == nil {
 			denseRank = search.CosineRank(qVec, embeds)
 		}
+		embedCancel()
 	}
 
 	merged := search.RRFMerge(bm25Rank, denseRank)
@@ -389,4 +392,91 @@ func (a *ContextArchive) SearchForest(
 		Nodes: selected,
 		Edges: forestEdges,
 	}, nil
+}
+
+// ─── ArchiveQuery Methods (P0-3, ADDED 2026-10-10) ────────────────────────
+//
+// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §4.
+// Three query methods at different granularities for the four consumption
+// paths (B: Planner Role, C: Step Plan Mode, D: Regular Step Warm layer).
+
+// SearchRecentStepSummaries returns the most recent N step summaries for
+// the given task. Used by Path C (Step Plan Mode) — only needs upstream
+// dependencies, not full search.
+//
+// Items are sorted by Timestamp descending (most recent first) and limited
+// to N. Only items with non-empty Summary are returned.
+func (a *ContextArchive) SearchRecentStepSummaries(taskID string, n int) []MemoryItem {
+	if a == nil || taskID == "" || n <= 0 {
+		return nil
+	}
+	a.Load()
+
+	a.mu.RLock()
+	items := make([]MemoryItem, len(a.items))
+	copy(items, a.items)
+	a.mu.RUnlock()
+
+	items = filterItemsByTask(items, taskID)
+
+	// Filter to only items with summaries.
+	filtered := make([]MemoryItem, 0, len(items))
+	for _, it := range items {
+		if it.Summary != "" {
+			filtered = append(filtered, it)
+		}
+	}
+
+	// Sort by timestamp descending (most recent first).
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Timestamp.After(filtered[j].Timestamp)
+	})
+
+	if len(filtered) > n {
+		filtered = filtered[:n]
+	}
+	return filtered
+}
+
+// SearchAllStepSummaries returns all step summaries for the given task,
+// ranked by BM25 relevance to the query. Used by Path B (Planner Role) —
+// needs full task history for DAG planning.
+func (a *ContextArchive) SearchAllStepSummaries(taskID, query string, n int) []MemoryItem {
+	if a == nil || taskID == "" || n <= 0 {
+		return nil
+	}
+	// Delegate to existing Search with task scope.
+	return a.Search(query, nil, n, taskID, taskID)
+}
+
+// SearchSegments returns sealed segment summaries for the given task scope.
+// Used by Path D (Regular Step Warm layer) — provides segment-level overview
+// without full text, reducing token cost.
+//
+// This is a lightweight wrapper that filters the archive by task scope and
+// returns items with their Summary field as the segment representation.
+// A full SegmentManager integration (Path A) would provide richer segment
+// structures; this method provides the archive-based fallback.
+func (a *ContextArchive) SearchSegments(taskScope string, n int) []MemoryItem {
+	if a == nil || taskScope == "" || n <= 0 {
+		return nil
+	}
+	a.Load()
+
+	a.mu.RLock()
+	items := make([]MemoryItem, len(a.items))
+	copy(items, a.items)
+	a.mu.RUnlock()
+
+	items = filterItemsByTask(items, taskScope)
+
+	// Sort by timestamp descending.
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Timestamp.After(items[j].Timestamp)
+	})
+
+	if len(items) > n {
+		items = items[:n]
+	}
+	return items
 }

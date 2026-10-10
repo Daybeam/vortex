@@ -113,6 +113,10 @@ func parseExternalSkillFile(path string) (*ExternalSkillMeta, error) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	// FIX (2026-10-09): Default bufio.MaxScanTokenSize is 64KB. A 57KB+ SKILL.md
+	// with a long single line (e.g. minified code block) would silently fail.
+	// Enlarge to 1MB to handle large skills without modifying the original file.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	inFrontmatter := false
 	var frontmatterLines []string
 	var bodyLines []string
@@ -136,6 +140,12 @@ func parseExternalSkillFile(path string) (*ExternalSkillMeta, error) {
 		} else {
 			bodyLines = append(bodyLines, line)
 		}
+	}
+
+	// audit L-NEW-10: check scanner.Err() — if a line exceeds the 1MB buffer,
+	// the scanner stops silently and returns truncated content.
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("parse skill file %q: %w", path, err)
 	}
 
 	name := filepath.Base(filepath.Dir(path))

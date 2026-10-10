@@ -203,7 +203,7 @@ func generatedToConfigSkill(gs *store.GeneratedSkill) *config.Skill {
 		Description: gs.Description,
 		Implementations: map[string]config.SkillImplementation{
 			"default": {
-				SystemPrompt: fmt.Sprintf("You have access to a specialized tool `%s` that was generated to solve: %s. Use it when appropriate.", gs.ID, gs.Description),
+				SystemPrompt: fmt.Sprintf(SysPromptSpecializedTool, gs.ID, gs.Description),
 			},
 		},
 	}

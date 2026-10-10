@@ -104,6 +104,11 @@ Output ONLY the revised result, no explanations.`, step.Task, currentContent, cr
 	if err != nil {
 		return currentContent, err
 	}
+	// audit L-NEW-9: Spawn can return (nil, nil) when an external
+	// interceptor short-circuits. Guard to prevent nil deref panic.
+	if res == nil {
+		return currentContent, fmt.Errorf("synthesize_audit: spawn returned nil result for step %s", step.ID)
+	}
 	return fmt.Sprintf("%v", res.Output.Result), nil
 }
 

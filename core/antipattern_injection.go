@@ -54,7 +54,7 @@ func (s *DirectedEngine) buildAntiPatternGuidance(stepTask, rejectionReason stri
 	}
 
 	var b strings.Builder
-	b.WriteString("[PREVIOUS FAILURE ANTI-PATTERN]\n")
+	b.WriteString(MarkerPrevFailureAntiPattern + "\n")
 	b.WriteString("The following historical pitfalls are the most relevant to your current failure.\n")
 	b.WriteString("Avoid repeating them. Each entry lists the anti-pattern, the symptom you would see, and the correct pattern to use instead.\n\n")
 	for i, p := range precedents {
