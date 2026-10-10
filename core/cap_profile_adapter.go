@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"time"
 
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/store"
@@ -23,7 +24,10 @@ func NewCapProfileLookup(cps *store.CapabilityProfileStore) providers.Capability
 }
 
 func (l *capProfileLookup) Lookup(modelID, capability string) (successRate, avgTokenCost, avgLatencyMs float64, found bool) {
-	profile, err := l.store.GetProfile(context.Background(), modelID, capability)
+	// audit P-NEW-2: add timeout to prevent blocking forever if SQLite DB is locked.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	profile, err := l.store.GetProfile(ctx, modelID, capability)
 	if err != nil || profile == nil || profile.TotalRuns == 0 {
 		return 0, 0, 0, false
 	}
