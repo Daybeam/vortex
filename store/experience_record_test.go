@@ -14,6 +14,8 @@ import (
 //
 // This test would FAIL under -race if the es.Mu.Lock()/Unlock() were removed
 // from UpdateRouteWeight.
+//
+// Run with: go test -race -run TestUpdateRouteWeight_ConcurrentNoRace
 func TestUpdateRouteWeight_ConcurrentNoRace(t *testing.T) {
 	es := newTestStore(t)
 
@@ -56,6 +58,16 @@ func TestUpdateRouteWeight_ConcurrentNoRace(t *testing.T) {
 	}
 
 	wg.Wait()
+
+	// audit T-MED-3: Post-condition assertion — verify the writes actually
+	// took effect. Without this, the test passes vacuously (only -race would
+	// catch a data race). With this assertion, we also verify correctness.
+	es.Mu.RLock()
+	routingMatrixLen := len(es.RoutingMatrix)
+	es.Mu.RUnlock()
+	if routingMatrixLen == 0 {
+		t.Error("expected non-empty RoutingMatrix after concurrent writes — UpdateRouteWeight may not be persisting")
+	}
 }
 
 // itoa is a minimal int→string converter to avoid pulling in strconv for a

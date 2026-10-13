@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
@@ -125,7 +126,9 @@ func (r *SQLiteRepo) SyncSOPsToDB(sops map[string]*schemas.SOP) error {
 // LoadRolesFromDB reads all roles from the DB.
 // Used as a fallback when JSON files are missing.
 func (r *SQLiteRepo) LoadRolesFromDB() (map[string]*config.Role, error) {
-	rows, err := r.db.QueryContext(context.Background(), `SELECT raw_json FROM roles_meta`)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // audit P-LOW-1: prevent indefinite hang on slow/corrupted DB
+	defer cancel()
+	rows, err := r.db.QueryContext(ctx, `SELECT raw_json FROM roles_meta`)
 	if err != nil {
 		return nil, err
 	}

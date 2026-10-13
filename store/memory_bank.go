@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type MemoryBank struct {
@@ -96,7 +97,6 @@ func (s *MemoryBankStore) SaveUserProfile(up UserProfile) error {
 
 func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	mb := &MemoryBank{
 		ActiveContext:  ActiveContext{Goals: []string{}, RecentChanges: []string{}, OpenQuestions: []string{}},
@@ -106,12 +106,18 @@ func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 		UserProfile:    UserProfile{Preferences: []string{}, Expertise: []string{}, PastDelegations: []string{}},
 	}
 
+	// audit C-HIGH-3: read+parse files under RLock (ensures consistency with
+	// concurrent Save), but defer DB writes until after RUnlock to avoid
+	// blocking all writers for the duration of DB round-trips.
+	type pendingSave struct{ category, key, content string }
+	var pending []pendingSave
+
 	// 1. activeContext.md
 	if data, err := os.ReadFile(filepath.Join(s.baseDir, "activeContext.md")); err == nil {
 		content := string(data)
 		mb.ActiveContext = parseActiveContext(content)
 		if s.backend != nil {
-			s.backend.SaveItem(context.Background(), "active_context", "raw", content, nil)
+			pending = append(pending, pendingSave{"active_context", "raw", content})
 		}
 	}
 
@@ -120,7 +126,7 @@ func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 		content := string(data)
 		mb.Decisions = parseDecisionLog(content)
 		if s.backend != nil {
-			s.backend.SaveItem(context.Background(), "decisions", "raw", content, nil)
+			pending = append(pending, pendingSave{"decisions", "raw", content})
 		}
 	}
 
@@ -129,7 +135,7 @@ func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 		content := string(data)
 		mb.ProductContext = content
 		if s.backend != nil {
-			s.backend.SaveItem(context.Background(), "product_context", "raw", content, nil)
+			pending = append(pending, pendingSave{"product_context", "raw", content})
 		}
 	}
 
@@ -138,7 +144,7 @@ func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 		content := string(data)
 		mb.Progress = parseProgress(content)
 		if s.backend != nil {
-			s.backend.SaveItem(context.Background(), "progress", "raw", content, nil)
+			pending = append(pending, pendingSave{"progress", "raw", content})
 		}
 	}
 
@@ -147,7 +153,7 @@ func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 		content := string(data)
 		mb.SystemPatterns = parseList(content)
 		if s.backend != nil {
-			s.backend.SaveItem(context.Background(), "system_patterns", "raw", content, nil)
+			pending = append(pending, pendingSave{"system_patterns", "raw", content})
 		}
 	}
 
@@ -156,8 +162,17 @@ func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 		content := string(data)
 		mb.UserProfile = parseUserProfile(content)
 		if s.backend != nil {
-			s.backend.SaveItem(context.Background(), "user_profile", "raw", content, nil)
+			pending = append(pending, pendingSave{"user_profile", "raw", content})
 		}
+	}
+
+	s.mu.RUnlock()
+
+	// DB writes with timeout — no longer holding RLock.
+	saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, p := range pending {
+		s.backend.SaveItem(saveCtx, p.category, p.key, p.content, nil)
 	}
 
 	return mb, nil

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/daybeam/vortex/schemas"
 )
@@ -29,7 +30,9 @@ func (ss *ScheduleStore) Reload() {
 	defer ss.Mu.Unlock()
 
 	if ss.backend != nil {
-		list, err := ss.backend.LoadAll(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // audit P-MED-2: prevent indefinite hang while holding mutex
+		defer cancel()
+		list, err := ss.backend.LoadAll(ctx)
 		if err == nil && len(list) > 0 {
 			for _, s := range list {
 				ss.Schedules[s.ID] = s
@@ -45,8 +48,10 @@ func (ss *ScheduleStore) Save() error {
 	defer ss.Mu.RUnlock()
 
 	if ss.backend != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // audit P-MED-2: prevent indefinite hang while holding mutex
+		defer cancel()
 		for _, s := range ss.Schedules {
-			ss.backend.Save(context.Background(), s)
+			ss.backend.Save(ctx, s)
 		}
 	} else {
 		writeJSON(ss.path, ss.Schedules)
@@ -75,7 +80,9 @@ func (ss *ScheduleStore) Set(s *schemas.Schedule) {
 	defer ss.Mu.Unlock()
 	ss.Schedules[s.ID] = s
 	if ss.backend != nil {
-		ss.backend.Save(context.Background(), s)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // audit P-MED-2: prevent indefinite hang while holding mutex
+		defer cancel()
+		ss.backend.Save(ctx, s)
 	} else {
 		writeJSON(ss.path, ss.Schedules)
 	}

@@ -14,7 +14,7 @@ import (
 type StepRecord struct {
 	StepID         string            `json:"step_id"`
 	RoleID         string            `json:"role_id"`
-	ModelID        string            `json:"model_id"` // 记录实际使用的模型 ID
+	ModelID        string            `json:"model_id"` // records actual Model ID used
 	Skills         []string          `json:"skills"`
 	Capability     string            `json:"capability"`
 	Confidence     float64           `json:"confidence"`
