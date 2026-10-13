@@ -151,19 +151,24 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		// implicitly bind matching MCPs/roles without requiring the caller
 		// to know the internal capability catalog.
 		taskStr := strArg(args, "task")
-		if stepsRaw == nil && taskStr != "" {
-			// Parse top-level context_refs if present
-			ctxRefs := make(map[string]string)
-			if raw, ok := args["context_refs"]; ok && raw != nil {
-				if m, ok := raw.(map[string]any); ok {
-					for k, v := range m {
-						if sv, ok := v.(string); ok {
-							ctxRefs[k] = sv
-						}
+
+		// Parse top-level context_refs if present (shared by both paths).
+		// audit fix: previously this was inside the implicit single-step
+		// branch only — on the explicit steps path, top-level context_refs
+		// was silently dropped (additional_mcps had a merge, context_refs
+		// did not).
+		ctxRefs := make(map[string]string)
+		if raw, ok := args["context_refs"]; ok && raw != nil {
+			if m, ok := raw.(map[string]any); ok {
+				for k, v := range m {
+					if sv, ok := v.(string); ok {
+						ctxRefs[k] = sv
 					}
 				}
 			}
+		}
 
+		if stepsRaw == nil && taskStr != "" {
 			si := schemas.StepInput{
 				ID:          "s1",
 				Task:        taskStr,
@@ -220,6 +225,18 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				for i := range inputs {
 					if len(inputs[i].AdditionalMCPs) == 0 {
 						inputs[i].AdditionalMCPs = extraMCPs
+					}
+				}
+			}
+
+			// Merge top-level context_refs into each step (mirrors
+			// additional_mcps merge above). Per-step context_refs take
+			// precedence — top-level refs only apply to steps that don't
+			// define their own.
+			if len(ctxRefs) > 0 {
+				for i := range inputs {
+					if len(inputs[i].ContextRefs) == 0 {
+						inputs[i].ContextRefs = ctxRefs
 					}
 				}
 			}

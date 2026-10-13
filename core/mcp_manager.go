@@ -486,7 +486,17 @@ func (m *MCPConnectionManager) ensureMCPClient(ctx context.Context, mcp *config.
 			mcpEnv["VORTEX_SPAN_ID"] = sid
 		}
 
-		_ = client.KillProcessTree(cmd)
+		// Pre-start orphan cleanup (audit H2): on Unix KillProcessTree(cmd) is
+		// `pkill -f <cmd>` — it SIGTERMs ANY process whose full command line
+		// contains the pattern. A bare interpreter command like "python3"
+		// matches the host script itself (Kaggle: `python3 -u /kaggle/src/script.py`
+		// → whole container killed). This was the root cause of the B-arm
+		// SIGTERM-on-task-start failures (v12-v23, 2026-10-12).
+		// ORCH_DISABLE_PATTERN_KILL=1 skips this risky cleanup: Close() already
+		// does a precise KillProcessTreeByPID, so orphan leakage is minimal.
+		if os.Getenv("ORCH_DISABLE_PATTERN_KILL") != "1" {
+			_ = client.KillProcessTree(cmd)
+		}
 
 		resolvedDir := mcpDir
 		if resolvedDir != "" && !filepath.IsAbs(resolvedDir) {

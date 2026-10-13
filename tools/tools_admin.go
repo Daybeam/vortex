@@ -169,7 +169,7 @@ func registerAdminTools(s *server.MCPServer, app *App) {
 
 func HandleAdminDeployFile(ctx context.Context, app *App, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Security gate (ADDED 2026-09-14): arbitrary file write is a known Open Core
-	// risk (see docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §1.4 问题B).
+	// risk (see docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §1.4 problem B).
 	// Disabled by default; must explicitly opt in via env var.
 	if os.Getenv("VORTEX_ALLOW_DEPLOY_WRITE") != "1" {
 		return errResult("admin deploy write is disabled by default for security. Set VORTEX_ALLOW_DEPLOY_WRITE=1 to enable.")

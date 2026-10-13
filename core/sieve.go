@@ -46,12 +46,12 @@ type Sieve struct {
 	systemOneCfg      config.SystemOneConfig
 
 	// plans (ADDED 2026-10-10): step plan text per taskID for plan-drift
-	// detection. See docs/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
+	// detection. See docs/plan/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
 	plans map[string]string
 
 	// Adaptive threshold (#13, ADDED 2026-10-10): tracks intercept stats
 	// per task to auto-tune ToolRepetitionThreshold.
-	// See docs/STEP_PLAN_MODE_DESIGN.md §13.2.
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.2.
 	interceptStats       map[string]*interceptStat // taskID → stats
 	consecutiveCleanTasks int                      // tasks with 0 intercepts since last threshold change
 }
@@ -320,8 +320,15 @@ func (s *Sieve) validateSchema(text string, schema string) bool {
 }
 
 // InspectToolCalls checks for repeated identical tool calls to prevent infinite loops.
-// Returns (isValid, reason)
-func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (bool, string) {
+// Returns (isValid, reason).
+//
+// stepID scopes the repetition check per-step: when non-empty, the tool-call
+// history is keyed by "taskID:stepID" so that different steps within the same
+// task (which may legitimately call the same tool with the same args — e.g.,
+// step 1 reads config.json for analysis, step 2 reads config.json for code
+// generation) do NOT trigger false-positive loop detection. When empty (e.g.,
+// ChatHarness which has no step concept), falls back to per-task scoping.
+func (s *Sieve) InspectToolCalls(taskID, stepID string, calls []store.ToolInteraction) (bool, string) {
 	if len(calls) == 0 {
 		return true, ""
 	}
@@ -329,11 +336,19 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Scope tool history per-step to avoid cross-step false positives.
+	// toolResultCache and resultContentHistory remain per-task (cross-step
+	// read caching is beneficial).
+	histKey := taskID
+	if stepID != "" {
+		histKey = taskID + ":" + stepID
+	}
+
 	for _, call := range calls {
 		argData, _ := json.Marshal(call.Arguments)
 		hash := fmt.Sprintf("%s:%s", call.ToolName, string(argData))
 
-		history := s.toolHistory[taskID]
+		history := s.toolHistory[histKey]
 
 		// Poller tools (poll/progress/health/wait) are exempt from all
 		// repetition checks — they legitimately repeat with the same args
@@ -375,6 +390,8 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 			// calls between) that the consecutive and window checks miss.
 			// Conservative 2× multiplier avoids false-positiveing legitimate
 			// retries (allows up to 2×threshold-1 total calls).
+			// Note: scoped per-step via histKey — cross-step repeats are NOT
+			// counted (different steps may legitimately call the same tool).
 			totalCount := 0
 			for i := 0; i < len(history); i++ {
 				if history[i] == hash {
@@ -387,9 +404,9 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 			}
 		}
 
-		s.toolHistory[taskID] = append(s.toolHistory[taskID], hash)
-		if len(s.toolHistory[taskID]) > maxToolHistoryPerTask {
-			s.toolHistory[taskID] = s.toolHistory[taskID][len(s.toolHistory[taskID])-maxToolHistoryPerTask:]
+		s.toolHistory[histKey] = append(s.toolHistory[histKey], hash)
+		if len(s.toolHistory[histKey]) > maxToolHistoryPerTask {
+			s.toolHistory[histKey] = s.toolHistory[histKey][len(s.toolHistory[histKey])-maxToolHistoryPerTask:]
 		}
 	}
 
@@ -397,19 +414,16 @@ func (s *Sieve) InspectToolCalls(taskID string, calls []store.ToolInteraction) (
 	// Clearing is safe: old completed tasks are unlikely to still be
 	// making tool calls, and ClearHistory is called on task completion.
 	if len(s.toolHistory) > maxToolHistoryTasks {
-		current := s.toolHistory[taskID]
+		current := s.toolHistory[histKey]
 		// audit P-MED-8: partial eviction instead of full clear to prevent cache stampede
 		i := 0
 		for k := range s.toolHistory {
 			i++
 			if i%4 == 0 {
 				delete(s.toolHistory, k)
-				delete(s.toolResultCache, k)
-				delete(s.resultContentHistory, k)
-				delete(s.interceptStats, k)
 			}
 		}
-		s.toolHistory[taskID] = current
+		s.toolHistory[histKey] = current
 	}
 
 	return true, ""
@@ -422,6 +436,14 @@ func (s *Sieve) ClearHistory(taskID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.toolHistory, taskID)
+	// Also clear all step-scoped histories (keys "taskID:stepID").
+	// This prevents unbounded growth when a task has many steps.
+	prefix := taskID + ":"
+	for k := range s.toolHistory {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.toolHistory, k)
+		}
+	}
 	delete(s.toolResultCache, taskID)
 	delete(s.resultContentHistory, taskID)
 	delete(s.plans, taskID) // also clear step plan (#4)
@@ -670,7 +692,7 @@ func (s *Sieve) InspectWithSystemOne(ctx context.Context, text, requiredSchema s
 
 // ─── Plan Drift Detection (#4, ADDED 2026-10-10) ──────────────────────────
 //
-// See docs/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
+// See docs/plan/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
 // Advisory (non-blocking): detects when a tool call deviates from the
 // step plan and returns a steer message. The ChatHarness appends this
 // to the last tool result so the model sees it on the next turn.

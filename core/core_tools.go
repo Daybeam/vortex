@@ -19,6 +19,7 @@ var CoreToolNames = map[string]bool{
 	"write_file":   true,
 	"read_file":    true,
 	"execute_code": true,
+	"decompress":   true,
 }
 
 func CoreToolDefinitions() []schemas.ToolDefinition {
@@ -37,12 +38,14 @@ func CoreToolDefinitions() []schemas.ToolDefinition {
 		},
 		{
 			Name:        "read_file",
-			Description: "Read a file from the current task's output directory. Path is relative. Large files are auto-truncated with head+tail summary. Use mode='summary' for a structural skeleton with line numbers (JSON keys, HTML tags, code symbols).",
+			Description: "Read a file from the current task's output directory. Path is relative. Large files are auto-truncated with head+tail summary. Use mode='summary' for a structural skeleton with line numbers (JSON keys, HTML tags, code symbols). Use start_line/end_line to read a specific line range (1-indexed) — essential for batch-reading large files that exceed the model's context window.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path": map[string]any{"type": "string", "description": "Relative path within the task output directory"},
-					"mode": map[string]any{"type": "string", "description": "Read mode: 'full' (default) or 'summary' (structural skeleton with line numbers)"},
+					"path":       map[string]any{"type": "string", "description": "Relative path within the task output directory"},
+					"mode":       map[string]any{"type": "string", "description": "Read mode: 'full' (default) or 'summary' (structural skeleton with line numbers)"},
+					"start_line": map[string]any{"type": "integer", "description": "First line to read (1-indexed). If omitted, starts from line 1."},
+					"end_line":   map[string]any{"type": "integer", "description": "Last line to read (1-indexed, inclusive). If omitted, reads to end."},
 				},
 				"required": []string{"path"},
 			},
@@ -57,6 +60,17 @@ func CoreToolDefinitions() []schemas.ToolDefinition {
 					"language": map[string]any{"type": "string", "description": "Language: python, node, bun, or lua", "default": "python"},
 				},
 				"required": []string{"code"},
+			},
+		},
+		{
+			Name:        "decompress",
+			Description: "Recover original content from a folded conversation segment. Use this when you need the full details of a past discussion that was compressed into a summary. Returns the original user messages and assistant responses for the specified segment.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"segment_id": map[string]any{"type": "string", "description": "The segment ID to decompress (from the Folded Conversation Segments section)"},
+				},
+				"required": []string{"segment_id"},
 			},
 		},
 	}
@@ -172,6 +186,25 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		if mode == "summary" {
 			return FileSkeleton(data, filepath.Base(path)), nil
 		}
+		// Line-range reading: extract specific lines for batch-reading large files.
+		startLine, _ := args["start_line"].(float64)
+		endLine, _ := args["end_line"].(float64)
+		if startLine > 0 || endLine > 0 {
+			lines := strings.Split(string(data), "\n")
+			s := int(startLine)
+			if s < 1 {
+				s = 1
+			}
+			e := int(endLine)
+			if e <= 0 || e > len(lines) {
+				e = len(lines)
+			}
+			if s > len(lines) {
+				return fmt.Sprintf("[Line %d is beyond file end (total %d lines)]", s, len(lines)), nil
+			}
+			selected := strings.Join(lines[s-1:e], "\n")
+			return fmt.Sprintf("[Lines %d-%d of %d]\n%s", s, e, len(lines), selected), nil
+		}
 		gated := AdaptiveOutputResult(data, path)
 		return string(gated), nil
 
@@ -194,6 +227,11 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		}
 		out, _ := json.Marshal(result)
 		return string(out), nil
+
+	case "decompress":
+		// decompress is handled by the Spawner (which has the FoldEngine).
+		// If we reach here, the fold engine is not available.
+		return "", fmt.Errorf("decompress is not available in this context (no fold engine)")
 
 	default:
 		return "", fmt.Errorf("unknown core tool: %s", name)

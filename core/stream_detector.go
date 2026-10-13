@@ -1,9 +1,8 @@
 package core
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
+	"hash/fnv"
 	"strings"
 )
 
@@ -27,7 +26,7 @@ var ErrRepetitiveOutput = errors.New("repetitive output detected")
 // positive=0.
 type StreamChunkDetector struct {
 	// consecutive detection
-	lastHash    string
+	lastHash    uint64
 	consecCount int
 	maxConsec   int
 
@@ -122,7 +121,10 @@ func (d *StreamChunkDetector) Text() string {
 	return d.buf.String()
 }
 
-func hashChunk(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
+// audit P-MED-1: use FNV-64 instead of SHA-256 for chunk equality comparison.
+// FNV-64 is ~10x faster and sufficient for detecting identical consecutive chunks.
+func hashChunk(s string) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(s))
+	return h.Sum64()
 }

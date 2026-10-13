@@ -54,7 +54,7 @@ func TestSieve_InspectToolCalls_SparseInterleavedRepetition(t *testing.T) {
 
 	blocked := false
 	for _, c := range calls {
-		ok, _ := s.InspectToolCalls(taskID, []store.ToolInteraction{c})
+		ok, _ := s.InspectToolCalls(taskID, "", []store.ToolInteraction{c})
 		if !ok {
 			blocked = true
 			break
@@ -87,7 +87,7 @@ func TestSieve_InspectToolCalls_AllowsLegitimateRetry(t *testing.T) {
 	}
 
 	for _, c := range calls {
-		ok, reason := s.InspectToolCalls(taskID, []store.ToolInteraction{c})
+		ok, reason := s.InspectToolCalls(taskID, "", []store.ToolInteraction{c})
 		if !ok {
 			t.Fatalf("Legitimate retry (5× sparse interleaved) should not be blocked, got: %s", reason)
 		}
@@ -201,7 +201,7 @@ func TestSieve_PollerExemptFromLoopDetection(t *testing.T) {
 	pollCall := store.ToolInteraction{ToolName: "poll_job", Arguments: map[string]any{"job": "J1"}}
 
 	for i := 0; i < 10; i++ {
-		ok, reason := s.InspectToolCalls(taskID, []store.ToolInteraction{pollCall})
+		ok, reason := s.InspectToolCalls(taskID, "", []store.ToolInteraction{pollCall})
 		if !ok {
 			t.Fatalf("Poller tool should be exempt from loop detection, got: %s (call %d)", reason, i+1)
 		}
@@ -218,7 +218,7 @@ func TestSieve_NonPollerStillDetected(t *testing.T) {
 
 	blocked := false
 	for i := 0; i < 10; i++ {
-		ok, _ := s.InspectToolCalls(taskID, []store.ToolInteraction{readCall})
+		ok, _ := s.InspectToolCalls(taskID, "", []store.ToolInteraction{readCall})
 		if !ok {
 			blocked = true
 			break

@@ -37,6 +37,7 @@ func mustNewLogger(t *testing.T, dir string, cfg *config.SystemSettings) *Logger
 	if err != nil {
 		t.Fatalf("NewLogger(%q, ...) failed: %v", dir, err)
 	}
+	t.Cleanup(func() { logger.Close() })
 	return logger
 }
 
