@@ -9,8 +9,13 @@ import (
 
 // SelectSandboxProvider initializes the appropriate sandbox backend based on config (ADDED 2026-09-02).
 func SelectSandboxProvider(reg *config.Registry, outputBase string) SandboxProvider {
+	// audit C-MED-1: hold single RLock for all config reads — previously
+	// released between mode read and docker config read, allowing config
+	// to change in between (TOCTOU race).
 	reg.Mu.RLock()
 	mode := reg.System.Sandbox.Mode
+	image := reg.System.Sandbox.DockerImage
+	network := reg.System.Sandbox.DockerNetwork
 	reg.Mu.RUnlock()
 
 	if outputBase == "" {
@@ -23,9 +28,7 @@ func SelectSandboxProvider(reg *config.Registry, outputBase string) SandboxProvi
 	case "bubblewrap":
 		return NewBubblewrapProvider(outputBase)
 	case "docker":
-		// DockerProvider not implemented yet, fallback to local with warning
-		fmt.Fprintf(os.Stderr, "[sandbox] WARNING: DockerProvider not implemented, falling back to local\n")
-		return NewLocalProvider(outputBase)
+		return NewDockerProvider(outputBase, image, network)
 	case "remote":
 		// RemoteProvider not implemented yet, fallback to local with warning
 		fmt.Fprintf(os.Stderr, "[sandbox] WARNING: RemoteProvider not implemented, falling back to local\n")

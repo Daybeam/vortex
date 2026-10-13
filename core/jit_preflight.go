@@ -8,7 +8,7 @@ import (
 )
 
 // jit_preflight.go — JIT pre-flight gate.
-// Implements §二.2 and §三.2 of docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md.
+// Implements §2.2 and §3.2 of docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md.
 //
 // Every JIT entry point (JITManager.RegisterTool, JITSession.Eval, and the
 // tools/subsystems.go jit.create / jit.eval actions) MUST call PreflightCheck
@@ -41,10 +41,10 @@ var (
 // it to a single error for backward compatibility with the design doc's
 // signature.
 type PreflightResult struct {
-	OK         bool
-	Lang       string             // canonicalized
+	OK        bool
+	Lang      string           // canonicalized
 	Capability *RuntimeCapability // chosen backend (nil if unknown lang)
-	Err        error
+	Err       error
 }
 
 // PreflightCheck is the design-doc-signature entry point. Returns nil iff

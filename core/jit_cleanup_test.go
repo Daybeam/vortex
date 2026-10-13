@@ -41,13 +41,23 @@ func TestJITManager_CloseCancelsCleanup(t *testing.T) {
 }
 
 // TestJITManager_CloseIdempotent verifies that calling Close() multiple times
-// is safe (no panic from closing a closed channel).
+// is safe (no panic from closing a closed channel). Also asserts that stopCh
+// is actually closed after the first Close() call (audit T-LOW-1).
 func TestJITManager_CloseIdempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	reg := &config.Registry{}
 	m := NewJITManager(reg, tmpDir)
 
 	m.Close()
+
+	// Assert stopCh is closed (select succeeds immediately)
+	select {
+	case <-m.stopCh:
+		// expected — stopCh is closed
+	default:
+		t.Fatal("stopCh not closed after Close()")
+	}
+
 	m.Close() // should not panic
 	m.Close() // should not panic
 }
