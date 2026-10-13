@@ -79,7 +79,7 @@ General principles:
 // taskPlannerInstruction (ADDED 2026-10-10): instruction for the task_planner
 // builtin role. This role plans and modifies the DAG when the main agent is a
 // weak model or the task complexity is high. It only plans — it does not execute.
-// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
+// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
 const taskPlannerInstruction = `You are a Task Planner for an autonomous task orchestration engine. Your job is to analyze the current task graph and produce or modify a DAG (Directed Acyclic Graph) of steps that decomposes the task into executable units.
 
 Guidelines:

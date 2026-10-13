@@ -178,12 +178,13 @@ func TestOpenAIStreamComplete_ReasoningContent(t *testing.T) {
 	if len(chunks) != 4 {
 		t.Fatalf("expected 4 onChunk calls, got %d: %v", len(chunks), chunks)
 	}
-	// First two chunks are reasoning_content
-	if chunks[0] != "Let me think..." {
-		t.Errorf("chunk[0] expected reasoning, got %q", chunks[0])
+	// First two chunks are reasoning_content wrapped in imd/} tags
+	// so the ChatHarness can separate thinking from content.
+	if chunks[0] != "imdLet me think...}" {
+		t.Errorf("chunk[0] expected tagged reasoning, got %q", chunks[0])
 	}
-	if chunks[1] != " about the answer." {
-		t.Errorf("chunk[1] expected reasoning, got %q", chunks[1])
+	if chunks[1] != "imd about the answer.}" {
+		t.Errorf("chunk[1] expected tagged reasoning, got %q", chunks[1])
 	}
 	// Last two chunks are content
 	if chunks[2] != "Hello" || chunks[3] != " world!" {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/safelimits"
 )
 
 // ─── System One Provider ──────────────────────────────────────────────────
@@ -164,7 +165,7 @@ func (p *SystemOneProvider) Complete(ctx context.Context, req CompleteRequest) (
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, safelimits.MaxErrorBody)) // audit H1: cap error body
 		return nil, fmt.Errorf("systemone provider %q: backend returned HTTP %d: %s", p.name, resp.StatusCode, string(raw))
 	}
 

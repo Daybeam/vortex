@@ -118,13 +118,15 @@ func (r *Registry) ResolveToolBindings(role *Role, extra []MCPBinding) []MCPBind
 		effective[b.MCPID] = b
 	}
 	if role.AllowDynamicMCPs {
+		// audit C-LOW-1: use defer for RUnlock — previously manual Unlock
+		// meant a panic in the loop body would permanently hold the lock.
 		r.Mu.RLock()
+		defer r.Mu.RUnlock()
 		for id := range r.DynamicMCPs {
 			if _, exists := effective[id]; !exists {
 				effective[id] = MCPBinding{MCPID: id, AllowedTools: []string{}}
 			}
 		}
-		r.Mu.RUnlock()
 	}
 
 	for _, b := range extra {
@@ -500,22 +502,25 @@ func (r *Registry) GetVerifierID(toolName string) string {
 }
 
 func (r *Registry) CommitOps(ops []PatchOp, actor, taskID string) error {
+	// audit P-MED-4: release lock before WAL append — previously held Lock
+	// during wal.Append (which does f.Sync disk flush), blocking all config
+	// readers/writers for the full flush duration.
 	r.Mu.Lock()
 	if err := ApplyPatch(r, ops); err != nil {
 		r.Mu.Unlock()
 		return fmt.Errorf("registry: failed to apply patch: %w", err)
 	}
-	if r.wal != nil {
-		if _, err := r.wal.Append(actor, taskID, ops); err != nil {
-			r.Mu.Unlock()
+	hasWAL := r.wal != nil
+	wal := r.wal
+	r.Mu.Unlock()
+
+	if hasWAL {
+		if _, err := wal.Append(actor, taskID, ops); err != nil {
 			return fmt.Errorf("registry: failed to append to WAL: %w", err)
 		}
-		r.Mu.Unlock()
-	} else {
-		r.Mu.Unlock()
-		return r.Persist()
+		return nil
 	}
-	return nil
+	return r.Persist()
 }
 
 func (r *Registry) PersistForceSnapshot() error {
