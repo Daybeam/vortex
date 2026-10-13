@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,7 +71,7 @@ type ChatHarness struct {
 	// PendingSteer (ADDED 2026-10-10): non-blocking plan-drift correction
 	// message. When non-empty, it is appended to the last tool result in
 	// the current batch so the model sees it on the next turn.
-	// See docs/STEP_PLAN_MODE_DESIGN.md §10.3.
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §10.3.
 	PendingSteer string
 	SteerLock    sync.Mutex
 
@@ -81,15 +83,101 @@ type ChatHarness struct {
 	// See eval-kit/docs/28-engine-path-analysis.md §2 claim ②.
 	ReadinessGateSoft bool
 
+	// MaxContextWindow is the model's context window size (in tokens),
+	// from the provider config. Used for input size estimation: when
+	// the user's input exceeds 50% of this, it is mounted as a file
+	// with a summary; when it exceeds 100%, it is auto-delegated to
+	// the orchestrator. 0 = no estimation (legacy behavior).
+	MaxContextWindow int
+
 	// Segments (ADDED 2026-10-10): optional topic segment manager for
 	// chat memory. When non-nil, each indexed turn is also processed by
 	// the SegmentManager for topic segmentation (STAY/SEAL decisions).
-	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
+	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
 	Segments *SegmentManager
+}
+
+// thinkingExtractor detects imd/} tags in a chunk stream and separates
+// thinking content from regular content. Handles tags split across chunks.
+// Used by ChatHarness to emit "thinking" events separately from "delta" events,
+// enabling Telegram/web clients to display reasoning collapsibly.
+type thinkingExtractor struct {
+	inThinking bool
+	pending    string // buffer for partial tag detection
+}
+
+const (
+	thinkOpenTag  = "<think>"
+	thinkCloseTag = "</think>"
+)
+
+// Process takes a chunk and returns (content, thinking) strings.
+// content should be emitted as "delta", thinking as "thinking".
+// Both may be empty if the chunk is buffered for tag detection.
+func (te *thinkingExtractor) Process(chunk string) (content, thinking string) {
+	te.pending += chunk
+	for len(te.pending) > 0 {
+		if !te.inThinking {
+			idx := strings.Index(te.pending, thinkOpenTag)
+			if idx == -1 {
+				// No tag found. Keep last (len-1) chars as pending
+				// in case the tag is split across chunks.
+				safe := len(te.pending) - (len(thinkOpenTag) - 1)
+				if safe <= 0 {
+					return content, thinking
+				}
+				content += te.pending[:safe]
+				te.pending = te.pending[safe:]
+			} else {
+				if idx > 0 {
+					content += te.pending[:idx]
+				}
+				te.pending = te.pending[idx+len(thinkOpenTag):]
+				te.inThinking = true
+			}
+		} else {
+			idx := strings.Index(te.pending, thinkCloseTag)
+			if idx == -1 {
+				safe := len(te.pending) - (len(thinkCloseTag) - 1)
+				if safe <= 0 {
+					return content, thinking
+				}
+				thinking += te.pending[:safe]
+				te.pending = te.pending[safe:]
+			} else {
+				if idx > 0 {
+					thinking += te.pending[:idx]
+				}
+				te.pending = te.pending[idx+len(thinkCloseTag):]
+				te.inThinking = false
+			}
+		}
+	}
+	return content, thinking
+}
+
+// Flush returns any remaining buffered content. Call at the end of the stream.
+func (te *thinkingExtractor) Flush() (content, thinking string) {
+	if te.inThinking {
+		thinking = te.pending
+	} else {
+		content = te.pending
+	}
+	te.pending = ""
+	return content, thinking
 }
 
 func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
 	tools := CoreToolDefinitions()
+	// Filter out decompress — it requires a FoldEngine which the ChatHarness
+	// doesn't have. decompress is only available to subagents via the Spawner.
+	filtered := tools[:0]
+	for _, t := range tools {
+		if t.Name != "decompress" {
+			filtered = append(filtered, t)
+		}
+	}
+	tools = filtered
 	tools = append(tools, schemas.ToolDefinition{
 		Name: "delegate_to_orchestrator",
 		Description: "Delegate a complex, multi-step task to the orchestrator (role-based subagent execution). " +
@@ -218,10 +306,102 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	}
 	messages = append(messages, history...)
 
+	// ── Tiered Auto-Handling for Oversized Inputs ───────────────────
+	// When the user's input is large relative to the model's context window:
+	//   Tier 1 (>50% of context): mount as file, replace with summary + reference
+	//   Tier 3 (>100% of context): auto-delegate to orchestrator (DAG has compression)
+	// Tier 2 (overflow recovery) is in the error handling below.
+	// This is critical for small models (e.g., 4B with 4K context) receiving
+	// large pastes from Telegram/web chat.
+	if h.MaxContextWindow > 0 && h.OutputBase != "" {
+		totalChars := 0
+		for _, m := range messages {
+			totalChars += len(m.Content)
+		}
+		estimatedTokens := totalChars / 4
+
+		if estimatedTokens > h.MaxContextWindow/2 {
+			for i := len(messages) - 1; i >= 0; i-- {
+				if messages[i].Role == "user" && len(messages[i].Content) > 4000 {
+					content := messages[i].Content
+
+					// Tier 1: Mount as file in session workspace.
+					fileDir := filepath.Join(h.OutputBase, taskID, "inputs")
+					if err := os.MkdirAll(fileDir, 0755); err != nil {
+						log.Printf("WARN: chat_harness: failed to create input dir: %v", err)
+					}
+					filename := fmt.Sprintf("large_input_%d.txt", time.Now().UnixMilli())
+					filePath := filepath.Join(fileDir, filename)
+					// audit NEW-MED-1: log write failure — previously silently
+					// discarded, causing tool output to be silently lost.
+					if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+						log.Printf("WARN: chat_harness: failed to write large input file: %v", err)
+					}
+
+					// Generate summary: head + tail + line count.
+					lines := strings.Split(content, "\n")
+					headEnd := 20
+					if headEnd > len(lines) {
+						headEnd = len(lines)
+					}
+					tailStart := len(lines) - 20
+					if tailStart < headEnd {
+						tailStart = headEnd
+					}
+					summary := fmt.Sprintf("[Large input mounted: %d chars, %d lines, ~%d tokens. Saved as: %s]\n",
+						len(content), len(lines), estimatedTokens, filename)
+					summary += "--- First 20 lines ---\n" + strings.Join(lines[:headEnd], "\n") + "\n"
+					if tailStart < len(lines) && tailStart > headEnd {
+						summary += fmt.Sprintf("... [%d lines omitted] ...\n", tailStart-headEnd)
+						summary += "--- Last 20 lines ---\n" + strings.Join(lines[tailStart:], "\n")
+					}
+					summary += fmt.Sprintf("\n[Use read_file path=%s start_line=N end_line=M to read specific sections]", filename)
+
+					// Tier 3: Auto-delegate if input exceeds full context window.
+					if estimatedTokens > h.MaxContextWindow && h.Delegate != nil {
+						intent := content
+						if len(intent) > 500 {
+							intent = intent[:250] + " ... " + intent[len(intent)-250:]
+						}
+						delegatePrompt := fmt.Sprintf(
+							"Read and process the file at %s.\nUser intent (preview): %s\nFile summary: %s\n"+
+								"Use read_file with start_line/end_line to read in batches. Analyze and respond to the user's request.",
+							filePath, intent, summary)
+						delTaskID, delErr := h.Delegate(delegatePrompt)
+						if delErr == nil {
+							emit(ChatEvent{Type: "tool_call", Data: "auto_delegated_to_orchestrator", Meta: map[string]any{
+								"task_id": delTaskID,
+								"reason":  "input exceeds context window",
+								"tokens":  estimatedTokens,
+							}})
+							result := fmt.Sprintf(
+								"Your input is large (~%d tokens, exceeds model context window of %d).\n"+
+									"I've saved it to %s and delegated analysis to the orchestrator.\n"+
+									"Task: %s\nUse /status %s to check progress.",
+								estimatedTokens, h.MaxContextWindow, filename, delTaskID, delTaskID)
+							emit(ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": "auto_delegate"}})
+							emit(ChatEvent{Type: "done"})
+							return result, nil
+						}
+						// If delegate fails, fall through to Tier 1 (truncated chat).
+					}
+
+					// Tier 1: Replace the message with summary + file reference.
+					messages[i].Content = summary
+					emit(ChatEvent{Type: "steer", Data: fmt.Sprintf(
+						"large input (%d tokens) mounted as file %s, message replaced with summary",
+						estimatedTokens, filename)})
+					break
+				}
+			}
+		}
+	}
+
 	var finalText strings.Builder // audit H1: was `var finalText string` with += (O(n²))
 	var prevSig string
 	toolFailErrors := make(map[string][]string) // per-tool recent error messages (capped at 5)
 	noTextTurns := 0                            // consecutive turns with tool calls but no text output
+	overflowRetried := false                    // Tier 2: ensure context overflow retry happens only once
 
 	log.Printf("[chat-harness] task=%s sieve_nil=%v turns=%d", taskID, h.Sieve == nil, maxTurns)
 
@@ -254,18 +434,41 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		// a weak model emitting dozens of identical reasoning/text chunks
 		// without any tool calls. Inspired by Cordis thinking-loop-guard.
 		chunkDetector := NewStreamChunkDetector()
+		thinkExtractor := &thinkingExtractor{}
 		resp, err := h.Provider.StreamComplete(ctx, req, func(chunk string) error {
 			if chunk != "" {
 				if e := chunkDetector.Check(chunk); e != nil {
 					return e // abort stream; handled below as steer, not fatal
 				}
-				finalText.WriteString(chunk) // audit H1: was += (O(n²) string concat)
-				if e := emit(ChatEvent{Type: "delta", Data: chunk}); e != nil {
-					return e // audit H5: abort stream if client disconnected
+				// Separate thinking (imd/}) from content.
+				// Thinking is emitted as "thinking" events and NOT written
+				// to finalText — it's internal reasoning, not the response.
+				content, thinking := thinkExtractor.Process(chunk)
+				if content != "" {
+					finalText.WriteString(content)
+					if e := emit(ChatEvent{Type: "delta", Data: content}); e != nil {
+						return e // audit H5: abort stream if client disconnected
+					}
+				}
+				if thinking != "" {
+					if e := emit(ChatEvent{Type: "thinking", Data: thinking}); e != nil {
+						return e
+					}
 				}
 			}
 			return nil
 		})
+		// Flush any remaining buffered content from the thinking extractor.
+		if resp != nil {
+			content, thinking := thinkExtractor.Flush()
+			if content != "" {
+				finalText.WriteString(content)
+				emit(ChatEvent{Type: "delta", Data: content})
+			}
+			if thinking != "" {
+				emit(ChatEvent{Type: "thinking", Data: thinking})
+			}
+		}
 		if err != nil {
 			if errors.Is(err, ErrRepetitiveOutput) {
 				// Steer: undo this turn's partial text, inject guidance,
@@ -281,6 +484,30 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 					Role:    "user",
 					Content: MarkerRepetitiveOutput,
 				})
+				continue
+			}
+			// Tier 2: Context overflow recovery — detect, truncate, retry once.
+			// Reuses isContextLimitError from spawner_utils.go. This catches
+			// the case where the provider returns context_length_exceeded
+			// (e.g., 4B model with 4K context receiving a large input that
+			// slipped past Tier 1 estimation).
+			if isContextLimitError(err) && !overflowRetried {
+				overflowRetried = true
+				emit(ChatEvent{Type: "steer", Data: "context overflow detected, truncating input and retrying"})
+				for i := len(messages) - 1; i >= 0; i-- {
+					if messages[i].Role == "user" && len(messages[i].Content) > 4000 {
+						content := messages[i].Content
+						half := 2000
+						if half > len(content)/2 {
+							half = len(content) / 2
+						}
+						messages[i].Content = content[:half] +
+							fmt.Sprintf("\n[... truncated: %d chars omitted due to context overflow ...]\n", len(content)-half*2) +
+							content[len(content)-half:]
+						break
+					}
+				}
+				turn-- // retry same turn with truncated input
 				continue
 			}
 			emit(ChatEvent{Type: "error", Data: err.Error()})
@@ -320,7 +547,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			for i, tc := range resp.ToolCalls {
 				interactions[i] = store.ToolInteraction{ToolName: tc.Name, Arguments: tc.Arguments}
 			}
-			if ok, reason := h.Sieve.InspectToolCalls(taskID, interactions); !ok {
+			if ok, reason := h.Sieve.InspectToolCalls(taskID, "", interactions); !ok {
 				emit(ChatEvent{Type: "loop_guard", Data: reason})
 			}
 		} else {
@@ -338,7 +565,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			// Check the first tool call in the batch against the step
 			// plan. If drift is detected, set PendingSteer — it will be
 			// appended to the last tool result below.
-			// See docs/STEP_PLAN_MODE_DESIGN.md §10.3.
+			// See docs/plan/STEP_PLAN_MODE_DESIGN.md §10.3.
 			if i == 0 && h.Sieve != nil && h.PendingSteer == "" {
 				if msg := h.Sieve.DetectPlanDrift(taskID, tc); msg != "" {
 					h.SteerLock.Lock()
@@ -448,7 +675,7 @@ func (h *ChatHarness) indexTurn(ctx context.Context, sessionID, userQuery, assis
 	// P1-8 (2026-10-10): Path A — feed the turn into the SegmentManager
 	// for topic segmentation. The SegmentManager decides whether the item
 	// stays in the current segment or seals it and starts a new one.
-	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
+	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
 	if h.Segments != nil {
 		h.Segments.AddItem(MemoryItem{
 			TaskID:    "chat_" + sessionID,

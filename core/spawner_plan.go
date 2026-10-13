@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -48,6 +49,17 @@ func (s *Spawner) runPlannerPhase(ctx context.Context, req *SpawnRequest) (strin
 	}
 	cand := candidates[0]
 	pCfg := s.resolveCandidateConfig(req.Hub, role, cand.providerID, cand.model)
+	// eval E19 fix (2026-10-12): the primary candidate's model is intentionally
+	// empty ("use provider default") — resolveCandidateConfig already falls back
+	// through role.Provider -> Graph.MainProviderID -> Registry.DefaultProvider,
+	// so the resolved pCfg carries the effective model. The Complete call below
+	// previously passed the raw cand.model ("") which xfyun rejects with
+	// "missing required field model" (code 10005). Align with the normal spawn
+	// path (spawner.go:759 uses pCfg.Model).
+	planModel := pCfg.Model
+	if planModel == "" {
+		return "", fmt.Errorf("planner phase: no model configured on resolved provider %q (and no default-provider fallback available)", pCfg.Provider)
+	}
 
 	provider, err := providers.Get(pCfg, req.Hub.Registry.ExternalRuntimes)
 	if err != nil {
@@ -66,7 +78,7 @@ func (s *Spawner) runPlannerPhase(ctx context.Context, req *SpawnRequest) (strin
 	// P1-6 (2026-10-10): Path C — inject upstream step summaries from Archive.
 	// Gives the planner visibility into what previous steps in the same task
 	// have already produced, enabling better step-level planning.
-	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.3.
+	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.3.
 	if s.archive != nil && req.TaskID != "" {
 		upstreamSummaries := s.archive.SearchRecentStepSummaries(req.TaskID, 3)
 		if len(upstreamSummaries) > 0 {
@@ -91,7 +103,7 @@ func (s *Spawner) runPlannerPhase(ctx context.Context, req *SpawnRequest) (strin
 	resp, err := provider.Complete(planCtx, providers.CompleteRequest{
 		System:    system,
 		User:      req.Task,
-		Model:     cand.model,
+		Model:     planModel,
 		MaxTokens: 2048,
 	})
 	if err != nil {
@@ -105,10 +117,15 @@ func (s *Spawner) runPlannerPhase(ctx context.Context, req *SpawnRequest) (strin
 	}
 
 	// Persist plan to file for observability.
+	// audit L-MED-2: log persistence errors — previously silently discarded.
 	planDir := filepath.Join(s.outputBase, "step_plans")
-	_ = os.MkdirAll(planDir, 0755)
+	if err := os.MkdirAll(planDir, 0755); err != nil {
+		log.Printf("WARN: spawner_plan: failed to create plan dir: %v", err)
+	}
 	planPath := filepath.Join(planDir, req.StepID+".md")
-	_ = os.WriteFile(planPath, []byte(plan), 0644)
+	if err := os.WriteFile(planPath, []byte(plan), 0644); err != nil {
+		log.Printf("WARN: spawner_plan: failed to persist plan: %v", err)
+	}
 
 	return plan, nil
 }

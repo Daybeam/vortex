@@ -8,7 +8,7 @@ import (
 // Fires when CacheReadTokens == 0 for >= threshold consecutive rounds
 // where PromptTokens > minPromptTokens (small prompts are cold by design).
 //
-// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 告警器1.
+// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 1.
 // This is a pure observer: it never mutates execution flow. Alerting ≠ blocking.
 type CacheSentinel struct {
 	mu              sync.Mutex
@@ -50,11 +50,11 @@ func (c *CacheSentinel) Reset(taskID, stepID string) {
 // BudgetSentinel emits soft alerts at 60/80/90% budget consumption with a
 // linear extrapolation of the predicted total. It never auto-extends the budget.
 //
-// Design ref: §2.2 告警器2. Prediction ≠ decision.
+// Design ref: §2.2 alerter 2. Prediction ≠ decision.
 type BudgetSentinel struct {
-	mu    sync.Mutex
-	fired map[string]map[int]bool // taskID -> tier(60/80/90) -> fired
-	tiers []int
+	mu       sync.Mutex
+	fired    map[string]map[int]bool // taskID -> tier(60/80/90) -> fired
+	tiers    []int
 }
 
 func NewBudgetSentinel() *BudgetSentinel {

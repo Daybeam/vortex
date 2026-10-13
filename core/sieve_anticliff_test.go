@@ -48,11 +48,14 @@ func MainRule() string {
 	}
 }
 
-// TestSieveCompressContext_UnprotectedGoCodeStillCompressed verifies the
+// TestSieveCompressContext_UnprotectedGoCodeProcessingPathReached verifies the
 // differential: an unprotected key with Go-looking content under a .go
-// suffix is still eligible for AST compression. Anti-Cliff only protects
-// prefix-based keys; normal code-intel compression behavior is preserved.
-func TestSieveCompressContext_UnprotectedGoCodeStillCompressed(t *testing.T) {
+// suffix is NOT skipped by the Anti-Cliff protected-key guard. The key enters
+// the AST compressor processing path (protected keys would be skipped entirely).
+// Compression may or may not occur depending on file size threshold (>100 lines);
+// the invariant tested is that the key is present in output and non-empty.
+// (audit T-LOW-2: renamed from ...StillCompressed to accurately reflect what is asserted)
+func TestSieveCompressContext_UnprotectedGoCodeProcessingPathReached(t *testing.T) {
 	s := NewSieve(10)
 
 	goSource := `package code
@@ -74,17 +77,12 @@ func MainLogic() string {
 	if !ok {
 		t.Fatalf("expected string output for code/module.go, got %T", out["workspace/code/module.go"])
 	}
-	// If compression happened, the output will differ from input
 	if got == "" {
-		t.Error("expected non-empty output for unprotected key — key was skipped")
+		t.Error("expected non-empty output for unprotected key — key was skipped by guard")
 	}
-	if got == goSource {
-		t.Log("AST compressor did not compress (file may be below 100-line trigger) — acceptable; key path is unblocked")
-		// Accept either: the compressor only triggers > 100 lines; our fixture
-		// is small so it may no-op. The important invariant is that the
-		// processing path was reached (protected keys would have been
-		// skipped by the if-guard at top of loop; here we're in switch).
-	}
+	// Compression may or may not trigger (fixture is below 100-line threshold).
+	// The key invariant: the processing path was reached (output is non-empty),
+	// proving the protected-key guard did not skip this unprotected key.
 }
 
 // TestSieveCompressContext_PrefixOverride verifies the user-facing

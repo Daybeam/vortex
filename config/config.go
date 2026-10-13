@@ -15,6 +15,7 @@ type Registry struct {
 	DefaultEmbeddingProvider string
 	Providers                map[string]*ProviderConfig
 	Skills                   map[string]*Skill
+	PendingSkills            map[string]*Skill // staging for unverified external skills (TODO-4: not discoverable until promoted)
 	MCPs                     map[string]*MCPDef
 	Roles                    map[string]*Role
 	SOPs                     map[string]*schemas.SOP
@@ -29,6 +30,7 @@ type Registry struct {
 	StepPlan                 StepPlanConfig
 	RoleCookbookSource       string
 	RoleCookbookSources      map[string]string
+	SkillSyncSources         map[string]string // trusted repos for periodic skill sync, e.g. {"general": "mattpocock/skills"}
 	SkillsDir                string
 	RolesDir                 string
 	DynamicMCPs              map[string]*MCPDef // In-memory JIT tools

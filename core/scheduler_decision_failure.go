@@ -110,7 +110,7 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	s.Mu.Lock()
 	step.Status = schemas.StepBlocked
 	s.Mu.Unlock()
-	// [EVAL-OBS] 2026-10-07：blocked 是决策仲裁的直接上游，必须能看到根因分类。
+	// [EVAL-OBS] 2026-10-07: blocked is the direct upstream of decision arbitration, must see root cause classification.
 	if os.Getenv("ORCH_EVAL_OBS") != "" {
 		fmt.Fprintf(os.Stderr, "[EVAL-OBS] BLOCKED task=%s step=%s cause=%s conf=%.2f spawnDepth=%d maxSpawn=%d suggestion=%q\n",
 			taskID, step.ID, string(cause), conf, step.SpawnDepth, s.registry.System.MaxSpawnDepth, suggestion)

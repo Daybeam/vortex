@@ -16,8 +16,10 @@ import (
 func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID string, records []StepRecord, overallConf float64, decisions []map[string]any, success bool, attributableFailure bool) error {
 	// audit P-2: previously held es.Mu.Lock across the entire function body
 	// including decision appending, blocking all readers for the full duration.
-	// Split into two locked sections: core updates + decision outcomes.
+	// audit C-MED-2: use defer for Unlock — previously manual Unlock meant
+	// a panic in any sub-call would permanently deadlock the store.
 	es.Mu.Lock()
+	defer es.Mu.Unlock()
 
 	taskType := deriveTaskType(records)
 	es.upsertTaskPattern(taskID, taskType, records, overallConf)
@@ -47,11 +49,9 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 		seenRoles[rec.RoleID] = true
 		es.updateRoleAffinityLocked(rec.RoleID, taskType, success)
 	}
-	es.Mu.Unlock()
 
-	// Decision outcomes — independent of the core updates above, so use a
-	// separate short lock to minimize reader block time (audit P-2).
-	es.Mu.Lock()
+	// Decision outcomes — appended under the same lock (no gap between
+	// the two original sections meant the split was a no-op for readers).
 
 	// FIX (2026-07-08): decisions was accepted as a parameter but never
 	// actually recorded anywhere, so DecisionOutcomes was permanently empty
@@ -82,7 +82,6 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 	if len(es.DecisionOutcomes) > es.getMaxDecisionOutcomes() {
 		es.DecisionOutcomes = es.DecisionOutcomes[len(es.DecisionOutcomes)-es.getMaxDecisionOutcomes():]
 	}
-	es.Mu.Unlock()
 
 	// Debounce persist: if one is already in flight, skip — the next
 	// persist that runs will pick up all accumulated changes. This
@@ -229,6 +228,12 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 		sort.Slice(all, func(i, j int) bool { return all[i].ts.Before(all[j].ts) })
 		evict := len(all) / 4
 		for i := 0; i < evict; i++ {
+			// audit L-MED-5: also clean up sequenceKeyIndex for evicted
+			// patterns — stale index entries cause lookups to find evicted
+			// IDs, creating zero-value patterns and losing accumulated history.
+			if p, ok := es.TaskPatterns[all[i].id]; ok && p.SequenceKey != "" {
+				delete(es.sequenceKeyIndex, p.SequenceKey)
+			}
 			delete(es.TaskPatterns, all[i].id)
 		}
 		es.patternTokensCache = nil // invalidate cache
@@ -306,6 +311,11 @@ func (es *ExperienceStore) updateRoleProfile(rec *StepRecord) {
 
 	if len(rec.MissingContext) > 0 {
 		rp.CommonMissingContext = append(rp.CommonMissingContext, rec.MissingContext...)
+		// audit P-MED-3: cap CommonMissingContext to prevent unbounded growth.
+		// Keep the most recent 100 entries.
+		if len(rp.CommonMissingContext) > 100 {
+			rp.CommonMissingContext = rp.CommonMissingContext[len(rp.CommonMissingContext)-100:]
+		}
 	}
 }
 
@@ -364,17 +374,22 @@ func (es *ExperienceStore) updateStatePotentialsLocked(ctx context.Context, rec 
 	// (SQLite is single-writer anyway) — replaces N goroutines with 1.
 	if len(toSave) > 0 {
 		es.saveWg.Add(1)
-		go func(ctx context.Context, pots []*StatePotential) {
+		go func(pots []*StatePotential) {
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(os.Stderr, "[experience-record] goroutine panic: %v\n%s", r, debug.Stack())
 				}
 			}()
 			defer es.saveWg.Done()
+			// audit C-HIGH-4: detached context with timeout — prevents silent
+			// data loss when caller's ctx is cancelled (e.g., HTTP timeout).
+			// Same pattern as audit C-14 fix for persist goroutine.
+			saveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 			for _, sp := range pots {
-				es.backend.SaveStatePotential(ctx, sp)
+				es.backend.SaveStatePotential(saveCtx, sp)
 			}
-		}(ctx, toSave)
+		}(toSave)
 	}
 }
 
@@ -408,17 +423,21 @@ func (es *ExperienceStore) trackCooccurrencesLocked(ctx context.Context, records
 	// (SQLite is single-writer anyway) — replaces N goroutines with 1.
 	if len(toSave) > 0 {
 		es.saveWg.Add(1)
-		go func(ctx context.Context, entries []*CooccurrenceEntry) {
+		go func(entries []*CooccurrenceEntry) {
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(os.Stderr, "[experience-record] goroutine panic: %v\n%s", r, debug.Stack())
 				}
 			}()
 			defer es.saveWg.Done()
+			// audit C-HIGH-4: detached context with timeout — prevents silent
+			// data loss when caller's ctx is cancelled (e.g., HTTP timeout).
+			saveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 			for _, entry := range entries {
-				es.backend.SaveCooccurrence(ctx, entry)
+				es.backend.SaveCooccurrence(saveCtx, entry)
 			}
-		}(ctx, toSave)
+		}(toSave)
 	}
 }
 

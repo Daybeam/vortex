@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"os"
 	"testing"
 )
@@ -86,15 +85,13 @@ func TestExperienceStore_CanonicalAntiPatternsSeededAfterLoad(t *testing.T) {
 	}
 
 	expected := map[string]bool{
-		"prec_antipattern_large_file_patch":       true,
+		"prec_antipattern_large_file_patch":    true,
 		"prec_antipattern_assetmanager_threshold": true,
-		"prec_antipattern_mock_interface":         true,
-		"prec_antipattern_static_threshold":       true,
+		"prec_antipattern_mock_interface":      true,
+		"prec_antipattern_static_threshold":    true,
 		"prec_antipattern_role_protected_context": true,
 	}
 	if es.AntiPatternStore.PrecedentCount() < len(expected) {
 		t.Fatalf("expected at least %d canonical precedents, got %d", len(expected), es.AntiPatternStore.PrecedentCount())
 	}
-
-	_ = context.Background()
 }

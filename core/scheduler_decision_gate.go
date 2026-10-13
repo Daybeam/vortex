@@ -103,6 +103,11 @@ func (s *DirectedEngine) addDecision(
 		Options: options,
 		Created: time.Now(),
 	}
+
+	// #15: Audit hash chain — record decision creation (tamper-evident).
+	if s.auditLogger != nil {
+		s.auditLogger.Log("addDecision", graph.TaskID, step.ID, dec.ID, string(dtype), "", options)
+	}
 	// NOTE: The former "Autonomous Decision Router" that auto-routed
 	// generative_uncertainty → refine_and_retry was removed (2026-10-02).
 	// It called SubmitDecision BEFORE the decision was enqueued, so the
@@ -143,6 +148,7 @@ func (s *DirectedEngine) addDecision(
 	s.publishEvent(graph.TaskID, step.ID, EventDecisionRequired, map[string]any{
 		"decision_id": dec.ID,
 		"type":        string(dtype),
+		"options":     options,
 	})
 
 	// E5 fix (2026-10-02): NonInteractive auto-resolution.
@@ -163,7 +169,7 @@ func (s *DirectedEngine) addDecision(
 	// - RiskTierCritical (browser/payment/deploy) → never auto-resolve.
 	// - Non-critical → 30s rate limit per step; if same step had a decision
 	//   within 30s, skip auto-resolution (let maxTurns exhaust naturally).
-	// See docs/STEP_PLAN_MODE_DESIGN.md §13.3.
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.3.
 	if s.registry != nil && s.registry.System.NonInteractive {
 		// #14: Critical tier never auto-resolves — must wait for human.
 		tier, _ := schemas.DetermineRiskTier(step.Task, step.AdditionalMCPs)
@@ -237,6 +243,10 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	choice, ok := defaultNonInteractiveChoice(dtype, options)
 	if !ok {
 		return ""
+	}
+	// #15: Audit hash chain — record auto-resolution (tamper-evident).
+	if s.auditLogger != nil {
+		s.auditLogger.Log("autoResolve", taskID, stepID, decID, string(dtype), choice, options)
 	}
 	return choice
 }
@@ -397,7 +407,7 @@ func (s *DirectedEngine) RequestAutonomousAbort(taskID, stepID string, failureCl
 	// P1-7 (2026-10-10): Path B — before aborting, attempt to re-plan with
 	// the task_planner role. If the planner produces a new plan, the abort
 	// decision includes it as a "replan" option.
-	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
+	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
 	replanResult := s.tryPlannerReplan(taskID, stepID, reason)
 
 	decisionCtx := map[string]any{
@@ -418,7 +428,7 @@ func (s *DirectedEngine) RequestAutonomousAbort(taskID, stepID string, failureCl
 // output (a markdown plan) or empty string if planning fails or is not configured.
 //
 // Path B (Planner Role): uses SearchAllStepSummaries to get full task history.
-// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
+// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
 func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string) string {
 	// Check if task_planner role exists in registry.
 	if s.registry == nil {

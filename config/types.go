@@ -213,6 +213,11 @@ type Skill struct {
 	// Directory content manifest — path list only, no file contents.
 	Manifest *SkillManifest `json:"manifest,omitempty"`
 
+	// StagedAt records when the skill was placed into PendingSkills (staging).
+	// Used by PendingSkillGC to expire un-promoted external skills after TTL.
+	// Zero value means the skill was not staged (native or already promoted).
+	StagedAt time.Time `json:"staged_at,omitempty"`
+
 	Filter filters.ToolFilter `json:"-"`
 }
 
@@ -474,6 +479,8 @@ type RoleGroup struct {
 type SandboxConfig struct {
 	Mode              string   `json:"mode,omitempty"`
 	AllowedWorkspaces []string `json:"allowed_workspaces,omitempty"`
+	DockerImage       string   `json:"docker_image,omitempty"`       // image for docker mode (default: python:3.12-slim)
+	DockerNetwork     string   `json:"docker_network,omitempty"`     // "none" (default) | "host" | custom
 }
 
 // RetentionSettings controls dual-mode (headless vs GUI) storage compaction
@@ -500,6 +507,7 @@ type SystemSettings struct {
 	MaxLogSizeMB              int      `json:"max_log_size_mb"`
 	CookbookSyncIntervalHours int      `json:"cookbook_sync_interval_hours,omitempty"`
 	CookbookCacheEnabled      bool     `json:"cookbook_cache_enabled,omitempty"`
+	SkillSyncIntervalHours    int      `json:"skill_sync_interval_hours,omitempty"` // periodic skill sync interval (default 24h)
 	Bookmarks                 []string `json:"bookmarks,omitempty"`
 	ExternalInterceptors      []string `json:"external_interceptors,omitempty"`
 	SwarmFallbackDelay        int      `json:"swarm_fallback_delay,omitempty"`
@@ -600,7 +608,7 @@ type SystemSettings struct {
 
 	// WarmContextBudgetTokens (ADDED 2026-10-10): token budget for the
 	// Warm layer in PromptAssembler (ActiveContextAssembler). Default 2000.
-	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §5.
+	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §5.
 	WarmContextBudgetTokens int `json:"warm_context_budget_tokens,omitempty"`
 	// WarmContextEmbedEnabled (ADDED 2026-10-10): when true, the Warm layer
 	// uses vector recall via the embedding client from ContextHub. When
@@ -759,7 +767,7 @@ type Config struct {
 	WALCheckpoint string `json:"wal_checkpoint,omitempty"`
 
 	// StepPlan (ADDED 2026-10-10): configures automatic step-plan mode.
-	// See docs/STEP_PLAN_MODE_DESIGN.md §9.
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §9.
 	StepPlan StepPlanConfig `json:"step_plan,omitempty"`
 }
 
@@ -768,7 +776,11 @@ type Config struct {
 // task complexity for steps in the "fuzzy zone" (keyword matching
 // inconclusive). FallbackMode controls behavior when the probe is
 // unavailable: "keyword" (default) or "off".
+// RequireForComplexSteps auto-enables step plan for any step where
+// DetermineComplexity returns true, even if the step didn't set
+// EnableStepPlan explicitly.
 type StepPlanConfig struct {
-	EnableProbe bool   `json:"enable_probe"`
-	FallbackMode string `json:"fallback_mode,omitempty"` // "keyword" (default) | "off"
+	EnableProbe           bool   `json:"enable_probe"`
+	FallbackMode          string `json:"fallback_mode,omitempty"` // "keyword" (default) | "off"
+	RequireForComplexSteps bool  `json:"require_for_complex_steps,omitempty"`
 }

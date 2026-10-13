@@ -533,8 +533,18 @@ func TestDelegationReturn_RedactsUpstreamContext(t *testing.T) {
 		t.Fatal("expected system_prompt in delegation return")
 	}
 
-	if containsSubstring(sysPrompt, "upstream") {
-		t.Log("Note: 'upstream' may appear in prompt template structure; verify no raw upstream data leaks")
+	// audit T-MED-1: Hard assertion — the upstream step's task description ("work")
+	// must NOT appear as raw data in the delegated system prompt. If it does,
+	// delegation mode is leaking upstream task content to the external gateway.
+	if containsSubstring(sysPrompt, "Task: work") || containsSubstring(sysPrompt, "\"task\":\"work\"") {
+		t.Error("DATA LEAK: upstream task content 'work' appears in delegated system_prompt — redaction failed")
+	}
+
+	// Soft check: "upstream" may legitimately appear in prompt template structure
+	// or in the REDACTED marker (e.g. "[REDACTED: upstream results not shared]").
+	// This is a manual verification point, not a hard assertion. (audit T-MED-1)
+	if containsSubstring(sysPrompt, "upstream") && !containsSubstring(sysPrompt, "REDACTED") {
+		t.Logf("WARN: 'upstream' appears in system_prompt without REDACTED marker — manually verify no raw upstream task data leaks")
 	}
 }
 

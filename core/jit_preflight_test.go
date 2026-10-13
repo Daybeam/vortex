@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// jit_preflight_test.go — tests for the preflight gate (architecture §二.2).
+// jit_preflight_test.go — tests for the preflight gate (architecture §2.2).
 // Covers all three gate classes: unknown language, unavailable runtime,
 // safety violations, and the happy path. Pure-Go, no host runtime required.
 

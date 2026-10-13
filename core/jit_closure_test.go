@@ -8,7 +8,7 @@ import (
 	"github.com/daybeam/vortex/config"
 )
 
-// jit_closure_test.go — tests for Task-Local Closure (architecture §二.1).
+// jit_closure_test.go — tests for Task-Local Closure (architecture §2.1).
 // Verifies the snapshot/restore lifecycle: JIT tools are snapshotted at
 // submission time and can be restored after global TTL expiry.
 

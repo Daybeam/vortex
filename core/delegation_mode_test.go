@@ -589,12 +589,10 @@ func TestDelegationMode_CancelTask(t *testing.T) {
 	if graph.Status != schemas.GraphCancelled {
 		t.Errorf("expected graph cancelled, got %v", graph.Status)
 	}
-	// Double-cancel is idempotent in the current implementation: the graph is
-	// already terminal, so the observable contract is that the status remains
-	// GraphCancelled (not that an error is returned).
-	if err := engine.CancelTask(taskID); err != nil {
-		t.Logf("second CancelTask returned error (acceptable): %v", err)
-	}
+	// Double-cancel is idempotent: the graph is already terminal. The observable
+	// contract is that the status remains GraphCancelled (asserted below), NOT
+	// that an error is or isn't returned. (audit T-MED-2: clarified contract)
+	_ = engine.CancelTask(taskID) // error return is not part of the contract
 	engine.Mu.RLock()
 	graph = engine.graphs[taskID]
 	engine.Mu.RUnlock()

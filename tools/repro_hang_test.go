@@ -61,4 +61,9 @@ func TestReproHang(t *testing.T) {
 	if duration > 1*time.Second {
 		t.Errorf("Execution too slow: %v", duration)
 	}
+	// audit T-LOW-2: assert JIT query respects the limit parameter —
+	// previously only logged, making query correctness untested.
+	if len(jitCandidates) > 5 {
+		t.Errorf("JIT query returned more than requested limit: got %d, max 5", len(jitCandidates))
+	}
 }

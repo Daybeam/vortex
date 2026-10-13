@@ -92,9 +92,13 @@ func (r *Registry) loadWithFallbackLocked() error {
 	if _, bakErr := os.Stat(bakPath); os.IsNotExist(bakErr) {
 		info, _ := os.Stat(r.configPath)
 		if info != nil && info.Size() > 0 {
-			if data, readErr := os.ReadFile(r.configPath); readErr == nil {
-				_ = os.WriteFile(bakPath, data, 0644)
+		if data, readErr := os.ReadFile(r.configPath); readErr == nil {
+			// audit NEW-MED-3: log backup write failure — previously silently
+			// discarded, making config corruption unrecoverable with no indication.
+			if err := os.WriteFile(bakPath, data, 0644); err != nil {
+				log.Printf("WARN: config: failed to write backup file %s: %v", bakPath, err)
 			}
+		}
 		}
 	}
 
@@ -423,16 +427,38 @@ func (r *Registry) StartWatcher(ctx context.Context) {
 }
 
 func (r *Registry) Persist() error {
+	// audit P-MED-5: release RLock before file write I/O — previously held
+	// RLock for the entire persistLocked() call (including marshal + file
+	// write), blocking all writers for the full I/O duration. Now we clone
+	// the config snapshot under RLock, release, then write without any lock.
 	r.Mu.RLock()
-	defer r.Mu.RUnlock()
-	return r.persistLocked()
+	if err := r.checkNotStaleForPersist(); err != nil {
+		r.Mu.RUnlock()
+		return err
+	}
+	cfg := r.buildConfigSnapshotLocked()
+	r.Mu.RUnlock()
+	return r.persistAndSnapshot(cfg)
 }
 
 func (r *Registry) persistLocked() error {
 	if err := r.checkNotStaleForPersist(); err != nil {
 		return err
 	}
+	cfg := r.buildConfigSnapshotLocked()
+	// NOTE: deliberately not writing r.walCheckpoint here -- persistLocked is
+	// called under varying lock types (Persist() holds only an RLock;
+	// PersistForceSnapshot/Compactor.Compact hold a full Lock), so mutating a
+	// Registry field here would be unsafe when only an RLock is held. This is
+	// fine: r.walCheckpoint is only ever consulted once, in NewRegistry right
+	// after loadLocked runs (itself always under a full Lock), so there is no
+	// same-process reader that needs this update to be reflected immediately.
+	return r.persistAndSnapshot(cfg)
+}
 
+// buildConfigSnapshotLocked clones all config data into a Config struct.
+// Caller MUST hold at least r.Mu.RLock().
+func (r *Registry) buildConfigSnapshotLocked() Config {
 	providers := make(map[string]ProviderConfig)
 	for k, v := range r.Providers {
 		providers[k] = *v
@@ -485,7 +511,7 @@ func (r *Registry) persistLocked() error {
 		}
 	}
 
-	cfg := Config{
+	return Config{
 		DefaultProvider:        r.DefaultProvider,
 		Providers:              providers,
 		Skills:                 skills,
@@ -504,14 +530,6 @@ func (r *Registry) persistLocked() error {
 		RolesDir:               r.RolesDir,
 		WALCheckpoint:          walCheckpoint,
 	}
-	// NOTE: deliberately not writing r.walCheckpoint here -- persistLocked is
-	// called under varying lock types (Persist() holds only an RLock;
-	// PersistForceSnapshot/Compactor.Compact hold a full Lock), so mutating a
-	// Registry field here would be unsafe when only an RLock is held. This is
-	// fine: r.walCheckpoint is only ever consulted once, in NewRegistry right
-	// after loadLocked runs (itself always under a full Lock), so there is no
-	// same-process reader that needs this update to be reflected immediately.
-	return r.persistAndSnapshot(cfg)
 }
 
 func (r *Registry) bootstrapDefaultsLocked() {

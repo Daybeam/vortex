@@ -63,6 +63,16 @@ var disableThinking = sync.OnceValue(func() bool {
 func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest, onChunk func(string) error) (*ProviderResponse, error) {
 	chatURL := getOpenAIEndpoint(p.cfg.BaseURL, "/v1/chat/completions")
 
+	// v26 probe: request-shape forensics at provider entry
+	if os.Getenv("VORTEX_DEBUG") != "" {
+		_nt := 0
+		for _, s := range req.MCPServers {
+			_nt += len(s.Tools)
+		}
+		log.Printf("[PROBE] StreamComplete model=%q sys=%dB usr=%dB mcpTools=%d constraints=%v forceTool=%v attachments=%d",
+			req.Model, len(req.System), len(req.User), _nt, req.Constraints, req.ForceToolCall, len(req.Attachments))
+	}
+
 	userContent := any(req.User)
 	if len(req.Attachments) > 0 {
 		parts := []map[string]any{
@@ -100,8 +110,8 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 		body["frequency_penalty"] = *req.FrequencyPenalty
 	}
 
-	// ORCH_DISABLE_THINKING=1 → 让思考型模型（Qwen3.5-4B）直接给 content，
-	// 避免解析到空串触发 P1 自旋。默认关闭（qwen3-4b 是非思考模型）。
+	// ORCH_DISABLE_THINKING=1 → makes thinking models (Qwen3.5-4B) give content directly,
+	// avoiding parsing empty string triggering P1 spin. Off by default (qwen3-4b is a non-thinking model).
 	if disableThinking() {
 		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}
@@ -221,12 +231,13 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 			}
 		}
 		// Pipe reasoning_content (chain-of-thought from thinking models like
-		// DeepSeek/Qwen3) to onChunk so the stream chunk detector can catch
-		// repetitive reasoning loops. Not written to fullText — it's not
-		// the actual response content, just internal reasoning.
+		// DeepSeek/Qwen3) to onChunk wrapped in imd/} tags so the ChatHarness
+		// can separate it from content and emit "thinking" events. This enables
+		// Telegram/web clients to display reasoning collapsibly. Not written to
+		// fullText — it's not the actual response content, just internal reasoning.
 		if delta.ReasoningContent != "" {
 			if onChunk != nil {
-				if err := onChunk(delta.ReasoningContent); err != nil {
+				if err := onChunk("imd" + delta.ReasoningContent + "}"); err != nil {
 					return nil, err
 				}
 			}
@@ -325,7 +336,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 		body["frequency_penalty"] = *req.FrequencyPenalty
 	}
 
-	// ORCH_DISABLE_THINKING=1 → 同上，非流式路径也必须带（否则 Q3.5 仍能解析到空串）。
+	// ORCH_DISABLE_THINKING=1 → same as above, non-streaming path must also include it (otherwise Q3.5 can still parse empty string).
 	if disableThinking() {
 		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}

@@ -10,7 +10,7 @@ import (
 // receives debounced batches of AgentEvents. Events are collected within the
 // debounce window or until batchSize is reached, then delivered as a sorted
 // batch (highest priority first). This is the consumer-side Debounce utility
-// for EVENT_DRIVEN_CALLBACK_DESIGN.md §五.
+// for EVENT_DRIVEN_CALLBACK_DESIGN.md §5.
 //
 // Usage (e.g. in swarm provider or chat harness):
 //

@@ -128,7 +128,15 @@ func TestRegisterConfiguredInstances_UnsupportedProviderType_LoggedNotPanicked(t
 // check -- callers should be able to call this unconditionally at startup
 // without worrying about Registry construction order.
 func TestRegisterConfiguredInstances_NilRegistry_NoPanic(t *testing.T) {
+	// audit T-MED-1: explicit recover + assertion — previously assertion-free,
+	// relying solely on implicit test framework panic detection.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("RegisterConfiguredInstances panicked on nil registry: %v", r)
+		}
+	}()
 	RegisterConfiguredInstances(nil, config.ExternalRuntimes{}, nil)
+	t.Log("RegisterConfiguredInstances completed without panic on nil registry")
 }
 
 // TestRegisterConfiguredInstances_DirectAPIKey_DoesNotCollide verifies the

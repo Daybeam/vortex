@@ -271,7 +271,7 @@ func TestChatHarnessWriteToolNotCached(t *testing.T) {
 // Feature: Mid-Stream Chunk Repetition Detection
 // Invariant: Repetitive streaming output triggers steer+retry, not fatal error
 // Scenario: Provider emits 65 identical chunks → detector fires → harness steers → retry succeeds
-// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: 流式输出重复检测与恢复
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: streaming output repetition detection and recovery
 // -----------------------------------------------------------------------------
 
 type repetitiveStreamProvider struct {
@@ -395,5 +395,366 @@ func TestChatHarness_ReadinessGateSoft_ChangesPromptLanguage(t *testing.T) {
 	}
 	if strings.Contains(soft, "NEVER blindly delegate") {
 		t.Error("soft mode should NOT contain 'NEVER blindly delegate'")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Tests for Tiered Auto-Handling of Oversized Chat Inputs
+// See chat_harness.go §"Tiered Auto-Handling for Oversized Inputs"
+// -----------------------------------------------------------------------------
+
+// TestEnforceTokenBudget_TruncatesInsteadOfDropping verifies the fix for the
+// silent-drop bug: when the newest message alone exceeds the token budget,
+// it is truncated with a marker instead of being silently dropped.
+func TestEnforceTokenBudget_TruncatesInsteadOfDropping(t *testing.T) {
+	m := &RollingWindowMemory{WindowSize: 10, MaxTokens: 50} // very small budget
+	// Create a message that alone exceeds 50 tokens (200 chars).
+	bigContent := strings.Repeat("x", 500)
+	history := []ChatMessage{
+		{Role: "system", Content: "Summary"},
+		{Role: "user", Content: bigContent},
+	}
+	result := m.enforceTokenBudget(history)
+	if len(result) == 0 {
+		t.Fatal("expected non-empty result, got empty (message was silently dropped)")
+	}
+	// The last message should be the truncated user message, not dropped.
+	last := result[len(result)-1]
+	if last.Role != "user" {
+		t.Fatalf("expected last message to be user, got %s", last.Role)
+	}
+	if !strings.Contains(last.Content, "truncated") {
+		t.Errorf("expected truncation marker in content, got: %s", last.Content[:min(100, len(last.Content))])
+	}
+	if len(last.Content) >= len(bigContent) {
+		t.Error("expected content to be truncated (shorter than original)")
+	}
+}
+
+// TestReadFile_StartLineEndLine verifies that read_file with start_line/end_line
+// returns only the specified line range.
+func TestReadFile_StartLineEndLine(t *testing.T) {
+	outBase := t.TempDir()
+	taskDir := filepath.Join(outBase, "task1")
+	if err := os.MkdirAll(taskDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a 10-line file.
+	content := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+	if err := os.WriteFile(filepath.Join(taskDir, "test.txt"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read lines 3-5.
+	result, err := HandleCoreTool(context.Background(), "read_file", map[string]any{
+		"path":      "test.txt",
+		"start_line": float64(3),
+		"end_line":   float64(5),
+	}, outBase, "task1")
+	if err != nil {
+		t.Fatalf("read_file failed: %v", err)
+	}
+	if !strings.Contains(result, "Lines 3-5 of 10") {
+		t.Errorf("expected line range header, got: %s", result)
+	}
+	if !strings.Contains(result, "line3") || !strings.Contains(result, "line5") {
+		t.Errorf("expected line3 and line5 in result, got: %s", result)
+	}
+	if strings.Contains(result, "line2") || strings.Contains(result, "line6") {
+		t.Errorf("should not contain line2 or line6, got: %s", result)
+	}
+}
+
+// TestReadFile_StartLineEndLine_BeyondEnd verifies graceful handling when
+// start_line is beyond the file end.
+func TestReadFile_StartLineEndLine_BeyondEnd(t *testing.T) {
+	outBase := t.TempDir()
+	taskDir := filepath.Join(outBase, "task1")
+	if err := os.MkdirAll(taskDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "line1\nline2\nline3"
+	if err := os.WriteFile(filepath.Join(taskDir, "test.txt"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := HandleCoreTool(context.Background(), "read_file", map[string]any{
+		"path":      "test.txt",
+		"start_line": float64(100),
+	}, outBase, "task1")
+	if err != nil {
+		t.Fatalf("read_file failed: %v", err)
+	}
+	if !strings.Contains(result, "beyond file end") {
+		t.Errorf("expected 'beyond file end' message, got: %s", result)
+	}
+}
+
+// tier1Provider is a mock provider that just returns a text response.
+type tier1Provider struct{}
+
+func (m *tier1Provider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+	return m.StreamComplete(ctx, req, func(string) error { return nil })
+}
+
+func (m *tier1Provider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
+	onChunk("Response received.")
+	return &schemas.ProviderResponse{Text: "Response received."}, nil
+}
+
+func (m *tier1Provider) Embed(ctx context.Context, text string) ([]float32, error) { return nil, nil }
+func (m *tier1Provider) CountTokens(ctx context.Context, text string) (int, error)  { return 0, nil }
+func (m *tier1Provider) Name() string                                               { return "tier1mock" }
+
+// TestChatHarness_Tier1_LargeInputMountedAsFile verifies that when the user's
+// input exceeds 50% of MaxContextWindow, it is mounted as a file and the
+// message is replaced with a summary + file reference.
+func TestChatHarness_Tier1_LargeInputMountedAsFile(t *testing.T) {
+	outBase := t.TempDir()
+	h := &ChatHarness{
+		Provider:        &tier1Provider{},
+		Model:           "mock",
+		OutputBase:      outBase,
+		MaxTurns:        2,
+		MaxContextWindow: 2000, // 50% = 1000 tokens = 4000 chars
+	}
+
+	// Create a large user message: 5000 chars → 1250 tokens > 1000 (50% of 2000).
+	// And len > 4000 to satisfy the threshold check.
+	largeContent := strings.Repeat("This is a line of content.\n", 200) // ~5800 chars
+	var events []ChatEvent
+	_, err := h.Run(context.Background(), "task1",
+		[]ChatMessage{{Role: "user", Content: largeContent}},
+		func(ev ChatEvent) error { events = append(events, ev); return nil })
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	// Verify a steer event was emitted indicating the input was mounted.
+	var sawSteer bool
+	for _, ev := range events {
+		if ev.Type == "steer" && strings.Contains(ev.Data, "mounted as file") {
+			sawSteer = true
+		}
+	}
+	if !sawSteer {
+		t.Errorf("expected steer event for file mount, got events: %v", events)
+	}
+
+	// Verify the file was actually written.
+	entries, err := os.ReadDir(filepath.Join(outBase, "task1", "inputs"))
+	if err != nil {
+		t.Fatalf("expected inputs dir, got error: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected at least one mounted file in inputs dir")
+	}
+}
+
+// tier3Provider is a mock provider that should NOT be called (Tier 3 delegates).
+type tier3Provider struct{ called bool }
+
+func (m *tier3Provider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+	return m.StreamComplete(ctx, req, func(string) error { return nil })
+}
+
+func (m *tier3Provider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
+	m.called = true
+	onChunk("Should not reach here.")
+	return &schemas.ProviderResponse{Text: "Should not reach here."}, nil
+}
+
+func (m *tier3Provider) Embed(ctx context.Context, text string) ([]float32, error) { return nil, nil }
+func (m *tier3Provider) CountTokens(ctx context.Context, text string) (int, error)  { return 0, nil }
+func (m *tier3Provider) Name() string                                               { return "tier3mock" }
+
+// TestChatHarness_Tier3_AutoDelegate verifies that when the user's input
+// exceeds 100% of MaxContextWindow, it is auto-delegated to the orchestrator.
+func TestChatHarness_Tier3_AutoDelegate(t *testing.T) {
+	outBase := t.TempDir()
+	provider := &tier3Provider{}
+	delegateCalled := false
+	h := &ChatHarness{
+		Provider:        provider,
+		Model:           "mock",
+		OutputBase:      outBase,
+		MaxTurns:        2,
+		MaxContextWindow: 1000, // 100% = 1000 tokens = 4000 chars
+		Delegate: func(prompt string) (string, error) {
+			delegateCalled = true
+			return "orch_task_456", nil
+		},
+	}
+
+	// Create a very large user message: 5000 chars → 1250 tokens > 1000 (MaxContextWindow).
+	largeContent := strings.Repeat("This is a line of content.\n", 200)
+	var events []ChatEvent
+	_, err := h.Run(context.Background(), "task1",
+		[]ChatMessage{{Role: "user", Content: largeContent}},
+		func(ev ChatEvent) error { events = append(events, ev); return nil })
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	if !delegateCalled {
+		t.Error("expected Delegate to be called for Tier 3 auto-delegation")
+	}
+	if provider.called {
+		t.Error("provider should NOT have been called — input should have been delegated")
+	}
+
+	// Verify auto_delegated_to_orchestrator event was emitted.
+	var sawDelegate bool
+	for _, ev := range events {
+		if ev.Type == "tool_call" && ev.Data == "auto_delegated_to_orchestrator" {
+			sawDelegate = true
+		}
+	}
+	if !sawDelegate {
+		t.Errorf("expected auto_delegated_to_orchestrator event, got: %v", events)
+	}
+}
+
+// overflowProvider returns a context limit error on first call, then normal response.
+type overflowProvider struct {
+	calls int
+}
+
+func (m *overflowProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+	return m.StreamComplete(ctx, req, func(string) error { return nil })
+}
+
+func (m *overflowProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		return nil, fmt.Errorf("context_length_exceeded: maximum context length is 4096 tokens")
+	}
+	onChunk("Recovered after truncation.")
+	return &schemas.ProviderResponse{Text: "Recovered after truncation."}, nil
+}
+
+func (m *overflowProvider) Embed(ctx context.Context, text string) ([]float32, error) { return nil, nil }
+func (m *overflowProvider) CountTokens(ctx context.Context, text string) (int, error)  { return 0, nil }
+func (m *overflowProvider) Name() string                                               { return "overflowmock" }
+
+// TestChatHarness_Tier2_ContextOverflowRecovery verifies that when the provider
+// returns a context_length_exceeded error, the harness truncates the input
+// and retries.
+func TestChatHarness_Tier2_ContextOverflowRecovery(t *testing.T) {
+	h := &ChatHarness{
+		Provider:   &overflowProvider{},
+		Model:      "mock",
+		OutputBase: t.TempDir(),
+		MaxTurns:   3,
+	}
+
+	// Create a large user message that would trigger overflow.
+	largeContent := strings.Repeat("This is a line of content.\n", 200)
+	var events []ChatEvent
+	final, err := h.Run(context.Background(), "task1",
+		[]ChatMessage{{Role: "user", Content: largeContent}},
+		func(ev ChatEvent) error { events = append(events, ev); return nil })
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	// Verify the response is the recovered text, not an error.
+	if !strings.Contains(final, "Recovered") {
+		t.Errorf("expected recovered response, got: %q", final)
+	}
+
+	// Verify steer event for overflow was emitted.
+	var sawOverflowSteer bool
+	for _, ev := range events {
+		if ev.Type == "steer" && strings.Contains(ev.Data, "context overflow") {
+			sawOverflowSteer = true
+		}
+	}
+	if !sawOverflowSteer {
+		t.Errorf("expected steer event for context overflow, got: %v", events)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Tests for thinkingExtractor (imd/} tag separation)
+// -----------------------------------------------------------------------------
+
+// hex escapes for < and > to avoid editor stripping angle brackets.
+const (
+	testOpenTag  = "\x3cthink\x3e"     // imd
+	testCloseTag = "\x3c/think\x3e"    // }
+)
+
+func TestThinkingExtractor_SimpleTags(t *testing.T) {
+	te := &thinkingExtractor{}
+	input := testOpenTag + "reasoning here" + testCloseTag + "actual content"
+	content, thinking := te.Process(input)
+	c2, t2 := te.Flush()
+	content += c2
+	thinking += t2
+	if thinking != "reasoning here" {
+		t.Errorf("expected thinking 'reasoning here', got %q", thinking)
+	}
+	if content != "actual content" {
+		t.Errorf("expected content 'actual content', got %q", content)
+	}
+}
+
+func TestThinkingExtractor_NoTags(t *testing.T) {
+	te := &thinkingExtractor{}
+	content, thinking := te.Process("just regular content")
+	c2, t2 := te.Flush()
+	content += c2
+	thinking += t2
+	if thinking != "" {
+		t.Errorf("expected no thinking, got %q", thinking)
+	}
+	if content != "just regular content" {
+		t.Errorf("expected 'just regular content', got %q", content)
+	}
+}
+
+func TestThinkingExtractor_SplitTags(t *testing.T) {
+	te := &thinkingExtractor{}
+	// Tag split across chunks: open tag in chunk 1, content + close tag in chunk 2
+	content, thinking := te.Process(testOpenTag)
+	if content != "" || thinking != "" {
+		t.Errorf("expected empty results for partial tag, got content=%q thinking=%q", content, thinking)
+	}
+	content, thinking = te.Process("reasoning" + testCloseTag)
+	c2, t2 := te.Flush()
+	content += c2
+	thinking += t2
+	if thinking != "reasoning" {
+		t.Errorf("expected thinking 'reasoning', got %q", thinking)
+	}
+	if content != "" {
+		t.Errorf("expected no content, got %q", content)
+	}
+}
+
+func TestThinkingExtractor_MultipleBlocks(t *testing.T) {
+	te := &thinkingExtractor{}
+	input := testOpenTag + "think1" + testCloseTag + "text1" + testOpenTag + "think2" + testCloseTag + "text2"
+	content, thinking := te.Process(input)
+	c2, t2 := te.Flush()
+	content += c2
+	thinking += t2
+	if thinking != "think1think2" {
+		t.Errorf("expected 'think1think2', got %q", thinking)
+	}
+	if content != "text1text2" {
+		t.Errorf("expected 'text1text2', got %q", content)
+	}
+}
+
+func TestThinkingExtractor_Flush(t *testing.T) {
+	te := &thinkingExtractor{}
+	_, thinking := te.Process(testOpenTag + "partial reasoning")
+	// No closing tag — flush should return remaining as thinking
+	_, t2 := te.Flush()
+	thinking += t2
+	if thinking != "partial reasoning" {
+		t.Errorf("expected 'partial reasoning', got %q", thinking)
 	}
 }

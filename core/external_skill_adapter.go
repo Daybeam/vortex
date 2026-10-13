@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
@@ -26,6 +27,7 @@ type ExternalSkillMeta struct {
 	Description string
 	Body        string
 	Provides    []string
+	Capability  string // explicit frontmatter `capability:` field
 }
 
 // ImportSkillDirectory scans a directory of skills (e.g. mattpocock/skills/skills/)
@@ -59,20 +61,26 @@ func (a *ExternalSkillAdapter) ImportSkillDirectory(rootPath string) (int, error
 			ID:          skillID,
 			Name:        meta.Name,
 			Description: meta.Description,
-			Capability:  "external_discipline",
+			Capability:  deriveCapability(meta),
 			Domain:      "EXTERNAL",
 			TokenEstimate: 500,
 			ExecutionMode: config.ExecutionModeDirectory,
 			SkillDir:      skillDir,
 			Provides:      meta.Provides,
 			Manifest:      scanSkillDir(skillDir),
+			StagedAt:      time.Now(),
 		}
 
 		a.Registry.Mu.Lock()
-		if a.Registry.Skills == nil {
-			a.Registry.Skills = make(map[string]*config.Skill)
+		// TODO-4: External skills go to PendingSkills (staging), not Skills.
+		// This makes them invisible to CapabilityIndex.Rebuild and all retrievers
+		// (which only read Skills), so they are not discoverable or injectable
+		// until explicitly promoted via the promote_skill action.
+		// See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-4.
+		if a.Registry.PendingSkills == nil {
+			a.Registry.PendingSkills = make(map[string]*config.Skill)
 		}
-		a.Registry.Skills[skillID] = skill
+		a.Registry.PendingSkills[skillID] = skill
 
 		// 2. If it's an orchestrator-style multi-step skill, also register as SOP
 		if strings.Contains(meta.Body, "## ") || strings.Contains(meta.Body, "1.") {
@@ -150,6 +158,7 @@ func parseExternalSkillFile(path string) (*ExternalSkillMeta, error) {
 
 	name := filepath.Base(filepath.Dir(path))
 	description := ""
+	capability := ""
 	var provides []string
 
 	for _, fl := range frontmatterLines {
@@ -164,6 +173,8 @@ func parseExternalSkillFile(path string) (*ExternalSkillMeta, error) {
 				description = v
 			} else if k == "provides" {
 				provides = parseProvidesList(v)
+			} else if k == "capability" {
+				capability = v
 			}
 		}
 	}
@@ -173,7 +184,36 @@ func parseExternalSkillFile(path string) (*ExternalSkillMeta, error) {
 		Description: description,
 		Body:        strings.Join(bodyLines, "\n"),
 		Provides:    provides,
+		Capability:  capability,
 	}, nil
+}
+
+// deriveCapability determines the capability tag for an external skill.
+// Priority: explicit frontmatter `capability:` → first meaningful word from
+// description → generic "external" fallback.
+//
+// This replaces the previous hardcoded "external_discipline" which caused all
+// external skills to share a single tag, making SemanticRetriever return every
+// external skill on any query matching "external" or "discipline" (noise,
+// not signal). See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-1.
+func deriveCapability(meta *ExternalSkillMeta) string {
+	// 1. Explicit frontmatter capability
+	if meta.Capability != "" {
+		return strings.ToLower(meta.Capability)
+	}
+
+	// 2. First meaningful word from description (≥3 bytes, lowercased)
+	if meta.Description != "" {
+		for _, w := range strings.Fields(meta.Description) {
+			w = strings.ToLower(strings.Trim(w, ".,;:!?\"'()[]"))
+			if len(w) >= 3 {
+				return w
+			}
+		}
+	}
+
+	// 3. Generic fallback — "external" (not "external_discipline")
+	return "external"
 }
 
 // parseProvidesList parses a YAML-style list value like "[a, b, c]" or "a, b, c".

@@ -12,7 +12,7 @@ import (
 )
 
 // jit_embedded.go — Embedded JIT execution tier.
-// Implements §二.1 (Embedded Tier) of docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md.
+// Implements §2.1 (Embedded Tier) of docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md.
 //
 // Two pure-Go engines are compiled into the binary:
 //   - goja       (dop251/goja):  ECMAScript 5.1. Used for lang="js".

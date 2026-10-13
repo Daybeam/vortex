@@ -106,7 +106,7 @@ func TestMaxWeightForest_AllRedundant(t *testing.T) {
 	seedNodes := []string{"a", "b", "c"}
 	schemaEdges := []WeightedEdge{}
 	semanticEdges := []WeightedEdge{
-		// 全部超过阈值，都是冗余
+		// all exceed threshold, all redundant
 		{From: "a", To: "b", Weight: 0.99, EdgeType: "semantic"},
 		{From: "b", To: "c", Weight: 0.98, EdgeType: "semantic"},
 	}
@@ -115,7 +115,7 @@ func TestMaxWeightForest_AllRedundant(t *testing.T) {
 	if len(forest) != 0 {
 		t.Errorf("expected 0 forest edges when all redundant, got %d", len(forest))
 	}
-	// 退化为按种子顺序取
+	// degrades to seed-order selection
 	if len(nodes) != 3 {
 		t.Errorf("expected 3 nodes in fallback mode, got %d", len(nodes))
 	}

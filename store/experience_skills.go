@@ -229,8 +229,11 @@ func (es *ExperienceStore) QueryDecisionAdvice(ctx context.Context, decisionType
 // task — but as of 2026-09-06 it has zero call sites in core/ or tools/.
 // It remains in the interface contract for future wiring.
 func (es *ExperienceStore) QuerySimilarPatterns(ctx context.Context, capabilities []string, limit int) []TaskPattern {
-	es.Mu.RLock()
-	defer es.Mu.RUnlock()
+	// audit C-HIGH-1: was RLock but writes patternTokensCache → concurrent
+	// map write panic. Upgraded to Lock. This function has zero call sites
+	// (see comment above), so performance impact is nil.
+	es.Mu.Lock()
+	defer es.Mu.Unlock()
 
 	taskType := strings.Join(capabilities, "+")
 	queryTokens := tokenize(taskType)

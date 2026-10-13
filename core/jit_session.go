@@ -57,7 +57,7 @@ type EvalResult struct {
 // JITSession wraps one long-lived, sandboxed REPL subprocess.
 type JITSession struct {
 	ID        string
-	Lang      string // only "python" implemented in this POC
+	Lang      string // "python" or "node"
 	CreatedAt time.Time
 	ExpiresAt time.Time
 
@@ -112,6 +112,7 @@ func (s *JITSession) Close() {
 type JITSessionManager struct {
 	registry   *config.Registry
 	scriptPath string // absolute path to scripts/jit/repl_server.py
+	nodeScript string // absolute path to scripts/jit/repl_server.js
 
 	mu       sync.RWMutex
 	sessions map[string]*JITSession
@@ -121,22 +122,22 @@ type JITSessionManager struct {
 
 // NewJITSessionManager constructs a manager. scriptsDir is the project's
 // own scripts/ directory (same convention as JITManager's workDir param);
-// the manager resolves scriptsDir/jit/repl_server.py from it.
+// the manager resolves scriptsDir/jit/repl_server.py and repl_server.js from it.
 func NewJITSessionManager(reg *config.Registry, scriptsDir string) *JITSessionManager {
 	return &JITSessionManager{
 		registry:   reg,
 		scriptPath: filepath.Join(scriptsDir, "jit", "repl_server.py"),
+		nodeScript: filepath.Join(scriptsDir, "jit", "repl_server.js"),
 		sessions:   make(map[string]*JITSession),
 		stopCh:     make(chan struct{}), // audit R-3
 	}
 }
 
 // GetOrCreateSession returns the existing session for sessionID if it's
-// still alive, or spawns a new one. lang is validated but only "python" is
-// implemented in this POC (design doc §3.3's Lua limitation).
+// still alive, or spawns a new one. Supports "python" and "node" languages.
 func (m *JITSessionManager) GetOrCreateSession(sessionID, lang string, ttl time.Duration) (*JITSession, error) {
-	if lang != "python" {
-		return nil, fmt.Errorf("jit_session: lang %q not implemented in this POC (only \"python\")", lang)
+	if lang != "python" && lang != "node" {
+		return nil, fmt.Errorf("jit_session: lang %q not supported (only \"python\" and \"node\")", lang)
 	}
 
 	m.mu.Lock()
@@ -169,7 +170,16 @@ func (m *JITSessionManager) GetOrCreateSession(sessionID, lang string, ttl time.
 	}
 
 	pythonCmd := env.GetPythonCmd()
-	cli, err := client.NewMCPClient(pythonCmd, []string{m.scriptPath}, "", nil, constraints)
+	var cmdName string
+	var cmdArgs []string
+	if lang == "node" {
+		cmdName = "node"
+		cmdArgs = []string{m.nodeScript}
+	} else {
+		cmdName = pythonCmd
+		cmdArgs = []string{m.scriptPath}
+	}
+	cli, err := client.NewMCPClient(cmdName, cmdArgs, "", nil, constraints)
 	if err != nil {
 		return nil, fmt.Errorf("jit_session: spawn repl_server.py: %w", err)
 	}

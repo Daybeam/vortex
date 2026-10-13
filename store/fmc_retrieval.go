@@ -157,6 +157,10 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 		contextBonusDur = time.Since(bonusStart)
 	}
 
+	// audit C-HIGH-2: snapshot rerankerClient while still holding RLock to
+	// avoid data race with SetRerankerClient after RUnlock below.
+	reranker := es.rerankerClient
+
 	// audit P-2.3: release RLock before reranker HTTP call. The reranker
 	// operates on the local results slice only (no es.Nodes access), so
 	// holding the store lock during the network call blocked ALL experience
@@ -168,9 +172,9 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 	// Fine ranking = reranker scores → converted to ranks → RRF fused.
 	reranked := false
 	rerankDur := time.Duration(0)
-	if es.rerankerClient != nil && len(results) > 1 {
+	if reranker != nil && len(results) > 1 {
 		rerankStart := time.Now()
-		results, reranked = es.rerankWithRRF(ctx, log, results, errorSignal, capability)
+		results, reranked = es.rerankWithRRF(ctx, log, results, errorSignal, capability, reranker)
 		rerankDur = time.Since(rerankStart)
 	}
 
@@ -418,13 +422,14 @@ const rrfK = 60
 // retrieval results. Returns the reordered slice and true on success.
 // On reranker error, returns the original order and false (graceful degradation).
 // audit P-2.3: caller must NOT hold es.Mu — this function makes an HTTP call
-// and only operates on the local results slice + es.rerankerClient (init-time).
+// and only operates on the local results slice + reranker (snapshot from RLock).
 func (es *ExperienceStore) rerankWithRRF(
 	ctx context.Context,
 	log *slog.Logger,
 	results []*ExperienceNode,
 	errorSignal string,
 	capability string,
+	reranker IRerankerClient,
 ) ([]*ExperienceNode, bool) {
 	// Build query text for the reranker.
 	queryText := errorSignal
@@ -449,7 +454,7 @@ func (es *ExperienceStore) rerankWithRRF(
 	}
 
 	// Call reranker. Scores are runtime-only — never persisted (whitepaper §1.3).
-	scores, err := es.rerankerClient.Rerank(ctx, queryText, docs)
+	scores, err := reranker.Rerank(ctx, queryText, docs)
 	if err != nil {
 		log.Warn("reranker_failed_using_coarse_order", "error", err)
 		return results, false

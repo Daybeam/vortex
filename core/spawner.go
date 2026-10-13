@@ -116,8 +116,13 @@ type Spawner struct {
 
 	// archive (ADDED 2026-10-10): ContextArchive for step summary queries.
 	// Nil-safe: set via SetArchive from DirectedEngine.
-	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §4.
+	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §4.
 	archive *ContextArchive
+
+	// foldEngine (ADDED 2026-10-13): Segment-Based Incremental Fold engine.
+	// Nil-safe: set via SetFoldEngine from DirectedEngine.
+	// See docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
+	foldEngine *FoldEngine
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
@@ -251,11 +256,22 @@ func (s *Spawner) SetRefBasedHandoffThreshold(bytes int) {
 // SetArchive injects the ContextArchive for Path D (Regular Step Warm layer).
 // Nil-safe: when nil, Archive queries are skipped (zero behavior change).
 // Also propagates to the PromptAssembler if it has been initialized.
-// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
+// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
 func (s *Spawner) SetArchive(a *ContextArchive) {
 	s.archive = a
 	if s.pa != nil {
 		s.pa.SetArchive(a)
+	}
+}
+
+// SetFoldEngine injects the FoldEngine for segment-based incremental fold.
+// Nil-safe: when nil, fold is skipped (zero behavior change).
+// Also propagates to the PromptAssembler if it has been initialized.
+// See docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
+func (s *Spawner) SetFoldEngine(fe *FoldEngine) {
+	s.foldEngine = fe
+	if s.pa != nil {
+		s.pa.SetFoldEngine(fe)
 	}
 }
 
@@ -279,8 +295,8 @@ func (s *Spawner) CloseMCPConnections() {
 // SpawnResult is the outcome of one subagent call.
 type SpawnResult struct {
 	Output        schemas.SubagentOutput
-	ProviderID    string   // 实际使用的 Provider ID
-	ModelID       string   // 实际使用的模型 ID
+	ProviderID    string   // actual Provider ID used
+	ModelID       string   // actual Model ID used
 	Ref           string   // "task_id:step_id"
 	StatesVisited []string // PGPO: Visited environment states (ADDED 2026-09-08)
 	TurnsUsed     int      // Actual tool-call turns consumed (ADDED 2026-09-13 IRT)
@@ -306,21 +322,32 @@ func (s *Spawner) Spawn(ctx context.Context, req *SpawnRequest) (*SpawnResult, e
 	// Step Plan Mode (ADDED 2026-10-10): if enabled, run a Planner Phase
 	// before the interceptor chain. The plan is injected into
 	// AdditionalPromptContext so the executor sees it.
-	// See docs/STEP_PLAN_MODE_DESIGN.md §2.2.
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §2.2.
 	//
 	// Auto-detection (§9): if EnableStepPlan is not explicitly set, check
 	// StepPlanConfig.EnableProbe and run shouldEnableStepPlan (keyword +
 	// optional System One probe) to decide automatically.
-	if !req.EnableStepPlan && s.registry != nil && s.registry.StepPlan.EnableProbe {
-		var probe providers.Provider
-		if s.systemOneProvider != nil {
-			probe = s.systemOneProvider
-		}
-		if s.shouldEnableStepPlan(req, probe) {
+	//
+	// RequireForComplexSteps (item #11): auto-enable for complex steps even
+	// without EnableProbe — uses keyword heuristic only (zero cost).
+	if !req.EnableStepPlan && s.registry != nil {
+		sp := s.registry.StepPlan
+		if sp.RequireForComplexSteps && schemas.DetermineComplexity(req.Task, 0) {
 			req.EnableStepPlan = true
+		} else if sp.EnableProbe {
+			var probe providers.Provider
+			if s.systemOneProvider != nil {
+				probe = s.systemOneProvider
+			}
+			if s.shouldEnableStepPlan(req, probe) {
+				req.EnableStepPlan = true
+			}
 		}
 	}
-	if req.EnableStepPlan {
+	// eval E19 fix (2026-10-12): decider steps carry no Hub in their
+	// SpawnRequest — planner would fail with "planner phase: Hub is nil".
+	// Deciders decide skip/retry/abort; they never need an execution plan.
+	if req.EnableStepPlan && req.Hub != nil {
 		plan, planErr := s.runPlannerPhase(ctx, req)
 		if planErr != nil {
 			s.logger.Log("step_plan_failed", req.TaskID, req.StepID, map[string]any{"error": planErr.Error()})
@@ -731,6 +758,17 @@ turnLoop:
 
 			if orchestratorDebug() {
 				fmt.Fprintf(os.Stderr, "[DEBUG] Calling Provider %s for Task %s Turn %d (candidate %d)\n", pCfg.Model, req.TaskID, turn, candIdx)
+				// v26 probe: prompt emptiness forensics
+				_sysLen, _usrLen := 0, 0
+				for _, b := range systemBlocks {
+					_sysLen += len(b.Text)
+				}
+				for _, b := range userBlocks {
+					_usrLen += len(b.Text)
+				}
+				fmt.Fprintf(os.Stderr, "[DEBUG][PROBE] task=%s turn=%d systemBlocks=%d(%dB) userBlocks=%d(%dB) sysFlat=%dB usrFlat=%dB tools=%d\n",
+					req.TaskID, turn, len(systemBlocks), _sysLen, len(userBlocks), _usrLen,
+					len(flattenContentBlocks(systemBlocks)), len(flattenContentBlocks(userBlocks)), len(mcpServers))
 			}
 
 			// --- Sieve Context Management (SOP 3.0) ---
@@ -743,10 +781,28 @@ turnLoop:
 			auditRes, err := s.contextManager.Audit(ctxWithTimeout, provider, reqSieve)
 			if err == nil && auditRes.Decision != LevelNone {
 				squeezed, squeezeRes, sErr := s.contextManager.Squeeze(ctxWithTimeout, provider, reqSieve, auditRes.Decision)
-				if sErr == nil {
+			if sErr == nil {
+				// FIX (2026-10-12, Kaggle B-arm empty-prompt root cause):
+				// Squeeze's returned CompleteRequest only populates the flat
+				// System/User strings; SystemBlocks/UserBlocks are left nil.
+				// Assigning them back unconditionally wiped the ENTIRE prompt
+				// whenever Audit decided any non-None level (mock/llama.cpp
+				// CountTokens returns garbage) — the model then received an
+				// empty system+user and could only greet/clarify with zero
+				// tool calls. Preserve content: prefer blocks, else rebuild
+				// blocks from the compressed flat strings.
+				if len(squeezed.SystemBlocks) > 0 || len(squeezed.UserBlocks) > 0 {
 					systemBlocks = squeezed.SystemBlocks
 					userBlocks = squeezed.UserBlocks
-					if squeezeRes.Decision == LevelCritical {
+				} else if squeezed.System != "" || squeezed.User != "" {
+					if squeezed.System != "" {
+						systemBlocks = []schemas.ContentBlock{{Type: "text", Text: squeezed.System}}
+					}
+					if squeezed.User != "" {
+						userBlocks = []schemas.ContentBlock{{Type: "text", Text: squeezed.User}}
+					}
+				}
+				if squeezeRes.Decision == LevelCritical {
 						cancel()
 						return nil, fmt.Errorf("DYNAMIC_ESCALATION_REQUIRED: %s", squeezeRes.ActionTaken)
 					}
@@ -953,7 +1009,7 @@ turnLoop:
 		GetGlobalStats().RecordUsage(currentPCfg.Provider, currentPCfg.Model, resp.PromptTokens, resp.CompletionTokens, len(resp.ToolCalls), resp.CacheWriteTokens, resp.CacheReadTokens)
 
 		// ── Cost Governance: Cache efficiency sentinel (P0) ───────────────
-		// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 告警器1.
+		// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 1.
 		// Pure observer: never mutates execution flow. Alerting ≠ blocking.
 		if alert, n := s.cacheSentinel.Observe(req.TaskID, req.StepID, resp.PromptTokens, resp.CacheReadTokens); alert {
 			s.logger.Log(EventCacheInefficiency, req.TaskID, req.StepID, map[string]any{
@@ -1049,8 +1105,8 @@ turnLoop:
 				consecutiveParseFailures = 0
 			}
 
-			// [EVAL-OBS] 2026-10-07 观测打印：定位「一个 τ² turn 内引擎到底跑了几轮、
-			// 每轮调了什么、为什么没退出」。由 ORCH_EVAL_OBS 环境变量开启，默认关闭。
+			// [EVAL-OBS] 2026-10-07 observation print: diagnose 'how many rounds the engine ran
+			// within a single τ² turn, what each round called, and why it didn't exit'. Enabled by ORCH_EVAL_OBS env var, off by default.
 			if evalObsEnabled() {
 				fmt.Fprintf(os.Stderr, "[EVAL-OBS] task=%s step=%s turn=%d/%d calls=%d trace=%d status=%s conf=%.2f parse=%v(consec=%d) noTool=%v lowConf=%v\n",
 					req.TaskID, req.StepID, turn+1, maxTurns, len(resp.ToolCalls), len(trace),
@@ -1521,12 +1577,13 @@ turnLoop:
 					if len(md) > 2000 {
 						md = s.sieve.PruneOutput(md, req.Task)
 					}
-					toolResults = append(toolResults, md)
 					// #2-universal (eval §23): cache the successful read result
 					// for replay on identical future calls within this server.
+					// Cache the clean md before any repetition warning is prepended.
 					if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
 						s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
 					}
+					toolResults = append(toolResults, md)
 				}
 				}
 			} else if mcpDef.URL != "" {
@@ -1568,11 +1625,12 @@ turnLoop:
 						if len(md) > 2000 {
 							md = s.sieve.PruneOutput(md, req.Task)
 						}
-						toolResults = append(toolResults, md)
 						// #2-universal (eval §23): cache the successful read result.
+						// Cache the clean md before any repetition warning is prepended.
 						if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
 							s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
 						}
+						toolResults = append(toolResults, md)
 					}
 				}
 			} else {

@@ -35,14 +35,20 @@ type PromptAssembler struct {
 	// archive (ADDED 2026-10-10): ContextArchive for Path D — querying
 	// current-task step summaries to inject into the Warm layer.
 	// Nil-safe: set via SetArchive from Spawner.
-	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
+	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
 	archive *ContextArchive
+
+	// foldEngine (ADDED 2026-10-13): Segment-Based Incremental Fold engine.
+	// Performs reversible compression of sealed segments before budget enforcement.
+	// Nil-safe: when nil, fold is skipped (zero behavior change).
+	// See docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
+	foldEngine *FoldEngine
 
 	// P2-11: Dynamic warm context budget feedback loop.
 	// When subagent duration exceeds the baseline, the budget is tightened
 	// (reduced) to speed up execution. When duration is below baseline,
 	// the budget is gradually restored.
-	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §P2.
+	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §P2.
 	dynamicWarmMu      sync.Mutex
 	dynamicWarmBudget  int // 0 = use config value; >0 = override
 	lastSubagentDur    time.Duration
@@ -53,6 +59,12 @@ type PromptAssembler struct {
 // Nil-safe: when nil, the Archive query is skipped (zero behavior change).
 func (s *PromptAssembler) SetArchive(a *ContextArchive) {
 	s.archive = a
+}
+
+// SetFoldEngine injects the FoldEngine for segment-based incremental fold.
+// Nil-safe: when nil, fold is skipped (zero behavior change).
+func (s *PromptAssembler) SetFoldEngine(fe *FoldEngine) {
+	s.foldEngine = fe
 }
 
 // RecordSubagentDuration records the last subagent execution duration and
@@ -238,7 +250,7 @@ func (s *PromptAssembler) Build(
 	}
 	if s.expStore != nil {
 		// P0-1 fix (2026-10-10): get embedClient from hub instead of nil.
-		// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §1.3 + §5.
+		// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §1.3 + §5.
 		var embedClient store.IEmbeddingClient
 		warmBudget := s.getEffectiveWarmBudget() // P2-11: dynamic budget
 		warmEmbedEnabled := true
@@ -268,7 +280,7 @@ func (s *PromptAssembler) Build(
 	// and injects them as a Warm-layer block. This gives the executing step
 	// visibility into what previous steps in the same task produced, without
 	// requiring full step output.
-	// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
+	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
 	if s.archive != nil && taskID != "" {
 		stepSummaries := s.archive.SearchRecentStepSummaries(taskID, 3)
 		if len(stepSummaries) > 0 {
@@ -446,8 +458,19 @@ func (s *PromptAssembler) Build(
 	// budget. If the total estimated tokens exceed the budget, the tiered
 	// trimming pipeline drops Tier 3 → Tier 2 → compresses Tier 1, never
 	// touching Protected blocks.
+	//
+	// Fold engine runs FIRST: it folds sealed segments into summaries
+	// (reversible, incremental, semantic boundaries). Then the enforcer
+	// handles any remaining overflow via tier drops + hard truncate.
 	if providerCfg != nil {
 		budgetTokens := providerCfg.GetMaxSystemPromptTokens()
+
+		// Phase 0: Segment-based incremental fold (before budget enforcement).
+		if s.foldEngine != nil {
+			blocks = s.foldEngine.FoldSealedSegments(blocks, taskID, budgetTokens)
+		}
+
+		// Phase 1-4: Tiered budget enforcement (existing, unchanged).
 		blocks = s.budgetEnforcer.EnforceBudget(blocks, budgetTokens)
 	}
 

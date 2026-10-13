@@ -113,9 +113,9 @@ func DetermineRiskTier(task string, mcpList []string) (RiskTier, float64) {
 	return RiskTierLight, 0.1
 }
 
-// DetermineComplexity (ADDED 2026-10-10): heuristic判断 a step task is complex
+// DetermineComplexity (ADDED 2026-10-10): heuristic to determine a step task is complex
 // enough to warrant an explicit planning phase. Zero-cost keyword matching.
-// See docs/STEP_PLAN_MODE_DESIGN.md §9.2 (方案 A).
+// See docs/plan/STEP_PLAN_MODE_DESIGN.md §9.2 (Option A).
 func DetermineComplexity(task string, stepCount int) bool {
 	lower := strings.ToLower(task)
 	// Multi-file operations → need a plan
@@ -316,7 +316,7 @@ type Step struct {
 	// EnableStepPlan (ADDED 2026-10-10): forces this Step through a Planner
 	// Phase before execution. The Planner generates a markdown plan using
 	// read-only tools; the Executor then receives the plan as context.
-	// See docs/STEP_PLAN_MODE_DESIGN.md.
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md.
 	EnableStepPlan bool `json:"enable_step_plan,omitempty"`
 
 	// OutputContract mirrors StepInput.OutputContract — the deterministic schema
@@ -598,7 +598,7 @@ type TaskGraph struct {
 	// referenced by this task's steps at submission time. If a JIT tool's
 	// global TTL expires mid-task, executeStep restores it from this snapshot
 	// so the task never hits "tool not found". See
-	// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §二.1.
+	// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
 	// Stored as map[string]any (JSON-serialized *config.MCPDef) to avoid a
 	// circular dependency with the config package — same pattern as
 	// SessionRoles/SessionSkills above.

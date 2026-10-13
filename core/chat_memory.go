@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -93,19 +94,83 @@ func (m *RollingWindowMemory) summarize(ctx context.Context, older []ChatMessage
 		User:   text,
 	})
 	if err != nil || resp == nil || resp.Text == "" {
+		// audit L-MED-1: log fallback for observability — previously silently
+		// swallowed, making summary model failures invisible.
+		if err != nil {
+			log.Printf("WARN: chat_memory: summary model failed, using semantic pruning: %v", err)
+		} else if resp == nil || resp.Text == "" {
+			log.Printf("WARN: chat_memory: summary model returned empty response, using semantic pruning")
+		}
 		return applySemanticPruning(text)
 	}
 	return resp.Text
 }
 
 func (m *RollingWindowMemory) enforceTokenBudget(msgs []ChatMessage) []ChatMessage {
-	if m.MaxTokens <= 0 || m.estimateTokens(msgs) <= m.MaxTokens {
+	if m.MaxTokens <= 0 || len(msgs) <= 1 {
 		return msgs
 	}
-	for len(msgs) > 1 && m.estimateTokens(msgs) > m.MaxTokens {
-		msgs = append(msgs[:1], msgs[2:]...)
+	total := m.estimateTokens(msgs)
+	if total <= m.MaxTokens {
+		return msgs
 	}
-	return msgs
+	// Layout: [summary, facts?, conversation...]
+	// Preserve summary (idx 0) and facts (idx 1) as long as possible.
+	// Drop oldest conversation messages first, then facts, then summary.
+	// O(n): single pass from newest to oldest to find what fits.
+	// (audit P-CRIT-1: was O(n²) + dropped facts before conversation msgs)
+	summaryTokens := len(msgs[0].Content) / 4
+	convStart := 1 // first conversation message index (after summary)
+	fixedTokens := summaryTokens
+	if len(msgs) > 1 {
+		fixedTokens += len(msgs[1].Content) / 4 // include facts
+		convStart = 2
+	}
+	// Try keeping summary + facts + newest conversation messages.
+	budget := m.MaxTokens - fixedTokens
+	if budget < 0 && len(msgs) > 1 {
+		// Drop facts — try summary + newest conversation only.
+		fixedTokens = summaryTokens
+		convStart = 1
+		budget = m.MaxTokens - fixedTokens
+	}
+	if budget < 0 {
+		return msgs[:1] // only summary fits
+	}
+	// Keep newest conversation messages that fit.
+	keep := 0
+	for i := len(msgs) - 1; i >= convStart; i-- {
+		t := len(msgs[i].Content) / 4
+		if t > budget {
+			break
+		}
+		budget -= t
+		keep++
+	}
+	// Fix: If the newest message alone exceeds budget, don't silently drop it.
+	// Truncate with a marker instead so the model sees something useful.
+	if keep == 0 && len(msgs) > convStart {
+		newest := msgs[len(msgs)-1]
+		maxChars := budget * 4 // rough token→char conversion
+		if maxChars < 200 {
+			maxChars = 200 // minimum to be useful
+		}
+		if len(newest.Content) > maxChars {
+			half := maxChars / 2
+			omitted := len(newest.Content) - maxChars
+			newest.Content = newest.Content[:half] +
+				fmt.Sprintf("\n[... message truncated: %d chars omitted to fit token budget ...]\n", omitted) +
+				newest.Content[len(newest.Content)-half:]
+		}
+		result := make([]ChatMessage, 0, convStart+1)
+		result = append(result, msgs[:convStart]...)
+		result = append(result, newest)
+		return result
+	}
+	result := make([]ChatMessage, 0, convStart+keep)
+	result = append(result, msgs[:convStart]...)
+	result = append(result, msgs[len(msgs)-keep:]...)
+	return result
 }
 
 func (m *RollingWindowMemory) estimateTokens(msgs []ChatMessage) int {
@@ -121,6 +186,9 @@ func (m *RollingWindowMemory) estimateTokens(msgs []ChatMessage) int {
 // MemoryBankStore.UserProfile.Preferences.
 type FactCache struct {
 	Store *store.MemoryBankStore
+	// audit C-HIGH-5: serializes Load+merge+Save to prevent lost updates
+	// when multiple goroutines extract facts concurrently.
+	mu sync.Mutex
 }
 
 var (
@@ -156,6 +224,8 @@ func (fc *FactCache) ExtractAndInject(history []ChatMessage) string {
 	}
 
 	if fc.Store != nil {
+		fc.mu.Lock()
+		defer fc.mu.Unlock()
 		if mb, err := fc.Store.Load(); err == nil {
 			merged := mergeUnique(mb.UserProfile.Preferences, facts)
 			up := mb.UserProfile
@@ -163,6 +233,10 @@ func (fc *FactCache) ExtractAndInject(history []ChatMessage) string {
 			if err := fc.Store.SaveUserProfile(up); err != nil {
 				log.Printf("WARN: chat_memory: failed to save user profile: %v", err)
 			}
+		} else {
+			// audit L-LOW-1: log Load failure — previously silently ignored,
+			// making fact persistence failures invisible.
+			log.Printf("WARN: chat_memory: failed to load memory bank for fact injection: %v", err)
 		}
 	}
 

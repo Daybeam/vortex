@@ -71,6 +71,7 @@ func (c *StorageCompactor) RunCompaction(ctx context.Context) error {
 			log.Printf("[Compactor] WARN: failed to prune old tasks: %v", err)
 		}
 		_, _ = c.db.ExecContext(ctx, `DELETE FROM task_steps WHERE task_id NOT IN (SELECT task_id FROM tasks)`)
+		// audit L-LOW-2: best-effort cleanup — orphaned rows remain on failure, system continues.
 	}
 
 	if c.config.MaxCompletedTasks > 0 {
@@ -88,6 +89,7 @@ func (c *StorageCompactor) RunCompaction(ctx context.Context) error {
 			log.Printf("[Compactor] WARN: failed to prune excess tasks (FIFO): %v", err)
 		}
 		_, _ = c.db.ExecContext(ctx, `DELETE FROM task_steps WHERE task_id NOT IN (SELECT task_id FROM tasks)`)
+		// audit L-LOW-2: best-effort cleanup — orphaned rows remain on failure, system continues.
 	}
 
 	if _, err := c.db.ExecContext(ctx, `PRAGMA incremental_vacuum;`); err != nil {

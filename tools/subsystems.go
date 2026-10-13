@@ -1192,6 +1192,126 @@ func registerAdminSubsystem(app *App) {
 		},
 	}
 
+	s.Actions["sync_skills"] = Action{
+		Name:        "sync_skills",
+		Description: "Sync SKILL.md files from a GitHub repository. Downloads to a temp directory and imports using the same parser as import_skills (proper frontmatter + capability derivation).",
+		Parameters: map[string]any{
+			"owner": "string (required) - GitHub repo owner (e.g. mattpocock)",
+			"repo":  "string (required) - GitHub repo name (e.g. skills)",
+			"path":  "string (optional) - Path within repo to sync from (default: root)",
+		},
+		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			owner := strArg(args, "owner")
+			repo := strArg(args, "repo")
+			repoPath := strArg(args, "path")
+			if owner == "" || repo == "" {
+				return nil, fmt.Errorf("owner and repo are required")
+			}
+
+			ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+
+			tempDir, err := os.MkdirTemp("", "sync_skills_*")
+			if err != nil {
+				return nil, fmt.Errorf("failed to create temp dir: %w", err)
+			}
+			defer os.RemoveAll(tempDir)
+
+			// Recursively download .md files, preserving directory structure
+			// so ImportSkillDirectory's filepath.Walk can find SKILL.md files.
+			var download func(repoPath, localDir string, depth int) (int, error)
+			download = func(rp, ld string, depth int) (int, error) {
+				if depth > 5 {
+					return 0, nil
+				}
+				files, err := app.ResourceLoader.FetchRepoContents(ctx, owner, repo, rp)
+				if err != nil {
+					return 0, err
+				}
+				count := 0
+				for _, f := range files {
+					if f.Type == "dir" {
+						subDir := filepath.Join(ld, f.Name)
+						if err := os.MkdirAll(subDir, 0755); err != nil {
+							continue
+						}
+						n, _ := download(f.Path, subDir, depth+1)
+						count += n
+					} else if f.Type == "file" && strings.HasSuffix(f.Name, ".md") {
+						content, err := app.ResourceLoader.Fetch(ctx, f.DownloadURL)
+						if err != nil {
+							continue
+						}
+						if err := os.WriteFile(filepath.Join(ld, f.Name), []byte(content), 0644); err != nil {
+							continue
+						}
+						count++
+					}
+				}
+				return count, nil
+			}
+
+			downloaded, err := download(repoPath, tempDir, 0)
+			if err != nil {
+				return nil, fmt.Errorf("failed to download from %s/%s: %w", owner, repo, err)
+			}
+			if downloaded == 0 {
+				return map[string]any{"imported_count": 0, "message": "no .md files found"}, nil
+			}
+
+			adapter := core.NewExternalSkillAdapter(app.Registry)
+			imported, err := adapter.ImportSkillDirectory(tempDir)
+			if err != nil {
+				return nil, fmt.Errorf("import failed: %w", err)
+			}
+
+			return map[string]any{
+				"imported_count":  imported,
+				"downloaded_files": downloaded,
+				"source":          fmt.Sprintf("%s/%s/%s", owner, repo, repoPath),
+			}, nil
+		},
+	}
+
+	s.Actions["promote_skill"] = Action{
+		Name:        "promote_skill",
+		Description: "Promote a pending external skill to the active registry, making it discoverable and injectable. Use after testing an imported skill to confirm it is trustworthy.",
+		Parameters: map[string]any{
+			"skill_id": "string (required) - ID of the pending skill to promote",
+		},
+		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			skillID := strArg(args, "skill_id")
+			if skillID == "" {
+				return nil, fmt.Errorf("skill_id is required")
+			}
+
+			app.Registry.Mu.Lock()
+			skill, ok := app.Registry.PendingSkills[skillID]
+			if !ok {
+				app.Registry.Mu.Unlock()
+				return nil, fmt.Errorf("pending skill %q not found", skillID)
+			}
+			if app.Registry.Skills == nil {
+				app.Registry.Skills = make(map[string]*config.Skill)
+			}
+			app.Registry.Skills[skillID] = skill
+			delete(app.Registry.PendingSkills, skillID)
+			app.Registry.Mu.Unlock()
+
+			// Rebuild capability index so the promoted skill becomes discoverable
+			if app.Navigator != nil {
+				app.Navigator.Refresh()
+			}
+
+			return map[string]any{
+				"promoted_skill": skillID,
+				"name":           skill.Name,
+				"capability":     skill.Capability,
+				"message":        "skill is now discoverable and injectable",
+			}, nil
+		},
+	}
+
 	s.Actions["debug_dump"] = Action{
 		Name:        "debug_dump",
 		Description: "Get a goroutine stack dump for debugging hangs.",
@@ -1233,7 +1353,7 @@ func registerJitSubsystem(app *App) {
 				sandboxed = val
 			}
 
-			// Preflight gate (architecture §二.2): reject bad code before any
+			// Preflight gate (architecture §2.2): reject bad code before any
 			// file I/O or process spawn. RegisterTool re-runs this, but doing
 			// it here too gives the action layer a chance to surface the
 			// structured PreflightResult to the caller (e.g. which backend
@@ -1354,7 +1474,7 @@ func registerJitSubsystem(app *App) {
 			}
 			ttl := intArg(args, "ttl_seconds", 300)
 
-			// Preflight gate (architecture §二.2): runs before any session
+			// Preflight gate (architecture §2.2): runs before any session
 			// spawn or embedded VM construction. Returns a structured result
 			// so the caller can see which backend was chosen.
 			pf := core.PreflightCheckDetailed(lang, code)

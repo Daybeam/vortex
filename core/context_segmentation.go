@@ -113,6 +113,20 @@ func (m *SegmentManager) SealedCount() int {
 	return len(m.sealed)
 }
 
+// GetSealedSince returns sealed segments from index n onwards.
+// Used by FoldEngine to get new sealed segments since the last fold baseline.
+// Returns nil if n >= len(sealed).
+func (m *SegmentManager) GetSealedSince(n int) []MemorySegment {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if n < 0 || n >= len(m.sealed) {
+		return nil
+	}
+	result := make([]MemorySegment, len(m.sealed)-n)
+	copy(result, m.sealed[n:])
+	return result
+}
+
 // ActiveSegment returns the current active segment for a taskScope, or nil.
 func (m *SegmentManager) ActiveSegment(taskScope string) *MemorySegment {
 	m.mu.RLock()

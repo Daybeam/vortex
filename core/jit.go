@@ -234,7 +234,7 @@ func (m *JITManager) PromotePermanent(id string) error {
 
 // ── Task-Local Closure ─────────────────────────────────────────────────────
 //
-// Implements §二.1 of docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md.
+// Implements §2.1 of docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md.
 // At task submission time, SnapshotJITTools deep-copies any JIT MCP definitions
 // referenced by mcpIDs into a map[json.RawMessage] the task graph carries. If a
 // JIT tool's global TTL expires mid-task, RestoreLocalMCPs re-registers the

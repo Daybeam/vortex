@@ -94,7 +94,29 @@ func (a *ContextArchive) Append(item MemoryItem) error {
 	return err
 }
 
-// Load reads *new* items from disk since last read.
+// GetByNodeIDs returns items matching the given node IDs.
+// Used by FoldEngine.Decompress to recover folded content from the archive.
+// Returns items in the order they are found in the archive.
+func (a *ContextArchive) GetByNodeIDs(nodeIDs []string) []MemoryItem {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	idSet := make(map[string]bool, len(nodeIDs))
+	for _, id := range nodeIDs {
+		idSet[id] = true
+	}
+	var result []MemoryItem
+	for _, item := range a.items {
+		if idSet[item.NodeID] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
 func (a *ContextArchive) Load() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -274,7 +296,7 @@ func (a *ContextArchive) Search(query string, embedClient EmbeddingClient, k int
 	return results
 }
 
-// --- Prune (TTL 清理) ---
+// --- Prune (TTL cleanup) ---
 
 // PruneExpired removes items past their TTL and rewrites the archive file.
 // Items with TTL == nil are never expired. Returns number of items pruned and any error.
@@ -327,7 +349,7 @@ func (a *ContextArchive) writeFileLocked() error {
 	return err
 }
 
-// --- Forest Search (Kruskal 下沉核心层) ---
+// --- Forest Search (Kruskal sink core layer) ---
 
 // ForestResult bundles the selected MemoryItems with the edges of the Kruskal forest.
 type ForestResult struct {
@@ -396,7 +418,7 @@ func (a *ContextArchive) SearchForest(
 
 // ─── ArchiveQuery Methods (P0-3, ADDED 2026-10-10) ────────────────────────
 //
-// See docs/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §4.
+// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §4.
 // Three query methods at different granularities for the four consumption
 // paths (B: Planner Role, C: Step Plan Mode, D: Regular Step Warm layer).
 

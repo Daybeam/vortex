@@ -16,7 +16,7 @@ import (
 // Returns (true, nil) if the task is complex, (false, nil) if simple,
 // (_, error) if the probe fails (caller should fall back to keyword).
 //
-// See docs/STEP_PLAN_MODE_DESIGN.md §9.3 (方案 B).
+// See docs/plan/STEP_PLAN_MODE_DESIGN.md §9.3 (Option B).
 func ProbeTaskComplexity(probe providers.Provider, task string) (bool, error) {
 	if probe == nil {
 		return false, fmt.Errorf("probe: provider is nil")
@@ -39,6 +39,10 @@ func ProbeTaskComplexity(probe providers.Provider, task string) (bool, error) {
 	})
 	if err != nil {
 		return false, fmt.Errorf("probe: provider call: %w", err)
+	}
+	// audit L-HIGH-1: guard against (nil, nil) return from provider.
+	if resp == nil {
+		return false, fmt.Errorf("probe: nil response from provider")
 	}
 
 	// System One returns choice answers as ToolCalls with typed Arguments.

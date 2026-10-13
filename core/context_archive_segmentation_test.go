@@ -11,6 +11,15 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
+// mustAppend wraps archive.Append and fails the test on error.
+// audit NEW-LOW-2: replaces `mustAppend(t, archive, ...)` (搬龙门) patterns.
+func mustAppend(t *testing.T, archive *ContextArchive, item MemoryItem) {
+	t.Helper()
+	if err := archive.Append(item); err != nil {
+		t.Fatalf("archive.Append failed: %v", err)
+	}
+}
+
 // ── P1-5: PromptAssembler Archive Query (Path D) ──────────────────────────
 
 func TestPromptAssembler_ArchiveStepSummaries_Injected(t *testing.T) {
@@ -20,7 +29,7 @@ func TestPromptAssembler_ArchiveStepSummaries_Injected(t *testing.T) {
 	// Add some step summaries to the archive.
 	taskID := "task-123"
 	for i := 0; i < 3; i++ {
-		_ = archive.Append(MemoryItem{
+		mustAppend(t, archive, MemoryItem{
 			TaskID:    taskID,
 			NodeID:    "step-" + string(rune('A'+i)),
 			Intent:    "Do step " + string(rune('A'+i)),
@@ -407,7 +416,7 @@ func TestArchiveQuery_SearchRecentStepSummaries(t *testing.T) {
 
 	taskID := "task-query-test"
 	for i := 0; i < 5; i++ {
-		_ = archive.Append(MemoryItem{
+		mustAppend(t, archive, MemoryItem{
 			TaskID:    taskID,
 			NodeID:    "step-" + string(rune('A'+i)),
 			Intent:    "Step " + string(rune('A'+i)),
@@ -432,13 +441,13 @@ func TestArchiveQuery_SearchRecentStepSummaries_FiltersByTask(t *testing.T) {
 	tmpDir := t.TempDir()
 	archive := NewContextArchive(filepath.Join(tmpDir, "test.jsonl"))
 
-	_ = archive.Append(MemoryItem{
+	mustAppend(t, archive, MemoryItem{
 		TaskID:    "task-A",
 		NodeID:    "step-1",
 		Summary:   "task A step 1",
 		Timestamp: time.Now(),
 	})
-	_ = archive.Append(MemoryItem{
+	mustAppend(t, archive, MemoryItem{
 		TaskID:    "task-B",
 		NodeID:    "step-1",
 		Summary:   "task B step 1",
@@ -458,13 +467,13 @@ func TestArchiveQuery_SearchRecentStepSummaries_OnlyWithSummary(t *testing.T) {
 	tmpDir := t.TempDir()
 	archive := NewContextArchive(filepath.Join(tmpDir, "test.jsonl"))
 
-	_ = archive.Append(MemoryItem{
+	mustAppend(t, archive, MemoryItem{
 		TaskID:    "task-X",
 		NodeID:    "step-1",
 		Summary:   "has summary",
 		Timestamp: time.Now(),
 	})
-	_ = archive.Append(MemoryItem{
+	mustAppend(t, archive, MemoryItem{
 		TaskID:    "task-X",
 		NodeID:    "step-2",
 		Summary:   "", // no summary
@@ -483,7 +492,7 @@ func TestArchiveQuery_SearchAllStepSummaries(t *testing.T) {
 
 	taskID := "task-all-test"
 	for i := 0; i < 3; i++ {
-		_ = archive.Append(MemoryItem{
+		mustAppend(t, archive, MemoryItem{
 			TaskID:    taskID,
 			NodeID:    "step-" + string(rune('A'+i)),
 			Intent:    "Step " + string(rune('A'+i)),
@@ -493,9 +502,16 @@ func TestArchiveQuery_SearchAllStepSummaries(t *testing.T) {
 	}
 
 	results := archive.SearchAllStepSummaries(taskID, "step", 10)
-	// Search may return results or not depending on BM25 index state.
-	// Just verify it doesn't panic and returns the right type.
-	_ = results
+	// audit T-HIGH-1: was _ = results (gatekeeping bypass — discarded results, verified nothing).
+	// Assert the search actually returns matching items with the correct task scope.
+	if len(results) == 0 {
+		t.Fatal("expected non-empty search results for query 'step' with 3 matching entries")
+	}
+	for _, r := range results {
+		if r.TaskID != taskID {
+			t.Errorf("result taskID mismatch: got %q, want %q? (task scope filter broken)", r.TaskID, taskID)
+		}
+	}
 }
 
 func TestArchiveQuery_SearchSegments(t *testing.T) {
@@ -504,7 +520,7 @@ func TestArchiveQuery_SearchSegments(t *testing.T) {
 
 	taskID := "task-seg-test"
 	for i := 0; i < 3; i++ {
-		_ = archive.Append(MemoryItem{
+		mustAppend(t, archive, MemoryItem{
 			TaskID:    taskID,
 			NodeID:    "step-" + string(rune('A'+i)),
 			Summary:   "Summary " + string(rune('A'+i)),
@@ -651,7 +667,7 @@ func TestIntegration_ArchiveStepSummaries_InPromptBlocks(t *testing.T) {
 	taskID := "integration-task"
 
 	// Simulate step completion — archive a step summary.
-	_ = archive.Append(MemoryItem{
+	mustAppend(t, archive, MemoryItem{
 		TaskID:    taskID,
 		NodeID:    "step-1",
 		Intent:    "Write the initial code",
@@ -659,7 +675,7 @@ func TestIntegration_ArchiveStepSummaries_InPromptBlocks(t *testing.T) {
 		StepIDs:   []string{"step-1"},
 		Timestamp: time.Now().Add(-2 * time.Minute),
 	})
-	_ = archive.Append(MemoryItem{
+	mustAppend(t, archive, MemoryItem{
 		TaskID:    taskID,
 		NodeID:    "step-2",
 		Intent:    "Add tests",

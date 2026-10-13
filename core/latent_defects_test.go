@@ -18,7 +18,7 @@ func TestSieve_ClearHistory_PreventsMemoryLeak(t *testing.T) {
 			ToolName:  "read_file",
 			Arguments: map[string]any{"path": filepath.Join("/tmp", string(rune('a'+i)))},
 		}
-		valid, _ := s.InspectToolCalls(taskID, []store.ToolInteraction{call})
+		valid, _ := s.InspectToolCalls(taskID, "", []store.ToolInteraction{call})
 		if !valid {
 			t.Fatalf("call %d should be valid", i)
 		}
@@ -43,11 +43,11 @@ func TestSieve_AlternatingFailure_DetectedAsLoop(t *testing.T) {
 	callB := store.ToolInteraction{ToolName: "read_file", Arguments: map[string]any{"path": "/tmp/a"}}
 
 	for i := 0; i < 4; i++ {
-		s.InspectToolCalls(taskID, []store.ToolInteraction{callA})
-		s.InspectToolCalls(taskID, []store.ToolInteraction{callB})
+		s.InspectToolCalls(taskID, "", []store.ToolInteraction{callA})
+		s.InspectToolCalls(taskID, "", []store.ToolInteraction{callB})
 	}
 
-	valid, reason := s.InspectToolCalls(taskID, []store.ToolInteraction{callA})
+	valid, reason := s.InspectToolCalls(taskID, "", []store.ToolInteraction{callA})
 	if valid {
 		t.Fatalf("alternating pattern should be detected as potential loop, got valid=true")
 	}
@@ -205,7 +205,7 @@ func TestSieve_ClearHistory_OnTaskCompletion(t *testing.T) {
 	taskID := "task-completion-test"
 
 	call := store.ToolInteraction{ToolName: "read_file", Arguments: map[string]any{"path": "/tmp/a"}}
-	s.InspectToolCalls(taskID, []store.ToolInteraction{call})
+	s.InspectToolCalls(taskID, "", []store.ToolInteraction{call})
 
 	s.mu.Lock()
 	_, existsBefore := s.toolHistory[taskID]
@@ -232,13 +232,13 @@ func TestSieve_ConsecutiveDetection_StillWorks(t *testing.T) {
 	call := store.ToolInteraction{ToolName: "write_file", Arguments: map[string]any{"path": "/tmp/a"}}
 
 	for i := 0; i < 3; i++ {
-		valid, _ := s.InspectToolCalls(taskID, []store.ToolInteraction{call})
+		valid, _ := s.InspectToolCalls(taskID, "", []store.ToolInteraction{call})
 		if !valid {
 			t.Fatalf("call %d should be valid (at or below threshold)", i)
 		}
 	}
 
-	valid, reason := s.InspectToolCalls(taskID, []store.ToolInteraction{call})
+	valid, reason := s.InspectToolCalls(taskID, "", []store.ToolInteraction{call})
 	if valid {
 		t.Fatal("fourth consecutive call should be detected as loop")
 	}
@@ -260,7 +260,7 @@ func TestSieve_WindowDetection_DoesNotFlagNormalUsage(t *testing.T) {
 	}
 
 	for _, call := range calls {
-		valid, _ := s.InspectToolCalls(taskID, []store.ToolInteraction{call})
+		valid, _ := s.InspectToolCalls(taskID, "", []store.ToolInteraction{call})
 		if !valid {
 			t.Fatalf("normal varied usage should not be flagged as loop: %s", call.ToolName)
 		}

@@ -221,14 +221,16 @@ func (n *CapabilityNavigator) GetOverview() string {
 				catalog[p] = "Declared capability from " + m.ID
 			}
 		}
+		// audit P-MED-1: build name→description map once (O(m)) instead of O(n×m) nested loop.
+		descMap := make(map[string]string, len(m.FullToolDefinitions))
+		for _, dt := range m.FullToolDefinitions {
+			descMap[dt.Name] = dt.Description
+		}
 		for _, t := range m.AvailableTools {
 			key := fmt.Sprintf("%s.%s", m.ID, t)
 			desc := "Atomic tool"
-			for _, dt := range m.FullToolDefinitions {
-				if dt.Name == t {
-					desc = dt.Description
-					break
-				}
+			if d, ok := descMap[t]; ok {
+				desc = d
 			}
 			catalog[key] = desc
 		}
@@ -385,15 +387,17 @@ func (n *CapabilityNavigator) formatRoleDetail(r *config.Role) string {
 				}
 				continue
 			}
+			// Build name→description map once (O(m)) instead of O(n×m) nested loop.
+			descMap := make(map[string]string, len(mcp.FullToolDefinitions))
+			for _, dt := range mcp.FullToolDefinitions {
+				descMap[dt.Name] = dt.Description
+			}
 			if b.IsRestricted() {
 				sb.WriteString(fmt.Sprintf("- `%s` (restricted to %d tools):\n", b.MCPID, len(b.AllowedTools)))
 				for _, t := range b.AllowedTools {
 					desc := ""
-					for _, dt := range mcp.FullToolDefinitions {
-						if dt.Name == t {
-							desc = " - " + dt.Description
-							break
-						}
+					if d, ok := descMap[t]; ok {
+						desc = " - " + d
 					}
 					sb.WriteString(fmt.Sprintf("  - `%s`%s\n", t, desc))
 				}
@@ -401,11 +405,8 @@ func (n *CapabilityNavigator) formatRoleDetail(r *config.Role) string {
 				sb.WriteString(fmt.Sprintf("- `%s` (unrestricted, %d tools):\n", b.MCPID, len(mcp.AvailableTools)))
 				for _, t := range mcp.AvailableTools {
 					desc := ""
-					for _, dt := range mcp.FullToolDefinitions {
-						if dt.Name == t {
-							desc = " - " + dt.Description
-							break
-						}
+					if d, ok := descMap[t]; ok {
+						desc = " - " + d
 					}
 					sb.WriteString(fmt.Sprintf("  - `%s`%s\n", t, desc))
 				}
@@ -479,13 +480,15 @@ func (n *CapabilityNavigator) formatMCPDetail(id string, m *config.MCPDef) strin
 
 	if len(m.AvailableTools) > 0 {
 		sb.WriteString("### Available Tools\n")
+		// Build name→description map once (O(m)) instead of O(n×m) nested loop.
+		descMap := make(map[string]string, len(m.FullToolDefinitions))
+		for _, dt := range m.FullToolDefinitions {
+			descMap[dt.Name] = dt.Description
+		}
 		for _, t := range m.AvailableTools {
 			desc := ""
-			for _, dt := range m.FullToolDefinitions {
-				if dt.Name == t {
-					desc = " - " + dt.Description
-					break
-				}
+			if d, ok := descMap[t]; ok {
+				desc = " - " + d
 			}
 			sb.WriteString(fmt.Sprintf("- `%s`%s\n", t, desc))
 		}

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -10,8 +11,8 @@ import (
 )
 
 // These tests spawn the real scripts/jit/repl_server.py subprocess (not
-// mocked) -- per the design doc's own §5 validation order ("POC 落地前，
-// 不写全部代码就先验证的部分"), this is the point: prove state genuinely
+// mocked) -- per the design doc's own §5 validation order ("before POC lands,
+// validate by testing parts without writing all code"), this is the point: prove state genuinely
 // persists across calls against a real Python process, not a mock that
 // could hide a wiring bug. Requires "python" resolvable on PATH -- if this
 // suite is skipped in some CI environment lacking Python, that's a real
@@ -258,5 +259,55 @@ func TestJITSessionManager_CloseSessionsForStep_NoopWhenNoSessionExists(t *testi
 	m.CloseSessionsForStep("nonexistent-task", "nonexistent-step")
 	if got := m.SessionCount(); got != 0 {
 		t.Errorf("expected 0 sessions, got %d", got)
+	}
+}
+
+// --- Node.js language support tests ---
+// These verify the "node" language path added to jit_session.go.
+// Skips if node is not on PATH (CI environments without Node.js).
+
+func skipIfNoNode(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not on PATH — skipping Node.js JIT session test")
+	}
+}
+
+func TestJITSession_Node_StatePersistsAcrossEvalCalls(t *testing.T) {
+	skipIfNoNode(t)
+	m := newTestJITSessionManager(t)
+	defer m.CloseSession("node-t1")
+
+	sess, err := m.GetOrCreateSession("node-t1", "node", 30*time.Second)
+	if err != nil {
+		t.Fatalf("GetOrCreateSession(node): %v", err)
+	}
+	if sess.Lang != "node" {
+		t.Fatalf("expected Lang=\"node\", got %q", sess.Lang)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Set a variable in the persistent VM context.
+	if _, err := sess.Eval(ctx, "var x = 1 + 1"); err != nil {
+		t.Fatalf("first Eval: %v", err)
+	}
+
+	// Read it back — state must persist across calls.
+	res, err := sess.Eval(ctx, "__result__ = x")
+	if err != nil {
+		t.Fatalf("second Eval: %v", err)
+	}
+	if f, ok := res.Result.(float64); !ok || f != 2 {
+		t.Errorf("expected persisted x==2, got %#v (state must survive across Eval calls)", res.Result)
+	}
+}
+
+func TestJITSession_Node_UnsupportedLangStillRejected(t *testing.T) {
+	m := newTestJITSessionManager(t)
+	_, err := m.GetOrCreateSession("node-t2", "ruby", 30*time.Second)
+	if err == nil {
+		t.Error("expected error for lang=ruby, got nil")
 	}
 }

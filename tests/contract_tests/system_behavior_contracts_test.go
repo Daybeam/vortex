@@ -24,7 +24,7 @@ func TestSystemContract_LoopDetection(t *testing.T) {
 	// First 3 calls: should pass (history grows to 3, threshold=3,
 	// check counts consecutive entries BEFORE appending current call)
 	for i := 1; i <= 3; i++ {
-		ok, reason := sieve.InspectToolCalls(taskID, []store.ToolInteraction{toolCall})
+		ok, reason := sieve.InspectToolCalls(taskID, "", []store.ToolInteraction{toolCall})
 		if !ok {
 			t.Fatalf("call %d: expected pass, got rejection: %s", i, reason)
 		}
@@ -34,7 +34,7 @@ func TestSystemContract_LoopDetection(t *testing.T) {
 	}
 
 	// 4th call: consecutiveCount=3 >= threshold=3 → intercepted
-	ok, reason := sieve.InspectToolCalls(taskID, []store.ToolInteraction{toolCall})
+	ok, reason := sieve.InspectToolCalls(taskID, "", []store.ToolInteraction{toolCall})
 	if ok {
 		t.Fatal("expected 3rd identical call to be intercepted, but it passed")
 	}
@@ -56,7 +56,7 @@ func TestSystemContract_LoopDetection_DifferentTools(t *testing.T) {
 	}
 
 	// All 3 calls have different arguments → not a loop
-	ok, reason := sieve.InspectToolCalls(taskID, calls)
+	ok, reason := sieve.InspectToolCalls(taskID, "", calls)
 	if !ok {
 		t.Errorf("expected distinct calls to pass, got rejection: %s", reason)
 	}
@@ -67,7 +67,7 @@ func TestSystemContract_LoopDetection_DifferentTools(t *testing.T) {
 func TestSystemContract_LoopDetection_EmptyCalls(t *testing.T) {
 	sieve := core.NewSieve(10)
 
-	ok, reason := sieve.InspectToolCalls("task-empty", nil)
+	ok, reason := sieve.InspectToolCalls("task-empty", "", nil)
 	if !ok {
 		t.Errorf("expected empty calls to pass, got rejection: %s", reason)
 	}
