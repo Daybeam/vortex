@@ -11,7 +11,7 @@ import (
 // TestCancelTask_SwarmProviderLoopNotKilledButTaskInvisible verifies the first
 // P0 cancellation risk point flagged in
 // docs/completed/2026-09-14/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §3.1/§6:
-// "SwarmAgentProvider 的 loop(ctx) goroutine 的 ctx 来源是否为 task context？"
+// "Is the ctx source of SwarmAgentProvider's loop(ctx) goroutine the task context?"
 //
 // FINDING: the swarm provider's loop ctx comes from Start(ctx), NOT from the
 // task's cancelFuncs context. CancelTask cannot directly cancel the swarm

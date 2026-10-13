@@ -132,7 +132,7 @@ func TestSpawner_BuildSystemPrompt_WithTree(t *testing.T) {
 	}
 	prompt := flattenContentBlocks(blocks)
 
-	// Per PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md §四.5, the sliding window
+	// Per PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md §4.5, the sliding window
 	// collapses resolved historical nodes to single-line ASSERT statements
 	// and keeps only the most recent Active/Running nodes fully expanded.
 	if !strings.Contains(prompt, "ASSERT [Initial Task]") {

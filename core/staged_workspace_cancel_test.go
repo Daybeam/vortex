@@ -11,7 +11,7 @@ import (
 // TestCancelTask_RunLoopExitsPromptly_NoOwnGoroutineForStagedWorkspace
 // verifies the second P0 cancellation risk point flagged in
 // docs/completed/2026-09-14/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §3.1/§6:
-// "StagedWorkspace 在 scheduler_dag.go:356 起的后台 goroutine 是否绑 task ctx?"
+// "Is the StagedWorkspace background goroutine started at scheduler_dag.go:356 bound to the task ctx?"
 //
 // FINDING (2026-09-17): there is no separate StagedWorkspace goroutine to
 // verify. core/staged_workspace.go's methods (TakePreStepSnapshot,

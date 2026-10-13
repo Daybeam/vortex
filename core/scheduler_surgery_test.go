@@ -18,7 +18,7 @@ import (
 func TestDirectedEngine_MutateGraphTopology(t *testing.T) {
 	// audit T-GATE-1 (2026-10-05 r2): was skipped on Windows via
 	// runtime.GOOS=="windows" → t.Skip, which meant the test NEVER RAN
-	// on the development platform (搬龙门). Root cause = t.TempDir()
+	// on the development platform (gatekeeping bypass). Root cause = t.TempDir()
 	// auto-cleanup races with engine bg goroutines holding logger files.
 	// Fix = use mustTempDir (added by T-CRIT-1) which uses os.MkdirTemp
 	// + t.Cleanup(os.RemoveAll) — same pattern as delegation_mode_test.go.
