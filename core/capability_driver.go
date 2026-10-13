@@ -11,7 +11,7 @@ import (
 )
 
 // capability_driver.go — Unified Capability Driver Pattern.
-// Implements docs/architecture/UNIFIED_CAPABILITY_DISCOVERY_DESIGN.md §二.
+// Implements docs/architecture/UNIFIED_CAPABILITY_DISCOVERY_DESIGN.md §2.
 //
 // Decouples capability discovery from execution. Whether a capability is a
 // remote SSE endpoint (Phase 1) or a future local binary (Phase 2), the

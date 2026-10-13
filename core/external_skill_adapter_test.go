@@ -236,7 +236,7 @@ func TestImportSkillDirectory_LargeSkillFile(t *testing.T) {
 
 	// 1. Verify skill is registered as ExecutionModeDirectory
 	var skill *config.Skill
-	for _, s := range reg.Skills {
+	for _, s := range reg.PendingSkills {
 		skill = s
 		break
 	}
@@ -298,7 +298,7 @@ func TestImportSkillDirectory_LargeSkill_PromptFragmentSmall(t *testing.T) {
 	}
 
 	// Find the imported skill and activate it.
-	for _, skill := range reg.Skills {
+	for _, skill := range reg.PendingSkills {
 		mounter := &SkillMounter{}
 		fragment := mounter.Activate(skill)
 
@@ -404,7 +404,7 @@ func TestImportSkillDirectory_LargeSkill_BodyInSOPNotInPrompt(t *testing.T) {
 
 	// Step 3: Verify body is NOT in the prompt fragment
 	bodyInPrompt := false
-	for _, skill := range reg.Skills {
+	for _, skill := range reg.PendingSkills {
 		mounter := &SkillMounter{}
 		fragment := mounter.Activate(skill)
 		if strings.Contains(fragment, sentinel) {
@@ -413,5 +413,207 @@ func TestImportSkillDirectory_LargeSkill_BodyInSOPNotInPrompt(t *testing.T) {
 	}
 	if bodyInPrompt {
 		t.Error("body should NOT appear in the prompt fragment (would overflow context)")
+	}
+}
+
+// ─── deriveCapability tests (TODO-1: remove hardcoded "external_discipline") ──
+//
+// Regression test for SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-1.
+// Before this fix, ImportSkillDirectory hardcoded Capability="external_discipline"
+// for all external skills, causing SemanticRetriever to return every external
+// skill on any query matching "external" or "discipline" (noise, not signal).
+// After the fix, capability is derived from frontmatter or description.
+
+func TestDeriveCapability_ExplicitFrontmatter(t *testing.T) {
+	meta := &ExternalSkillMeta{Capability: "futures-trading"}
+	if got := deriveCapability(meta); got != "futures-trading" {
+		t.Errorf("expected 'futures-trading', got %q", got)
+	}
+}
+
+func TestDeriveCapability_FromDescription(t *testing.T) {
+	meta := &ExternalSkillMeta{Description: "Analyzes futures market data and positions"}
+	if got := deriveCapability(meta); got != "analyzes" {
+		t.Errorf("expected 'analyzes' (first word ≥3 chars), got %q", got)
+	}
+}
+
+func TestDeriveCapability_FallbackToExternal(t *testing.T) {
+	meta := &ExternalSkillMeta{}
+	if got := deriveCapability(meta); got != "external" {
+		t.Errorf("expected 'external' fallback, got %q", got)
+	}
+}
+
+func TestDeriveCapability_NotExternalDiscipline(t *testing.T) {
+	// The old hardcoded value must never appear as the derived capability
+	// unless the frontmatter explicitly says so.
+	meta := &ExternalSkillMeta{Description: "Some skill description"}
+	if got := deriveCapability(meta); got == "external_discipline" {
+		t.Error("deriveCapability must not return 'external_discipline' — that was the bug")
+	}
+}
+
+func TestImportSkillDirectory_CapabilityNotHardcoded(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "futures_skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: Futures Analyzer\ndescription: Analyzes futures market data\n---\n## Step 1\n1. Do analysis.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &config.Registry{}
+	adapter := NewExternalSkillAdapter(reg)
+
+	if _, err := adapter.ImportSkillDirectory(dir); err != nil {
+		t.Fatalf("ImportSkillDirectory failed: %v", err)
+	}
+
+	for id, skill := range reg.PendingSkills {
+		if skill.Capability == "external_discipline" {
+			t.Errorf("skill %q still has hardcoded Capability 'external_discipline' — TODO-1 not fixed", id)
+		}
+		if skill.Capability == "" {
+			t.Errorf("skill %q has empty Capability", id)
+		}
+	}
+}
+
+func TestImportSkillDirectory_ExplicitCapabilityFromFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "custom_cap_skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: Custom Cap Skill\ndescription: Some description\ncapability: data-analysis\n---\n## Step 1\n1. Do work.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &config.Registry{}
+	adapter := NewExternalSkillAdapter(reg)
+
+	if _, err := adapter.ImportSkillDirectory(dir); err != nil {
+		t.Fatalf("ImportSkillDirectory failed: %v", err)
+	}
+
+	for _, skill := range reg.PendingSkills {
+		if skill.Capability != "data-analysis" {
+			t.Errorf("expected Capability 'data-analysis' from frontmatter, got %q", skill.Capability)
+		}
+	}
+}
+
+// ─── TODO-4: Pending state + promote gate tests ──────────────────────────────
+//
+// Regression tests for SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-4.
+// External skills go to PendingSkills (not Skills), making them invisible to
+// CapabilityIndex and all retrievers. They must be explicitly promoted.
+
+func TestImportSkillDirectory_GoesToPendingNotActive(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "test_skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: Test Skill\ndescription: A test skill\n---\n## Step 1\n1. Do something.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &config.Registry{}
+	adapter := NewExternalSkillAdapter(reg)
+
+	if _, err := adapter.ImportSkillDirectory(dir); err != nil {
+		t.Fatalf("ImportSkillDirectory failed: %v", err)
+	}
+
+	// Skill should be in PendingSkills, NOT in Skills
+	if len(reg.PendingSkills) != 1 {
+		t.Fatalf("expected 1 pending skill, got %d", len(reg.PendingSkills))
+	}
+	if len(reg.Skills) != 0 {
+		t.Errorf("expected 0 active skills (should all be pending), got %d", len(reg.Skills))
+	}
+}
+
+func TestImportSkillDirectory_PendingSkillNotInCapabilityIndex(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "indexed_skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: Indexed Skill\ndescription: Should not be discoverable until promoted\ncapability: data-analysis\n---\n## Step 1\n1. Analyze.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &config.Registry{}
+	adapter := NewExternalSkillAdapter(reg)
+
+	if _, err := adapter.ImportSkillDirectory(dir); err != nil {
+		t.Fatalf("ImportSkillDirectory failed: %v", err)
+	}
+
+	// Build capability index — pending skill should NOT appear
+	idx := NewCapabilityIndex(reg)
+	if idx.Tags["data-analysis"] {
+		t.Error("pending skill's capability 'data-analysis' should NOT be in CapabilityIndex tags")
+	}
+}
+
+func TestPromoteSkill_MovesFromPendingToActive(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "promote_me")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: Promote Me\ndescription: Skill to be promoted\ncapability: trading\n---\n## Step 1\n1. Trade.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &config.Registry{}
+	adapter := NewExternalSkillAdapter(reg)
+
+	if _, err := adapter.ImportSkillDirectory(dir); err != nil {
+		t.Fatalf("ImportSkillDirectory failed: %v", err)
+	}
+
+	// Find the pending skill ID
+	var skillID string
+	for id := range reg.PendingSkills {
+		skillID = id
+		break
+	}
+	if skillID == "" {
+		t.Fatal("no pending skill found")
+	}
+
+	// Promote: move from PendingSkills to Skills
+	reg.Mu.Lock()
+	skill := reg.PendingSkills[skillID]
+	if reg.Skills == nil {
+		reg.Skills = make(map[string]*config.Skill)
+	}
+	reg.Skills[skillID] = skill
+	delete(reg.PendingSkills, skillID)
+	reg.Mu.Unlock()
+
+	// Verify: skill is now in Skills, not in PendingSkills
+	if len(reg.PendingSkills) != 0 {
+		t.Errorf("expected 0 pending skills after promotion, got %d", len(reg.PendingSkills))
+	}
+	if len(reg.Skills) != 1 {
+		t.Fatalf("expected 1 active skill after promotion, got %d", len(reg.Skills))
+	}
+
+	// Verify: skill is now in CapabilityIndex
+	idx := NewCapabilityIndex(reg)
+	if !idx.Tags["trading"] {
+		t.Error("promoted skill's capability 'trading' should be in CapabilityIndex tags")
 	}
 }
