@@ -32,6 +32,7 @@ type ChatSession struct {
 	RootID       string                  `json:"root_id,omitempty"`
 	ActiveLeafID string                  `json:"active_leaf_id,omitempty"`
 	ActiveRoleID string                  `json:"active_role_id,omitempty"`
+	UserTier     string                  `json:"user_tier,omitempty"` // guest | authorized | admin
 	CreatedAt    time.Time               `json:"created_at"`
 
 	mu        sync.Mutex
