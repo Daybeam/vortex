@@ -1,8 +1,8 @@
 package core
 
 import (
-	"github.com/daybeam/vortex/pkg/observability"
 	"sync"
+	"github.com/daybeam/vortex/pkg/observability"
 )
 
 // UsageStats tracks token consumption across different models.
