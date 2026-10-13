@@ -139,12 +139,12 @@ func TestSieve_AdaptiveThreshold_TightensOnDistinctIntercepts(t *testing.T) {
 
 	// Fill history to trigger intercepts.
 	for i := 0; i < 4; i++ {
-		s.InspectToolCalls(taskID, []store.ToolInteraction{callA})
+		s.InspectToolCalls(taskID, "", []store.ToolInteraction{callA})
 	}
 	// callA should have been intercepted (threshold=3, 4th call triggers).
 	// Now trigger with callB.
 	for i := 0; i < 4; i++ {
-		s.InspectToolCalls(taskID, []store.ToolInteraction{callB})
+		s.InspectToolCalls(taskID, "", []store.ToolInteraction{callB})
 	}
 
 	// Threshold is NOT tightened yet — tightening is deferred to ClearHistory
@@ -172,8 +172,8 @@ func TestSieve_AdaptiveThreshold_RespectsMax(t *testing.T) {
 	callB := store.ToolInteraction{ToolName: "write_file", Arguments: map[string]any{"path": "b.go"}}
 
 	for i := 0; i < 10; i++ {
-		s.InspectToolCalls(taskID, []store.ToolInteraction{callA})
-		s.InspectToolCalls(taskID, []store.ToolInteraction{callB})
+		s.InspectToolCalls(taskID, "", []store.ToolInteraction{callA})
+		s.InspectToolCalls(taskID, "", []store.ToolInteraction{callB})
 	}
 
 	// ClearHistory would try to tighten, but threshold is already at max.

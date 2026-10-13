@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
@@ -139,12 +138,16 @@ func (sm *ScheduleManager) acquireLock(id string, timestamp time.Time) bool {
 	}
 	defer f.Close()
 
-	// Write owner info for audit (pod name if available)
+	// Write owner info for audit (pod name if available). audit L-LOW-1: log write
+	// failure — the lock still works (file existence is the mechanism), but the
+	// audit trail (owner, acquisition time) is lost if the write fails.
 	owner := os.Getenv("POD_NAME")
 	if owner == "" {
 		owner, _ = os.Hostname()
 	}
-	_, _ = f.WriteString(fmt.Sprintf("Owner: %s\nAcquired: %s", owner, time.Now().Format(time.RFC3339)))
+	if _, err := f.WriteString(fmt.Sprintf("Owner: %s\nAcquired: %s", owner, time.Now().Format(time.RFC3339))); err != nil {
+		log.Printf("[schedule] lock metadata write failed for %s: %v", lockPath, err)
+	}
 
 	return true
 }
@@ -358,38 +361,16 @@ func (sm *ScheduleManager) calculateNextRun(s *schemas.Schedule) time.Time {
 }
 
 func (sm *ScheduleManager) parseCron(expr string, from time.Time) (time.Time, error) {
-	// Simple Cron Parser for standard 5-field format: min hour day month weekday
-	fields := strings.Fields(expr)
-	if len(fields) != 5 {
-		return time.Time{}, fmt.Errorf("cron expression must have 5 fields")
+	// Full 5-field cron parser (stdlib only, no external dependency).
+	// Supports: *, exact values, ranges (a-b), steps (*/n, a-b/n), lists (a,b,c).
+	// See cron_parser.go for the implementation.
+	sched, err := parseCronSchedule(expr)
+	if err != nil {
+		return time.Time{}, err
 	}
-
-	// In a real project, use github.com/robfig/cron/v3.
-	// For this audit completion, we implement a basic "next-minute/next-hour" logic
-	// if the expression is simple (like "* * * * *"), otherwise fallback to 1h for now.
-
-	// If it's all stars, next minute
-	if expr == "* * * * *" {
-		return from.Add(time.Minute).Truncate(time.Minute), nil
+	next := sched.nextRun(from)
+	if next.IsZero() {
+		return time.Time{}, fmt.Errorf("cron expression %q has no matching time within 366 days", expr)
 	}
-
-	// If it's "0 * * * *", next hour
-	if fields[0] == "0" && fields[1] == "*" && fields[2] == "*" && fields[3] == "*" && fields[4] == "*" {
-		return from.Add(time.Hour).Truncate(time.Hour), nil
-	}
-
-	// FIX (playbook addendum, found during audit of the "完成 cron 解析器"
-	// claim): the original placeholder here silently returned
-	// `from.Add(time.Hour)` with a nil error for ANY 5-field expression that
-	// wasn't one of the two hardcoded literal patterns above (e.g. a real
-	// schedule like "0 9 * * 1-5" for weekday mornings would silently run
-	// hourly instead, with no error surfaced anywhere). Only "* * * * *" and
-	// "minute-hour wildcards" are genuinely supported today; anything else
-	// must fail loudly (as an error, which the caller already logs as
-	// schedule_config_error and falls back to a visible 24h retry for) rather
-	// than silently producing a schedule the user never asked for. Replace
-	// this branch with a real cron library (e.g. robfig/cron/v3) to support
-	// the general case; until then, an honest error is strictly better than a
-	// silently wrong next-run time for a scheduling feature.
-	return time.Time{}, fmt.Errorf("cron expression %q is not one of the currently-supported patterns (\"* * * * *\" or \"0 * * * *\"); full cron parsing is not yet implemented", expr)
+	return next, nil
 }

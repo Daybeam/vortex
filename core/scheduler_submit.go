@@ -163,7 +163,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			stepID = fmt.Sprintf("step_%s", uuid.New().String()[:6])
 		}
 
-		ctx := ContextWithTrace(context.Background(), traceID, NewSpanID())
+		ctx := ContextWithTrace(s.lifecycleCtx, traceID, NewSpanID()) // audit P-MED-4: derive from lifecycleCtx so Stop() cancels
 
 		s.logger.LogCtx(ctx, "smart_route", taskID, stepID, map[string]any{
 			"task":        inp.Task,
@@ -235,7 +235,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 		// Task-Local Closure: snapshot JIT tools so TTL expiry mid-task
 		// doesn't cause "tool not found". See
-		// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §二.1.
+		// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
 		if s.jit != nil {
 			graph.LocalMCPs = s.jit.SnapshotJITTools(inp.AdditionalMCPs)
 		}
@@ -247,8 +247,15 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 		s.Mu.Lock()
 		s.graphs[taskID] = graph
-		ctx, cancel := context.WithCancel(s.lifecycleCtx) // audit C2: derive from lifecycleCtx so Stop() cancels tasks
-		s.cancelFuncs[taskID] = cancel
+		// audit C2: derive from lifecycleCtx so Stop() cancels tasks.
+		// audit P-MED-4: apply timeoutSecs if configured to prevent indefinite hang.
+		var taskCancel context.CancelFunc
+		if timeoutSecs > 0 {
+			ctx, taskCancel = context.WithTimeout(s.lifecycleCtx, time.Duration(timeoutSecs)*time.Second)
+		} else {
+			ctx, taskCancel = context.WithCancel(s.lifecycleCtx)
+		}
+		s.cancelFuncs[taskID] = taskCancel
 		s.doneChans[taskID] = make(chan struct{})
 		s.Mu.Unlock()
 
@@ -536,7 +543,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 	// Task-Local Closure: snapshot JIT tools referenced by any step so
 	// TTL expiry mid-task doesn't cause "tool not found". See
-	// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §二.1.
+	// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
 	if s.jit != nil {
 		var allMCPs []string
 		for _, inp := range inputs {

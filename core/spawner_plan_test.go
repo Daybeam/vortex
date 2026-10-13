@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -220,5 +221,78 @@ func TestShouldEnableStepPlan_ProbeNo(t *testing.T) {
 	}
 	if s.shouldEnableStepPlan(req, probe) {
 		t.Error("should return false when probe says no")
+	}
+}
+
+// --- RequireForComplexSteps (#11) auto-detection tests ---
+//
+// These test the inline auto-detection logic from spawner.go:317-319:
+//   if !req.EnableStepPlan && s.registry != nil {
+//       sp := s.registry.StepPlan
+//       if sp.RequireForComplexSteps && schemas.DetermineComplexity(req.Task, 0) {
+//           req.EnableStepPlan = true
+//       }
+//   }
+// We simulate the exact logic path rather than calling Spawn() (which requires
+// full engine wiring) — this is a unit test of the config+heuristic combination.
+
+func TestRequireForComplexSteps_ComplexTaskAutoEnables(t *testing.T) {
+	reg := &config.Registry{
+		StepPlan: config.StepPlanConfig{
+			RequireForComplexSteps: true,
+		},
+	}
+	req := &SpawnRequest{
+		Task: "Refactor the auth module across multiple files",
+	}
+	// Simulate spawner.go:317-319 auto-detection logic.
+	if !req.EnableStepPlan && reg != nil {
+		sp := reg.StepPlan
+		if sp.RequireForComplexSteps && schemas.DetermineComplexity(req.Task, 0) {
+			req.EnableStepPlan = true
+		}
+	}
+	if !req.EnableStepPlan {
+		t.Error("RequireForComplexSteps=true + complex task should auto-enable step plan")
+	}
+}
+
+func TestRequireForComplexSteps_SimpleTaskDoesNotEnable(t *testing.T) {
+	reg := &config.Registry{
+		StepPlan: config.StepPlanConfig{
+			RequireForComplexSteps: true,
+		},
+	}
+	req := &SpawnRequest{
+		Task: "Fix typo",
+	}
+	if !req.EnableStepPlan && reg != nil {
+		sp := reg.StepPlan
+		if sp.RequireForComplexSteps && schemas.DetermineComplexity(req.Task, 0) {
+			req.EnableStepPlan = true
+		}
+	}
+	if req.EnableStepPlan {
+		t.Error("RequireForComplexSteps=true + simple task should NOT auto-enable step plan")
+	}
+}
+
+func TestRequireForComplexSteps_DisabledDoesNotEnable(t *testing.T) {
+	reg := &config.Registry{
+		StepPlan: config.StepPlanConfig{
+			RequireForComplexSteps: false,
+		},
+	}
+	req := &SpawnRequest{
+		Task: "Refactor the auth module across multiple files",
+	}
+	if !req.EnableStepPlan && reg != nil {
+		sp := reg.StepPlan
+		if sp.RequireForComplexSteps && schemas.DetermineComplexity(req.Task, 0) {
+			req.EnableStepPlan = true
+		}
+	}
+	if req.EnableStepPlan {
+		t.Error("RequireForComplexSteps=false should NOT auto-enable step plan even for complex tasks")
 	}
 }

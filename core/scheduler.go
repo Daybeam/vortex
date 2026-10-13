@@ -158,6 +158,9 @@ type DirectedEngine struct {
 	// non-critical auto-resolved decisions (30s cooldown per step).
 	recentDecisions   map[string]time.Time
 	recentDecisionsMu sync.Mutex
+
+	// auditLogger (#15): tamper-evident SHA-256 hash chain for decisions.
+	auditLogger *AuditLogger
 }
 
 const defaultMaxHashCacheEntries = 10000

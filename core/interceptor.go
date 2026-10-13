@@ -115,7 +115,7 @@ type SpawnRequest struct {
 	// EnableStepPlan (ADDED 2026-10-10): forces a Planner Phase before
 	// execution. The planner generates a markdown plan; the plan is
 	// injected into AdditionalPromptContext for the executor.
-	// See docs/STEP_PLAN_MODE_DESIGN.md.
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md.
 	EnableStepPlan bool
 }
 

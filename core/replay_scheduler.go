@@ -131,7 +131,7 @@ func (s *ReplaySandbox) DirectExecute(ctx context.Context, mcpID, toolName strin
 
 // GrayscaleController manages the grayscale traffic control lifecycle for
 // replay-generated JIT candidates: 5% trial → promote after N successes →
-// archive on failure. See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §决策3.
+// archive on failure. See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §decision 3.
 type GrayscaleController struct {
 	mu                 sync.Mutex
 	trials             map[string]*trialState
@@ -247,7 +247,7 @@ func (rs *replayScheduler) ScanFailedTasks(ctx context.Context, since time.Time)
 
 // Mutate generates mutation variants for a forked history using three
 // deterministic strategies: RewriteStrategy, AlternativeToolchain, and
-// ParamPerturbation. See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §决策2.
+// ParamPerturbation. See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §decision 2.
 func (rs *replayScheduler) Mutate(history []AgentEvent, atStepID string) ([]MutationVariant, error) {
 	variants := make([]MutationVariant, 0, rs.maxVariants)
 
@@ -384,7 +384,7 @@ func extractRootCause(history []AgentEvent) string {
 // mapCauseToMutation maps a FailureClass (from core/failure_classify.go) to
 // the appropriate mutation type. Returns (mutationType, fixable).
 // Unfixable failures return ("", false) and are skipped by RunReplayCycle.
-// See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §决策2.
+// See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §decision 2.
 func mapCauseToMutation(cause string) (mutType string, fixable bool) {
 	switch FailureClass(cause) {
 	case FailureClassContextDeficit, FailureClassGenerativeUncertainty, FailureClassContractViolation:
@@ -564,7 +564,7 @@ func (rs *replayScheduler) verifyMutation(ctx context.Context, v MutationVariant
 // verifyWithCrossFamily runs an LLM-based audit using a provider from a
 // different model family. This is the auto-resolution path when no
 // deterministic Verifier is configured but a cross-family provider is
-// available. See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §安全约束清单 item 6.
+// available. See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §safety constraints item 6.
 func (rs *replayScheduler) verifyWithCrossFamily(ctx context.Context, providerID string, v MutationVariant) (bool, string) {
 	toolName, _ := v.Payload["_tool"].(string)
 	if toolName == "" {

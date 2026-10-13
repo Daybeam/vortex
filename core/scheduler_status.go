@@ -469,6 +469,11 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 		return fmt.Errorf("step %q not found", dec.StepID)
 	}
 
+	// #15: Audit hash chain — record decision submission (tamper-evident).
+	if s.auditLogger != nil {
+		s.auditLogger.Log("submitDecision", taskID, dec.StepID, decisionID, string(dec.Type), choice, dec.Options)
+	}
+
 	if choice != "rewrite_dag" {
 		switch choice {
 		case "skip":

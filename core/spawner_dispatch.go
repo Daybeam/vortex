@@ -23,7 +23,7 @@ func (s *Spawner) checkSieveGuardian(taskID, stepID string, turn int, toolCalls 
 		}
 	}
 
-	valid, reason := s.sieve.InspectToolCalls(taskID, plannedInteractions)
+	valid, reason := s.sieve.InspectToolCalls(taskID, stepID, plannedInteractions)
 	if !valid {
 		var loopDetail []map[string]any
 		for _, pi := range plannedInteractions {
@@ -50,12 +50,30 @@ func (s *Spawner) checkSieveGuardian(taskID, stepID string, turn int, toolCalls 
 	return valid, reason
 }
 
-// handleCoreToolCall executes a core tool (write_file, read_file, execute_code)
-// directly without MCP transport. Returns the result string, status, and the
-// tool interaction record for the trace.
+// handleCoreToolCall executes a core tool (write_file, read_file, execute_code,
+// decompress) directly without MCP transport. Returns the result string,
+// status, and the tool interaction record for the trace.
 // Extracted from spawner.go per SPAWNER_REFACTORING_EXECUTION_PLAN.md Step 2.
 func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall, taskID, stepID string, validator *SafePathValidator) (string, string, store.ToolInteraction) {
-	result, herr := HandleCoreTool(ctx, call.Name, call.Arguments, s.outputBase, taskID, validator)
+	var result string
+	var herr error
+
+	if call.Name == "decompress" {
+		// Handle decompress with the Spawner's FoldEngine.
+		segmentID, _ := call.Arguments["segment_id"].(string)
+		if segmentID == "" {
+			result = "Error: segment_id is required"
+			herr = fmt.Errorf("segment_id is required")
+		} else if s.foldEngine == nil {
+			result = "Error: decompress is not available (no fold engine)"
+			herr = fmt.Errorf("fold engine not available")
+		} else {
+			result, herr = s.foldEngine.Decompress(segmentID, taskID)
+		}
+	} else {
+		result, herr = HandleCoreTool(ctx, call.Name, call.Arguments, s.outputBase, taskID, validator)
+	}
+
 	res := result
 	status := "success"
 	if herr != nil {
