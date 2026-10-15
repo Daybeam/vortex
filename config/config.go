@@ -72,3 +72,17 @@ type ProviderHealth struct {
 	CircuitOpened bool
 	CooldownUntil time.Time
 }
+
+// GetWorkspacePolicy returns the WorkspacePolicy for the given owner.
+// When per-owner policy exists, it merges allowed roots; otherwise returns
+// the global policy. Returns nil when workspace policy is disabled.
+func (r *Registry) GetWorkspacePolicy(ownerID string) *WorkspacePolicyConfig {
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
+	if !r.System.WorkspacePolicy.Enabled {
+		return nil
+	}
+	// Return a copy so callers can't mutate the registry's config.
+	policy := r.System.WorkspacePolicy
+	return &policy
+}

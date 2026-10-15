@@ -35,9 +35,9 @@ func TestOpenAIStreamComplete_TextTokens(t *testing.T) {
 	p := &OpenAIProvider{cfg: cfg, name: "openai", client: server.Client()}
 
 	resp, err := p.StreamComplete(context.Background(), CompleteRequest{
-		Model:    "gpt-4",
-		System:   "test",
-		User:     "hi",
+		Model:     "gpt-4",
+		System:    "test",
+		User:      "hi",
 		MaxTokens: 100,
 	}, func(chunk string) error {
 		chunks = append(chunks, chunk)
@@ -83,9 +83,9 @@ func TestOpenAIStreamComplete_ToolCalls(t *testing.T) {
 	p := &OpenAIProvider{cfg: cfg, name: "openai", client: server.Client()}
 
 	resp, err := p.StreamComplete(context.Background(), CompleteRequest{
-		Model:    "gpt-4",
-		System:   "test",
-		User:     "write a file",
+		Model:     "gpt-4",
+		System:    "test",
+		User:      "write a file",
 		MaxTokens: 100,
 	}, nil)
 	if err != nil {
@@ -122,9 +122,9 @@ func TestOpenAIStreamComplete_ErrorFallback(t *testing.T) {
 	p := &OpenAIProvider{cfg: cfg, name: "openai", client: server.Client()}
 
 	_, err := p.StreamComplete(context.Background(), CompleteRequest{
-		Model:    "gpt-4",
-		System:   "test",
-		User:     "hi",
+		Model:     "gpt-4",
+		System:    "test",
+		User:      "hi",
 		MaxTokens: 100,
 	}, nil)
 	if err == nil {
@@ -159,9 +159,9 @@ func TestOpenAIStreamComplete_ReasoningContent(t *testing.T) {
 	p := &OpenAIProvider{cfg: cfg, name: "openai", client: server.Client()}
 
 	resp, err := p.StreamComplete(context.Background(), CompleteRequest{
-		Model:    "deepseek-r1",
-		System:   "test",
-		User:     "hi",
+		Model:     "deepseek-r1",
+		System:    "test",
+		User:      "hi",
 		MaxTokens: 100,
 	}, func(chunk string) error {
 		chunks = append(chunks, chunk)

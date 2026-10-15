@@ -25,8 +25,8 @@ func TestSystemOneReranker_Rerank_Success(t *testing.T) {
 		answers := make(map[string]systemOneAnswer)
 		for qID := range req.Questions {
 			answers[qID] = systemOneAnswer{
-				Type:   "score",
-				Score:  float64(len(qID)), // deterministic: "doc_0"→5, "doc_1"→5, etc.
+				Type:  "score",
+				Score: float64(len(qID)), // deterministic: "doc_0"→5, "doc_1"→5, etc.
 			}
 		}
 

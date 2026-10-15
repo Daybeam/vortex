@@ -21,8 +21,8 @@ type SecretProvider interface {
 // User, quietly eroding the rules layer when long task logs push the
 // context window past its budget.
 type CompleteRequest struct {
-	System string
-	User   string
+	System       string
+	User         string
 
 	// Legacy block form (Volatile only). Still supported for backward compat.
 	SystemBlocks []ContentBlock
@@ -53,6 +53,7 @@ type ContentBlock struct {
 	Type         string         `json:"type"` // "text", "image" (future)
 	Text         string         `json:"text,omitempty"`
 	CacheControl string         `json:"cache_control,omitempty"` // e.g. "ephemeral" for Anthropic
+	Category     string         `json:"category,omitempty"`      // semantic category for token-proportion observability (e.g. "skills", "constraints")
 	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 

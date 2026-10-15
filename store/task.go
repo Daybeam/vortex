@@ -13,11 +13,24 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
+// ToolMetadata holds optional execution telemetry returned by tools or MCP servers.
+// Used by the Sieve truncation guardian (InspectTruncationArtifact) to prevent
+// weak models from over-generalizing (e.g., claiming "all" results) when the
+// tool output was truncated.
+type ToolMetadata struct {
+	Total     int    `json:"total,omitempty"`      // full count (if applicable)
+	Returned  int    `json:"returned,omitempty"`   // actual count returned this call
+	Truncated bool   `json:"truncated,omitempty"`  // whether output was truncated
+	Hint      string `json:"hint,omitempty"`       // server-side follow-up guidance
+	DataShape string `json:"data_shape,omitempty"` // data schema tag (e.g., "futures_dominant_daily")
+}
+
 // ToolInteraction holds one step's output in the task-scoped KV store.
 type ToolInteraction struct {
 	ToolName  string         `json:"tool_name"`
 	Arguments map[string]any `json:"arguments"`
 	Result    any            `json:"result"`
+	Meta      *ToolMetadata  `json:"meta,omitempty"` // structured metadata (Phase 1)
 }
 
 type StepResult struct {

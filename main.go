@@ -15,18 +15,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/pkg/registry"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/store"
 	"github.com/daybeam/vortex/tools"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 
 	ci_analyzer "github.com/daybeam/vortex/pkg/codeintel/analyzer"
 	ci_overlay "github.com/daybeam/vortex/pkg/codeintel/overlay"
 	ci_tools "github.com/daybeam/vortex/pkg/codeintel/tools"
+	"github.com/daybeam/vortex/pkg/telemetry"
 )
 
 func main() {
@@ -255,7 +256,7 @@ func runExec(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBas
 }
 
 func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath string, s *store.Store, rootCtx context.Context, rootCancel context.CancelFunc) {
-	fmt.Fprintln(os.Stderr, "[vortex] Starting in Hub mode...")
+	fmt.Fprintln(os.Stderr, "[orchestrator] Starting in Hub mode...")
 	for _, dir := range []string{outputBase, tmpBase, logDir, expDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			log.Fatalf("failed to create directory %s: %v", dir, err)
@@ -266,6 +267,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	ts := s.Tasks
 	es := s.Experience
 
+	// ── System One Reranker (config-driven, hot-reload safe) ────────────
 	wireReranker := func() {
 		expStore, ok := es.(*store.ExperienceStore)
 		if !ok {
@@ -295,6 +297,8 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	mbStore := s.MemoryBank
 
 	// ── Telemetry Exporter (Phase 2 Roadmap - 2026-08-22) ──────────────────
+	telemetryExporter := telemetry.NewExporter(reg.System.Telemetry, es)
+	go telemetryExporter.StartBackgroundSync(rootCtx)
 
 	// ── JIT Manager ───────────────────────────────────────────────────────
 	jitMgr := core.NewJITManager(reg, root)
@@ -323,6 +327,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 		scheduler.BaselineStore = store.NewBaselineStore(s.DB)
 	}
 	scheduler.Sessions = core.NewSessionManager(reg.System.Sandbox.AllowedWorkspaces, 0)
+
 	// audit H10: wait for fire-and-forget DB saves to drain before db.Close.
 	// Must be deferred BEFORE scheduler.Stop so LIFO order runs it AFTER
 	// scheduler.Stop (which cancels lifecycleCtx) but BEFORE db.Close.
@@ -332,6 +337,8 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	defer scheduler.Stop() // drain background goroutines on exit
 
 	// ── Global Event Logger (trajectory capture) ─────────────────────────
+	// Writes all EventBus events to global_trajectory.jsonl. Passive
+	// subscriber — zero risk, immediate value for replay/audit.
 	gel, gelErr := core.NewGlobalEventLogger(logDir)
 	if gelErr != nil {
 		log.Printf("[event-log] failed to init GlobalEventLogger: %v (continuing without)", gelErr)
@@ -377,7 +384,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	sopMgr := core.NewSOPManager(reg, sopsDir)
 
 	// ── MCP Server ────────────────────────────────────────────────────────
-	mcpServer := server.NewMCPServer("vortex_mcp", "1.0.0", server.WithInstructions(tools.ResolveServerInstructions(reg, false)))
+	mcpServer := server.NewMCPServer("orchestrator_mcp", "1.0.0", server.WithInstructions(tools.ResolveServerInstructions(reg, false)))
 
 	app := &tools.App{
 		Registry:        reg,
@@ -398,6 +405,14 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	}
 	app.InitArchive(outputBase)
 	defer app.StopArchive() // audit M12: stop pruning goroutine on shutdown
+
+	// Budget Gate: auto-suspend tasks when token usage exceeds configured
+	// thresholds. No-op unless budget_gate.enabled is set in config.json.
+	if bg := core.NewBudgetGate(reg.System.BudgetGate, scheduler); bg != nil {
+		defer bg.Wire()()
+		fmt.Fprintln(os.Stderr, "[orchestrator] budget gate enabled")
+	}
+
 	if err := app.SetupSubsystems(mcpServer); err != nil {
 		log.Fatalf("failed to init subsystems: %v", err)
 	}
@@ -407,7 +422,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	// was only called in main_web.go, not the standard edition).
 	if app.ExpStore != nil && app.Registry != nil {
 		if pruned := app.ExpStore.PruneStaleJITRefs(app.Registry); pruned > 0 {
-			fmt.Fprintf(os.Stderr, "[vortex] Pruned %d stale JIT experience patterns\n", pruned)
+			fmt.Fprintf(os.Stderr, "[orchestrator] Pruned %d stale JIT experience patterns\n", pruned)
 		}
 	}
 
@@ -425,7 +440,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	case "sse":
 		serveSSE(mcpServer, rootCancel) // audit L4: pass rootCancel so background goroutines stop on shutdown
 	default:
-		fmt.Fprintln(os.Stderr, "[vortex] stdio mode (Claude Desktop)")
+		fmt.Fprintln(os.Stderr, "[orchestrator] stdio mode (Claude Desktop)")
 		// Graceful shutdown on SIGINT/SIGTERM: run ServeStdio in a goroutine,
 		// wait for either the server to finish or a signal. On signal, cancel
 		// the root context (stops background goroutines) and close stdin to
@@ -446,7 +461,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 			// audit L7: don't use log.Fatalf — os.Exit skips deferred cleanup
 			// (CloseMCPConnections, JITSessions.CloseAll, scheduler.Stop, etc.).
 			// Log and return normally so defers run.
-			log.Printf("[vortex] stdio server error: %v", err)
+			log.Printf("[orchestrator] stdio server error: %v", err)
 		}
 	}
 }

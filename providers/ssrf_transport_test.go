@@ -15,11 +15,11 @@ func TestSSRFSafeTransport_BlocksPrivateIPs(t *testing.T) {
 	transport := ssrfSafeTransport()
 
 	blockedAddrs := []string{
-		"10.0.0.1:80",          // private class A
-		"172.16.0.1:80",        // private class B
-		"192.168.1.1:80",       // private class C
-		"169.254.169.254:80",   // link-local (AWS metadata)
-		"0.0.0.0:80",           // unspecified
+		"10.0.0.1:80",        // private class A
+		"172.16.0.1:80",      // private class B
+		"192.168.1.1:80",     // private class C
+		"169.254.169.254:80", // link-local (AWS metadata)
+		"0.0.0.0:80",         // unspecified
 	}
 
 	for _, addr := range blockedAddrs {

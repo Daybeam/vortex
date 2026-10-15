@@ -27,22 +27,22 @@ const maxFileReadBytes = 1 << 20
 // The Lua script must define a global `provider` table with `name` (string)
 // and `complete` (function) fields.
 type ScriptProvider struct {
-	cfg          *config.ProviderConfig
-	client       *http.Client
-	scriptPath   string
+	cfg           *config.ProviderConfig
+	client        *http.Client
+	scriptPath    string
 	workspaceRoot string // if set, Lua scripts get fs.read access scoped to this dir
-	mu           sync.RWMutex
-	vm           *lua.LState
-	lastLoaded   time.Time
+	mu            sync.RWMutex
+	vm            *lua.LState
+	lastLoaded    time.Time
 }
 
 // NewScriptProvider creates a new ScriptProvider by loading the given Lua script.
 func NewScriptProvider(cfg *config.ProviderConfig, scriptPath string) (*ScriptProvider, error) {
 	workspaceRoot, _ := cfg.Extra["workspace_root"].(string)
 	sp := &ScriptProvider{
-		cfg:          cfg,
-		client:       &http.Client{Timeout: 120 * time.Second, Transport: ssrfSafeTransport()},
-		scriptPath:   scriptPath,
+		cfg:           cfg,
+		client:        &http.Client{Timeout: 120 * time.Second, Transport: ssrfSafeTransport()},
+		scriptPath:    scriptPath,
 		workspaceRoot: workspaceRoot,
 	}
 	if err := sp.loadScript(); err != nil {
@@ -278,15 +278,15 @@ func ssrfSafeTransport() *http.Transport {
 			if host == "localhost" || host == "127.0.0.1" || host == "::1" {
 				return (&net.Dialer{}).DialContext(ctx, network, addr)
 			}
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, fmt.Errorf("SSRF guard: DNS lookup failed for %s: %w (audit NEW-6: fail-closed)", host, err)
-		}
-		ip, err := validateSSRFIPs(host, ips)
-		if err != nil {
-			return nil, err
-		}
-		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, fmt.Errorf("SSRF guard: DNS lookup failed for %s: %w (audit NEW-6: fail-closed)", host, err)
+			}
+			ip, err := validateSSRFIPs(host, ips)
+			if err != nil {
+				return nil, err
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		},
 	}
 }

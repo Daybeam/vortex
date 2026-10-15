@@ -30,6 +30,13 @@ package providers
 // real token-counting API (see AnthropicProvider/GeminiProvider.CountTokens)
 // we prefer that and only fall back to this when the API is unavailable or
 // errors.
+// EstimateTokens is the exported wrapper around the CJK-aware
+// estimateTokens. Core packages reuse it to estimate token cost for
+// embeddings, tool schemas, and conversation history -- all of which feed
+// the context-budget observability (outer ring of /api/context/profile and
+// the per-model consumption ledger on /api/usage).
+func EstimateTokens(text string) int { return estimateTokens(text) }
+
 func estimateTokens(text string) int {
 	if text == "" {
 		return 0

@@ -601,6 +601,7 @@ type SystemSettings struct {
 	// Defaults to 6 hours if unset/zero, matching the design doc's guidance.
 	FMCBatchIntervalHours int                `json:"fmc_batch_interval_hours,omitempty"`
 	Notifications         NotificationConfig `json:"notifications,omitempty"`
+	BudgetGate            BudgetGateConfig   `json:"budget_gate,omitempty"`
 	Retention             RetentionSettings  `json:"retention,omitempty"`
 	// OutputDir overrides the default "outputs" directory for task output.
 	// When empty (the default), "outputs" is used. Relative to project root.
@@ -624,6 +625,27 @@ type SystemSettings struct {
 	// lifecycle points (chat and DAG). See docs/completed/2026-09-28/UNIFIED_HOOK_ARCHITECTURE_DESIGN.md.
 	// Each hook declares a point, script path, timeout, and optional filter.
 	Hooks []HookConfig `json:"hooks,omitempty"`
+
+	// WorkspacePolicy (ADDED 2026-10-13): tier-gated workspace scope.
+	// When Enabled, Public tier callers have workspace_root forced to
+	// a session sandbox; Admin/local callers are unaffected.
+	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md.
+	WorkspacePolicy WorkspacePolicyConfig `json:"workspace_policy,omitempty"`
+}
+
+// WorkspacePolicyConfig configures tier-gated workspace scope resolution.
+// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.6.
+type WorkspacePolicyConfig struct {
+	Enabled            bool                      `json:"enabled,omitempty"`
+	SessionSandboxBase string                    `json:"session_sandbox_base,omitempty"`
+	AllowedRoots       []string                  `json:"allowed_roots,omitempty"`
+	PerOwner           map[string]PerOwnerPolicy `json:"per_owner,omitempty"`
+}
+
+// PerOwnerPolicy allows per-owner workspace root overrides.
+type PerOwnerPolicy struct {
+	AllowedRoots     []string `json:"allowed_roots,omitempty"`
+	AllowAdminBypass bool     `json:"allow_admin_bypass,omitempty"`
 }
 
 // RerankerConfig configures the optional System One experience reranker.
@@ -709,17 +731,31 @@ func (s *SystemSettings) OutputDirOrDefault() string {
 }
 
 type NotificationRoute struct {
-	Name      string   `json:"name"`
-	TaskType  string   `json:"task_type"`
-	TriggerOn []string `json:"trigger_on"`
-	TargetURL string   `json:"target_url"`
-	SecretEnv string   `json:"secret_env"`
+	Name       string   `json:"name"`
+	TaskType   string   `json:"task_type,omitempty"`     // match role BaseCapability; "*" = all
+	TaskIDGlob string   `json:"task_id_glob,omitempty"`  // glob match on task ID ("invest_*")
+	StepIDGlob string   `json:"step_id_glob,omitempty"`  // glob match on step ID ("fetch_*")
+	TriggerOn  []string `json:"trigger_on,omitempty"`    // empty = Tier 0 (task_completed + task_failed)
+	TargetURL  string   `json:"target_url"`
+	SecretEnv  string   `json:"secret_env"`
+	Enabled    bool     `json:"enabled"` // per-route on/off; default false for safety
 }
 
 type NotificationConfig struct {
 	Enabled         bool                `json:"enabled"`
 	DefaultEndpoint string              `json:"default_endpoint"`
 	Routes          []NotificationRoute `json:"routes"`
+}
+
+// BudgetGateConfig configures automatic task suspension when token usage
+// exceeds a configured threshold. When Enabled is false (the default),
+// no budget checking occurs and existing behavior is unchanged.
+type BudgetGateConfig struct {
+	Enabled       bool   `json:"enabled"`
+	PerTaskTokens int64  `json:"per_task_tokens"`  // 0 = no per-task limit
+	PerRoleTokens int64  `json:"per_role_tokens"`  // 0 = no per-role limit
+	AutoResume    bool   `json:"auto_resume"`      // unused in v1; reserved for future
+	WindowMinutes int    `json:"window_minutes"`   // unused in v1; 0 = lifetime cumulative
 }
 
 type TelemetryConfig struct {
