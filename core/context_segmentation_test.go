@@ -249,9 +249,9 @@ func TestPruneStepContext_WithPruning(t *testing.T) {
 
 func TestCosineSimilarity(t *testing.T) {
 	tests := []struct {
-		a, b   []float32
-		want   float64
-		name   string
+		a, b []float32
+		want float64
+		name string
 	}{
 		{[]float32{1, 0}, []float32{1, 0}, 1.0, "same"},
 		{[]float32{1, 0}, []float32{0, 1}, 0, "orthogonal"},

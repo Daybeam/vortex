@@ -398,10 +398,11 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	}
 
 	var finalText strings.Builder // audit H1: was `var finalText string` with += (O(n²))
-	var prevSig string
+	recentSigs := make([]string, 0, 5) // fallback windowed loop detection when Sieve is nil (Gap-3)
 	toolFailErrors := make(map[string][]string) // per-tool recent error messages (capped at 5)
 	noTextTurns := 0                            // consecutive turns with tool calls but no text output
 	overflowRetried := false                    // Tier 2: ensure context overflow retry happens only once
+	var lastToolMeta *store.ToolMetadata        // Phase 3: last tool's structured metadata for truncation guard
 
 	log.Printf("[chat-harness] task=%s sieve_nil=%v turns=%d", taskID, h.Sieve == nil, maxTurns)
 
@@ -538,6 +539,15 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			noTextTurns = 0
 		}
 
+		// Phase 3: Truncation guardian — if the last tool result was truncated
+		// and the model uses universal quantifiers, block and warn.
+		if finalText.Len()-prevLen > 0 && h.Sieve != nil && lastToolMeta != nil {
+			newText := finalText.String()[prevLen:]
+			if ok, reason := h.Sieve.InspectTruncationArtifact(lastToolMeta, newText); !ok {
+				emit(ChatEvent{Type: "truncation_violation", Data: reason})
+			}
+		}
+
 		// Loop detection: log repetitive tool calls for observability.
 		// Consequence is cache replay (in the execution loop below), not
 		// force-termination — force-terminate causes small models to panic
@@ -551,11 +561,25 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				emit(ChatEvent{Type: "loop_guard", Data: reason})
 			}
 		} else {
+			// Gap-3: fallback windowed loop detection when Sieve is nil.
+			// Maintains recent 5 signatures and flags if the current sig
+			// appears >= 3 times in the window (replaces weak 1-hop prevSig).
 			sig := toolCallSignature(resp.ToolCalls)
-			if sig != "" && sig == prevSig {
-				emit(ChatEvent{Type: "loop_guard", Data: "identical tool calls repeated"})
+			if sig != "" {
+				recentSigs = append(recentSigs, sig)
+				if len(recentSigs) > 5 {
+					recentSigs = recentSigs[len(recentSigs)-5:]
+				}
+				count := 0
+				for _, s := range recentSigs {
+					if s == sig {
+						count++
+					}
+				}
+				if count >= 3 {
+					emit(ChatEvent{Type: "loop_guard", Data: "identical tool calls repeated (windowed fallback)"})
+				}
 			}
-			prevSig = sig
 		}
 
 		for i, tc := range resp.ToolCalls {
@@ -629,7 +653,14 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				}
 			}
 
-			// Append PendingSteer to the last tool result in this batch.
+			// Phase 2: extract structured metadata from tool result for
+			// truncation guardian (Phase 3). Tries to parse result as JSON.
+			if result != "" {
+				var m map[string]any
+				if json.Unmarshal([]byte(result), &m) == nil {
+					lastToolMeta = extractMeta(m)
+				}
+			}
 			// Aligns with Hermes steer semantics: the model sees the
 			// correction after all tool results, maximizing its weight.
 			isLast := i == len(resp.ToolCalls)-1

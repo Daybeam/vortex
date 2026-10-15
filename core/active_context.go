@@ -13,9 +13,9 @@ import (
 type ContextTier int
 
 const (
-	ContextHot ContextTier = iota // Required: current task spec, step input, latest error
-	ContextWarm                   // Relevant: matched experience nodes (successes + failures)
-	ContextCold                   // Background: SOPs, role cookbooks, skill index
+	ContextHot  ContextTier = iota // Required: current task spec, step input, latest error
+	ContextWarm                    // Relevant: matched experience nodes (successes + failures)
+	ContextCold                    // Background: SOPs, role cookbooks, skill index
 )
 
 // ActiveContextAssembler rebuilds the prompt before each step execution.
@@ -37,11 +37,11 @@ func NewActiveContextAssembler(gs store.IExperienceStore, ec store.IEmbeddingCli
 // Called by executeStep() before spawning the sub-agent.
 func (a *ActiveContextAssembler) Assemble(
 	ctx context.Context, // L-2.1: propagated ctx for cancellation
-	taskSpec string,    // Hot: current task description
-	stepInput string,   // Hot: current step input
+	taskSpec string, // Hot: current task description
+	stepInput string, // Hot: current step input
 	latestError string, // Hot: error from previous attempt (if retrying)
-	capability string,  // Warm: for graph retrieval
-	roleID string,      // Cold: for role cookbook lookup
+	capability string, // Warm: for graph retrieval
+	roleID string, // Cold: for role cookbook lookup
 ) string {
 	var sb strings.Builder
 

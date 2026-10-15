@@ -41,10 +41,10 @@ var (
 // it to a single error for backward compatibility with the design doc's
 // signature.
 type PreflightResult struct {
-	OK        bool
-	Lang      string           // canonicalized
+	OK         bool
+	Lang       string             // canonicalized
 	Capability *RuntimeCapability // chosen backend (nil if unknown lang)
-	Err       error
+	Err        error
 }
 
 // PreflightCheck is the design-doc-signature entry point. Returns nil iff

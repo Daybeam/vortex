@@ -27,8 +27,8 @@ type ChatMemoryManager interface {
 //   - Token-budget trimming (MaxTokens) — drops oldest messages when over budget
 type RollingWindowMemory struct {
 	WindowSize   int                // recent N turns kept raw (default: 10)
-	SummaryModel providers.Provider  // optional LLM for summarization (nil = rule-based)
-	FactCache    *FactCache          // optional fact extraction (nil = skip)
+	SummaryModel providers.Provider // optional LLM for summarization (nil = rule-based)
+	FactCache    *FactCache         // optional fact extraction (nil = skip)
 	MaxTokens    int                // optional token budget (0 = no limit)
 }
 

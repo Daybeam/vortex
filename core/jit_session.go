@@ -116,8 +116,8 @@ type JITSessionManager struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*JITSession
-	stopCh   chan struct{}    // audit R-3: stop TTL goroutines on CloseAll
-	stopOnce sync.Once        // audit R-3: safe close of stopCh
+	stopCh   chan struct{} // audit R-3: stop TTL goroutines on CloseAll
+	stopOnce sync.Once     // audit R-3: safe close of stopCh
 }
 
 // NewJITSessionManager constructs a manager. scriptsDir is the project's

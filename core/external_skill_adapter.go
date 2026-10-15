@@ -58,11 +58,11 @@ func (a *ExternalSkillAdapter) ImportSkillDirectory(rootPath string) (int, error
 		// 1. Register as native Skill
 		skillDir := filepath.Dir(path)
 		skill := &config.Skill{
-			ID:          skillID,
-			Name:        meta.Name,
-			Description: meta.Description,
-			Capability:  deriveCapability(meta),
-			Domain:      "EXTERNAL",
+			ID:            skillID,
+			Name:          meta.Name,
+			Description:   meta.Description,
+			Capability:    deriveCapability(meta),
+			Domain:        "EXTERNAL",
 			TokenEstimate: 500,
 			ExecutionMode: config.ExecutionModeDirectory,
 			SkillDir:      skillDir,

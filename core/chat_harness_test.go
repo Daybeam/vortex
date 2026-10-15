@@ -194,7 +194,7 @@ func (m *steerMockProvider) Embed(ctx context.Context, text string) ([]float32, 
 	return nil, nil
 }
 func (m *steerMockProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
-func (m *steerMockProvider) Name() string                                             { return "steermock" }
+func (m *steerMockProvider) Name() string                                              { return "steermock" }
 
 func TestChatHarnessSteerNoTextLoop(t *testing.T) {
 	h := &ChatHarness{
@@ -244,8 +244,10 @@ func (m *writeCacheBugProvider) StreamComplete(ctx context.Context, req schemas.
 func (m *writeCacheBugProvider) Embed(ctx context.Context, text string) ([]float32, error) {
 	return nil, nil
 }
-func (m *writeCacheBugProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
-func (m *writeCacheBugProvider) Name() string                                             { return "writecachemock" }
+func (m *writeCacheBugProvider) CountTokens(ctx context.Context, text string) (int, error) {
+	return 0, nil
+}
+func (m *writeCacheBugProvider) Name() string { return "writecachemock" }
 
 func TestChatHarnessWriteToolNotCached(t *testing.T) {
 	h := &ChatHarness{
@@ -447,7 +449,7 @@ func TestReadFile_StartLineEndLine(t *testing.T) {
 
 	// Read lines 3-5.
 	result, err := HandleCoreTool(context.Background(), "read_file", map[string]any{
-		"path":      "test.txt",
+		"path":       "test.txt",
 		"start_line": float64(3),
 		"end_line":   float64(5),
 	}, outBase, "task1")
@@ -479,7 +481,7 @@ func TestReadFile_StartLineEndLine_BeyondEnd(t *testing.T) {
 	}
 
 	result, err := HandleCoreTool(context.Background(), "read_file", map[string]any{
-		"path":      "test.txt",
+		"path":       "test.txt",
 		"start_line": float64(100),
 	}, outBase, "task1")
 	if err != nil {
@@ -503,8 +505,8 @@ func (m *tier1Provider) StreamComplete(ctx context.Context, req schemas.Complete
 }
 
 func (m *tier1Provider) Embed(ctx context.Context, text string) ([]float32, error) { return nil, nil }
-func (m *tier1Provider) CountTokens(ctx context.Context, text string) (int, error)  { return 0, nil }
-func (m *tier1Provider) Name() string                                               { return "tier1mock" }
+func (m *tier1Provider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
+func (m *tier1Provider) Name() string                                              { return "tier1mock" }
 
 // TestChatHarness_Tier1_LargeInputMountedAsFile verifies that when the user's
 // input exceeds 50% of MaxContextWindow, it is mounted as a file and the
@@ -512,10 +514,10 @@ func (m *tier1Provider) Name() string                                           
 func TestChatHarness_Tier1_LargeInputMountedAsFile(t *testing.T) {
 	outBase := t.TempDir()
 	h := &ChatHarness{
-		Provider:        &tier1Provider{},
-		Model:           "mock",
-		OutputBase:      outBase,
-		MaxTurns:        2,
+		Provider:         &tier1Provider{},
+		Model:            "mock",
+		OutputBase:       outBase,
+		MaxTurns:         2,
 		MaxContextWindow: 2000, // 50% = 1000 tokens = 4000 chars
 	}
 
@@ -565,8 +567,8 @@ func (m *tier3Provider) StreamComplete(ctx context.Context, req schemas.Complete
 }
 
 func (m *tier3Provider) Embed(ctx context.Context, text string) ([]float32, error) { return nil, nil }
-func (m *tier3Provider) CountTokens(ctx context.Context, text string) (int, error)  { return 0, nil }
-func (m *tier3Provider) Name() string                                               { return "tier3mock" }
+func (m *tier3Provider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
+func (m *tier3Provider) Name() string                                              { return "tier3mock" }
 
 // TestChatHarness_Tier3_AutoDelegate verifies that when the user's input
 // exceeds 100% of MaxContextWindow, it is auto-delegated to the orchestrator.
@@ -575,10 +577,10 @@ func TestChatHarness_Tier3_AutoDelegate(t *testing.T) {
 	provider := &tier3Provider{}
 	delegateCalled := false
 	h := &ChatHarness{
-		Provider:        provider,
-		Model:           "mock",
-		OutputBase:      outBase,
-		MaxTurns:        2,
+		Provider:         provider,
+		Model:            "mock",
+		OutputBase:       outBase,
+		MaxTurns:         2,
 		MaxContextWindow: 1000, // 100% = 1000 tokens = 4000 chars
 		Delegate: func(prompt string) (string, error) {
 			delegateCalled = true
@@ -633,9 +635,11 @@ func (m *overflowProvider) StreamComplete(ctx context.Context, req schemas.Compl
 	return &schemas.ProviderResponse{Text: "Recovered after truncation."}, nil
 }
 
-func (m *overflowProvider) Embed(ctx context.Context, text string) ([]float32, error) { return nil, nil }
-func (m *overflowProvider) CountTokens(ctx context.Context, text string) (int, error)  { return 0, nil }
-func (m *overflowProvider) Name() string                                               { return "overflowmock" }
+func (m *overflowProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	return nil, nil
+}
+func (m *overflowProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
+func (m *overflowProvider) Name() string                                              { return "overflowmock" }
 
 // TestChatHarness_Tier2_ContextOverflowRecovery verifies that when the provider
 // returns a context_length_exceeded error, the harness truncates the input
@@ -681,8 +685,8 @@ func TestChatHarness_Tier2_ContextOverflowRecovery(t *testing.T) {
 
 // hex escapes for < and > to avoid editor stripping angle brackets.
 const (
-	testOpenTag  = "\x3cthink\x3e"     // imd
-	testCloseTag = "\x3c/think\x3e"    // }
+	testOpenTag  = "\x3cthink\x3e"  // imd
+	testCloseTag = "\x3c/think\x3e" // }
 )
 
 func TestThinkingExtractor_SimpleTags(t *testing.T) {
@@ -756,5 +760,69 @@ func TestThinkingExtractor_Flush(t *testing.T) {
 	thinking += t2
 	if thinking != "partial reasoning" {
 		t.Errorf("expected 'partial reasoning', got %q", thinking)
+	}
+}
+
+// ── Gap-3: Fallback Windowed Loop Detection (Sieve=nil) ─────────────────────
+
+type fallbackLoopProvider struct {
+	calls int
+}
+
+func (m *fallbackLoopProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+	return m.StreamComplete(ctx, req, func(string) error { return nil })
+}
+
+func (m *fallbackLoopProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
+	m.calls++
+	if m.calls <= 5 {
+		return &schemas.ProviderResponse{
+			ToolCalls: []schemas.ToolCall{
+				{Name: "read_file", Arguments: map[string]any{"path": "x.txt"}},
+			},
+		}, nil
+	}
+	onChunk("Done.")
+	return &schemas.ProviderResponse{Text: "Done."}, nil
+}
+
+func (m *fallbackLoopProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	return nil, nil
+}
+func (m *fallbackLoopProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
+func (m *fallbackLoopProvider) Name() string                                              { return "fallbackmock" }
+
+func TestChatHarness_FallbackWindowedLoop_WhenSieveNil(t *testing.T) {
+	outBase := t.TempDir()
+	taskDir := filepath.Join(outBase, "task1")
+	if err := os.MkdirAll(taskDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, "x.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sieve is nil — exercises the fallback windowed loop detection (Gap-3).
+	h := &ChatHarness{
+		Provider:   &fallbackLoopProvider{},
+		Model:      "mock",
+		OutputBase: outBase,
+		MaxTurns:   8,
+		// Sieve intentionally nil
+	}
+
+	var events []ChatEvent
+	h.Run(context.Background(), "task1",
+		[]ChatMessage{{Role: "user", Content: "test"}},
+		func(ev ChatEvent) error { events = append(events, ev); return nil })
+
+	var sawFallbackGuard bool
+	for _, ev := range events {
+		if ev.Type == "loop_guard" && strings.Contains(ev.Data, "windowed fallback") {
+			sawFallbackGuard = true
+		}
+	}
+	if !sawFallbackGuard {
+		t.Error("expected loop_guard event with 'windowed fallback' when Sieve is nil")
 	}
 }

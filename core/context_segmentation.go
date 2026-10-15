@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -229,6 +230,115 @@ func (m *SegmentManager) GetSegmentLinks(segmentID string) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.segmentLinks[segmentID]
+}
+
+// ---------------------------------------------------------------------------
+// Trace Weaver (P2-4): Cross-Segment Semantic Linking (Membox method)
+// ---------------------------------------------------------------------------
+//
+// Trace Weaver extends the basic 1-hop segmentLinks with two capabilities:
+//   1. FollowTrace — BFS through segmentLinks to find all transitively
+//      connected segments, returned in temporal order (topic evolution).
+//   2. WeaveTrace  — Combine segment summaries into a coherent narrative
+//      string with temporal markers for context retrieval.
+//
+// The Membox paper method: when a topic resurfaces across multiple segments
+// (e.g., user discusses "auth" in segment 1, switches to "UI" in segment 2,
+// then returns to "auth" in segment 3), Trace Weaver follows the semantic
+// links to reconstruct the full topic trace, providing complete context
+// rather than just the most recent segment.
+
+const traceWeaverDefaultDepth = 3 // max BFS hops for trace following
+
+// SegmentTrace is a chain of semantically linked segments in temporal order.
+type SegmentTrace struct {
+	Segments []MemorySegment // ordered by StartTime ascending
+	TraceID  string          // originating segment ID
+}
+
+// FollowTrace builds a trace from a starting segment by transitively
+// following cross-segment links up to maxDepth hops. Returns segments
+// ordered by StartTime ascending (temporal order = topic evolution).
+//
+// If maxDepth <= 0, uses traceWeaverDefaultDepth (3).
+// If the segmentID has no links, returns a trace containing only the
+// starting segment (if found in sealed segments).
+func (m *SegmentManager) FollowTrace(segmentID string, maxDepth int) SegmentTrace {
+	if maxDepth <= 0 {
+		maxDepth = traceWeaverDefaultDepth
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	trace := SegmentTrace{TraceID: segmentID}
+
+	// BFS through segmentLinks.
+	visited := map[string]bool{segmentID: true}
+	queue := []struct {
+		id    string
+		depth int
+	}{{segmentID, 0}}
+
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+
+		if cur.depth >= maxDepth {
+			continue
+		}
+		for _, neighbor := range m.segmentLinks[cur.id] {
+			if !visited[neighbor] {
+				visited[neighbor] = true
+				queue = append(queue, struct {
+					id    string
+					depth int
+				}{neighbor, cur.depth + 1})
+			}
+		}
+	}
+
+	// Collect MemorySegment objects from sealed segments.
+	for i := range m.sealed {
+		if visited[m.sealed[i].SegmentID] {
+			trace.Segments = append(trace.Segments, m.sealed[i])
+		}
+	}
+
+	// Sort by StartTime ascending (temporal order).
+	sort.Slice(trace.Segments, func(i, j int) bool {
+		return trace.Segments[i].StartTime.Before(trace.Segments[j].StartTime)
+	})
+
+	return trace
+}
+
+// WeaveTrace combines segment summaries into a coherent narrative string.
+// Each segment is formatted with a temporal marker and its summary,
+// producing a single context string that shows topic evolution over time.
+//
+// Example output:
+//   → [10:00] auth design: discussed token rotation strategy
+//   → [10:15] auth design: refined refresh token lifetime to 15min
+//   → [10:30] auth design: concluded with sliding window approach
+func (m *SegmentManager) WeaveTrace(trace SegmentTrace) string {
+	if len(trace.Segments) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	for _, seg := range trace.Segments {
+		title := seg.TopicTitle
+		if title == "" {
+			title = seg.Summary
+		}
+		fmt.Fprintf(&b, "→ [%s] %s: %s\n",
+			seg.StartTime.Format("15:04"),
+			title,
+			seg.Summary,
+		)
+	}
+	return b.String()
 }
 
 func (m *SegmentManager) appendSealedFile(data []byte) {

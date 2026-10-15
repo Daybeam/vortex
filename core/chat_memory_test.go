@@ -137,9 +137,13 @@ func (p *summaryMockProvider) StreamComplete(ctx context.Context, req schemas.Co
 	return p.Complete(ctx, req)
 }
 
-func (p *summaryMockProvider) Embed(ctx context.Context, text string) ([]float32, error) { return nil, nil }
-func (p *summaryMockProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
-func (p *summaryMockProvider) Name() string                                               { return "summary-mock" }
+func (p *summaryMockProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	return nil, nil
+}
+func (p *summaryMockProvider) CountTokens(ctx context.Context, text string) (int, error) {
+	return 0, nil
+}
+func (p *summaryMockProvider) Name() string { return "summary-mock" }
 
 func TestRollingWindowMemory_LLMSummary(t *testing.T) {
 	mp := &summaryMockProvider{}
@@ -171,9 +175,11 @@ func (p *errorMockProvider) Complete(ctx context.Context, req schemas.CompleteRe
 func (p *errorMockProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
 	return p.Complete(ctx, req)
 }
-func (p *errorMockProvider) Embed(ctx context.Context, text string) ([]float32, error) { return nil, nil }
+func (p *errorMockProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	return nil, nil
+}
 func (p *errorMockProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
-func (p *errorMockProvider) Name() string                                               { return "error-mock" }
+func (p *errorMockProvider) Name() string                                              { return "error-mock" }
 
 func TestRollingWindowMemory_LLMSummaryFallbackOnError(t *testing.T) {
 	mem := &RollingWindowMemory{

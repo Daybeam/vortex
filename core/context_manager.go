@@ -19,11 +19,11 @@ type CompressionLevel int
 
 // Package-level regexes for applyRTK & applyLogCompress — compiled once, reused on every call.
 var (
-	rtkReTimestamp = regexp.MustCompile(`\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]`)
-	rtkReProgress  = regexp.MustCompile(`(?m)^.*(Progress|Processing|Updating).*(\d+%|\.\.\.).*$`)
-	reLogNoise     = regexp.MustCompile(`(?i)(PASS|SUCCESS|INFO|DEBUG)`)
-	reErrorKeyword = regexp.MustCompile(`(?i)(FATAL|ERROR|WARN|Exception|Traceback|panic:|failed:|FAIL)`)
-	reStackTrace   = regexp.MustCompile(`(?i)(^\s*at\s+|^[\t\s]+[a-zA-Z0-9_\-/\\]+\.go:\d+|^[\t\s]+[a-zA-Z0-9_\-/\\]+\.[a-zA-Z0-9_]+:\d+)`)
+	rtkReTimestamp  = regexp.MustCompile(`\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]`)
+	rtkReProgress   = regexp.MustCompile(`(?m)^.*(Progress|Processing|Updating).*(\d+%|\.\.\.).*$`)
+	reLogNoise      = regexp.MustCompile(`(?i)(PASS|SUCCESS|INFO|DEBUG)`)
+	reErrorKeyword  = regexp.MustCompile(`(?i)(FATAL|ERROR|WARN|Exception|Traceback|panic:|failed:|FAIL)`)
+	reStackTrace    = regexp.MustCompile(`(?i)(^\s*at\s+|^[\t\s]+[a-zA-Z0-9_\-/\\]+\.go:\d+|^[\t\s]+[a-zA-Z0-9_\-/\\]+\.[a-zA-Z0-9_]+:\d+)`)
 	reCodeFeature   = regexp.MustCompile(`(?m)^\s*(func|function|def|class|type|struct|interface|package|import|using|include|pub|public|private)\b`)
 	reCodeSignature = regexp.MustCompile(`(?m)^\s*(func|function|def|class|type|struct|interface)\b`)
 )
@@ -189,6 +189,7 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 
 // zoneKind discriminates which zone the counter should tally.
 type zoneKind int
+
 const (
 	zoneProtected zoneKind = iota
 	zoneVolatile
@@ -197,7 +198,7 @@ const (
 // countZone returns the total token count of the requested zone.
 // zoneProtected = ProtectedSystemBlocks + ProtectedUserBlocks.
 // zoneVolatile  = SystemBlocks + UserBlocks (legacy) + System/User fallback
-//                + VolatileSystemBlocks + VolatileUserBlocks.
+//   - VolatileSystemBlocks + VolatileUserBlocks.
 func (cm *ContextManager) countZone(ctx context.Context, provider providers.Provider, req *schemas.CompleteRequest, zone zoneKind) (int, error) {
 	if zone == zoneProtected {
 		var sb strings.Builder
@@ -332,22 +333,22 @@ func (cm *ContextManager) Squeeze(ctx context.Context, provider providers.Provid
 	}
 
 	newReq := &schemas.CompleteRequest{
-		System:             volatileSystem,
-		User:               volatileUser,
+		System:                volatileSystem,
+		User:                  volatileUser,
 		ProtectedSystemBlocks: req.ProtectedSystemBlocks,
 		ProtectedUserBlocks:   req.ProtectedUserBlocks,
 		VolatileSystemBlocks:  req.VolatileSystemBlocks,
 		VolatileUserBlocks:    req.VolatileUserBlocks,
-		Model:             req.Model,
-		MaxTokens:         req.MaxTokens,
-		Temperature:       req.Temperature,
-		FrequencyPenalty:  req.FrequencyPenalty,
-		MCPServers:        req.MCPServers,
-		Attachments:       req.Attachments,
-		Secrets:           req.Secrets,
-		ForceToolCall:     req.ForceToolCall,
-		Constraints:       req.Constraints,
-		CompressionHint:   req.CompressionHint,
+		Model:                 req.Model,
+		MaxTokens:             req.MaxTokens,
+		Temperature:           req.Temperature,
+		FrequencyPenalty:      req.FrequencyPenalty,
+		MCPServers:            req.MCPServers,
+		Attachments:           req.Attachments,
+		Secrets:               req.Secrets,
+		ForceToolCall:         req.ForceToolCall,
+		Constraints:           req.Constraints,
+		CompressionHint:       req.CompressionHint,
 	}
 
 	compressedText := newReq.System + "\n\n" + newReq.User

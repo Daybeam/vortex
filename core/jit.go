@@ -65,10 +65,10 @@ const EmbeddedCommandPrefix = "__embedded__:"
 // RegisterTool creates a temporary script file and registers it as a dynamic MCP.
 // As of the embedded-runtime + preflight architecture
 // (docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md), this method:
-//   1. Runs PreflightCheck first — bad code is rejected before any file I/O.
-//   2. Routes embedded langs (js, lua) to RegisterEmbeddedTool, which registers
-//      an in-process MCP marker instead of requiring a host binary.
-//   3. Keeps the legacy host-binary path for managed langs (python, node, bun).
+//  1. Runs PreflightCheck first — bad code is rejected before any file I/O.
+//  2. Routes embedded langs (js, lua) to RegisterEmbeddedTool, which registers
+//     an in-process MCP marker instead of requiring a host binary.
+//  3. Keeps the legacy host-binary path for managed langs (python, node, bun).
 func (m *JITManager) RegisterTool(script, lang string, ttl time.Duration, sandboxed bool) (string, error) {
 	if err := PreflightCheck(lang, script); err != nil {
 		return "", err
