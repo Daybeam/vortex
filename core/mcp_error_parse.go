@@ -9,17 +9,17 @@ import (
 // following the SERF (Structured Error Recovery Framework) schema from
 // arXiv:2603.13417 §12.3.
 type SERFError struct {
-	Category         string         `json:"category"`          // INVALID_INPUT / RESOURCE_NOT_FOUND / ...
+	Category         string         `json:"category"` // INVALID_INPUT / RESOURCE_NOT_FOUND / ...
 	Retryable        bool           `json:"retryable"`
-	RetryAfterMs     *int           `json:"retry_after_ms"`    // nil = no suggested value
+	RetryAfterMs     *int           `json:"retry_after_ms"` // nil = no suggested value
 	SuggestedActions []SERFAction   `json:"suggested_actions"`
 	Context          map[string]any `json:"context"`
-	RawMessage       string         `json:"message"`           // original error text
+	RawMessage       string         `json:"message"` // original error text
 }
 
 // SERFAction represents a recovery action suggested by the tool.
 type SERFAction struct {
-	Type    string         `json:"type"`             // SWITCH_RESOURCE / ESCALATE_TO_USER / RETRY
+	Type    string         `json:"type"` // SWITCH_RESOURCE / ESCALATE_TO_USER / RETRY
 	Params  map[string]any `json:"params"`
 	Message string         `json:"message,omitempty"`
 }
@@ -79,11 +79,11 @@ func tryParseSERF(errMsg string) *SERFError {
 	trimmed := strings.TrimSpace(errMsg)
 	if strings.HasPrefix(trimmed, "{") {
 		var wrapper struct {
-			SERF      *SERFError      `json:"serf"`
-			Code      string          `json:"code"`
-			Message   string          `json:"message"`
-			Retryable bool            `json:"retryable"`
-			Context   map[string]any  `json:"context"`
+			SERF      *SERFError     `json:"serf"`
+			Code      string         `json:"code"`
+			Message   string         `json:"message"`
+			Retryable bool           `json:"retryable"`
+			Context   map[string]any `json:"context"`
 		}
 		if json.Unmarshal([]byte(trimmed), &wrapper) == nil {
 			if wrapper.SERF != nil {

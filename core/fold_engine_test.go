@@ -326,17 +326,17 @@ func TestDecompress_RecoversOriginalContent(t *testing.T) {
 
 	// Create a sealed segment with items in archive.
 	item1 := MemoryItem{
-		NodeID:   "dec-item-1",
-		Intent:   "user question about Go",
-		Summary:  "assistant answer about Go",
-		TaskID:   "task-1",
+		NodeID:    "dec-item-1",
+		Intent:    "user question about Go",
+		Summary:   "assistant answer about Go",
+		TaskID:    "task-1",
 		Timestamp: time.Now(),
 	}
 	item2 := MemoryItem{
-		NodeID:   "dec-item-2",
-		Intent:   "follow-up about testing",
-		Summary:  "answer about testing",
-		TaskID:   "task-1",
+		NodeID:    "dec-item-2",
+		Intent:    "follow-up about testing",
+		Summary:   "answer about testing",
+		TaskID:    "task-1",
 		Timestamp: time.Now(),
 	}
 
@@ -493,8 +493,8 @@ func TestInsertFoldBlock_EmptyBlocks_ReturnsJustFold(t *testing.T) {
 
 func TestEstimateFoldTokens(t *testing.T) {
 	blocks := []schemas.ContentBlock{
-		{Text: strings.Repeat("x", 400)},  // 100 tokens
-		{Text: strings.Repeat("y", 800)},  // 200 tokens
+		{Text: strings.Repeat("x", 400)}, // 100 tokens
+		{Text: strings.Repeat("y", 800)}, // 200 tokens
 	}
 	total := estimateFoldTokens(blocks)
 	if total != 300 {

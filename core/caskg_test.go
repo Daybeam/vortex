@@ -110,9 +110,10 @@ func TestCaSKG_Save_AutoCreatesDir(t *testing.T) {
 // TestCaSKG_PruneStaleEdges_FreshHighPerformingRetained
 //
 // Scenario: Fresh, high-performing edges are retained after pruning
-//   Given: Edges with recent LastUpdated and success rate >= minSuccessRate
-//   When:  PruneStaleEdges is called
-//   Then:  All fresh, high-performing edges remain in the graph
+//
+//	Given: Edges with recent LastUpdated and success rate >= minSuccessRate
+//	When:  PruneStaleEdges is called
+//	Then:  All fresh, high-performing edges remain in the graph
 func TestCaSKG_PruneStaleEdges_FreshHighPerformingRetained(t *testing.T) {
 	m := NewCaSKGManager("")
 
@@ -146,9 +147,10 @@ func TestCaSKG_PruneStaleEdges_FreshHighPerformingRetained(t *testing.T) {
 // TestCaSKG_PruneStaleEdges_StaleEvicted
 //
 // Scenario: Edges unused beyond maxAge are evicted
-//   Given: An edge with LastUpdated 10 days ago (maxAge = 7 days)
-//   When:  PruneStaleEdges is called
-//   Then:  The stale edge is removed from the graph
+//
+//	Given: An edge with LastUpdated 10 days ago (maxAge = 7 days)
+//	When:  PruneStaleEdges is called
+//	Then:  The stale edge is removed from the graph
 func TestCaSKG_PruneStaleEdges_StaleEvicted(t *testing.T) {
 	m := NewCaSKGManager("")
 
@@ -178,9 +180,10 @@ func TestCaSKG_PruneStaleEdges_StaleEvicted(t *testing.T) {
 // TestCaSKG_PruneStaleEdges_UnderperformingEvicted
 //
 // Scenario: Edges with TotalCount >= 5 and success rate < minSuccessRate are evicted
-//   Given: An edge with 1 success / 10 total = 10% (below 30% threshold)
-//   When:  PruneStaleEdges is called
-//   Then:  The underperforming edge is removed
+//
+//	Given: An edge with 1 success / 10 total = 10% (below 30% threshold)
+//	When:  PruneStaleEdges is called
+//	Then:  The underperforming edge is removed
 func TestCaSKG_PruneStaleEdges_UnderperformingEvicted(t *testing.T) {
 	m := NewCaSKGManager("")
 
@@ -210,9 +213,10 @@ func TestCaSKG_PruneStaleEdges_UnderperformingEvicted(t *testing.T) {
 // TestCaSKG_PruneStaleEdges_LowTotalCountSpared
 //
 // Scenario: Edges with TotalCount < 5 are spared from performance pruning
-//   Given: An edge with 1 success / 3 total = 33% (below threshold but < 5 total)
-//   When:  PruneStaleEdges is called
-//   Then:  The edge is retained (not enough data to prune)
+//
+//	Given: An edge with 1 success / 3 total = 33% (below threshold but < 5 total)
+//	When:  PruneStaleEdges is called
+//	Then:  The edge is retained (not enough data to prune)
 func TestCaSKG_PruneStaleEdges_LowTotalCountSpared(t *testing.T) {
 	m := NewCaSKGManager("")
 
@@ -242,10 +246,11 @@ func TestCaSKG_PruneStaleEdges_LowTotalCountSpared(t *testing.T) {
 // TestCaSKG_PruneStaleEdges_LegacyZeroTimeSpared
 //
 // Scenario: Legacy edges with zero LastUpdated are spared from time-decay pruning
-//   Given: An edge loaded from old JSON (LastUpdated is zero)
-//   When:  PruneStaleEdges is called
-//   Then:  The edge is NOT evicted by Rule 1 (time-decay)
-//   And:   It can still be evicted by Rule 2 (performance) if applicable
+//
+//	Given: An edge loaded from old JSON (LastUpdated is zero)
+//	When:  PruneStaleEdges is called
+//	Then:  The edge is NOT evicted by Rule 1 (time-decay)
+//	And:   It can still be evicted by Rule 2 (performance) if applicable
 func TestCaSKG_PruneStaleEdges_LegacyZeroTimeSpared(t *testing.T) {
 	m := NewCaSKGManager("")
 
@@ -275,9 +280,10 @@ func TestCaSKG_PruneStaleEdges_LegacyZeroTimeSpared(t *testing.T) {
 // TestCaSKG_PruneStaleEdges_EmptySourceRemoved
 //
 // Scenario: Source nodes with no remaining targets are cleaned up
-//   Given: A source node whose only target edge is pruned
-//   When:  PruneStaleEdges is called
-//   Then:  The empty source entry is removed from the edges map
+//
+//	Given: A source node whose only target edge is pruned
+//	When:  PruneStaleEdges is called
+//	Then:  The empty source entry is removed from the edges map
 func TestCaSKG_PruneStaleEdges_EmptySourceRemoved(t *testing.T) {
 	m := NewCaSKGManager("")
 
@@ -307,10 +313,11 @@ func TestCaSKG_PruneStaleEdges_EmptySourceRemoved(t *testing.T) {
 // TestCaSKG_JSONBackwardCompat_LegacyFileWithoutLastUpdated
 //
 // Scenario: JSON files from before LastUpdated was added can still be loaded
-//   Given: A JSON file with edges that lack the "last_updated" field
-//   When:  NewCaSKGManager loads the file
-//   Then:  The graph is loaded successfully with LastUpdated as zero value
-//   And:   The edge data (SuccessCount, TotalCount, CausalLift) is preserved
+//
+//	Given: A JSON file with edges that lack the "last_updated" field
+//	When:  NewCaSKGManager loads the file
+//	Then:  The graph is loaded successfully with LastUpdated as zero value
+//	And:   The edge data (SuccessCount, TotalCount, CausalLift) is preserved
 func TestCaSKG_JSONBackwardCompat_LegacyFileWithoutLastUpdated(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "legacy_caskg.json")
@@ -353,9 +360,10 @@ func TestCaSKG_JSONBackwardCompat_LegacyFileWithoutLastUpdated(t *testing.T) {
 // TestCaSKG_Save_TriggersPruning
 //
 // Scenario: Save() automatically prunes stale edges before persisting (throttled)
-//   Given: A graph with a stale edge and a fresh edge, and prune throttle has elapsed
-//   When:  Save() is called
-//   Then:  The stale edge is evicted and only the fresh edge is persisted
+//
+//	Given: A graph with a stale edge and a fresh edge, and prune throttle has elapsed
+//	When:  Save() is called
+//	Then:  The stale edge is evicted and only the fresh edge is persisted
 func TestCaSKG_Save_TriggersPruning(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "caskg.json")
@@ -411,9 +419,10 @@ func TestCaSKG_Save_TriggersPruning(t *testing.T) {
 // TestCaSKG_RecordTransition_StampsLastUpdated
 //
 // Scenario: recordTransition stamps LastUpdated on every edge activation
-//   Given: A new edge is created via recordTransition
-//   When:  recordTransition is called
-//   Then:  edge.LastUpdated is set to a non-zero timestamp close to now
+//
+//	Given: A new edge is created via recordTransition
+//	When:  recordTransition is called
+//	Then:  edge.LastUpdated is set to a non-zero timestamp close to now
 func TestCaSKG_RecordTransition_StampsLastUpdated(t *testing.T) {
 	m := NewCaSKGManager("")
 

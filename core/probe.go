@@ -30,8 +30,8 @@ func ProbeTaskComplexity(probe providers.Provider, task string) (bool, error) {
 		Constraints: map[string]any{
 			"questions": map[string]any{
 				"complexity": map[string]any{
-					"type":    "choice",
-					"options": []string{"yes", "no"},
+					"type":     "choice",
+					"options":  []string{"yes", "no"},
 					"question": "This task requires multi-step planning?",
 				},
 			},

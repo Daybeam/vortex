@@ -15,7 +15,10 @@ func TestDirectedEngine_DetectReadDeps_Versioning(t *testing.T) {
 
 	taskID := "task_v1"
 	taskDir := filepath.Join(tempDir, taskID)
-	_ = os.MkdirAll(taskDir, 0755)
+	// audit T-NEW-3: assert on setup errors for clear failure messages.
+	if err := os.MkdirAll(taskDir, 0755); err != nil {
+		t.Fatalf("setup MkdirAll failed: %v", err)
+	}
 
 	reg := &config.Registry{
 		System: config.SystemSettings{
@@ -31,7 +34,10 @@ func TestDirectedEngine_DetectReadDeps_Versioning(t *testing.T) {
 	// 1. Create a producer step output
 	filePath := filepath.Join(taskDir, "output.txt")
 	content := []byte("v1 content")
-	_ = os.WriteFile(filePath, content, 0644)
+	// audit T-NEW-3: assert on setup errors for clear failure messages.
+	if err := os.WriteFile(filePath, content, 0644); err != nil {
+		t.Fatalf("setup WriteFile failed: %v", err)
+	}
 
 	graph := &schemas.TaskGraph{
 		TaskID: taskID,

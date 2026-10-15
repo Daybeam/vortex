@@ -203,7 +203,7 @@ func (m *CaSKGManager) recordTransition(source, target string, success bool) {
 const (
 	defaultStaleEdgeMaxAge      = 7 * 24 * time.Hour
 	defaultMinSuccessRate       = 0.3
-	staleEdgeMinTotalForPruning = 5  // don't prune edges with too few observations
+	staleEdgeMinTotalForPruning = 5             // don't prune edges with too few observations
 	pruneInterval               = 1 * time.Hour // throttle: prune at most once per hour
 )
 

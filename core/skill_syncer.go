@@ -176,7 +176,7 @@ func (s *SkillSyncer) SyncRepo(ctx context.Context, owner, repo, path string) (i
 		if err != nil {
 			continue
 		}
-		
+
 		skillFileName := strings.TrimSuffix(file.Name, filepath.Ext(file.Name)) + ".json"
 		if err := os.WriteFile(filepath.Join(skillsDir, skillFileName), skillData, 0644); err != nil {
 			continue
@@ -209,7 +209,7 @@ func (s *SkillSyncer) parseSkill(filename, content string) (*config.Skill, error
 	// If it's Markdown (like google/skills), we do a basic heuristic parse
 	// In a real implementation, we would use a proper parser for SKILL.md
 	// For now, we'll wrap the MD content into a default skill structure
-	
+
 	// Extract ID from filename or content
 	id := strings.TrimSuffix(filename, filepath.Ext(filename))
 	id = strings.ReplaceAll(id, " ", "_")

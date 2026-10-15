@@ -133,7 +133,9 @@ func TestMCPToolsListFailure_SlogError(t *testing.T) {
 //
 // Feature: Context Window Compression
 // Scenario: When the provider returns a context-limit error, the system must
-//          detect it and trigger compression
+//
+//	detect it and trigger compression
+//
 // Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Context Compression
 // -----------------------------------------------------------------------------
 func TestIsContextLimitError(t *testing.T) {
@@ -247,7 +249,9 @@ func TestToolCallKey_DeterministicSameArgsDifferentForDifferent(t *testing.T) {
 //
 // Feature: Write Authorization
 // Scenario: IsWriteMCPTool correctly classifies write tools vs read-only tools
-//          and excludes core filesystem tools
+//
+//	and excludes core filesystem tools
+//
 // Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Write Authorization
 // -----------------------------------------------------------------------------
 // Verifies that IsWriteMCPTool correctly classifies MCP tools as write
@@ -327,7 +331,9 @@ func (m *recordingTaskStore) Claim(_ context.Context, _, _ string) (bool, error)
 //
 // Feature: Engine Trace Persistence
 // Scenario: On error paths, trace data must be persisted to TaskStore and
-//          must not be lost
+//
+//	must not be lost
+//
 // Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Engine Trace Persistence
 // -----------------------------------------------------------------------------
 func TestPersistTraceOnError(t *testing.T) {

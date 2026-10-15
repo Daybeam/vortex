@@ -3,8 +3,8 @@ package core
 import (
 	"fmt"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/daybeam/vortex/config"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // validateToolArgs validates tool call arguments against the tool's JSON Schema

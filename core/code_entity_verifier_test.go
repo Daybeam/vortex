@@ -111,9 +111,13 @@ func TestCodeEntityVerifier_SkipsVendorAndGit(t *testing.T) {
 		t.Error("expected failure message")
 	}
 	// OtherFunc in src/ should be found.
-	passed, _, _ = v.Verify(context.Background(), dir, map[string]any{
+	// audit T-NEW-2: check Verify error for diagnostic clarity.
+	passed, _, vErr := v.Verify(context.Background(), dir, map[string]any{
 		"entities": []any{"OtherFunc"},
 	})
+	if vErr != nil {
+		t.Fatalf("Verify failed: %v", vErr)
+	}
 	if !passed {
 		t.Error("entity in src/ should be found")
 	}

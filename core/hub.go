@@ -43,15 +43,15 @@ type ContextHub struct {
 	// via orchestrator_discover). 429/rate-limit errors are EXCLUDED — they auto-recover.
 	circuitMu      sync.Mutex
 	circuitBroken  map[string]int // poolID → consecutive non-429 failure count
-	circuitMaxFail int           // threshold before a provider is dead
+	circuitMaxFail int            // threshold before a provider is dead
 }
 
 func NewContextHub(reg *config.Registry, graph *schemas.TaskGraph, exp store.IExperienceStore) *ContextHub {
 	return &ContextHub{
-		Registry: reg,
-		Graph:    graph,
-		Exp:      exp,
-		circuitBroken: make(map[string]int),
+		Registry:       reg,
+		Graph:          graph,
+		Exp:            exp,
+		circuitBroken:  make(map[string]int),
 		circuitMaxFail: 3,
 	}
 }
@@ -489,7 +489,30 @@ func (h *ContextHub) GetEmbeddingProvider() (interfaces.Provider, string, error)
 
 // EmbedWithFallback performs an embedding operation using the tiered fallback logic.
 // It attempts each available embedding provider until one succeeds or all fail.
+//
+// ADDED (2026-10-12): this is now a thin accounting wrapper around
+// embedWithFallbackInner. On success it records the estimated input-token
+// cost of the embedded text into the global usage ledger
+// (GetGlobalStats().RecordEmbedding), so /api/usage and future cost tracking
+// see embedding consumption alongside chat-model usage. The embedding client
+// interface returns no native token counts, so estimation reuses the
+// CJK-aware providers.EstimateTokens heuristic the rest of the budget system
+// already relies on. Failures record nothing (no tokens were consumed
+// billably by us on a failed attempt, and the fallback may still succeed).
 func (h *ContextHub) EmbedWithFallback(ctx context.Context, text string) ([]float32, string, error) {
+	emb, model, provider, err := h.embedWithFallbackInner(ctx, text)
+	if err != nil {
+		return emb, model, err
+	}
+	GetGlobalStats().RecordEmbedding(provider, model, providers.EstimateTokens(text))
+	return emb, model, nil
+}
+
+// embedWithFallbackInner holds the original tiered-fallback body. The extra
+// string return is the provider name of the embedding client that succeeded
+// (or "" when none did); EmbedWithFallback uses it for per-provider
+// usage accounting.
+func (h *ContextHub) embedWithFallbackInner(ctx context.Context, text string) ([]float32, string, string, error) {
 	h.Registry.Mu.RLock()
 	pID := h.Registry.DefaultEmbeddingProvider
 	h.Registry.Mu.RUnlock()
@@ -507,7 +530,7 @@ func (h *ContextHub) EmbedWithFallback(ctx context.Context, text string) ([]floa
 				if err == nil {
 					emb, err := p.Embed(ctx, text)
 					if err == nil {
-						return emb, cfg.EmbeddingModel, nil
+						return emb, cfg.EmbeddingModel, cfg.Provider, nil
 					}
 					if tripped := h.recordEmbeddingFailure(pID, err); tripped {
 						errs = append(errs, fmt.Sprintf("%s (%s): CIRCUIT TRIPPED — %v", pID, cfg.EmbeddingModel, err))
@@ -524,7 +547,7 @@ func (h *ContextHub) EmbedWithFallback(ctx context.Context, text string) ([]floa
 			if err == nil {
 				emb, err := p.Embed(ctx, text)
 				if err == nil {
-					return emb, cfg.EmbeddingModel, nil
+					return emb, cfg.EmbeddingModel, cfg.Provider, nil
 				}
 				errs = append(errs, fmt.Sprintf("%s (%s): %v", pID, cfg.EmbeddingModel, err))
 			}
@@ -550,7 +573,7 @@ func (h *ContextHub) EmbedWithFallback(ctx context.Context, text string) ([]floa
 		if err == nil {
 			emb, err := p.Embed(ctx, text)
 			if err == nil {
-				return emb, cfg.EmbeddingModel, nil
+				return emb, cfg.EmbeddingModel, cfg.Provider, nil
 			}
 			if tripped := h.recordEmbeddingFailure(cfg.PoolID, err); tripped {
 				errs = append(errs, fmt.Sprintf("%s (%s): CIRCUIT TRIPPED — %v", cfg.PoolID, cfg.EmbeddingModel, err))
@@ -575,7 +598,7 @@ func (h *ContextHub) EmbedWithFallback(ctx context.Context, text string) ([]floa
 				if err == nil {
 					emb, err := p.Embed(ctx, text)
 					if err == nil {
-						return emb, cfg.EmbeddingModel, nil
+						return emb, cfg.EmbeddingModel, cfg.Provider, nil
 					}
 					if tripped := h.recordEmbeddingFailure(id, err); tripped {
 						errs = append(errs, fmt.Sprintf("%s (%s, session): CIRCUIT TRIPPED — %v", id, cfg.EmbeddingModel, err))
@@ -589,11 +612,10 @@ func (h *ContextHub) EmbedWithFallback(ctx context.Context, text string) ([]floa
 
 	errStr := strings.Join(errs, "; ")
 	if errStr != "" {
-		return nil, "", fmt.Errorf("all embedding providers failed: %s", errStr)
+		return nil, "", "", fmt.Errorf("all embedding providers failed: %s", errStr)
 	}
-	return nil, "", fmt.Errorf("no embedding providers configured")
+	return nil, "", "", fmt.Errorf("no embedding providers configured")
 }
-
 
 // HubEmbeddingClient wraps ContextHub to satisfy the core.EmbeddingClient
 // interface used by IntentRouter. It delegates to EmbedWithFallback, which
