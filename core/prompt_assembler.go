@@ -53,6 +53,14 @@ type PromptAssembler struct {
 	dynamicWarmBudget  int // 0 = use config value; >0 = override
 	lastSubagentDur    time.Duration
 	warmBudgetBaseline time.Duration // threshold for tightening (default 30s)
+
+	// lastProfile is the most recent token-proportion snapshot, captured at
+	// the end of Build (post-budget enforcement). It reflects the *actual*
+	// system prompt that was assembled. Nil until the first Build. Read/write
+	// only via LastProfile / setLastProfile (mutex-guarded) because the API
+	// endpoint may read it concurrently with a spawn-time write.
+	profileMu   sync.Mutex
+	lastProfile *ContextProfile
 }
 
 // SetArchive injects the ContextArchive for Path D (Regular Step Warm layer).
@@ -164,10 +172,10 @@ func (s *PromptAssembler) Build(
 	// CompressRoleInstruction retains the first 3 + last 2 paragraphs.
 	if role != nil && role.Instruction != "" {
 		instruction := s.budgetEnforcer.CompressRoleInstruction(role.Instruction)
-		blocks = append(blocks, TagBlock(schemas.ContentBlock{
+		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 			Text:         fmt.Sprintf("# Role: %s\n%s", role.Name, instruction),
 			CacheControl: "ephemeral",
-		}, GovTier1))
+		}, GovTier1, CategoryRoleInstruction))
 	}
 
 	// Priority 6: Inject Semantic Precedents (Cognitive Feedback Loop).
@@ -185,9 +193,9 @@ func (s *PromptAssembler) Build(
 			pPart.WriteString(s.budgetEnforcer.SummarizePrecedent(p))
 			pPart.WriteString("\n\n")
 		}
-		blocks = append(blocks, TagBlock(schemas.ContentBlock{
+		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 			Text: pPart.String(),
-		}, GovTier3))
+		}, GovTier3, CategoryPastPrecedents))
 	}
 
 	// Anti-Cliff Priority 6+: Inject Anti-Pattern Precedents into ProtectedZone
@@ -195,19 +203,19 @@ func (s *PromptAssembler) Build(
 	// compression. ADDED (2026-08-27).
 	antiPatternText := s.resolveAntiPatternWarnings(capability, toolConstraints)
 	if antiPatternText != "" {
-		blocks = append(blocks, MarkProtected(schemas.ContentBlock{
+		blocks = append(blocks, MarkProtectedWithCategory(schemas.ContentBlock{
 			Text:         antiPatternText,
 			CacheControl: "ephemeral",
-		}))
+		}, CategoryAntiPattern))
 	}
 
 	// Historical Similar Task Patterns injection
 	similarTaskText := s.resolveSimilarTaskExperience(ctx, capability)
 	if similarTaskText != "" {
-		blocks = append(blocks, MarkProtected(schemas.ContentBlock{
+		blocks = append(blocks, MarkProtectedWithCategory(schemas.ContentBlock{
 			Text:         similarTaskText,
 			CacheControl: "ephemeral",
-		}))
+		}, CategorySimilarTask))
 
 		// Embedding model compatibility check (ADDED 2026-09-06)
 		// If the stored patterns were built with a different embedding model
@@ -268,10 +276,10 @@ func (s *PromptAssembler) Build(
 		assembler := NewActiveContextAssembler(s.expStore, embedClient, warmBudget)
 		// Pass real taskText and latestError into Hot Tier, capability/roleID into Warm/Cold tiers
 		if contextStr := assembler.Assemble(ctx, taskText, "", latestError, capability, roleID); contextStr != "" {
-			blocks = append(blocks, MarkProtected(schemas.ContentBlock{
+			blocks = append(blocks, MarkProtectedWithCategory(schemas.ContentBlock{
 				Text:         contextStr,
 				CacheControl: "ephemeral",
-			}))
+			}, CategoryActiveContext))
 		}
 	}
 
@@ -297,10 +305,10 @@ func (s *PromptAssembler) Build(
 				}
 				archivePart.WriteString(fmt.Sprintf("- **Step %s**: %s\n", stepLabel, sm.Summary))
 			}
-			blocks = append(blocks, TagBlock(schemas.ContentBlock{
+			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 				Text:         archivePart.String(),
 				CacheControl: "ephemeral",
-			}, GovTier2))
+			}, GovTier2, CategoryArchiveSummary))
 		}
 	}
 
@@ -311,10 +319,10 @@ func (s *PromptAssembler) Build(
 	// Tier 2 (trimmable): per §5, failure profiles are dropped before role
 	// instruction compression but after Tier 3.
 	if failureModeProfileText := s.resolveFailureModeProfile(providerCfg.Model); failureModeProfileText != "" {
-		blocks = append(blocks, TagBlock(schemas.ContentBlock{
+		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 			Text:         failureModeProfileText,
 			CacheControl: "ephemeral",
-		}, GovTier2))
+		}, GovTier2, CategoryFailureProfile))
 	}
 
 	// Inject Cookbook if present.
@@ -323,9 +331,9 @@ func (s *PromptAssembler) Build(
 	if cookbookSource, ok := providerCfg.Extra["cookbook_source"].(string); ok && cookbookSource != "" {
 		if content, err := s.resourceLoader.Fetch(ctx, cookbookSource); err == nil {
 			indexed := s.budgetEnforcer.IndexCookbook(content, capability)
-			blocks = append(blocks, TagBlock(schemas.ContentBlock{
+			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 				Text: fmt.Sprintf("# Model Execution Cookbook\n%s", indexed),
-			}, GovTier2))
+			}, GovTier2, CategoryCookbook))
 		}
 	}
 
@@ -378,9 +386,9 @@ func (s *PromptAssembler) Build(
 		if len(loadedSkills) > 1 {
 			tier = GovTier2
 		}
-		blocks = append(blocks, TagBlock(schemas.ContentBlock{
+		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 			Text: skillPart.String(),
-		}, tier))
+		}, tier, CategorySkills))
 	}
 
 	// Inject Few-Shot Examples for tool calls.
@@ -392,9 +400,9 @@ func (s *PromptAssembler) Build(
 		for _, ex := range fewShots {
 			fsPart.WriteString(ex + "\n\n")
 		}
-		blocks = append(blocks, TagBlock(schemas.ContentBlock{
+		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 			Text: fsPart.String(),
-		}, GovTier3))
+		}, GovTier3, CategoryFewShot))
 	}
 
 	// Inject Tree Context.
@@ -410,9 +418,9 @@ func (s *PromptAssembler) Build(
 		windowedPath := s.budgetEnforcer.SlidingWindowTreePath(path)
 		treeText := s.budgetEnforcer.RenderCollapsedTreePath(windowedPath, archetype)
 		if treeText != "" {
-			blocks = append(blocks, TagBlock(schemas.ContentBlock{
+			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 				Text: treeText,
-			}, GovTier3))
+			}, GovTier3, CategoryTreePath))
 		}
 	}
 
@@ -448,10 +456,10 @@ func (s *PromptAssembler) Build(
 	if err := tmpl.Execute(&buf, mergedContext); err != nil {
 		return nil, fmt.Errorf("template execute error: %w", err)
 	}
-	blocks = append(blocks, MarkProtected(schemas.ContentBlock{
+	blocks = append(blocks, MarkProtectedWithCategory(schemas.ContentBlock{
 		Text:         buf.String(),
 		CacheControl: "ephemeral", // Marker 1: End of System Prompt
-	}))
+	}, CategoryConstraints))
 
 	// ─── Runtime Two-Level Interception (§5) ───────────────────────────
 	// After assembling all blocks, enforce the model-aware System Prompt
@@ -473,6 +481,21 @@ func (s *PromptAssembler) Build(
 		// Phase 1-4: Tiered budget enforcement (existing, unchanged).
 		blocks = s.budgetEnforcer.EnforceBudget(blocks, budgetTokens)
 	}
+
+	// ── Token-proportion observability snapshot ───────────────────────────
+	// Capture the *actual* (post-budget) system-prompt breakdown so the
+	// observability UI can visualize where the System Prompt budget is spent.
+	// This is the real data the /api/context/profile endpoint surfaces —
+	// skills / mcp / rules / precedents all appear as labeled categories.
+	budgetTokens, reserveTokens := 0, 0
+	model, provider := "", ""
+	if providerCfg != nil {
+		budgetTokens = providerCfg.GetMaxSystemPromptTokens()
+		reserveTokens = providerCfg.GetReserveTokens()
+		model = providerCfg.Model
+		provider = providerCfg.Provider
+	}
+	s.setLastProfile(s.ComputeContextProfile(blocks, budgetTokens, reserveTokens, model, provider))
 
 	return blocks, nil
 }
@@ -579,4 +602,29 @@ func (s *PromptAssembler) resolveFailureModeProfile(modelID string) string {
 		sb.WriteString(fmt.Sprintf("- %s (%d prior occurrence(s))\n", e.mode, e.count))
 	}
 	return sb.String()
+}
+
+// CheckDataShapeMismatch checks if recent tool interactions have inconsistent
+// DataShape metadata. If two interactions have different DataShape values,
+// returns a warning string that should be injected into the prompt to prevent
+// the model from blindly merging incompatible data.
+//
+// See docs/plan/STRUCTURED_TOOL_METADATA_DESIGN.md §2.3.
+func CheckDataShapeMismatch(interactions []store.ToolInteraction) string {
+	seen := make(map[string]bool)
+	var shapes []string
+	for _, it := range interactions {
+		if it.Meta == nil || it.Meta.DataShape == "" {
+			continue
+		}
+		if !seen[it.Meta.DataShape] {
+			seen[it.Meta.DataShape] = true
+			shapes = append(shapes, it.Meta.DataShape)
+		}
+	}
+	if len(shapes) < 2 {
+		return ""
+	}
+	return fmt.Sprintf("[WARN] 警告：前后两次调用的数据口径不一致（%s），禁止直接合并对比，请先明确说明口径差异。",
+		strings.Join(shapes, " vs "))
 }

@@ -262,8 +262,19 @@ func (r *IntentRouter) Route(ctx context.Context, reg *config.Registry, userInpu
 		// If keyword finished first, give a brief window for embedding to attempt superior match
 		// audit P-8: use NewTimer + Stop instead of time.After to avoid timer leak.
 		timer := time.NewTimer(250 * time.Millisecond)
+		// FIX (eval, 2026-10-13): track whether the embedding racer already
+		// delivered inside the window below. The previous code re-waited on
+		// embedChan at the tail select — but the racer sends at most ONE value
+		// ever, so if it already delivered (the common no-client case), that
+		// channel is permanently drained and the tail select blocks forever
+		// (the MCP tool-call ctx is never cancelled). Symptom: orchestrator_
+		// submit_task hangs ~50% of runs (outer select picks ready cases at
+		// random) whenever keyword matching finds no SOP candidates.
+		var embRes raceResult
+		var embSeen bool
 		select {
-		case embRes := <-embedChan:
+		case embRes = <-embedChan:
+			embSeen = true
 			timer.Stop()
 			if embRes.err == nil && len(embRes.results) > 0 {
 				return embRes.results, nil
@@ -272,6 +283,10 @@ func (r *IntentRouter) Route(ctx context.Context, reg *config.Registry, userInpu
 		}
 		if kwRes.err == nil {
 			return kwRes.results, nil
+		}
+		if embSeen {
+			// Embedding already reported inside the window — never re-wait.
+			return nil, kwRes.err
 		}
 		select {
 		case embRes := <-embedChan:

@@ -71,7 +71,41 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 			result, herr = s.foldEngine.Decompress(segmentID, taskID)
 		}
 	} else {
-		result, herr = HandleCoreTool(ctx, call.Name, call.Arguments, s.outputBase, taskID, validator)
+		// A5 (Effect Boundary Defense): dry-run pre-check for high-risk tools.
+		// If the tool has RiskLevel=high and supports dry_run, execute with
+		// dry_run=true to preview the operation without committing it.
+		// If high-risk but no dry_run support, log a warning.
+		// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.4.
+		toolDef := findCoreToolDef(call.Name)
+		if isHighRiskTool(toolDef) {
+			if supportsDryRun(toolDef) {
+				// Execute with dry_run=true — preview without committing.
+				dryArgs := addDryRunArg(call.Arguments)
+				dryResult, dryErr := HandleCoreTool(ctx, call.Name, dryArgs, s.outputBase, taskID, validator)
+				if dryErr == nil {
+					result = dryRunResult(call.Name, dryResult)
+					s.logger.Log("EventA5DryRunPreview", taskID, stepID, map[string]any{
+						"tool":  call.Name,
+						"args":  marshalArgsForLog(call.Arguments),
+						"phase": "dry_run_preview",
+					})
+				} else {
+					// dry_run failed — the real operation would likely fail too.
+					result = fmt.Sprintf("[DRY-RUN FAILED] %s: %v\nOperation aborted to prevent likely failure.", call.Name, dryErr)
+					herr = dryErr
+				}
+			} else {
+				// High-risk tool without dry_run support — log warning, proceed.
+				s.logger.Log("EventA5HighRiskNoDryRun", taskID, stepID, map[string]any{
+					"tool":  call.Name,
+					"args":  marshalArgsForLog(call.Arguments),
+					"phase": "high_risk_no_dry_run",
+				})
+				result, herr = HandleCoreTool(ctx, call.Name, call.Arguments, s.outputBase, taskID, validator)
+			}
+		} else {
+			result, herr = HandleCoreTool(ctx, call.Name, call.Arguments, s.outputBase, taskID, validator)
+		}
 	}
 
 	res := result
@@ -80,10 +114,18 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 		res = fmt.Sprintf("Error: %v", herr)
 		status = "error"
 	}
+	// Egress redaction (I5): strip secrets before result enters LLM context.
+	// Output bounding: adaptive truncation for oversized tool results.
+	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4.2.
+	res = RedactEgress(res)
+	if len(res) > 2000 {
+		res = string(AdaptiveOutputResult([]byte(res), call.Name))
+	}
 	interaction := store.ToolInteraction{
 		ToolName:  call.Name,
 		Arguments: call.Arguments,
 		Result:    res,
+		Meta:      extractMeta(res), // Phase 2: extract structured metadata
 	}
 	s.logger.Log("EventCoreToolCall", taskID, stepID, map[string]any{
 		"tool":   call.Name,
@@ -98,4 +140,39 @@ func (s *Spawner) ClearSieveHistory(taskID string) {
 	if s.sieve != nil {
 		s.sieve.ClearHistory(taskID)
 	}
+}
+
+// extractMeta extracts structured ToolMetadata from a tool result if present.
+// MCP servers may return {"data": ..., "meta": {"truncated": true, ...}}.
+// Returns nil if the result is not a map or has no "meta" key.
+func extractMeta(result any) *store.ToolMetadata {
+	m, ok := result.(map[string]any)
+	if !ok {
+		return nil
+	}
+	metaVal, ok := m["meta"]
+	if !ok {
+		return nil
+	}
+	metaMap, ok := metaVal.(map[string]any)
+	if !ok {
+		return nil
+	}
+	meta := &store.ToolMetadata{}
+	if v, ok := metaMap["total"].(float64); ok {
+		meta.Total = int(v)
+	}
+	if v, ok := metaMap["returned"].(float64); ok {
+		meta.Returned = int(v)
+	}
+	if v, ok := metaMap["truncated"].(bool); ok {
+		meta.Truncated = v
+	}
+	if v, ok := metaMap["hint"].(string); ok {
+		meta.Hint = v
+	}
+	if v, ok := metaMap["data_shape"].(string); ok {
+		meta.DataShape = v
+	}
+	return meta
 }

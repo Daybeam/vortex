@@ -321,14 +321,19 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 		if stdout.Len() > 0 && stderr.Len() == 0 {
 			observability.GetGlobalMetrics().Inc("orchestrator.calls.execute_code_print_only", 1)
 		}
+		// Output bounding: guard against oversized stdout/stderr hitting LLM context.
+		// Mirrors SummarizeOutput in tools_command.go — AdaptiveOutputResult applies
+		// Head+Tail truncation + Error Keyword Extraction + workspace dump for large outputs.
+		gatedStdout := string(AdaptiveOutputResult([]byte(stdout.String()), "execute_code"))
+		gatedStderr := string(AdaptiveOutputResult([]byte(stderr.String()), "execute_code"))
 		return map[string]any{
-			"stdout": stdout.String(),
-			"stderr": stderr.String(),
+			"stdout": gatedStdout,
+			"stderr": gatedStderr,
 		}, nil
 	}
 	return map[string]any{
-		"stdout":    stdout.String(),
-		"stderr":    stderr.String(),
+		"stdout":    string(AdaptiveOutputResult([]byte(stdout.String()), "execute_code")),
+		"stderr":    string(AdaptiveOutputResult([]byte(stderr.String()), "execute_code")),
 		"exit_code": cmd.ProcessState.ExitCode(),
 		"error":     errToString(err),
 	}, nil

@@ -442,7 +442,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 	// ── Phase 0: Task-Local Closure Restore (ADDED 2026-09-15) ──────────
 	// If JIT tools referenced by this task have expired globally (TTL GC),
 	// re-register them from the task-local snapshot taken at submit time.
-	// See docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §二.1.
+	// See docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
 	if s.jit != nil && len(graph.LocalMCPs) > 0 {
 		if restored := s.jit.RestoreLocalMCPs(graph.LocalMCPs); len(restored) > 0 {
 			s.logger.Log("JITClosureRestored", graph.TaskID, step.ID, map[string]any{
@@ -493,7 +493,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 	}
 
 	// ── Cost Governance: Budget progress sentinel (P1) ──────────────────
-	// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 告警器2.
+	// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 2.
 	// Soft alert at 60/80/90% + linear prediction from step completion ratio.
 	// Never auto-extends budget. Prediction ≠ decision.
 	//
@@ -905,9 +905,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"error": err.Error(),
 					"role":  step.RoleID,
 				})
-			// CRITICAL: Mark step as blocked (prevents re-dispatch via ReadySteps).
-			// Graph stays GraphRunning — independent branches continue.
-			s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphRunning)
+				// CRITICAL: Mark step as blocked (prevents re-dispatch via ReadySteps).
+				// Graph stays GraphRunning — independent branches continue.
+				s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphRunning)
 
 				// ACAIS: Deposit critical signal for role missing
 				if s.SignalField != nil {
@@ -950,9 +950,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					"role":       step.RoleID,
 					"root_cause": string(FailureClassRoleMissing),
 				})
-			// Race fix: protect graph.Status with Mu.
-			// Step is blocked; graph stays running for independent branches.
-			s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphRunning)
+				// Race fix: protect graph.Status with Mu.
+				// Step is blocked; graph stays running for independent branches.
+				s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphRunning)
 
 				s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 					"error":           "Infrastructure failure: " + err.Error(),

@@ -72,15 +72,15 @@ type SpawnRequest struct {
 	ContextRefs              map[string]string
 	// DegradedMCPs: MCPs that failed health check and were skipped.
 	// Populated by HealthCheckInterceptor. Downstream spawner should not attempt to start them.
-	DegradedMCPs             []string
+	DegradedMCPs []string
 	// TurnsBudgetBonus: extra tool-turn budget granted on top of maxTurns,
 	// propagated from Step.TurnsBudgetBonus by the scheduler. Lets a resumed
 	// step actually get more room instead of re-hitting the same cap.
 	// ADDED (2026-09-07).
-	TurnsBudgetBonus         int
-	Temperature              *float32
-	FrequencyPenalty         *float32
-	Metadata                 map[string]any
+	TurnsBudgetBonus int
+	Temperature      *float32
+	FrequencyPenalty *float32
+	Metadata         map[string]any
 	// ProviderOverride: if set, overrides the role-level provider for this step.
 	// Must match a named provider in the registry (config.json "providers" keys).
 	ProviderOverride string

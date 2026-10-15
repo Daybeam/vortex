@@ -46,15 +46,15 @@ type ReplayScheduler interface {
 }
 
 type replayScheduler struct {
-	replayer           *Replayer
-	verifier           Verifier
-	expStore           *store.ExperienceStore
-	db                 *sql.DB
-	executor           ToolExecutor
-	maxVariants        int
-	grayscale          *GrayscaleController
+	replayer            *Replayer
+	verifier            Verifier
+	expStore            *store.ExperienceStore
+	db                  *sql.DB
+	executor            ToolExecutor
+	maxVariants         int
+	grayscale           *GrayscaleController
 	crossFamilyResolver func() string
-	spawner            *Spawner
+	spawner             *Spawner
 }
 
 // NewReplayScheduler creates a ReplayScheduler from the existing infra.

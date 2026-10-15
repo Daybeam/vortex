@@ -8,7 +8,9 @@ import (
 
 // Feature: Sieve Guardian
 // Scenario: Repetition detection — when output repetition rate exceeds threshold,
-//          the call is intercepted
+//
+//	the call is intercepted
+//
 // Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Sieve Guardian
 // -----------------------------------------------------------------------------
 func TestSieve_BlocksWhenRepetitionExceedsThreshold(t *testing.T) {
@@ -231,9 +233,11 @@ func TestSieve_NonPollerStillDetected(t *testing.T) {
 
 // Feature: Content-based result repetition detection
 // Scenario: Different tool calls return identical result content (e.g., entity
-//          ID variants like "sophia" vs "SOPHIA" returning the same user data).
-//          The call-level hash check misses this because args differ. The
-//          result-level check catches it by comparing result content hashes.
+//
+//	ID variants like "sophia" vs "SOPHIA" returning the same user data).
+//	The call-level hash check misses this because args differ. The
+//	result-level check catches it by comparing result content hashes.
+//
 // Inspired by: OpenHands StuckDetector content-based event equality.
 // See: docs/HARNESS_LOOP_GUARD_RESEARCH.md §7.
 func TestSieve_CheckResultRepetition_SameResultDifferentCalls(t *testing.T) {
@@ -288,5 +292,110 @@ func TestSieve_CheckResultRepetition_ClearHistoryResets(t *testing.T) {
 
 	if s.CheckResultRepetition(taskID, result) {
 		t.Fatal("After ClearHistory, first call should not trigger repetition")
+	}
+}
+
+// ── Gap-1: ABAB Cycle Detection ─────────────────────────────────────────────
+
+func TestDetectCycle_Period2(t *testing.T) {
+	// A,B,A,B,A,B — period 2, 3 repeats.
+	// NOT detected by detectCycle — period 2 is already covered by
+	// the window check (50% density). detectCycle only checks period 4.
+	history := []string{"A", "B", "A", "B", "A", "B"}
+	if detectCycle(history, 3) {
+		t.Error("period 2 should not be detected by detectCycle (covered by window check)")
+	}
+}
+
+func TestDetectCycle_Period3(t *testing.T) {
+	// A,B,C,A,B,C,A,B,C — period 3, 3 repeats.
+	// NOT detected by detectCycle — period 3 is already covered by
+	// the total-occurrence check. detectCycle only checks period 4.
+	history := []string{"A", "B", "C", "A", "B", "C", "A", "B", "C"}
+	if detectCycle(history, 3) {
+		t.Error("period 3 should not be detected by detectCycle (covered by total-occurrence check)")
+	}
+}
+
+func TestDetectCycle_Period4(t *testing.T) {
+	// A,B,C,D,A,B,C,D,A,B,C,D — period 4, 3 repeats
+	// This is the residual narrow case that existing checks miss.
+	history := []string{"A", "B", "C", "D", "A", "B", "C", "D", "A", "B", "C", "D"}
+	if !detectCycle(history, 3) {
+		t.Error("expected cycle detection for period 4 with 3 repeats")
+	}
+}
+
+func TestDetectCycle_NoCycle(t *testing.T) {
+	history := []string{"A", "B", "C", "D", "E", "F"}
+	if detectCycle(history, 3) {
+		t.Error("expected no cycle detection for non-repeating sequence")
+	}
+}
+
+func TestDetectCycle_TooFewRepeats(t *testing.T) {
+	// A,B,A,B — period 2, only 2 repeats (< threshold 3)
+	history := []string{"A", "B", "A", "B"}
+	if detectCycle(history, 3) {
+		t.Error("expected no cycle detection with only 2 repeats")
+	}
+}
+
+func TestDetectCycle_EmptyAndShort(t *testing.T) {
+	if detectCycle([]string{}, 3) {
+		t.Error("empty history should not detect cycle")
+	}
+	if detectCycle([]string{"A"}, 3) {
+		t.Error("single element should not detect cycle")
+	}
+	if detectCycle([]string{"A", "B"}, 3) {
+		t.Error("two elements should not detect cycle")
+	}
+}
+
+func TestSieve_InspectToolCalls_ABABCycleDetected(t *testing.T) {
+	// Integration test: feed A,B,C,D,A,B,C,D,A,B,C,D through InspectToolCalls.
+	// Each individual hash appears only 3 times total (< threshold*2=6),
+	// and ≤ 1 time in any 6-window (< 50% density), so existing checks
+	// don't fire. The cycle detection (Gap-1) should catch it.
+	s := NewSieve(100)
+	taskID := "task-cycle"
+
+	calls := []struct {
+		tool string
+		args map[string]any
+	}{
+		{"toolA", nil}, {"toolB", nil}, {"toolC", nil}, {"toolD", nil},
+		{"toolA", nil}, {"toolB", nil}, {"toolC", nil}, {"toolD", nil},
+		{"toolA", nil}, {"toolB", nil}, {"toolC", nil}, {"toolD", nil},
+	}
+
+	blocked := false
+	for _, c := range calls {
+		interactions := []store.ToolInteraction{{ToolName: c.tool, Arguments: c.args}}
+		ok, _ := s.InspectToolCalls(taskID, "", interactions)
+		if !ok {
+			blocked = true
+			break
+		}
+	}
+
+	if !blocked {
+		t.Error("expected InspectToolCalls to detect ABAB cycle (period 4, 3 repeats)")
+	}
+}
+
+func TestSieve_InspectToolCalls_NonCyclicNotBlocked(t *testing.T) {
+	// Verify that non-cyclic diverse calls are not falsely flagged.
+	s := NewSieve(100)
+	taskID := "task-diverse"
+
+	calls := []string{"toolA", "toolB", "toolC", "toolD", "toolE", "toolF"}
+	for _, tool := range calls {
+		interactions := []store.ToolInteraction{{ToolName: tool, Arguments: nil}}
+		ok, _ := s.InspectToolCalls(taskID, "", interactions)
+		if !ok {
+			t.Errorf("non-cyclic call %s should not be blocked", tool)
+		}
 	}
 }
