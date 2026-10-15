@@ -157,3 +157,30 @@ func TestAnthropicCountTokens_NoModelFallsBackWithoutNetworkCall(t *testing.T) {
 // (err != nil || status >= 400 -> estimateTokens), so it's covered by
 // inspection/code review rather than a live-network test here, to keep this
 // test suite network-independent.
+
+// TestEstimateTokensExportedWrapper pins the exported wrapper (ADDED
+// 2026-10-12) that core reuses for embedding / tool-schema / history token
+// estimation. The private heuristic is covered by the tests above; this only
+// guards the export contract itself.
+func TestEstimateTokensExportedWrapper(t *testing.T) {
+	cases := []struct {
+		text string
+		want int
+	}{
+		{"", 0},
+		{"abcdefgh", 2},        // 8 ASCII chars / 4.0
+		{"a", 1},               // non-empty never zero
+		{"hello world", 2},     // 11 chars / 4.0 = 2.75 → 2
+	}
+	for _, c := range cases {
+		if got := EstimateTokens(c.text); got != c.want {
+			t.Errorf("EstimateTokens(%q) = %d, want %d", c.text, got, c.want)
+		}
+	}
+	// The wrapper must not diverge from the private heuristic.
+	for _, text := range []string{"mixed 中英文 text", "pure ascii", "你好世界"} {
+		if EstimateTokens(text) != estimateTokens(text) {
+			t.Errorf("EstimateTokens wrapper diverges from estimateTokens for %q", text)
+		}
+	}
+}

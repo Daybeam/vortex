@@ -75,10 +75,10 @@ func TestLogger_Log_PublishesToEventBus(t *testing.T) {
 	DefaultBus = bus
 
 	logger := &Logger{
-		ch:              make(chan LogEvent, 100),
-		dirCache:        make(map[string]bool),
-		fileSizeCache:   make(map[string]int64),
-		System:          &config.SystemSettings{MaxLogSizeMB: 100},
+		ch:            make(chan LogEvent, 100),
+		dirCache:      make(map[string]bool),
+		fileSizeCache: make(map[string]int64),
+		System:        &config.SystemSettings{MaxLogSizeMB: 100},
 	}
 
 	var received []AgentEvent
@@ -113,10 +113,10 @@ func TestLogger_Log_SkipsEmptyTaskID(t *testing.T) {
 	DefaultBus = bus
 
 	logger := &Logger{
-		ch:              make(chan LogEvent, 100),
-		dirCache:        make(map[string]bool),
-		fileSizeCache:   make(map[string]int64),
-		System:          &config.SystemSettings{MaxLogSizeMB: 100},
+		ch:            make(chan LogEvent, 100),
+		dirCache:      make(map[string]bool),
+		fileSizeCache: make(map[string]int64),
+		System:        &config.SystemSettings{MaxLogSizeMB: 100},
 	}
 
 	count := 0

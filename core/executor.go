@@ -206,13 +206,13 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 							desc := p.Description + ": " + output
 							select {
 							case confirmSem <- struct{}{}:
-							go func(matchedAt int64, desc string) {
-								defer func() {
-									if r := recover(); r != nil {
-										fmt.Fprintf(os.Stderr, "[executor] pattern confirm panic: %v\n", r)
-									}
-								}()
-								defer func() { <-confirmSem }()
+								go func(matchedAt int64, desc string) {
+									defer func() {
+										if r := recover(); r != nil {
+											fmt.Fprintf(os.Stderr, "[executor] pattern confirm panic: %v\n", r)
+										}
+									}()
+									defer func() { <-confirmSem }()
 									timer := time.NewTimer(stdinConfirmDelay)
 									defer timer.Stop()
 									<-timer.C

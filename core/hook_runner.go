@@ -23,13 +23,13 @@ import (
 
 // HookPoint constants — the lifecycle stages where hooks fire.
 const (
-	HookChatHabit        = "chat_habit"         // chat: before pre-turn, analyzes conversation patterns
-	HookChatPreTurn      = "chat_pre_turn"      // chat: before LLM call, can redirect/inject/abort
-	HookChatPostTurn     = "chat_post_turn"     // chat: after LLM response, advisory annotation
-	HookStepPre          = "step_pre"           // DAG: before step execution (= existing interceptors)
-	HookStepPost         = "step_post"          // DAG: after step completion, advisory
-	HookTaskCompletion   = "task_completion"    // DAG: after task reaches terminal state
-	HookDecisionRequired = "decision_required"  // DAG: when a decision is needed, suggests a choice
+	HookChatHabit        = "chat_habit"        // chat: before pre-turn, analyzes conversation patterns
+	HookChatPreTurn      = "chat_pre_turn"     // chat: before LLM call, can redirect/inject/abort
+	HookChatPostTurn     = "chat_post_turn"    // chat: after LLM response, advisory annotation
+	HookStepPre          = "step_pre"          // DAG: before step execution (= existing interceptors)
+	HookStepPost         = "step_post"         // DAG: after step completion, advisory
+	HookTaskCompletion   = "task_completion"   // DAG: after task reaches terminal state
+	HookDecisionRequired = "decision_required" // DAG: when a decision is needed, suggests a choice
 )
 
 // HookContext is the input passed to every hook script.
@@ -45,8 +45,8 @@ type HookContext struct {
 
 // HookResult is what a hook script returns.
 type HookResult struct {
-	Action      string         `json:"action"`                 // none|inject_context|redirect_to_orchestrator|abort|annotate|suggest_decision|publish_event
-	Data        map[string]any `json:"data,omitempty"`
+	Action      string           `json:"action"` // none|inject_context|redirect_to_orchestrator|abort|annotate|suggest_decision|publish_event
+	Data        map[string]any   `json:"data,omitempty"`
 	Annotations []HookAnnotation `json:"annotations,omitempty"`
 }
 

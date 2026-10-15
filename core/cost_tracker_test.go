@@ -15,9 +15,16 @@ func TestCostTracker_RecordAndGetSpend(t *testing.T) {
 	defer ct.Close()
 
 	// Record several LLM calls across two models.
-	ct.Record("gpt-4", "task1", "step1", 1000, 500)
-	ct.Record("gpt-4", "task1", "step2", 800, 300)
-	ct.Record("claude-3", "task2", "step1", 2000, 1000)
+	// audit NEW2-LOW-2: assert on Record errors for clear failure messages.
+	if err := ct.Record("gpt-4", "task1", "step1", 1000, 500); err != nil {
+		t.Fatalf("Record 1 failed: %v", err)
+	}
+	if err := ct.Record("gpt-4", "task1", "step2", 800, 300); err != nil {
+		t.Fatalf("Record 2 failed: %v", err)
+	}
+	if err := ct.Record("claude-3", "task2", "step1", 2000, 1000); err != nil {
+		t.Fatalf("Record 3 failed: %v", err)
+	}
 
 	spend, err := ct.GetTotalSpend()
 	if err != nil {
@@ -65,7 +72,10 @@ func TestCostTracker_PersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCostTracker 1: %v", err)
 	}
-	ct1.Record("gpt-4", "task1", "step1", 1000, 500)
+	// audit NEW2-LOW-2: assert on Record error for clear failure messages.
+	if err := ct1.Record("gpt-4", "task1", "step1", 1000, 500); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
 	ct1.Close()
 
 	// Reopen and verify data persisted.

@@ -16,12 +16,12 @@ import (
 func TestCapabilityIndex_TwoCharTokensNotDropped(t *testing.T) {
 	reg := &config.Registry{
 		Skills: map[string]*config.Skill{
-			"ai_skill":  {ID: "ai_skill", Capability: "AI"},
-			"ml_skill":  {ID: "ml_skill", Capability: "ML"},
-			"qa_skill":  {ID: "qa_skill", Capability: "QA"},
-			"go_skill":  {ID: "go_skill", Capability: "go"},
-			"js_skill":  {ID: "js_skill", Capability: "js"},
-			"3d_skill":  {ID: "3d_skill", Capability: "3d"},
+			"ai_skill": {ID: "ai_skill", Capability: "AI"},
+			"ml_skill": {ID: "ml_skill", Capability: "ML"},
+			"qa_skill": {ID: "qa_skill", Capability: "QA"},
+			"go_skill": {ID: "go_skill", Capability: "go"},
+			"js_skill": {ID: "js_skill", Capability: "js"},
+			"3d_skill": {ID: "3d_skill", Capability: "3d"},
 		},
 	}
 
@@ -68,7 +68,7 @@ func TestCapabilityIndex_SingleCharTokensDropped(t *testing.T) {
 func TestCapabilityIndex_ChineseTokensPreserved(t *testing.T) {
 	reg := &config.Registry{
 		Skills: map[string]*config.Skill{
-			"single_cn": {ID: "single_cn", Capability: "期"},     // 3 bytes, 1 rune
+			"single_cn": {ID: "single_cn", Capability: "期"},    // 3 bytes, 1 rune
 			"double_cn": {ID: "double_cn", Capability: "行情"},   // 6 bytes, 2 runes
 			"triple_cn": {ID: "triple_cn", Capability: "期货分析"}, // 12 bytes, 4 runes
 		},

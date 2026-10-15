@@ -1,6 +1,9 @@
 package schemas
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // SOP represents a Standard Operating Procedure workflow template.
 type SOP struct {
@@ -56,11 +59,16 @@ func (s *SOP) UnmarshalJSON(data []byte) error {
 		switch v := aux.Triggers.(type) {
 		case []any:
 			b, _ := json.Marshal(v)
-			json.Unmarshal(b, &s.Triggers)
+			// audit L-15-3: return error instead of silently dropping triggers.
+			if err := json.Unmarshal(b, &s.Triggers); err != nil {
+				return fmt.Errorf("parse SOP triggers: %w", err)
+			}
 		case map[string]any:
 			var t SOPTrigger
 			b, _ := json.Marshal(v)
-			json.Unmarshal(b, &t)
+			if err := json.Unmarshal(b, &t); err != nil {
+				return fmt.Errorf("parse SOP trigger: %w", err)
+			}
 			s.Triggers = []SOPTrigger{t}
 		}
 	}
@@ -70,7 +78,10 @@ func (s *SOP) UnmarshalJSON(data []byte) error {
 		switch v := aux.Steps.(type) {
 		case map[string]any:
 			b, _ := json.Marshal(v)
-			json.Unmarshal(b, &s.Steps)
+			// audit L-15-3: return error instead of silently dropping steps.
+			if err := json.Unmarshal(b, &s.Steps); err != nil {
+				return fmt.Errorf("parse SOP steps: %w", err)
+			}
 		case []any:
 			s.Steps = make(map[string]SOPStep)
 			for _, item := range v {

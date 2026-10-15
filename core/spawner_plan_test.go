@@ -100,9 +100,11 @@ func (m *mockProbeProvider) Complete(ctx context.Context, req schemas.CompleteRe
 func (m *mockProbeProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
 	return m.Complete(ctx, req)
 }
-func (m *mockProbeProvider) Embed(ctx context.Context, text string) ([]float32, error) { return nil, nil }
+func (m *mockProbeProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	return nil, nil
+}
 func (m *mockProbeProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
-func (m *mockProbeProvider) Name() string                                               { return "mockprobe" }
+func (m *mockProbeProvider) Name() string                                              { return "mockprobe" }
 
 func TestProbeTaskComplexity_Yes(t *testing.T) {
 	probe := &mockProbeProvider{

@@ -1,8 +1,8 @@
 package core
 
 import (
-	"sync"
 	"github.com/daybeam/vortex/pkg/observability"
+	"sync"
 )
 
 // UsageStats tracks token consumption across different models.
@@ -14,15 +14,23 @@ type UsageStats struct {
 	CacheWriteTokens map[string]int64 `json:"cache_write_tokens"`
 	CacheReadTokens  map[string]int64 `json:"cache_read_tokens"`
 	ToolCalls        map[string]int64 `json:"tool_calls"`
+	// EmbeddingInputTokens / EmbeddingCalls track embedding-model usage
+	// (ADDED 2026-10-12). Embeddings have no completion tokens -- only the
+	// embedded text's input cost -- so they live in their own ledger
+	// instead of the chat-model maps above.
+	EmbeddingInputTokens map[string]int64 `json:"embedding_input_tokens"`
+	EmbeddingCalls       map[string]int64 `json:"embedding_calls"`
 }
 
 var globalStats = &UsageStats{
-	TotalTokens:      make(map[string]int64),
-	PromptTokens:     make(map[string]int64),
-	CompletionTokens: make(map[string]int64),
-	CacheWriteTokens: make(map[string]int64),
-	CacheReadTokens:  make(map[string]int64),
-	ToolCalls:        make(map[string]int64),
+	TotalTokens:          make(map[string]int64),
+	PromptTokens:         make(map[string]int64),
+	CompletionTokens:     make(map[string]int64),
+	CacheWriteTokens:     make(map[string]int64),
+	CacheReadTokens:      make(map[string]int64),
+	ToolCalls:            make(map[string]int64),
+	EmbeddingInputTokens: make(map[string]int64),
+	EmbeddingCalls:       make(map[string]int64),
 }
 
 func GetGlobalStats() *UsageStats {
@@ -52,6 +60,26 @@ func (s *UsageStats) RecordUsage(provider, model string, prompt, completion int,
 	}
 }
 
+// RecordEmbedding tracks embedding-model input token consumption
+// (ADDED 2026-10-12). Mirrors RecordUsage's by-model + by-provider
+// tracking so the /api/usage ledger can break costs down per provider.
+func (s *UsageStats) RecordEmbedding(provider, model string, inputTokens int) {
+	if model == "" && provider == "" {
+		return
+	}
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
+	if model != "" {
+		s.EmbeddingInputTokens[model] += int64(inputTokens)
+		s.EmbeddingCalls[model]++
+	}
+	if provider != "" && provider != model {
+		s.EmbeddingInputTokens[provider] += int64(inputTokens)
+		s.EmbeddingCalls[provider]++
+	}
+}
+
 func (s *UsageStats) GetSnapshot() map[string]any {
 	s.Mu.RLock()
 	defer s.Mu.RUnlock()
@@ -73,6 +101,19 @@ func (s *UsageStats) GetSnapshot() map[string]any {
 	for k, v := range metrics {
 		snapshot["_observability_"+k] = v
 	}
+
+	// Embedding ledger (ADDED 2026-10-12): embedding models never enter the
+	// per-model loop above (no TotalTokens entries), so they are exposed as
+	// their own block: { "<model>": {input_tokens, calls}, ... }. Always
+	// present (possibly empty) so consumers don't need existence checks.
+	embedding := make(map[string]any)
+	for model, tokens := range s.EmbeddingInputTokens {
+		embedding[model] = map[string]any{
+			"input_tokens": tokens,
+			"calls":        s.EmbeddingCalls[model],
+		}
+	}
+	snapshot["_embedding"] = embedding
 
 	return snapshot
 }

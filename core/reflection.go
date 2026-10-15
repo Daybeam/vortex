@@ -29,7 +29,7 @@ type ReflectionEngine struct {
 	jit       *JITManager
 	logger    *Logger
 	mbStore   *store.MemoryBankStore // optional: for user profile extraction
-	wg        sync.WaitGroup          // audit M7: track inner goroutines
+	wg        sync.WaitGroup         // audit M7: track inner goroutines
 }
 
 // SetMemoryBankStore wires the MemoryBankStore for user profile extraction.
@@ -203,7 +203,7 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 			TaskType:       taskType,
 			Task:           step.Task,
 			Trace:          trace,
-			LastError:      step.TriggerError, // Pass the triggering signal (ADDED 2026-08-16)
+			LastError:      step.TriggerError,  // Pass the triggering signal (ADDED 2026-08-16)
 			StatesVisited:  step.StatesVisited, // PGPO (ADDED 2026-09-08)
 			Embedding:      step.Embedding,
 			EmbeddingModel: step.EmbeddingModel,
@@ -337,14 +337,14 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 				select {
 				case crystSem <- struct{}{}:
 					re.wg.Add(1)
-				go func(r store.StepRecord) {
-					defer func() {
-						if r := recover(); r != nil {
-							fmt.Fprintf(os.Stderr, "[reflection] goroutine panic: %v\n%s", r, debug.Stack())
-						}
-					}()
-					defer re.wg.Done()
-					defer func() { <-crystSem }()
+					go func(r store.StepRecord) {
+						defer func() {
+							if r := recover(); r != nil {
+								fmt.Fprintf(os.Stderr, "[reflection] goroutine panic: %v\n%s", r, debug.Stack())
+							}
+						}()
+						defer re.wg.Done()
+						defer func() { <-crystSem }()
 						gctx, gcancel := context.WithTimeout(lifecycleCtx, 5*time.Minute)
 						defer gcancel()
 						re.CrystallizeStepToSkill(gctx, r)
@@ -528,10 +528,10 @@ func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability,
 		UsageCount:    0,
 		SuccessRate:   1.0,
 		LastUsed:      time.Now(),
-		OS:            runtime.GOOS,           // Environment Fingerprint (ADDED 2026-08-16)
-		Arch:          runtime.GOARCH,         // Environment Fingerprint (ADDED 2026-08-16)
-		Shell:         env.GetShellVersion(),  // Environment Fingerprint (ADDED 2026-08-20)
-		FailureSignal: failureSignal,          // Trigger-driven retrieval (ADDED 2026-08-16)
+		OS:            runtime.GOOS,          // Environment Fingerprint (ADDED 2026-08-16)
+		Arch:          runtime.GOARCH,        // Environment Fingerprint (ADDED 2026-08-16)
+		Shell:         env.GetShellVersion(), // Environment Fingerprint (ADDED 2026-08-20)
+		FailureSignal: failureSignal,         // Trigger-driven retrieval (ADDED 2026-08-16)
 	})
 }
 
@@ -794,8 +794,8 @@ func (re *ReflectionEngine) ScanAndPromoteCompoundSkills(ctx context.Context) {
 		// online controller can adapt based on intermediate results.
 		if re.isOutcomeDependent(ctx, c.ToolA) {
 			re.logger.Log("EventCompoundSkillSkippedOutcomeDependent", "", "", map[string]any{
-				"tool_a": c.ToolA,
-				"tool_b": c.ToolB,
+				"tool_a":   c.ToolA,
+				"tool_b":   c.ToolB,
 				"co_count": c.CoCount,
 			})
 			continue

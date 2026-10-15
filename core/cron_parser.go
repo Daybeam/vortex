@@ -15,10 +15,10 @@ type cronField struct {
 
 // cronSchedule holds 5 parsed fields for next-run calculation.
 type cronSchedule struct {
-	minute   cronField // 0-59
-	hour     cronField // 0-23
-	day      cronField // 1-31
-	month    cronField // 1-12
+	minute  cronField // 0-59
+	hour    cronField // 0-23
+	day     cronField // 1-31
+	month   cronField // 1-12
 	weekday cronField // 0-6 (0=Sunday)
 	// audit L-MED-1: standard cron semantics — when both day and weekday are
 	// restricted (not "*"), match if EITHER matches (OR). When at least one is
@@ -29,11 +29,11 @@ type cronSchedule struct {
 
 var (
 	cronFieldRanges = []struct{ min, max int }{
-		{0, 59},  // minute
-		{0, 23},  // hour
-		{1, 31},  // day
-		{1, 12},  // month
-		{0, 6},   // weekday
+		{0, 59}, // minute
+		{0, 23}, // hour
+		{1, 31}, // day
+		{1, 12}, // month
+		{0, 6},  // weekday
 	}
 )
 

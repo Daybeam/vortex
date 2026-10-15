@@ -41,7 +41,7 @@ const (
 // Original content lives in ContextArchive; FoldBlock only records which
 // ItemIDs (NodeIDs) were folded, so decompress can recover them.
 type FoldBlock struct {
-	BlockID    string    `json:"block_id"`     // "fold_b1", "fold_b2", ...
+	BlockID    string    `json:"block_id"`    // "fold_b1", "fold_b2", ...
 	SegmentID  string    `json:"segment_id"`  // source segment ID (empty for tier-2)
 	TopicTitle string    `json:"topic_title"` // segment topic title
 	Summary    string    `json:"summary"`     // segment summary (LLM or fallback)
@@ -237,9 +237,9 @@ func (f *FoldEngine) foldTier2Merge(state *FoldState, taskScope string) {
 
 	if f.logger != nil {
 		f.logger.Log(EventCacheInefficiency, "", "", map[string]any{
-			"event":          "fold_tier2_merge",
-			"task_scope":     taskScope,
-			"merged_count":   len(toMerge),
+			"event":           "fold_tier2_merge",
+			"task_scope":      taskScope,
+			"merged_count":    len(toMerge),
 			"remaining_tier1": len(remaining),
 		})
 	}
@@ -290,12 +290,14 @@ func (f *FoldEngine) Decompress(segmentID, taskScope string) (string, error) {
 			item.Intent, item.Summary))
 	}
 
-	// Append cross-segment links if available.
+	// Append cross-segment trace (Trace Weaver) if available.
 	if f.segMgr != nil {
-		links := f.segMgr.GetSegmentLinks(segmentID)
-		if len(links) > 0 {
-			result.WriteString(fmt.Sprintf("\n**Related segments:** %s\n",
-				strings.Join(links, ", ")))
+		trace := f.segMgr.FollowTrace(segmentID, 0) // 0 = default depth
+		if len(trace.Segments) > 1 {
+			woven := f.segMgr.WeaveTrace(trace)
+			if woven != "" {
+				result.WriteString("\n**Topic trace:**\n" + woven)
+			}
 		}
 	}
 
@@ -362,8 +364,8 @@ func (f *FoldEngine) buildFoldSummaryBlock(blocks []*FoldBlock, taskScope string
 		Text:         buf.String(),
 		CacheControl: "ephemeral",
 		Metadata: map[string]any{
-			"fold_scope":  taskScope,
-			"fold_count":  len(blocks),
+			"fold_scope": taskScope,
+			"fold_count": len(blocks),
 		},
 	}
 }

@@ -37,9 +37,9 @@ func TestAgnesProvider(t *testing.T) {
 
 	// 4. Prepare a simple request
 	req := schemas.CompleteRequest{
-		Model: pc.Model,
-		System: "You are a helpful assistant.",
-		User: "Hello! Are you working? Please respond with 'AGNES_OK'.",
+		Model:     pc.Model,
+		System:    "You are a helpful assistant.",
+		User:      "Hello! Are you working? Please respond with 'AGNES_OK'.",
 		MaxTokens: 100,
 	}
 

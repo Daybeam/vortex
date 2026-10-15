@@ -31,6 +31,12 @@ const (
 	// GovernanceMarker is the Metadata key used to tag a block's governance tier.
 	GovernanceMarker = "__gov_tier"
 
+	// CategoryMarker is the Metadata key (legacy/redundant with
+	// ContentBlock.Category) used to tag a block's semantic category for
+	// token-proportion observability. The struct field is the source of truth;
+	// this mirror keeps older consumers that only read Metadata working.
+	CategoryMarker = "__category"
+
 	// GovTierProtected marks a block that must never be trimmed.
 	GovTierProtected = "protected"
 	// GovTier1 marks Role Instruction (compressible via head+tail retention).
@@ -39,6 +45,24 @@ const (
 	GovTier2 = "tier2_cookbook_failure"
 	// GovTier3 marks Tree Path / Precedents / Few-Shots (trim first).
 	GovTier3 = "tier3_tree_precedent_fewshot"
+
+	// ─── Semantic categories for token-proportion observability ──────────
+	// Each system-prompt block is tagged with exactly one of these so the
+	// observability UI can render a treemap of where the System Prompt budget
+	// is actually spent (the user-visible ask: "what % of my context is
+	// skills / mcp / rules / …").
+	CategoryRoleInstruction = "role_instruction" // Role instruction (Tier 1)
+	CategoryPastPrecedents  = "past_precedents"  // Past Decision Precedents (Tier 3)
+	CategoryAntiPattern     = "anti_pattern"     // Anti-Pattern warnings (Protected)
+	CategorySimilarTask     = "similar_task"     // Similar task patterns (Protected)
+	CategoryActiveContext   = "active_context"   // ActiveContext assemblage (Protected)
+	CategoryArchiveSummary  = "archive_summary"  // Recent step summaries (Tier 2)
+	CategoryFailureProfile  = "failure_profile"  // Per-model failure profile (Tier 2)
+	CategoryCookbook        = "cookbook"         // Cookbook TOC + anchor (Tier 2)
+	CategorySkills          = "skills"           // Injected skill prompts (Protected / Tier 2)
+	CategoryFewShot         = "few_shot"         // Few-shot tool-call examples (Tier 3)
+	CategoryTreePath        = "tree_path"        // Context tree path (Tier 3)
+	CategoryConstraints     = "constraints"      // Hard rules + tool usage + output contract (Protected)
 
 	// charsPerToken mirrors config.CharsPerToken for token estimation.
 	charsPerToken = 4
@@ -339,9 +363,9 @@ func (e *PromptBudgetEnforcer) SlidingWindowTreePath(path []map[string]any) []ma
 		intent, _ := node["intent"].(string)
 		summary, _ := node["summary"].(string)
 		collapsed := map[string]any{
-			"intent":  intent,
-			"status":  node["status"],
-			"summary": summary,
+			"intent":      intent,
+			"status":      node["status"],
+			"summary":     summary,
 			"__collapsed": fmt.Sprintf("ASSERT [%s]: %s", intent, summary),
 		}
 		result = append(result, collapsed)
@@ -544,8 +568,8 @@ func (e *PromptBudgetEnforcer) logTrim(original, final, budget int, strategy str
 		return
 	}
 	e.logger.Log(EventCacheInefficiency, "", "", map[string]any{
-		"event":    "prompt_budget_trimmed",
-		"strategy": strategy,
+		"event":           "prompt_budget_trimmed",
+		"strategy":        strategy,
 		"original_tokens": original,
 		"final_tokens":    final,
 		"budget_tokens":   budget,
@@ -569,4 +593,23 @@ func TagBlock(block schemas.ContentBlock, tier string) schemas.ContentBlock {
 // MarkProtected tags a block as a protected zone (never trimmed).
 func MarkProtected(block schemas.ContentBlock) schemas.ContentBlock {
 	return TagBlock(block, GovTierProtected)
+}
+
+// TagBlockWithCategory is like TagBlock but also stamps the block's semantic
+// category (for token-proportion observability). It sets both the struct
+// field ContentBlock.Category and a Metadata mirror.
+func TagBlockWithCategory(block schemas.ContentBlock, tier, category string) schemas.ContentBlock {
+	block = TagBlock(block, tier)
+	if block.Metadata == nil {
+		block.Metadata = make(map[string]any)
+	}
+	block.Metadata[CategoryMarker] = category
+	block.Category = category
+	return block
+}
+
+// MarkProtectedWithCategory tags a block as a protected zone AND stamps its
+// semantic category.
+func MarkProtectedWithCategory(block schemas.ContentBlock, category string) schemas.ContentBlock {
+	return TagBlockWithCategory(block, GovTierProtected, category)
 }

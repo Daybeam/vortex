@@ -214,8 +214,8 @@ func (p *AnthropicProvider) StreamComplete(ctx context.Context, req CompleteRequ
 			if currentToolCall != nil {
 				var args map[string]any
 				if err := json.Unmarshal([]byte(currentInput.String()), &args); err != nil {
-				fmt.Fprintf(os.Stderr, "[anthropic] unmarshal tool call args: %v\n", err)
-			}
+					fmt.Fprintf(os.Stderr, "[anthropic] unmarshal tool call args: %v\n", err)
+				}
 				if args == nil {
 					args = make(map[string]any)
 				}

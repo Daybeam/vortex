@@ -117,11 +117,11 @@ const (
 
 const (
 	HealerAdviceElementNotInteractable = "The UI element you tried to interact with is hidden or not ready. Try calling 'wait_for_selector' or taking a 'screenshot' to re-verify the page state before retrying."
-	HealerAdviceTimeout               = "The operation timed out. This could be due to slow network or heavy page load. Consider increasing the timeout parameter or breaking the task into smaller sub-steps."
-	HealerAdviceSelectorNotFound     = "The CSS selector you provided was not found on the page. Use 'get_page_source' or 'screenshot' to check if the page structure has changed or if you are on the wrong URL."
-	HealerAdvicePermissionDenied      = "You hit a permission barrier. Check if you are correctly logged in or if you need to request elevated access for this specific tool."
-	HealerAdviceRateLimit             = "Rate limit reached. Please pause for a few seconds before retrying, or reduce the frequency of your requests."
-	HealerAdviceContextWindow         = "Context overflow risk. Try summarizing the previous steps or removing redundant logs from your next action."
+	HealerAdviceTimeout                = "The operation timed out. This could be due to slow network or heavy page load. Consider increasing the timeout parameter or breaking the task into smaller sub-steps."
+	HealerAdviceSelectorNotFound       = "The CSS selector you provided was not found on the page. Use 'get_page_source' or 'screenshot' to check if the page structure has changed or if you are on the wrong URL."
+	HealerAdvicePermissionDenied       = "You hit a permission barrier. Check if you are correctly logged in or if you need to request elevated access for this specific tool."
+	HealerAdviceRateLimit              = "Rate limit reached. Please pause for a few seconds before retrying, or reduce the frequency of your requests."
+	HealerAdviceContextWindow          = "Context overflow risk. Try summarizing the previous steps or removing redundant logs from your next action."
 )
 
 // ── Spawner System Injection Messages ────────────────────────────────

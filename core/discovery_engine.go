@@ -12,22 +12,22 @@ import (
 type CandidateType string
 
 const (
-	CandidateRole      CandidateType = "role"
-	CandidateSkill     CandidateType = "skill"
-	CandidateGroup     CandidateType = "group"
-	CandidateSOP       CandidateType = "sop"
-	CandidateMCP       CandidateType = "mcp"
+	CandidateRole       CandidateType = "role"
+	CandidateSkill      CandidateType = "skill"
+	CandidateGroup      CandidateType = "group"
+	CandidateSOP        CandidateType = "sop"
+	CandidateMCP        CandidateType = "mcp"
 	CandidateCapability CandidateType = "capability"
 )
 
 // DiscoveryCandidate represents a single matched item in the discovery process.
 type DiscoveryCandidate struct {
-	ID          string        `json:"id"`
-	Type        CandidateType `json:"type"`
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Confidence  float64       `json:"confidence"` // 0.0 to 1.0
-	Source      string        `json:"source"`     // e.g., "filter", "keyword", "semantic"
+	ID          string         `json:"id"`
+	Type        CandidateType  `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Confidence  float64        `json:"confidence"` // 0.0 to 1.0
+	Source      string         `json:"source"`     // e.g., "filter", "keyword", "semantic"
 	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 

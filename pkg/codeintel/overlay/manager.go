@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -72,7 +73,7 @@ type Manager struct {
 	mu          sync.Mutex
 	sessions    map[string]*t.EditSession
 	analyzer    Validator
-	snapshotDir string // root for crash-recovery snapshot dirs
+	snapshotDir string   // root for crash-recovery snapshot dirs
 	fileLock    *fileLock
 }
 
@@ -390,7 +391,11 @@ func (m *Manager) recoverCommitting(snapDir string, manifest *t.Manifest) {
 		// Only restore if current content differs (idempotent)
 		current, _ := os.ReadFile(entry.TargetPath)
 		if hash(string(current)) != hash(string(orig)) {
-			_ = os.WriteFile(entry.TargetPath, orig, 0644)
+			// audit NEW2-MED-1: log restore failure so user knows their file
+			// was left in the overlay-modified state instead of being restored.
+			if werr := os.WriteFile(entry.TargetPath, orig, 0644); werr != nil {
+				log.Printf("WARN: overlay: failed to restore %s: %v", entry.TargetPath, werr)
+			}
 		}
 	}
 	_ = os.RemoveAll(snapDir)
@@ -404,7 +409,11 @@ func (m *Manager) restoreFromManifest(manifest *t.Manifest, upToIndex int) {
 		if err != nil {
 			continue
 		}
-		_ = os.WriteFile(entry.TargetPath, orig, 0644)
+		// audit NEW2-MED-1: log restore failure so user knows their file
+		// was left in the overlay-modified state instead of being restored.
+		if werr := os.WriteFile(entry.TargetPath, orig, 0644); werr != nil {
+			log.Printf("WARN: overlay: failed to restore %s: %v", entry.TargetPath, werr)
+		}
 	}
 }
 

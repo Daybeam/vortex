@@ -111,8 +111,8 @@ func (n *CapabilityNavigator) ClassifyIntent(ctx context.Context, query string) 
 			strings.Join(knownTags, ", "), query)
 
 		resp, err := provider.Complete(ctx, providers.CompleteRequest{
-			System: SysPromptIntentClassifier,
-			User:   prompt,
+			System:  SysPromptIntentClassifier,
+			User:    prompt,
 			Secrets: n.Registry.Secrets,
 		})
 
@@ -134,17 +134,18 @@ func (n *CapabilityNavigator) ClassifyIntent(ctx context.Context, query string) 
 	sort.Strings(res)
 	return res
 }
+
 type NavigatorView struct {
-	Capabilities map[string][]RoleSummary      `json:"capabilities"`
-	Workflows    map[string][]WorkflowSummary  `json:"workflows"`
+	Capabilities map[string][]RoleSummary     `json:"capabilities"`
+	Workflows    map[string][]WorkflowSummary `json:"workflows"`
 }
 
 type RoleSummary struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Purpose     string   `json:"purpose"`
-	BestFor     string   `json:"best_for"`
-	Examples    []string `json:"examples,omitempty"`
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Purpose  string   `json:"purpose"`
+	BestFor  string   `json:"best_for"`
+	Examples []string `json:"examples,omitempty"`
 }
 
 type WorkflowSummary struct {
@@ -334,7 +335,6 @@ func (n *CapabilityNavigator) Search(ctx context.Context, query string) string {
 	sb.WriteString("\n> Call `orchestrator_discover(intent=\"<id>\")` for details on any match.")
 	return sb.String()
 }
-
 
 func (n *CapabilityNavigator) formatRoleDetail(r *config.Role) string {
 	var sb strings.Builder

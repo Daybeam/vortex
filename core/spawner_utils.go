@@ -168,8 +168,8 @@ func isContextLimitError(err error) bool {
 // return nil to signal "not compressible" so the caller falls through to
 // normal error handling.
 func compressUserBlocks(blocks []schemas.ContentBlock) []schemas.ContentBlock {
-	const keepFirst = 2  // system prompt + task description
-	const keepLast = 6   // recent turns (tool results + model reasoning)
+	const keepFirst = 2 // system prompt + task description
+	const keepLast = 6  // recent turns (tool results + model reasoning)
 	const minToCompress = keepFirst + keepLast + 2
 
 	if len(blocks) <= minToCompress {

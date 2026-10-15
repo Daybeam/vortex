@@ -202,8 +202,8 @@ func (s *DirectedEngine) addDecision(
 			"options":      options,
 			"decider_role": deciderRole,
 		})
-		s.goBackground(func() {
-			choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options)
+	s.goBackground(func() {
+		choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options)
 			if choice == "" {
 				return // must not auto-resolve (e.g. human_approval_required)
 			}
@@ -299,8 +299,6 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 	return "", false
 }
 
-// askSystemOneForDecision uses the System One decision model to pick an option
-// for a blocked decision. Stubbed in open core — System One is not available.
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,
@@ -315,6 +313,7 @@ func (s *DirectedEngine) askSystemOneForDecision(
 //   - consecutiveSkips >= maxSkips: too many skips in a row, force a real choice
 //   - root_cause is "capability_required" or "context_deficit": skipping won't
 //     help because downstream steps need the same capability/context
+//
 // "abort" is always added as a last resort if "skip" is removed and no other
 // terminal option remains.
 func filterSkipOptions(consecutiveSkips, maxSkips int, ctx map[string]any, options []string) []string {

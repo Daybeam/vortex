@@ -7,4 +7,6 @@ paths = [
   '''core/security_test\.go''',
   '''core/embed_test\.go''',
   '''pkg/gateway/sanitizer_test\.go''',
+  '''core/egress_redaction_test\.go''',
+  '''core/integration_defense_test\.go''',
 ]

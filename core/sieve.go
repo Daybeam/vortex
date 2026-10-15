@@ -19,14 +19,14 @@ import (
 
 // Sieve handles result validation, repetition detection, and schema enforcement.
 type Sieve struct {
-	RepetitionThreshold     float64             // Similarity threshold to trigger repetition warning (e.g., 0.85)
-	ToolRepetitionThreshold int                 // Number of identical tool calls allowed before interception
-	WindowSize              int                 // Number of previous lines to compare for repetition
-	MaxKeep                 int                 // Max lines to keep in pruner
-	toolHistory             map[string][]string // taskID -> list of toolCallHashes
+	RepetitionThreshold     float64                      // Similarity threshold to trigger repetition warning (e.g., 0.85)
+	ToolRepetitionThreshold int                          // Number of identical tool calls allowed before interception
+	WindowSize              int                          // Number of previous lines to compare for repetition
+	MaxKeep                 int                          // Max lines to keep in pruner
+	toolHistory             map[string][]string          // taskID -> list of toolCallHashes
 	toolResultCache         map[string]map[string]string // taskID -> hash -> cached result (read tools only)
-	resultContentHistory    map[string][]string // taskID -> list of result content hashes (for result-level repetition)
-	compressor              *codeintel.Compressor // AST-aware code shrinking
+	resultContentHistory    map[string][]string          // taskID -> list of result content hashes (for result-level repetition)
+	compressor              *codeintel.Compressor        // AST-aware code shrinking
 	mu                      sync.Mutex
 
 	// ProtectedPrefixes (Anti-Cliff, ADDED 2026-08-27, arXiv:2608.22752).
@@ -52,8 +52,8 @@ type Sieve struct {
 	// Adaptive threshold (#13, ADDED 2026-10-10): tracks intercept stats
 	// per task to auto-tune ToolRepetitionThreshold.
 	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.2.
-	interceptStats       map[string]*interceptStat // taskID → stats
-	consecutiveCleanTasks int                      // tasks with 0 intercepts since last threshold change
+	interceptStats        map[string]*interceptStat // taskID → stats
+	consecutiveCleanTasks int                       // tasks with 0 intercepts since last threshold change
 }
 
 // interceptStat tracks per-task interception statistics for adaptive
@@ -62,7 +62,7 @@ type Sieve struct {
 // loose → tighten. Relaxation happens across tasks: 10 consecutive tasks
 // with 0 intercepts → loosen by 1.
 type interceptStat struct {
-	interceptedHashes map[string]bool
+	interceptedHashes  map[string]bool
 	distinctIntercepts int
 	totalIntercepts    int
 }
@@ -93,14 +93,14 @@ func NewSieve(maxKeep int) *Sieve {
 		resultContentHistory:    make(map[string][]string),
 		compressor:              codeintel.NewCompressor(100),
 		ProtectedPrefixes: []string{
-			"$artifact",    // ArtifactContract / provenance metadata
-			"$contract",    // Artifact Contract fields (required_fields, type_schema)
-			"$goal",        // Task goal / invariant
-			"$rule",        // SOP rule / system directive
-			"$sop",         // SOP role definition
-			"$schema",      // JSON schema declarations
-			"$invariant",   // Explicit invariants
-			"protected_",   // Prefix reserved for any custom protected entry
+			"$artifact",  // ArtifactContract / provenance metadata
+			"$contract",  // Artifact Contract fields (required_fields, type_schema)
+			"$goal",      // Task goal / invariant
+			"$rule",      // SOP rule / system directive
+			"$sop",       // SOP role definition
+			"$schema",    // JSON schema declarations
+			"$invariant", // Explicit invariants
+			"protected_", // Prefix reserved for any custom protected entry
 		},
 	}
 }
@@ -264,19 +264,19 @@ func (s *Sieve) detectRepetition(text string) bool {
 		if current == "" {
 			continue
 		}
-		
+
 		// Compare with previous N lines
 		start := i - s.WindowSize
 		if start < 0 {
 			start = 0
 		}
-		
+
 		for j := start; j < i; j++ {
 			prev := strings.TrimSpace(lines[j])
 			if prev == "" {
 				continue
 			}
-			
+
 			if s.calculateSimilarity(current, prev) > s.RepetitionThreshold {
 				return true
 			}
@@ -290,10 +290,10 @@ func (s *Sieve) calculateSimilarity(a, b string) float64 {
 	if a == b {
 		return 1.0
 	}
-	
+
 	tokensA := strings.Fields(strings.ToLower(a))
 	tokensB := strings.Fields(strings.ToLower(b))
-	
+
 	if len(tokensA) == 0 || len(tokensB) == 0 {
 		return 0
 	}
@@ -408,6 +408,15 @@ func (s *Sieve) InspectToolCalls(taskID, stepID string, calls []store.ToolIntera
 		if len(s.toolHistory[histKey]) > maxToolHistoryPerTask {
 			s.toolHistory[histKey] = s.toolHistory[histKey][len(s.toolHistory[histKey])-maxToolHistoryPerTask:]
 		}
+
+		// ABAB cycle detection (Gap-1): catches residual narrow case where
+		// period 2-4 cycles slip through consecutive/window/total checks.
+		// e.g., A,B,C,D,A,B,C,D,A,B,C,D — each hash appears only 3 times
+		// total (< threshold*2=6), and < 3 in any 6-window (< 50% density).
+		if !isPollerTool(call.ToolName) && detectCycle(s.toolHistory[histKey], s.ToolRepetitionThreshold) {
+			s.recordInterceptLocked(taskID, hash)
+			return false, "InfiniteLoopDetected"
+		}
 	}
 
 	// Cap the number of tracked tasks to prevent unbounded map growth.
@@ -426,6 +435,67 @@ func (s *Sieve) InspectToolCalls(taskID, stepID string, calls []store.ToolIntera
 		s.toolHistory[histKey] = current
 	}
 
+	return true, ""
+}
+
+// detectCycle checks if the history ends with a repeating cycle of period 4.
+// Returns true if a cycle is detected with at least minRepeats repetitions.
+//
+// This catches the residual narrow case (Gap-1) that consecutive, window,
+// and total-occurrence checks all miss: cycles with period ≥ 4 where each
+// individual hash appears < threshold times in any window and < threshold*2
+// total, yet the overall pattern is clearly repetitive.
+//
+// Period 2 and 3 are NOT checked here because they are already covered by
+// the window check (50% density) and total-occurrence check (totalCount ≥ 6)
+// respectively. Only period 4 is the residual narrow case.
+//
+// Example: A,B,C,D,A,B,C,D,A,B,C,D (period 4, 3 repeats) — each hash
+// appears only 3 times total (< 6) and ≤ 1 time in any 6-window (< 50%).
+//
+// Inspired by Hermes Agent `_detect_identical_cycle()` (64-entry deque,
+// period 2-4 detection).
+func detectCycle(history []string, minRepeats int) bool {
+	n := len(history)
+	p := 4 // only period 4 — periods 2-3 already covered by existing checks
+	if n < p*minRepeats {
+		return false
+	}
+	// Check if the last p*minRepeats entries form a cycle of period p.
+	pattern := history[n-p:]
+	for r := 1; r < minRepeats; r++ {
+		start := n - p*(r+1)
+		for j := 0; j < p; j++ {
+			if history[start+j] != pattern[j] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// InspectTruncationArtifact checks if the model is over-generalizing from
+// truncated tool results. When the last tool's Meta.Truncated is true and
+// the model output contains universal quantifiers (全部/所有/all/complete/etc.),
+// the Sieve blocks the output and forces the model to narrow its conclusion.
+//
+// See docs/plan/STRUCTURED_TOOL_METADATA_DESIGN.md §2.2.
+func (s *Sieve) InspectTruncationArtifact(lastMeta *store.ToolMetadata, modelOutput string) (bool, string) {
+	if lastMeta == nil || !lastMeta.Truncated {
+		return true, ""
+	}
+
+	forbiddenTerms := []string{"全部", "所有", "完整", "全体", "all", "entire", "complete"}
+	lowerOutput := strings.ToLower(modelOutput)
+	for _, term := range forbiddenTerms {
+		if strings.Contains(lowerOutput, term) {
+			hint := lastMeta.Hint
+			if hint == "" {
+				hint = "Previous tool output was truncated. Do not claim comprehensive coverage."
+			}
+			return false, fmt.Sprintf("TruncationViolation: Output contains '%s' but tool result was truncated (returned %d of %d). Hint: %s", term, lastMeta.Returned, lastMeta.Total, hint)
+		}
+	}
 	return true, ""
 }
 
@@ -781,4 +851,3 @@ func (s *Sieve) DetectPlanDrift(taskID string, tc schemas.ToolCall) string {
 		tc.Name,
 	)
 }
-

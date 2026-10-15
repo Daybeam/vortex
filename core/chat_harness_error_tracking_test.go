@@ -65,9 +65,14 @@ func TestChatHarness_ErrorTracking_InjectsErrorMessages(t *testing.T) {
 	}
 
 	var events []ChatEvent
-	_, _ = h.Run(context.Background(), "task-err-track",
+	// audit T-NEW-1: log Run error for diagnostic clarity — the test verifies
+	// behavior via event inspection below, but knowing if Run itself errored
+	// helps diagnose unexpected failures.
+	if _, runErr := h.Run(context.Background(), "task-err-track",
 		[]ChatMessage{{Role: "user", Content: "test"}},
-		func(ev ChatEvent) error { events = append(events, ev); return nil })
+		func(ev ChatEvent) error { events = append(events, ev); return nil }); runErr != nil {
+		t.Logf("h.Run returned error (may be expected for failing-tool scenario): %v", runErr)
+	}
 
 	// Collect tool_result events for "nonexistent_tool".
 	var toolResults []string

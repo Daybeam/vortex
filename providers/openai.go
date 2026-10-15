@@ -201,7 +201,7 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 				Delta struct {
 					Content          string `json:"content"`
 					ReasoningContent string `json:"reasoning_content"`
-					ToolCalls []struct {
+					ToolCalls        []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id"`
 						Type     string `json:"type"`

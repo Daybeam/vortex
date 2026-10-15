@@ -52,9 +52,9 @@ func (c *CacheSentinel) Reset(taskID, stepID string) {
 //
 // Design ref: §2.2 alerter 2. Prediction ≠ decision.
 type BudgetSentinel struct {
-	mu       sync.Mutex
-	fired    map[string]map[int]bool // taskID -> tier(60/80/90) -> fired
-	tiers    []int
+	mu    sync.Mutex
+	fired map[string]map[int]bool // taskID -> tier(60/80/90) -> fired
+	tiers []int
 }
 
 func NewBudgetSentinel() *BudgetSentinel {

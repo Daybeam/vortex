@@ -107,6 +107,33 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	}
 	s.Mu.Unlock()
 
+	// ── A3 Outcome Probe + A2/A4 Compensation (ADDED 2026-10-13) ───────
+	// Design ref: docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3
+	//
+	// Before blocking the step, probe external state for all effects the
+	// step produced and attempt compensation in reverse order. File effects
+	// are delegated to StagedWorkspace (existing rollback in scheduler_dag.go).
+	// External effects (api/database/network) are probed and compensated here.
+	// Effects that cannot be compensated are marked needs_manual_review.
+	if s.spawner != nil {
+		tracker := s.spawner.GetOrCreateEffectTracker(taskID)
+		compResults := tracker.CompensateStep(step.ID)
+		if len(compResults) > 0 {
+			for _, cr := range compResults {
+				s.logger.Log("EventA3Compensation", taskID, step.ID, map[string]any{
+					"tool":   cr.ToolName,
+					"action": cr.Action,
+					"detail": cr.Detail,
+				})
+			}
+			if tracker.NeedsReviewCount() > 0 {
+				s.logger.Log("EventA3NeedsReview", taskID, step.ID, map[string]any{
+					"needs_review_count": tracker.NeedsReviewCount(),
+				})
+			}
+		}
+	}
+
 	s.Mu.Lock()
 	step.Status = schemas.StepBlocked
 	s.Mu.Unlock()
@@ -119,11 +146,11 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	// All values are already in scope; this is purely additive — the thin
 	// {blocked, root_cause} payload made external observability impossible.
 	s.publishEvent(taskID, step.ID, EventStepFailed, map[string]any{
-		"root_cause":  string(cause),
-		"blocked":     true,
-		"role_id":     step.RoleID,
-		"suggestion":  suggestion,
-		"confidence":  conf,
+		"root_cause": string(cause),
+		"blocked":    true,
+		"role_id":    step.RoleID,
+		"suggestion": suggestion,
+		"confidence": conf,
 	})
 
 	if s.SignalField != nil {

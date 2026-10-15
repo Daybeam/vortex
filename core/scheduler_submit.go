@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -108,6 +110,15 @@ func (s *DirectedEngine) SubmitWithSession(inputs []schemas.StepInput, sessionID
 }
 
 func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles []*config.Role, skills []*config.Skill, providers []*config.ProviderConfig, mainProviderID string, sessionID string, workspaceRoot string, timeoutSecs int, tokenBudget int64, ownerID string) (string, error) {
+	// ── Tier-Gated Workspace Scope: Complete Mediation (I3) ───────────
+	// Defense-in-depth: even if the tools layer's ResolveWorkspaceRoot
+	// was bypassed (e.g. direct API handler), the scheduler re-checks
+	// that workspaceRoot is within the allowed scope for the owner.
+	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.5.
+	if err := s.validateWorkspaceScope(workspaceRoot, ownerID); err != nil {
+		return "", fmt.Errorf("workspace scope violation: %w", err)
+	}
+
 	// ── Session-to-Workspace Binding (D1) ───────────────────────────────
 	// Validate workspaceRoot against the AllowedWorkspaces whitelist before
 	// accepting any work. Nil-safe: when s.Sessions is nil (tests, backward
@@ -300,16 +311,16 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			fastPathHit := false
 			if isDeterministicContract(inp) {
 				if fpResult, fpErr := s.tryFastPath(ctx, inp, taskID, stepID); fpErr == nil {
-				finalResult = fpResult
-				finalErr = nil
-				fastPathHit = true
-				observability.GetGlobalMetrics().Inc("orchestrator.fast_path.hits", 1)
-				s.logger.Log("EventFastPathHit", taskID, stepID, map[string]any{
-					"path": inp.OutputContract.Path,
-				})
-			} else {
-				observability.GetGlobalMetrics().Inc("orchestrator.fast_path.misses", 1)
-				s.logger.Log("EventFastPathFallback", taskID, stepID, map[string]any{"err": fpErr.Error()})
+					finalResult = fpResult
+					finalErr = nil
+					fastPathHit = true
+					observability.GetGlobalMetrics().Inc("orchestrator.fast_path.hits", 1)
+					s.logger.Log("EventFastPathHit", taskID, stepID, map[string]any{
+						"path": inp.OutputContract.Path,
+					})
+				} else {
+					observability.GetGlobalMetrics().Inc("orchestrator.fast_path.misses", 1)
+					s.logger.Log("EventFastPathFallback", taskID, stepID, map[string]any{"err": fpErr.Error()})
 				}
 			}
 
@@ -327,43 +338,43 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 					// Audit gate. Only runs when the step completed OK and declared criteria.
 					if err == nil && result != nil && step.ExitCriteria != "" &&
 						(result.Output.Status == schemas.StatusOK || result.Output.Status == schemas.StatusPartial) {
-					if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
-						if step.AutoRefineCount < step.MaxAutoRefine {
-							step.AutoRefineCount++
-							step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Refining...", failType, reason))
-							s.logger.Log("EventStepRetrying", graph.TaskID, step.ID, map[string]any{
-								"reason": "exit_criteria_fail", "details": reason,
-								"refine_attempt": step.AutoRefineCount, "fail_type": failType,
-							})
-							// ── AntiPattern Injection (Module 2, Two-Tier Design) ──────────
-							// Query the AntiPatternStore for historical precedents matching
-							// this step's domain + the specific rejection reason, and inject
-							// them as a [PREVIOUS FAILURE ANTI-PATTERN] block. This gives the
-							// weak model curated "error-book" guidance on retry, reducing its
-							// secondary error rate. See core/antipattern_injection.go.
-							antiPatternBlock := s.buildAntiPatternGuidance(step.Task, reason)
-							if antiPatternBlock != "" {
-								s.logger.Log("EventAntiPatternInjected", graph.TaskID, step.ID, map[string]any{
-									"refine_attempt": step.AutoRefineCount,
-									"source":         "antipattern_store",
+						if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
+							if step.AutoRefineCount < step.MaxAutoRefine {
+								step.AutoRefineCount++
+								step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Refining...", failType, reason))
+								s.logger.Log("EventStepRetrying", graph.TaskID, step.ID, map[string]any{
+									"reason": "exit_criteria_fail", "details": reason,
+									"refine_attempt": step.AutoRefineCount, "fail_type": failType,
 								})
+								// ── AntiPattern Injection (Module 2, Two-Tier Design) ──────────
+								// Query the AntiPatternStore for historical precedents matching
+								// this step's domain + the specific rejection reason, and inject
+								// them as a [PREVIOUS FAILURE ANTI-PATTERN] block. This gives the
+								// weak model curated "error-book" guidance on retry, reducing its
+								// secondary error rate. See core/antipattern_injection.go.
+								antiPatternBlock := s.buildAntiPatternGuidance(step.Task, reason)
+								if antiPatternBlock != "" {
+									s.logger.Log("EventAntiPatternInjected", graph.TaskID, step.ID, map[string]any{
+										"refine_attempt": step.AutoRefineCount,
+										"source":         "antipattern_store",
+									})
+								}
+								// Compose the full recovery prompt: prior context + rejection +
+								// anti-pattern guidance. Single composition point keeps the
+								// retry-prompt shape consistent and testable.
+								spawnReq.AdditionalPromptContext = composeRecoveryPrompt(
+									spawnReq.AdditionalPromptContext, reason, antiPatternBlock,
+								)
+								continue // re-spawn with recovery context
 							}
-							// Compose the full recovery prompt: prior context + rejection +
-							// anti-pattern guidance. Single composition point keeps the
-							// retry-prompt shape consistent and testable.
-							spawnReq.AdditionalPromptContext = composeRecoveryPrompt(
-								spawnReq.AdditionalPromptContext, reason, antiPatternBlock,
-							)
-							continue // re-spawn with recovery context
-						}
-						// Refine budget exhausted → mark failed (audit rejected).
-						// Race fix: protect step/graph status with Mu.
-						s.Mu.Lock()
-						step.Status = schemas.StepFailed
-						step.LastError = store.SanitizeError(fmt.Sprintf("exit_criteria failed after %d refine attempts: %s", step.AutoRefineCount, reason))
-						graph.Status = schemas.GraphFailed
-						s.Mu.Unlock()
-						break
+							// Refine budget exhausted → mark failed (audit rejected).
+							// Race fix: protect step/graph status with Mu.
+							s.Mu.Lock()
+							step.Status = schemas.StepFailed
+							step.LastError = store.SanitizeError(fmt.Sprintf("exit_criteria failed after %d refine attempts: %s", step.AutoRefineCount, reason))
+							graph.Status = schemas.GraphFailed
+							s.Mu.Unlock()
+							break
 						}
 						// Audit passed → fall through to success path below.
 					}
@@ -688,4 +699,34 @@ func (s *DirectedEngine) pinBaseline(taskID string, inputs []schemas.StepInput) 
 	if err := s.BaselineStore.PinBaseline(ctx, taskID, sopID, sopVer, roleID, roleVer); err != nil {
 		s.logger.Log("EventBaselinePinError", taskID, "", map[string]any{"error": err.Error()})
 	}
+}
+
+// validateWorkspaceScope is the Complete Mediation (I3) defense-in-depth
+// check. When workspace policy is enabled and an owner is present, it
+// verifies that workspaceRoot is within the allowed roots.
+//
+// This catches direct API handler bypasses (pkg/api/handlers.go,
+// pkg/api/chat_handlers.go) that skip the tools layer's
+// ResolveWorkspaceRoot. Nil-safe: when policy is disabled or owner is
+// empty (local mode), the check is a no-op.
+func (s *DirectedEngine) validateWorkspaceScope(workspaceRoot, ownerID string) error {
+	if workspaceRoot == "" || ownerID == "" {
+		return nil // empty root or local mode → no check
+	}
+	wp := s.registry.GetWorkspacePolicy(ownerID)
+	if wp == nil || !wp.Enabled {
+		return nil // policy disabled → no check
+	}
+	if len(wp.AllowedRoots) == 0 {
+		return nil // no whitelist configured → allow
+	}
+	for _, allowed := range wp.AllowedRoots {
+		cleanAllowed := filepath.Clean(allowed)
+		cleanRoot := filepath.Clean(workspaceRoot)
+		if cleanRoot == cleanAllowed ||
+			strings.HasPrefix(cleanRoot, cleanAllowed+string(filepath.Separator)) {
+			return nil // within allowed root
+		}
+	}
+	return fmt.Errorf("workspace %s not in allowed roots for owner %s", workspaceRoot, ownerID)
 }

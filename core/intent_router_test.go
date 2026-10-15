@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
@@ -72,5 +73,37 @@ func TestIntentRouter_Route_EmbeddingFails_KeywordFallback(t *testing.T) {
 
 	if result[0].SOP.ID != "code-review" {
 		t.Errorf("Expected SOP code-review, got %s (mode: %s)", result[0].SOP.ID, result[0].MatchMode)
+	}
+}
+
+// FIX (eval, 2026-10-13): regression for the drained-embedChan deadlock in
+// Route. When the outer select fires on keywordChan FIRST and keyword
+// matching finds NO candidates, the old tail select re-waited on embedChan —
+// but the embedding racer sends at most one value ever, so if it had already
+// delivered inside the 250ms window the channel was permanently drained and
+// Route blocked until ctx cancellation (the MCP tool-call ctx never cancels).
+// Symptom seen live: orchestrator_submit_task hung ~50% of probe runs on the
+// implicit single-step path. The outer select picks uniformly among ready
+// cases, hence the repetition below.
+func TestIntentRouter_Route_NoKeywordMatch_NoClient_Returns(t *testing.T) {
+	reg := makeTestRegistry()
+	router := NewIntentRouter(nil)
+	router.RefreshEmbeddings(context.Background(), reg)
+
+	// "zzz quux" shares no token with the SOP trigger keywords.
+	for i := 0; i < 40; i++ {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			res, err := router.Route(context.Background(), reg, "zzz quux completely unrelated input", 3)
+			if err == nil && len(res) > 0 {
+				t.Errorf("iter %d: expected no results, got %d", i, len(res))
+			}
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iter %d: Route deadlocked on the no-keyword-match path", i)
+		}
 	}
 }

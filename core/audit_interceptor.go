@@ -20,8 +20,8 @@ func AuditInterceptor(logger *Logger) Interceptor {
 		metrics.Inc("orchestrator_subagent_calls_total", 1)
 
 		logger.LogCtx(ctx, "audit_entry", req.TaskID, req.StepID, map[string]any{
-			"role_id": req.RoleID,
-			"task":    req.Task,
+			"role_id":  req.RoleID,
+			"task":     req.Task,
 			"trace_id": traceID,
 			"span_id":  spanID,
 		})

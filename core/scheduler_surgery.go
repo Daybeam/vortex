@@ -2,8 +2,8 @@ package core
 
 import (
 	"fmt"
-	"time"
 	"github.com/daybeam/vortex/schemas"
+	"time"
 )
 
 // SurgeryData contains parameters for dynamic topology mutation.
@@ -122,9 +122,15 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 			MaxSpawnDepth:    inp.MaxSpawnDepth,
 			LastWorkedOn:     time.Now(),
 		}
-		if newStep.AdditionalSkills == nil { newStep.AdditionalSkills = []string{} }
-		if newStep.AdditionalMCPs == nil { newStep.AdditionalMCPs = []string{} }
-		if newStep.ContextRefs == nil { newStep.ContextRefs = map[string]string{} }
+		if newStep.AdditionalSkills == nil {
+			newStep.AdditionalSkills = []string{}
+		}
+		if newStep.AdditionalMCPs == nil {
+			newStep.AdditionalMCPs = []string{}
+		}
+		if newStep.ContextRefs == nil {
+			newStep.ContextRefs = map[string]string{}
+		}
 
 		graph.Steps[inp.ID] = newStep
 

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/daybeam/vortex/config"
@@ -122,6 +124,38 @@ func (p *SystemOneProvider) Complete(ctx context.Context, req CompleteRequest) (
 		return nil, fmt.Errorf("systemone provider %q: Constraints[\"questions\"] must be a non-empty map[string]any", p.name)
 	}
 
+	// Wire schema normalization (2026-10-14): laya-serve ≥0.3 expects
+	// "instructions"+"criteria"; several call sites (tool_router, decision
+	// gate, failure_classify) still emit the legacy "question"+"options"
+	// pair. Translate at this single choke point so every decision point is
+	// covered without touching each builder. Original keys are preserved for
+	// backends that still speak the legacy schema; new keys win when both
+	// are present (verified against laya 0.3.21).
+	normalized := make(map[string]any, len(questions))
+	for qID, raw := range questions {
+		q, isMap := raw.(map[string]any)
+		if !isMap {
+			normalized[qID] = raw
+			continue
+		}
+		nq := make(map[string]any, len(q)+2)
+		for k, v := range q {
+			nq[k] = v
+		}
+		if _, has := nq["instructions"]; !has {
+			if v, has := nq["question"]; has {
+				nq["instructions"] = v
+			}
+		}
+		if _, has := nq["criteria"]; !has {
+			if v, has := nq["options"]; has {
+				nq["criteria"] = v
+			}
+		}
+		normalized[qID] = nq
+	}
+	questions = normalized
+
 	// State: prefer User string, fall back to System string.
 	state := req.User
 	if state == "" {
@@ -147,7 +181,15 @@ func (p *SystemOneProvider) Complete(ctx context.Context, req CompleteRequest) (
 		return nil, fmt.Errorf("systemone provider %q: marshal request: %w", p.name, err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.cfg.BaseURL, bytes.NewReader(payload))
+	// Endpoint resolution: base_url may be the bare host (as shown in the
+	// SystemOneConfig example, e.g. "http://127.0.0.1:8000") or a full
+	// /v1/systemone URL. Append the canonical path only when no path is set.
+	endpoint := strings.TrimRight(p.cfg.BaseURL, "/")
+	if u, perr := url.Parse(endpoint); perr == nil && (u.Path == "" || u.Path == "/") {
+		endpoint += "/v1/systemone"
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("systemone provider %q: build request: %w", p.name, err)
 	}

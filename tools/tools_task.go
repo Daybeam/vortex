@@ -85,17 +85,41 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithAny("session_roles", mcp.Description("Session-specific roles")),
 		mcp.WithAny("session_skills", mcp.Description("Session-specific skills")),
 		mcp.WithString("session_id", mcp.Description("Session ID for workspace binding. All tasks in the same session share an authorized workspace root.")),
-		mcp.WithString("workspace_root", mcp.Description("Absolute path to the session workspace root directory. Must be in sandbox.allowed_workspaces whitelist if configured.")),
+		mcp.WithString("workspace_root", mcp.Description("Absolute path to workspace root. IGNORED for public tier (auto-bound to session sandbox). Only honored for local (no API key) and admin tier callers.")),
 		mcp.WithNumber("timeout", mcp.Description("Per-task timeout in seconds. Overrides the global default. 0 = use system default.")),
 		mcp.WithNumber("token_budget", mcp.Description("Per-task token budget cap. Overrides the global default. 0 = use system default.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, _ := req.Params.Arguments.(map[string]any)
-				sessionRoles := parseSessionRoles(args["session_roles"])
-				sessionSkills := parseSessionSkills(args["session_skills"])
+			sessionRoles := parseSessionRoles(args["session_roles"])
+			sessionSkills := parseSessionSkills(args["session_skills"])
 		sessionID := strArg(args, "session_id")
-		workspaceRoot := strArg(args, "workspace_root")
+		requestedRoot := strArg(args, "workspace_root")
 		timeoutSecs := intArg(args, "timeout", 0)
 		tokenBudget := int64Arg(args, "token_budget", 0)
+
+		// Tier-Gated Workspace Scope (ADDED 2026-10-13):
+		// Public tier callers cannot escalate via workspace_root.
+		// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.3.
+		var workspacePolicy *WorkspacePolicy
+		if wp := app.Registry.GetWorkspacePolicy(CallerOwnerID(ctx)); wp != nil {
+			workspacePolicy = &WorkspacePolicy{
+				OwnerID:            CallerOwnerID(ctx),
+				AllowedRoots:       wp.AllowedRoots,
+				SessionSandboxBase: wp.SessionSandboxBase,
+			}
+		}
+		workspaceRoot, err := ResolveWorkspaceRoot(ctx, workspacePolicy, requestedRoot)
+		if err != nil {
+			return errResult(err.Error())
+		}
+		if app.Logger != nil && requestedRoot != workspaceRoot {
+			app.Logger.Log("workspace_root_resolved", "", "", map[string]any{
+				"tier":      ctx.Value(AuthTierKey),
+				"owner":     CallerOwnerID(ctx),
+				"requested": requestedRoot,
+				"effective": workspaceRoot,
+			})
+		}
 
 		groupID := strArg(args, "group_id")
 		if groupID != "" {

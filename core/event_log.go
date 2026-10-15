@@ -38,11 +38,11 @@ func NewAgentEvent(taskID, stepID, eventType string, payload map[string]any) Age
 
 // GlobalEventLogger writes events to a central trajectory log file.
 type GlobalEventLogger struct {
-	path   string
-	ch     chan AgentEvent
-	wg     sync.WaitGroup
-	done   chan struct{}
-	closed uint32 // atomic flag: 1 = closed (audit finding M3)
+	path    string
+	ch      chan AgentEvent
+	wg      sync.WaitGroup
+	done    chan struct{}
+	closed  uint32 // atomic flag: 1 = closed (audit finding M3)
 	dropped uint64 // atomic counter for dropped events (audit finding M2)
 }
 

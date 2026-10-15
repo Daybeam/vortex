@@ -165,16 +165,16 @@ func TestSegmentManager_JaccardFallback_WhenNoEmbeddings(t *testing.T) {
 
 	// Add items without embeddings — should use Jaccard.
 	seg1 := sm.AddItem(MemoryItem{
-		NodeID:  "item-1",
-		Intent:  "deploy the application to production",
-		Summary: "deployment completed",
+		NodeID:    "item-1",
+		Intent:    "deploy the application to production",
+		Summary:   "deployment completed",
 		Timestamp: time.Now(),
 	}, "scope-1")
 
 	seg2 := sm.AddItem(MemoryItem{
-		NodeID:  "item-2",
-		Intent:  "deploy the application to staging",
-		Summary: "deployment completed",
+		NodeID:    "item-2",
+		Intent:    "deploy the application to staging",
+		Summary:   "deployment completed",
 		Timestamp: time.Now(),
 	}, "scope-1")
 
@@ -197,24 +197,24 @@ func TestSegmentManager_LLMSummarizer_UsedWhenSet(t *testing.T) {
 
 	// Add items to trigger a seal.
 	sm.AddItem(MemoryItem{
-		NodeID:  "item-1",
-		Intent:  "topic one alpha",
-		Summary: "did alpha",
+		NodeID:    "item-1",
+		Intent:    "topic one alpha",
+		Summary:   "did alpha",
 		Timestamp: time.Now(),
 	}, "scope-1")
 
 	sm.AddItem(MemoryItem{
-		NodeID:  "item-2",
-		Intent:  "completely different topic beta gamma delta",
-		Summary: "did beta gamma delta",
+		NodeID:    "item-2",
+		Intent:    "completely different topic beta gamma delta",
+		Summary:   "did beta gamma delta",
 		Timestamp: time.Now(),
 	}, "scope-1")
 
 	// The second item should trigger a seal (low similarity).
 	sm.AddItem(MemoryItem{
-		NodeID:  "item-3",
-		Intent:  "more different content epsilon zeta eta",
-		Summary: "did epsilon zeta eta",
+		NodeID:    "item-3",
+		Intent:    "more different content epsilon zeta eta",
+		Summary:   "did epsilon zeta eta",
 		Timestamp: time.Now(),
 	}, "scope-1")
 
@@ -238,16 +238,16 @@ func TestSegmentManager_FallbackSummary_WhenNoSummarizer(t *testing.T) {
 
 	// No summarizer set — should use head+tail fallback.
 	sm.AddItem(MemoryItem{
-		NodeID:  "item-1",
-		Intent:  "topic one alpha",
-		Summary: "did alpha",
+		NodeID:    "item-1",
+		Intent:    "topic one alpha",
+		Summary:   "did alpha",
 		Timestamp: time.Now(),
 	}, "scope-1")
 
 	sm.AddItem(MemoryItem{
-		NodeID:  "item-2",
-		Intent:  "completely different topic beta gamma delta",
-		Summary: "did beta gamma delta",
+		NodeID:    "item-2",
+		Intent:    "completely different topic beta gamma delta",
+		Summary:   "did beta gamma delta",
 		Timestamp: time.Now(),
 	}, "scope-1")
 
@@ -714,6 +714,245 @@ func TestIntegration_ArchiveStepSummaries_InPromptBlocks(t *testing.T) {
 	}
 	if !foundStep2 {
 		t.Error("step-2 summary should be in the prompt blocks")
+	}
+}
+
+// ── P2-4: Trace Weaver (Cross-Segment Semantic Linking, Membox method) ────
+
+func TestSegmentManager_FollowTrace_ReturnsTransitiveChain(t *testing.T) {
+	// Setup: A↔B, B↔C (but NOT A↔C directly).
+	// FollowTrace from A should return all 3 in temporal order.
+	sm := NewSegmentManager("")
+
+	now := time.Now()
+	segA := MemorySegment{SegmentID: "segA", TopicTitle: "auth", Summary: "token rotation", StartTime: now, EndTime: now, IsSealed: true}
+	segB := MemorySegment{SegmentID: "segB", TopicTitle: "auth", Summary: "refresh lifetime", StartTime: now.Add(10 * time.Minute), EndTime: now.Add(10 * time.Minute), IsSealed: true}
+	segC := MemorySegment{SegmentID: "segC", TopicTitle: "auth", Summary: "sliding window", StartTime: now.Add(20 * time.Minute), EndTime: now.Add(20 * time.Minute), IsSealed: true}
+
+	sm.sealed = []MemorySegment{segA, segB, segC}
+	sm.segmentLinks = map[string][]string{
+		"segA": {"segB"},
+		"segB": {"segA", "segC"},
+		"segC": {"segB"},
+	}
+
+	trace := sm.FollowTrace("segA", 3)
+
+	if len(trace.Segments) != 3 {
+		t.Fatalf("expected 3 segments in trace, got %d", len(trace.Segments))
+	}
+
+	// Verify temporal order (ascending by StartTime).
+	if trace.Segments[0].SegmentID != "segA" {
+		t.Errorf("expected segA first, got %s", trace.Segments[0].SegmentID)
+	}
+	if trace.Segments[1].SegmentID != "segB" {
+		t.Errorf("expected segB second, got %s", trace.Segments[1].SegmentID)
+	}
+	if trace.Segments[2].SegmentID != "segC" {
+		t.Errorf("expected segC third, got %s", trace.Segments[2].SegmentID)
+	}
+
+	if trace.TraceID != "segA" {
+		t.Errorf("expected TraceID=segA, got %s", trace.TraceID)
+	}
+}
+
+func TestSegmentManager_FollowTrace_RespectsMaxDepth(t *testing.T) {
+	// Chain: A↔B↔C↔D
+	// maxDepth=1 → only A+B (direct neighbors)
+	// maxDepth=2 → A+B+C
+	// maxDepth=3 → A+B+C+D
+	sm := NewSegmentManager("")
+
+	now := time.Now()
+	sm.sealed = []MemorySegment{
+		{SegmentID: "A", StartTime: now, IsSealed: true},
+		{SegmentID: "B", StartTime: now.Add(time.Minute), IsSealed: true},
+		{SegmentID: "C", StartTime: now.Add(2 * time.Minute), IsSealed: true},
+		{SegmentID: "D", StartTime: now.Add(3 * time.Minute), IsSealed: true},
+	}
+	sm.segmentLinks = map[string][]string{
+		"A": {"B"}, "B": {"A", "C"}, "C": {"B", "D"}, "D": {"C"},
+	}
+
+	depth1 := sm.FollowTrace("A", 1)
+	if len(depth1.Segments) != 2 {
+		t.Errorf("maxDepth=1: expected 2 segments (A+B), got %d", len(depth1.Segments))
+	}
+
+	depth2 := sm.FollowTrace("A", 2)
+	if len(depth2.Segments) != 3 {
+		t.Errorf("maxDepth=2: expected 3 segments (A+B+C), got %d", len(depth2.Segments))
+	}
+
+	depth3 := sm.FollowTrace("A", 3)
+	if len(depth3.Segments) != 4 {
+		t.Errorf("maxDepth=3: expected 4 segments (A+B+C+D), got %d", len(depth3.Segments))
+	}
+}
+
+func TestSegmentManager_FollowTrace_DefaultDepth(t *testing.T) {
+	// maxDepth=0 should use default (3).
+	sm := NewSegmentManager("")
+
+	now := time.Now()
+	sm.sealed = []MemorySegment{
+		{SegmentID: "A", StartTime: now, IsSealed: true},
+		{SegmentID: "B", StartTime: now.Add(time.Minute), IsSealed: true},
+		{SegmentID: "C", StartTime: now.Add(2 * time.Minute), IsSealed: true},
+		{SegmentID: "D", StartTime: now.Add(3 * time.Minute), IsSealed: true},
+	}
+	sm.segmentLinks = map[string][]string{
+		"A": {"B"}, "B": {"A", "C"}, "C": {"B", "D"}, "D": {"C"},
+	}
+
+	trace := sm.FollowTrace("A", 0) // 0 = default depth (3)
+	if len(trace.Segments) != 4 {
+		t.Errorf("default depth: expected 4 segments, got %d", len(trace.Segments))
+	}
+}
+
+func TestSegmentManager_FollowTrace_SingleSegment_WhenNoLinks(t *testing.T) {
+	sm := NewSegmentManager("")
+
+	now := time.Now()
+	sm.sealed = []MemorySegment{
+		{SegmentID: "lonely", TopicTitle: "solo", Summary: "no friends", StartTime: now, IsSealed: true},
+	}
+	// No segmentLinks entry for "lonely".
+
+	trace := sm.FollowTrace("lonely", 3)
+	if len(trace.Segments) != 1 {
+		t.Errorf("expected 1 segment (just itself), got %d", len(trace.Segments))
+	}
+	if trace.Segments[0].SegmentID != "lonely" {
+		t.Errorf("expected 'lonely', got %s", trace.Segments[0].SegmentID)
+	}
+}
+
+func TestSegmentManager_FollowTrace_Empty_WhenSegmentNotFound(t *testing.T) {
+	sm := NewSegmentManager("")
+	sm.sealed = []MemorySegment{
+		{SegmentID: "exists", StartTime: time.Now(), IsSealed: true},
+	}
+
+	trace := sm.FollowTrace("nonexistent", 3)
+	if len(trace.Segments) != 0 {
+		t.Errorf("expected 0 segments for nonexistent ID, got %d", len(trace.Segments))
+	}
+}
+
+func TestSegmentManager_WeaveTrace_ProducesNarrative(t *testing.T) {
+	sm := NewSegmentManager("")
+
+	now := time.Now()
+	trace := SegmentTrace{
+		TraceID: "segA",
+		Segments: []MemorySegment{
+			{SegmentID: "segA", TopicTitle: "auth design", Summary: "discussed token rotation", StartTime: now},
+			{SegmentID: "segB", TopicTitle: "auth design", Summary: "refined refresh lifetime", StartTime: now.Add(15 * time.Minute)},
+			{SegmentID: "segC", TopicTitle: "auth design", Summary: "concluded with sliding window", StartTime: now.Add(30 * time.Minute)},
+		},
+	}
+
+	woven := sm.WeaveTrace(trace)
+	if woven == "" {
+		t.Fatal("expected non-empty woven string")
+	}
+
+	// Verify all summaries appear in the woven output.
+	for _, seg := range trace.Segments {
+		if !strings.Contains(woven, seg.Summary) {
+			t.Errorf("woven output missing summary %q", seg.Summary)
+		}
+	}
+
+	// Verify temporal markers (→ prefix).
+	if !strings.Contains(woven, "→") {
+		t.Error("woven output should contain → markers")
+	}
+
+	// Verify topic title appears.
+	if !strings.Contains(woven, "auth design") {
+		t.Error("woven output should contain topic title")
+	}
+}
+
+func TestSegmentManager_WeaveTrace_Empty_WhenNoSegments(t *testing.T) {
+	sm := NewSegmentManager("")
+
+	woven := sm.WeaveTrace(SegmentTrace{TraceID: "empty"})
+	if woven != "" {
+		t.Errorf("expected empty string for empty trace, got %q", woven)
+	}
+}
+
+func TestSegmentManager_FollowTrace_WithRealSegments(t *testing.T) {
+	// End-to-end: create segments with embeddings that produce cross-segment
+	// links, then verify FollowTrace finds the transitive chain.
+	tmpDir := t.TempDir()
+	sm := NewSegmentManager(filepath.Join(tmpDir, "segments.jsonl"))
+
+	base := time.Now()
+
+	// Segment 1: topic "auth" (embedding [1,0,0])
+	sm.AddItem(MemoryItem{
+		NodeID: "a1", Intent: "auth token rotation", Summary: "discussed rotation",
+		Embedding: []float32{1.0, 0.0, 0.0}, Timestamp: base,
+	}, "scope-1")
+	// Seal by adding orthogonal content.
+	sm.AddItem(MemoryItem{
+		NodeID: "x1", Intent: "ui layout", Summary: "css grid",
+		Embedding: []float32{0.0, 1.0, 0.0}, Timestamp: base.Add(5 * time.Minute),
+	}, "scope-1")
+	// Segment 2: topic "auth" again (similar embedding → should link to seg1)
+	sm.AddItem(MemoryItem{
+		NodeID: "a2", Intent: "auth refresh token", Summary: "refresh lifetime",
+		Embedding: []float32{0.99, 0.0, 0.01}, Timestamp: base.Add(10 * time.Minute),
+	}, "scope-1")
+	// Seal.
+	sm.AddItem(MemoryItem{
+		NodeID: "x2", Intent: "database migration", Summary: "add index",
+		Embedding: []float32{0.0, 0.0, 1.0}, Timestamp: base.Add(15 * time.Minute),
+	}, "scope-1")
+	// Segment 3: topic "auth" again (should link to seg2, and transitively to seg1)
+	sm.AddItem(MemoryItem{
+		NodeID: "a3", Intent: "auth sliding window", Summary: "sliding window approach",
+		Embedding: []float32{0.98, 0.0, 0.02}, Timestamp: base.Add(20 * time.Minute),
+	}, "scope-1")
+	sm.SealActive("scope-1")
+
+	// Find the "auth" segments (should be 3: a1, a2, a3).
+	if sm.SealedCount() < 3 {
+		t.Fatalf("expected at least 3 sealed segments, got %d", sm.SealedCount())
+	}
+
+	// Find a segment that has links.
+	var linkedID string
+	for i := 0; i < sm.SealedCount(); i++ {
+		trace := sm.FollowTrace(sm.sealed[i].SegmentID, 3)
+		if len(trace.Segments) >= 2 {
+			linkedID = sm.sealed[i].SegmentID
+			break
+		}
+	}
+	if linkedID == "" {
+		t.Fatal("expected at least one segment with cross-segment links")
+	}
+
+	// FollowTrace should return multiple segments in temporal order.
+	trace := sm.FollowTrace(linkedID, 3)
+	if len(trace.Segments) < 2 {
+		t.Errorf("expected trace with >=2 segments, got %d", len(trace.Segments))
+	}
+
+	// Verify temporal ordering.
+	for i := 1; i < len(trace.Segments); i++ {
+		if trace.Segments[i].StartTime.Before(trace.Segments[i-1].StartTime) {
+			t.Error("trace segments should be in ascending temporal order")
+			break
+		}
 	}
 }
 

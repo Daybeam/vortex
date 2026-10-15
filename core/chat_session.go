@@ -35,11 +35,11 @@ type ChatSession struct {
 	UserTier     string                  `json:"user_tier,omitempty"` // guest | authorized | admin
 	CreatedAt    time.Time               `json:"created_at"`
 
-	mu        sync.Mutex
-	events    []ChatEvent
-	nextSeq   int64
-	seenMsg   map[string]bool
-	dirtyMsgs []string // message IDs added since last Persist (audit PERF-6: avoid re-saving all messages)
+	mu         sync.Mutex
+	events     []ChatEvent
+	nextSeq    int64
+	seenMsg    map[string]bool
+	dirtyMsgs  []string // message IDs added since last Persist (audit PERF-6: avoid re-saving all messages)
 	lastAccess time.Time
 }
 
@@ -396,10 +396,10 @@ func (st *ChatSessionStore) ListSessions(ctx context.Context, limit, offset int)
 
 // chatSessionData is the on-disk format for tree-based sessions.
 type chatSessionData struct {
-	Messages      map[string]*ChatMessage `json:"messages"`
-	RootID        string                  `json:"root_id,omitempty"`
-	ActiveLeafID  string                  `json:"active_leaf_id,omitempty"`
-	ActiveRoleID  string                  `json:"active_role_id,omitempty"` // regression for audit LOGIC-5: was missing — role lost on restart
+	Messages     map[string]*ChatMessage `json:"messages"`
+	RootID       string                  `json:"root_id,omitempty"`
+	ActiveLeafID string                  `json:"active_leaf_id,omitempty"`
+	ActiveRoleID string                  `json:"active_role_id,omitempty"` // regression for audit LOGIC-5: was missing — role lost on restart
 }
 
 // Persist writes the session's tree to <dir>/<id>.json and/or SQLite backend.

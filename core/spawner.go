@@ -123,6 +123,11 @@ type Spawner struct {
 	// Nil-safe: set via SetFoldEngine from DirectedEngine.
 	// See docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
 	foldEngine *FoldEngine
+
+	// effectTrackers (ADDED 2026-10-13): per-task EffectTracker for A2/A4
+	// effect tracking. Keyed by taskID. Lazy-created on first access.
+	// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3.
+	effectTrackers sync.Map // taskID → *EffectTracker
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
@@ -181,16 +186,16 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 			esStore.SetEmbeddingClient(hub.GetEmbeddingClient())
 		}
 
-	// Wire up embedding client for ToolRouter hybrid search.
-	spawner.toolRouter.SetEmbedClient(NewHubEmbeddingClient(hub))
-	refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
-	spawner.toolRouter.RefreshToolEmbeddings(refreshCtx, reg)
-	refreshCancel()
-	reg.OnReload(func() {
-		reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
-		defer reloadCancel()
-		spawner.toolRouter.RefreshToolEmbeddings(reloadCtx, reg)
-	})
+		// Wire up embedding client for ToolRouter hybrid search.
+		spawner.toolRouter.SetEmbedClient(NewHubEmbeddingClient(hub))
+		refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
+		spawner.toolRouter.RefreshToolEmbeddings(refreshCtx, reg)
+		refreshCancel()
+		reg.OnReload(func() {
+			reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
+			defer reloadCancel()
+			spawner.toolRouter.RefreshToolEmbeddings(reloadCtx, reg)
+		})
 	}
 
 	spawner.CaSKG.HookEventBus(DefaultBus)
@@ -273,6 +278,30 @@ func (s *Spawner) SetFoldEngine(fe *FoldEngine) {
 	if s.pa != nil {
 		s.pa.SetFoldEngine(fe)
 	}
+}
+
+// GetOrCreateEffectTracker returns the EffectTracker for a task, creating
+// one lazily if it doesn't exist. Thread-safe via sync.Map.
+// Used by the turnLoop to record effects (A2/A4) and by handleStepFailure
+// to compensate effects on step failure (A3).
+func (s *Spawner) GetOrCreateEffectTracker(taskID string) *EffectTracker {
+	val, ok := s.effectTrackers.Load(taskID)
+	if ok {
+		return val.(*EffectTracker)
+	}
+	tracker := NewEffectTracker(filepath.Join(s.outputBase, taskID))
+	actual, loaded := s.effectTrackers.LoadOrStore(taskID, tracker)
+	if loaded {
+		return actual.(*EffectTracker)
+	}
+	return tracker
+}
+
+// recordEffect is a convenience wrapper that records a tool call's effect
+// on the task's EffectTracker. Called from the turnLoop after each tool call.
+func (s *Spawner) recordEffect(taskID, stepID, toolName string, args map[string]any, result string, status string) {
+	tracker := s.GetOrCreateEffectTracker(taskID)
+	tracker.RecordEffect(taskID, stepID, toolName, args, result, status)
 }
 
 // RecordSubagentDuration records the last subagent execution duration for the
@@ -626,12 +655,25 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	const maxEmptyRespRetries = 2
 	emptyRespRetries := 0
 
+	// Outer-ring observability (ADDED 2026-10-12): systemBlocks / mcpServers
+	// are rebuilt per candidate inside the loops below; keep the last-built
+	// MCP server list so the per-turn outer-ring accounting after the
+	// candidate loop can price the tool schemas actually sent.
+	var lastMCPServers []providers.MCPServerDef
+
 turnLoop:
 	for turn := 0; turn < maxTurns; turn++ {
 		// Abort if the task context was cancelled (e.g. CancelTask or shutdown).
 		if ctx.Err() != nil {
 			return s.failedOutput(role.BaseCapability, fmt.Sprintf("context cancelled: %v", ctx.Err())), nil
 		}
+
+		// A1 (Effect Boundary Defense): per-turn idempotency context.
+		// Duplicate tool calls within the same turn are skipped to prevent
+		// repeated execution (A1 anomaly). Resets each turn — different
+		// turns may legitimately repeat calls (e.g., after provider retry).
+		// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
+		turnCtx := NewTurnIdempotencyContext()
 
 		// VDA: Attach visual context from current state
 		attachments := s.resolveContextAttachments(ctx, req.TaskID, req.StepID)
@@ -683,6 +725,7 @@ turnLoop:
 				return s.failedOutput(role.BaseCapability, fmt.Sprintf("failed to render prompt: %v", err)), nil
 			}
 			mcpServers := s.buildMCPServers(ctx, req.Hub, req.TaskID, bindings, pCfg.Provider)
+			lastMCPServers = mcpServers
 
 			// Priority 4: Dynamic Re-routing & Progressive Disclosure Hint
 			if turn == 0 && progressiveEnabled {
@@ -781,28 +824,28 @@ turnLoop:
 			auditRes, err := s.contextManager.Audit(ctxWithTimeout, provider, reqSieve)
 			if err == nil && auditRes.Decision != LevelNone {
 				squeezed, squeezeRes, sErr := s.contextManager.Squeeze(ctxWithTimeout, provider, reqSieve, auditRes.Decision)
-			if sErr == nil {
-				// FIX (2026-10-12, Kaggle B-arm empty-prompt root cause):
-				// Squeeze's returned CompleteRequest only populates the flat
-				// System/User strings; SystemBlocks/UserBlocks are left nil.
-				// Assigning them back unconditionally wiped the ENTIRE prompt
-				// whenever Audit decided any non-None level (mock/llama.cpp
-				// CountTokens returns garbage) — the model then received an
-				// empty system+user and could only greet/clarify with zero
-				// tool calls. Preserve content: prefer blocks, else rebuild
-				// blocks from the compressed flat strings.
-				if len(squeezed.SystemBlocks) > 0 || len(squeezed.UserBlocks) > 0 {
-					systemBlocks = squeezed.SystemBlocks
-					userBlocks = squeezed.UserBlocks
-				} else if squeezed.System != "" || squeezed.User != "" {
-					if squeezed.System != "" {
-						systemBlocks = []schemas.ContentBlock{{Type: "text", Text: squeezed.System}}
+				if sErr == nil {
+					// FIX (2026-10-12, Kaggle B-arm empty-prompt root cause):
+					// Squeeze's returned CompleteRequest only populates the flat
+					// System/User strings; SystemBlocks/UserBlocks are left nil.
+					// Assigning them back unconditionally wiped the ENTIRE prompt
+					// whenever Audit decided any non-None level (mock/llama.cpp
+					// CountTokens returns garbage) — the model then received an
+					// empty system+user and could only greet/clarify with zero
+					// tool calls. Preserve content: prefer blocks, else rebuild
+					// blocks from the compressed flat strings.
+					if len(squeezed.SystemBlocks) > 0 || len(squeezed.UserBlocks) > 0 {
+						systemBlocks = squeezed.SystemBlocks
+						userBlocks = squeezed.UserBlocks
+					} else if squeezed.System != "" || squeezed.User != "" {
+						if squeezed.System != "" {
+							systemBlocks = []schemas.ContentBlock{{Type: "text", Text: squeezed.System}}
+						}
+						if squeezed.User != "" {
+							userBlocks = []schemas.ContentBlock{{Type: "text", Text: squeezed.User}}
+						}
 					}
-					if squeezed.User != "" {
-						userBlocks = []schemas.ContentBlock{{Type: "text", Text: squeezed.User}}
-					}
-				}
-				if squeezeRes.Decision == LevelCritical {
+					if squeezeRes.Decision == LevelCritical {
 						cancel()
 						return nil, fmt.Errorf("DYNAMIC_ESCALATION_REQUIRED: %s", squeezeRes.ActionTaken)
 					}
@@ -944,28 +987,28 @@ turnLoop:
 							return ""
 						}(),
 					})
-				if candIdx < len(candidateConfigs)-1 {
-					continue // try next candidate provider/model
-				}
-				// No more candidates: retry before giving up (handles intermittent
-				// server-side empty responses, e.g. Xunfei MaaS §10.4).
-				retry, exhaustErr := shouldRetryEmptyResponse(&emptyRespRetries, maxEmptyRespRetries)
-				if retry {
-					s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
-						"error":  "empty_response_zero_tokens",
-						"retry":  emptyRespRetries,
-						"max":    maxEmptyRespRetries,
+					if candIdx < len(candidateConfigs)-1 {
+						continue // try next candidate provider/model
+					}
+					// No more candidates: retry before giving up (handles intermittent
+					// server-side empty responses, e.g. Xunfei MaaS §10.4).
+					retry, exhaustErr := shouldRetryEmptyResponse(&emptyRespRetries, maxEmptyRespRetries)
+					if retry {
+						s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+							"error": "empty_response_zero_tokens",
+							"retry": emptyRespRetries,
+							"max":   maxEmptyRespRetries,
+						})
+						continue turnLoop
+					}
+					// Retries exhausted: fast-fail
+					s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+						"error":   "empty_response_zero_tokens",
+						"details": fmt.Sprintf("all candidates returned 0 completion tokens after %d retries; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter, provider intermittent empty response", maxEmptyRespRetries),
 					})
-					continue turnLoop
-				}
-				// Retries exhausted: fast-fail
-				s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
-					"error":   "empty_response_zero_tokens",
-					"details": fmt.Sprintf("all candidates returned 0 completion tokens after %d retries; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter, provider intermittent empty response", maxEmptyRespRetries),
-				})
-				// Persist partial trace for observability (eval §8.48.6).
-				s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
-				return nil, exhaustErr
+					// Persist partial trace for observability (eval §8.48.6).
+					s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
+					return nil, exhaustErr
 				}
 				effectiveProviderID = pCfg.PoolID
 				effectiveModelID = pCfg.Model
@@ -1007,6 +1050,17 @@ turnLoop:
 
 		// Record Usage Stats
 		GetGlobalStats().RecordUsage(currentPCfg.Provider, currentPCfg.Model, resp.PromptTokens, resp.CompletionTokens, len(resp.ToolCalls), resp.CacheWriteTokens, resp.CacheReadTokens)
+
+		// Outer-ring accounting (ADDED 2026-10-12): the system-prompt profile is
+		// captured at Build() time and only covers the system ring. Fold in the
+		// MCP tool-schema cost and the conversation history actually sent this
+		// turn, plus the provider-reported prompt/completion tokens, so
+		// /api/context/profile renders the full context budget.
+		historyTokens := 0
+		for i := range userBlocks {
+			historyTokens += providers.EstimateTokens(userBlocks[i].Text)
+		}
+		s.UpdateSystemPromptOuterRing(estimateMCPServersTokens(lastMCPServers), historyTokens, resp.PromptTokens, resp.CompletionTokens)
 
 		// ── Cost Governance: Cache efficiency sentinel (P0) ───────────────
 		// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 1.
@@ -1170,17 +1224,17 @@ turnLoop:
 					fmt.Fprintf(os.Stderr, "[EVAL-OBS] NUDGE triggered turn=%d noTool=%v lowConf=%v parse=%v\n",
 						turn+1, noToolCallsYet, selfReportedLowConfidence, parseFailed)
 				}
-			msg := SpawnerNoToolsMsg
-			if output.Status == schemas.StatusCapabilityRequired && len(output.RequiredCapabilities) > 0 {
-				msg = fmt.Sprintf("%s Before finalizing capability_required, double-check your bound tools. If none fulfill %v, explain and finalize.", MarkerSystem, output.RequiredCapabilities)
-			}
-			// P1 fix (2026-10-03, eval §0.5): When the spin is caused by parse
-			// failure (not just "no tools"), include format guidance so the model
-			// knows BOTH problems: (1) call tools, (2) output valid JSON.
-			// Without this, the model retries with the same bad format → spin.
-			if parseFailed {
-				msg = SpawnerNoToolsBadJSONMsg
-			}
+				msg := SpawnerNoToolsMsg
+				if output.Status == schemas.StatusCapabilityRequired && len(output.RequiredCapabilities) > 0 {
+					msg = fmt.Sprintf("%s Before finalizing capability_required, double-check your bound tools. If none fulfill %v, explain and finalize.", MarkerSystem, output.RequiredCapabilities)
+				}
+				// P1 fix (2026-10-03, eval §0.5): When the spin is caused by parse
+				// failure (not just "no tools"), include format guidance so the model
+				// knows BOTH problems: (1) call tools, (2) output valid JSON.
+				// Without this, the model retries with the same bad format → spin.
+				if parseFailed {
+					msg = SpawnerNoToolsBadJSONMsg
+				}
 				for i := range userBlocks {
 					userBlocks[i].CacheControl = ""
 				}
@@ -1291,6 +1345,20 @@ turnLoop:
 				}
 			}
 
+			// A1 (Effect Boundary Defense): per-turn idempotency check.
+			// If this exact tool call (same name + same args) has already
+			// been executed in this turn, skip it. This prevents duplicate
+			// execution when a provider returns the same call multiple times.
+			// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
+			opKey := toolCallKey(call.Name, call.Arguments)
+			if turnCtx.CheckAndMark(opKey) {
+				observability.GetGlobalMetrics().Inc("orchestrator.a1.duplicate_skipped", 1)
+				toolResults = append(toolResults, fmt.Sprintf(
+					"[%s] Skipped: identical call already executed in this turn (A1 idempotency defense).",
+					call.Name))
+				continue
+			}
+
 			// #11 (eval §8.41): Identical-call dedup. Allow 2 identical
 			// calls (same tool + same args); on the 3rd, require a _reason
 			// argument. Legitimate retries (data refresh, waiting for async
@@ -1327,6 +1395,8 @@ turnLoop:
 				taskDir := filepath.Join(s.outputBase, req.TaskID)
 				validator := NewSafePathValidator(taskDir, req.SessionRoot, s.allowedWorkspaces)
 				res, status, interaction := s.handleCoreToolCall(ctx, call, req.TaskID, req.StepID, validator)
+				// A2/A4 (Effect Boundary Defense): record the tool call's effect.
+				s.recordEffect(req.TaskID, req.StepID, call.Name, call.Arguments, res, status)
 				if status == "error" {
 					toolFailCount[call.Name]++
 					effCount := s.incrTaskToolFail(req.TaskID, call.Name, toolFailCount[call.Name])
@@ -1445,45 +1515,45 @@ turnLoop:
 				continue
 			}
 
-		if isStateChangingTool(call.Name) {
-			needsVerification = true
-		}
-
-		// #2-universal (eval §23): a state-changing (write) call invalidates
-		// every cached read for this MCP server, keeping the read cache
-		// coherent with external state. Generic: any write verb prefix
-		// (cancel_/update_/create_/...) or known state-changing tool.
-		if s.domainReadCache != nil && (IsWriteMCPTool(call.Name) || isStateChangingTool(call.Name)) {
-			s.domainReadCache.Invalidate(mcpID)
-		}
-
-		// Bookmark_List Routing: Inject trusted domains into search-like tools
-		if strings.Contains(strings.ToLower(call.Name), "search") && len(req.Hub.Registry.System.Bookmarks) > 0 {
-			if call.Arguments == nil {
-				call.Arguments = make(map[string]any)
+			if isStateChangingTool(call.Name) {
+				needsVerification = true
 			}
-			call.Arguments["_bookmarks"] = req.Hub.Registry.System.Bookmarks
-		}
 
-		// #2-universal (eval §23): replay cached read results to break
-		// repetition loops (execution amplification) without force-terminating
-		// the conversation. Generic: any read-only domain tool (get_/list_/
-		// search_/query_/read_/fetch_/check_/is_/has_*) is eligible; pollers
-		// (progress/health/wait) and state-changing tools are excluded. The
-		// model receives the identical previously-computed markdown, so the
-		// repeated call costs zero extra tool execution.
-		if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
-			if cachedMD, ok := s.domainReadCache.Get(mcpID, call.Name, call.Arguments); ok {
-				log.Printf("[spawner] read_cache HIT task=%s step=%s tool=%s mcp=%s", req.TaskID, req.StepID, call.Name, mcpID)
-				observability.GetGlobalMetrics().Inc("orchestrator.read_cache.hit", 1)
-				interaction.Result = cachedMD
-				trace = append(trace, interaction)
-				toolResults = append(toolResults, cachedMD)
-				continue
+			// #2-universal (eval §23): a state-changing (write) call invalidates
+			// every cached read for this MCP server, keeping the read cache
+			// coherent with external state. Generic: any write verb prefix
+			// (cancel_/update_/create_/...) or known state-changing tool.
+			if s.domainReadCache != nil && (IsWriteMCPTool(call.Name) || isStateChangingTool(call.Name)) {
+				s.domainReadCache.Invalidate(mcpID)
 			}
-		}
 
-		if mcpDef.Command != "" {
+			// Bookmark_List Routing: Inject trusted domains into search-like tools
+			if strings.Contains(strings.ToLower(call.Name), "search") && len(req.Hub.Registry.System.Bookmarks) > 0 {
+				if call.Arguments == nil {
+					call.Arguments = make(map[string]any)
+				}
+				call.Arguments["_bookmarks"] = req.Hub.Registry.System.Bookmarks
+			}
+
+			// #2-universal (eval §23): replay cached read results to break
+			// repetition loops (execution amplification) without force-terminating
+			// the conversation. Generic: any read-only domain tool (get_/list_/
+			// search_/query_/read_/fetch_/check_/is_/has_*) is eligible; pollers
+			// (progress/health/wait) and state-changing tools are excluded. The
+			// model receives the identical previously-computed markdown, so the
+			// repeated call costs zero extra tool execution.
+			if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
+				if cachedMD, ok := s.domainReadCache.Get(mcpID, call.Name, call.Arguments); ok {
+					log.Printf("[spawner] read_cache HIT task=%s step=%s tool=%s mcp=%s", req.TaskID, req.StepID, call.Name, mcpID)
+					observability.GetGlobalMetrics().Inc("orchestrator.read_cache.hit", 1)
+					interaction.Result = cachedMD
+					trace = append(trace, interaction)
+					toolResults = append(toolResults, cachedMD)
+					continue
+				}
+			}
+
+			if mcpDef.Command != "" {
 				var finalRes any
 				var execErr error
 
@@ -1561,6 +1631,7 @@ turnLoop:
 					} else {
 						toolFailCount[call.Name] = 0
 						interaction.Result = finalRes
+						interaction.Meta = extractMeta(finalRes) // Phase 2: extract structured metadata
 						if att, ok := finalRes.(schemas.SubagentOutput); ok {
 							turnAttachments = append(turnAttachments, att.Attachments...)
 						}
@@ -1573,18 +1644,24 @@ turnLoop:
 						env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
 						md := env.ToMarkdown(call.Name)
 
-					// Apply Sieve Pruning to reduce token noise for large tool outputs
-					if len(md) > 2000 {
-						md = s.sieve.PruneOutput(md, req.Task)
+						// Apply Sieve Pruning to reduce token noise for large tool outputs
+						if len(md) > 2000 {
+							md = s.sieve.PruneOutput(md, req.Task)
+						}
+						// #2-universal (eval §23): cache the successful read result
+						// for replay on identical future calls within this server.
+						// Cache the clean md before any repetition warning is prepended.
+						if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
+							s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
+						}
+						// Egress redaction (I5): strip secrets before result enters LLM context.
+						// Output bounding: adaptive truncation for oversized results.
+						md = RedactEgress(md)
+						if len(md) > 2000 {
+							md = string(AdaptiveOutputResult([]byte(md), call.Name))
+						}
+						toolResults = append(toolResults, md)
 					}
-					// #2-universal (eval §23): cache the successful read result
-					// for replay on identical future calls within this server.
-					// Cache the clean md before any repetition warning is prepended.
-					if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
-						s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
-					}
-					toolResults = append(toolResults, md)
-				}
 				}
 			} else if mcpDef.URL != "" {
 				toolCtx, cancelTool := context.WithTimeout(ctx, 60*time.Second)
@@ -1630,6 +1707,11 @@ turnLoop:
 						if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
 							s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
 						}
+						// Egress redaction (I5): strip secrets before result enters LLM context.
+						md = RedactEgress(md)
+						if len(md) > 2000 {
+							md = string(AdaptiveOutputResult([]byte(md), call.Name))
+						}
 						toolResults = append(toolResults, md)
 					}
 				}
@@ -1641,6 +1723,8 @@ turnLoop:
 				env := s.processor.Wrap(call.Name, res, "error", "orchestrator:cloud", reason)
 				toolResults = append(toolResults, env.ToMarkdown(call.Name))
 			}
+			// A2/A4 (Effect Boundary Defense): record the MCP tool call's effect.
+			s.recordEffect(req.TaskID, req.StepID, call.Name, call.Arguments, fmt.Sprintf("%v", interaction.Result), "unknown")
 			trace = append(trace, interaction)
 
 			// ── PGPO: State Observation Loop (ADDED 2026-09-08) ──

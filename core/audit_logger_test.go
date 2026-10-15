@@ -90,11 +90,19 @@ func TestAuditLogger_TamperDetection(t *testing.T) {
 	path := filepath.Join(dir, "audit.jsonl")
 	al := NewAuditLogger(path)
 
-	al.Log("addDecision", "task1", "step1", "dec1", "step_failed", "", []string{"skip"})
-	al.Log("submitDecision", "task1", "step1", "dec1", "step_failed", "skip", nil)
+	// audit NEW2-LOW-1: assert on setup Log errors for clear failure messages.
+	if err := al.Log("addDecision", "task1", "step1", "dec1", "step_failed", "", []string{"skip"}); err != nil {
+		t.Fatalf("setup Log 1 failed: %v", err)
+	}
+	if err := al.Log("submitDecision", "task1", "step1", "dec1", "step_failed", "skip", nil); err != nil {
+		t.Fatalf("setup Log 2 failed: %v", err)
+	}
 
 	// Read and verify chain is initially intact.
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("setup ReadFile failed: %v", err)
+	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	var entries []AuditEntry
 	for _, line := range lines {
@@ -110,10 +118,16 @@ func TestAuditLogger_TamperDetection(t *testing.T) {
 	entries[0].Action = "TAMPERED"
 	tampered, _ := json.Marshal(entries[0])
 	lines[0] = string(tampered)
-	os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600)
+	// audit NEW2-LOW-1: check tamper write error.
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600); err != nil {
+		t.Fatalf("tamper WriteFile failed: %v", err)
+	}
 
 	// Re-read and verify chain is now broken (recomputed hash won't match).
-	data, _ = os.ReadFile(path)
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-read ReadFile failed: %v", err)
+	}
 	lines = strings.Split(strings.TrimSpace(string(data)), "\n")
 	entries = nil
 	for _, line := range lines {
@@ -138,8 +152,13 @@ func TestAuditLogger_RecoversChainAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.jsonl")
 	al1 := NewAuditLogger(path)
-	al1.Log("addDecision", "task1", "step1", "dec1", "step_failed", "", []string{"skip"})
-	al1.Log("submitDecision", "task1", "step1", "dec1", "step_failed", "skip", nil)
+	// audit NEW2-LOW-1: assert on setup Log errors.
+	if err := al1.Log("addDecision", "task1", "step1", "dec1", "step_failed", "", []string{"skip"}); err != nil {
+		t.Fatalf("setup Log 1 failed: %v", err)
+	}
+	if err := al1.Log("submitDecision", "task1", "step1", "dec1", "step_failed", "skip", nil); err != nil {
+		t.Fatalf("setup Log 2 failed: %v", err)
+	}
 
 	// Simulate restart: create a new AuditLogger pointing at the same file.
 	al2 := NewAuditLogger(path)
@@ -147,9 +166,14 @@ func TestAuditLogger_RecoversChainAcrossRestart(t *testing.T) {
 		t.Errorf("restart should recover prevHash: al2=%q, al1=%q", al2.prevHash, al1.prevHash)
 	}
 	// New entry should continue the chain.
-	al2.Log("autoResolve", "task2", "step2", "dec2", "", "abort", nil)
+	if err := al2.Log("autoResolve", "task2", "step2", "dec2", "", "abort", nil); err != nil {
+		t.Fatalf("Log after restart failed: %v", err)
+	}
 
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 entries after restart, got %d", len(lines))

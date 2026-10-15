@@ -25,11 +25,11 @@ import (
 type JITRuntimeType string
 
 const (
-	RuntimeGojaJS      JITRuntimeType = "goja_js"        // pure-Go ECMAScript 5.1 via dop251/goja
-	RuntimeGopherLua   JITRuntimeType = "gopher_lua"     // pure-Go Lua 5.1 via yuin/gopher-lua
-	RuntimePythonExt   JITRuntimeType = "python_external" // host python3/python
-	RuntimeNodeExt     JITRuntimeType = "node_external"  // host node
-	RuntimeBunExt      JITRuntimeType = "bun_external"   // host bun
+	RuntimeGojaJS    JITRuntimeType = "goja_js"         // pure-Go ECMAScript 5.1 via dop251/goja
+	RuntimeGopherLua JITRuntimeType = "gopher_lua"      // pure-Go Lua 5.1 via yuin/gopher-lua
+	RuntimePythonExt JITRuntimeType = "python_external" // host python3/python
+	RuntimeNodeExt   JITRuntimeType = "node_external"   // host node
+	RuntimeBunExt    JITRuntimeType = "bun_external"    // host bun
 )
 
 // RuntimeCapability is the serializable declaration of one language backend.

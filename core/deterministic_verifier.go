@@ -188,9 +188,10 @@ func (v *PlanCheckboxVerifier) Verify(ctx context.Context, workdir string, crite
 // codebase. This is a zero-LLM-cost, zero-false-positive grep-style check.
 //
 // Params:
-//   "entities":   []string — entity names to verify (e.g. ["foo", "BarBaz"])
-//   "search_dir": string   — directory to search (optional, defaults to workdir)
-//   "pattern":    string   — optional search pattern prefix (default: "func %s|type %s|var %s")
+//
+//	"entities":   []string — entity names to verify (e.g. ["foo", "BarBaz"])
+//	"search_dir": string   — directory to search (optional, defaults to workdir)
+//	"pattern":    string   — optional search pattern prefix (default: "func %s|type %s|var %s")
 //
 // Passes if: all entities are found in at least one .go file under search_dir.
 // Fails if: any entity is not found anywhere.

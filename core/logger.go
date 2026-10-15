@@ -21,16 +21,16 @@ import (
 type EventType string
 
 const (
-	EventTaskSubmitted           EventType = "task_submitted"
-	EventStepStarted             EventType = "step_started"
-	EventStepCompleted           EventType = "step_completed"
-	EventStepPartial             EventType = "step_partial"
-	EventStepFailed              EventType = "step_failed"
-	EventStepRetrying            EventType = "step_retrying"
-	EventRoleMissing             EventType = "role_missing"
-	EventRateLimited             EventType = "rate_limited"
-	EventDecisionRequired        EventType = "decision_required"
-	EventDecisionSubmitted       EventType = "decision_submitted"
+	EventTaskSubmitted     EventType = "task_submitted"
+	EventStepStarted       EventType = "step_started"
+	EventStepCompleted     EventType = "step_completed"
+	EventStepPartial       EventType = "step_partial"
+	EventStepFailed        EventType = "step_failed"
+	EventStepRetrying      EventType = "step_retrying"
+	EventRoleMissing       EventType = "role_missing"
+	EventRateLimited       EventType = "rate_limited"
+	EventDecisionRequired  EventType = "decision_required"
+	EventDecisionSubmitted EventType = "decision_submitted"
 	// EventDecisionAutoResolved is emitted when NonInteractive mode auto-selects
 	// a conservative default for a decision that would otherwise block forever.
 	// ADDED (2026-10-02, E5).
@@ -54,12 +54,12 @@ const (
 	EventHumanApprovalAttached   EventType = "human_approval_attached"
 	EventFallbackActivated       EventType = "fallback_activated"
 	EventMCPDegraded             EventType = "mcp_degraded"
-	EventStepDeprecated          EventType = "step_deprecated" // ADDED (2026-09-07): DAG surgery
-	EventStepInjected            EventType = "step_injected"   // ADDED (2026-09-07): DAG surgery
-	EventAutonomousStepSpawned   EventType = "autonomous_step_spawned" // ASAE (ADDED 2026-09-09)
-	EventDynamicRubricGen        EventType = "dynamic_rubric_gen"      // Phase 2 (ADDED 2026-09-09)
+	EventStepDeprecated          EventType = "step_deprecated"          // ADDED (2026-09-07): DAG surgery
+	EventStepInjected            EventType = "step_injected"            // ADDED (2026-09-07): DAG surgery
+	EventAutonomousStepSpawned   EventType = "autonomous_step_spawned"  // ASAE (ADDED 2026-09-09)
+	EventDynamicRubricGen        EventType = "dynamic_rubric_gen"       // Phase 2 (ADDED 2026-09-09)
 	EventCacheInefficiency       EventType = "cache_inefficiency"       // Cost governance (ADDED 2026-09-14)
-	EventBudgetPredictExceed     EventType = "budget_predict_exceed"   // Cost governance (ADDED 2026-09-14)
+	EventBudgetPredictExceed     EventType = "budget_predict_exceed"    // Cost governance (ADDED 2026-09-14)
 	EventBehaviorDeviation       EventType = "behavior_deviation"       // Cost governance (ADDED 2026-09-14)
 	EventDebateStarted           EventType = "debate_started"           // Cross-family debate (ADDED 2026-09-14)
 	EventDebateCritiqueReceived  EventType = "debate_critique_received" // Cross-family debate (ADDED 2026-09-14)
@@ -101,7 +101,7 @@ type Logger struct {
 	// Capped at maxFileSizeCacheEntries to prevent unbounded growth on long-running
 	// servers (one entry per unique task ID). When exceeded, the cache is cleared
 	// (safe — it is only an optimization; cleared entries trigger a one-time Stat).
-	fileSizeCache       map[string]int64
+	fileSizeCache           map[string]int64
 	maxFileSizeCacheEntries int
 }
 
@@ -112,11 +112,11 @@ func NewLogger(logDir string, sys *config.SystemSettings) (*Logger, error) {
 		return nil, err
 	}
 	l := &Logger{
-		logDir:         logDir,
-		ch:             make(chan LogEvent, 512),
-		System:         sys,
-		dirCache:       make(map[string]bool),
-		fileSizeCache:  make(map[string]int64),
+		logDir:                  logDir,
+		ch:                      make(chan LogEvent, 512),
+		System:                  sys,
+		dirCache:                make(map[string]bool),
+		fileSizeCache:           make(map[string]int64),
 		maxFileSizeCacheEntries: defaultMaxFileSizeCacheEntries,
 	}
 

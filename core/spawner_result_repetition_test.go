@@ -173,7 +173,9 @@ func (p *resultRepetitionProvider) StreamComplete(_ context.Context, _ schemas.C
 	return &schemas.ProviderResponse{Text: "Based on the data, the answer is 42."}, nil
 }
 
-func (p *resultRepetitionProvider) Embed(_ context.Context, _ string) ([]float32, error) { return nil, nil }
+func (p *resultRepetitionProvider) Embed(_ context.Context, _ string) ([]float32, error) {
+	return nil, nil
+}
 func (p *resultRepetitionProvider) CountTokens(_ context.Context, text string) (int, error) {
 	return len(text) / 4, nil
 }

@@ -23,7 +23,16 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 	step.ResultRef = result.Ref
 	s.Mu.Unlock()
 	s.logger.LogWithConfidence(EventStepCompleted, taskID, step.ID, conf, nil)
-	s.publishEvent(taskID, step.ID, EventStepCompleted, map[string]any{"confidence": conf})
+	payload := map[string]any{"confidence": conf}
+	if output.Usage != nil {
+		payload["usage"] = map[string]any{
+			"prompt_tokens":     output.Usage.PromptTokens,
+			"completion_tokens": output.Usage.CompletionTokens,
+			"total_tokens":      output.Usage.TotalTokens,
+		}
+	}
+	payload["role_id"] = step.RoleID
+	s.publishEvent(taskID, step.ID, EventStepCompleted, payload)
 
 	if step.TriggerError != "" && step.AdditionalPromptContext != "" {
 		s.DepositExperienceEvolution(s.lifecycleCtx, graph, step)

@@ -81,7 +81,13 @@ func (h *RemoteTaskHub) ClaimTask(stepID string) bool {
 	url := fmt.Sprintf("%s/api/swarm/claim", h.BaseURL)
 	body, _ := json.Marshal(map[string]string{"step_id": stepID})
 
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic
+	// if BaseURL contains invalid URL characters.
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		log.Printf("WARN: remote_hub: ClaimTask failed to build request: %v", err)
+		return false
+	}
 	req.Header.Set("Authorization", h.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -113,7 +119,12 @@ func (h *RemoteTaskHub) ReleaseTask(stepID string) {
 	url := fmt.Sprintf("%s/api/swarm/release", h.BaseURL)
 	body, _ := json.Marshal(map[string]string{"step_id": stepID})
 
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic.
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		log.Printf("WARN: remote_hub: ReleaseTask failed to build request: %v", err)
+		return
+	}
 	req.Header.Set("Authorization", h.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -164,13 +175,18 @@ func (h *RemoteTaskHub) ExecuteTask(ctx context.Context, stepID string) (*schema
 		"output":  output,
 	})
 
-	yReq, _ := http.NewRequest("POST", yieldURL, bytes.NewBuffer(yieldBody))
-	yReq.Header.Set("Authorization", h.APIKey)
-	yReq.Header.Set("Content-Type", "application/json")
+	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic.
+	yReq, yErr := http.NewRequest("POST", yieldURL, bytes.NewBuffer(yieldBody))
+	if yErr != nil {
+		log.Printf("WARN: remote_hub: yield failed to build request: %v", yErr)
+	} else {
+		yReq.Header.Set("Authorization", h.APIKey)
+		yReq.Header.Set("Content-Type", "application/json")
 
-	// audit M14: close response body to prevent connection pool exhaustion
-	if yieldResp, err := h.HTTPClient.Do(yReq); err == nil {
-		yieldResp.Body.Close()
+		// audit M14: close response body to prevent connection pool exhaustion
+		if yieldResp, err := h.HTTPClient.Do(yReq); err == nil {
+			yieldResp.Body.Close()
+		}
 	}
 
 	return output, nil
@@ -195,7 +211,12 @@ var _ interfaces.SignalFieldInterface = (*RemoteSignalField)(nil)
 
 func (f *RemoteSignalField) SensingGlobal(limit int, agentLoad float64) []string {
 	url := fmt.Sprintf("%s/api/swarm/sensing", f.Hub.BaseURL)
-	req, _ := http.NewRequest("GET", url, nil)
+	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic.
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("WARN: remote_hub: SensingGlobal failed to build request: %v", err)
+		return nil
+	}
 	req.Header.Set("Authorization", f.Hub.APIKey)
 
 	resp, err := f.Hub.HTTPClient.Do(req)

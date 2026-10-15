@@ -27,17 +27,17 @@ type pair struct {
 
 // SignalField implements the ACAIS hierarchical signal field with exponential decay.
 type SignalField struct {
-	Mu      sync.RWMutex
-	Layers  map[SignalLayer]map[string]*SignalIntensity // layer -> taskID -> intensity
+	Mu     sync.RWMutex
+	Layers map[SignalLayer]map[string]*SignalIntensity // layer -> taskID -> intensity
 
 	// Parameters
-	DecayRate      float64       // e.g., 0.95 (5% decay per tick)
-	DecayInterval  time.Duration // e.g., 10 seconds
-	BaseIntensity  float64       // e.g., 1.0 (amount deposited)
+	DecayRate     float64       // e.g., 0.95 (5% decay per tick)
+	DecayInterval time.Duration // e.g., 10 seconds
+	BaseIntensity float64       // e.g., 1.0 (amount deposited)
 
-	stopChan   chan struct{}
-	stopOnce   sync.Once
-	startOnce  sync.Once // audit H2: prevent duplicate decay goroutines on double-Start
+	stopChan  chan struct{}
+	stopOnce  sync.Once
+	startOnce sync.Once // audit H2: prevent duplicate decay goroutines on double-Start
 }
 
 var signalWeights = map[SignalLayer]float64{
