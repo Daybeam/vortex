@@ -10,7 +10,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/seiflotfy/cuckoofilter v0.0.0-20240715131351-a2f2c23f1771
 	github.com/yuin/gopher-lua v1.1.2
-	golang.org/x/text v0.39.0
+	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.60.1
 )
 
