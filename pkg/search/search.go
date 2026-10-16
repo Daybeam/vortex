@@ -11,11 +11,11 @@ import (
 
 // BM25Corpus is a reusable BM25 corpus, read-only after construction.
 type BM25Corpus struct {
-	k1        float64                   // BM25 parameter
-	b         float64                   // BM25 parameter
-	avgDL     float64                   // Average document length
-	docLen    map[string]int            // docID -> doc length (token count)
-	docFreq   map[string]map[string]int // term -> (docID -> count)
+	k1        float64                     // BM25 parameter
+	b         float64                     // BM25 parameter
+	avgDL     float64                     // Average document length
+	docLen    map[string]int              // docID -> doc length (token count)
+	docFreq   map[string]map[string]int   // term -> (docID -> count)
 	totalDocs int
 }
 
@@ -88,6 +88,14 @@ type Scored struct {
 
 // RRFMerge fuses multiple rankings (docID -> score) using Reciprocal Rank Fusion.
 func RRFMerge(rankings ...map[string]float64) map[string]float64 {
+	return RRFMergeCapped(0, rankings...)
+}
+
+// RRFMergeCapped fuses multiple rankings using RRF with a per-source cap.
+// maxPerSource <= 0 means no cap (process all items in each ranking).
+// maxPerSource > 0 truncates each ranking to its top-K before fusion,
+// preventing a noisy arm from flooding the fusion pool.
+func RRFMergeCapped(maxPerSource int, rankings ...map[string]float64) map[string]float64 {
 	merged := make(map[string]float64)
 	k := 60.0 // Standard RRF constant
 	for _, ranking := range rankings {
@@ -99,6 +107,11 @@ func RRFMerge(rankings ...map[string]float64) map[string]float64 {
 			items = append(items, Scored{ID: id, Score: score})
 		}
 		sort.Slice(items, func(i, j int) bool { return items[i].Score > items[j].Score })
+
+		// Pre-fusion cap: truncate to top maxPerSource items per source.
+		if maxPerSource > 0 && len(items) > maxPerSource {
+			items = items[:maxPerSource]
+		}
 
 		for rank, item := range items {
 			rrfScore := 1.0 / (k + float64(rank))

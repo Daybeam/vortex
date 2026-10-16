@@ -120,3 +120,9 @@ func (ct *CostTracker) Close() {
 		ct.db.Close()
 	}
 }
+
+// SetCostTracker wires a CostTracker into the scheduler for per-call token spend logging.
+// Call once after NewDirectedEngine; nil-safe (passing nil disables tracking).
+func (s *DirectedEngine) SetCostTracker(ct *CostTracker) {
+	s.costTracker = ct
+}

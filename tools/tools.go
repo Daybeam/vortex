@@ -133,6 +133,9 @@ type App struct {
 	Archive         *core.ContextArchive
 	Promoter        *Promoter // Optional usage-driven hot-promoter for invoke actions
 	SOPManager      *core.SOPManager
+	BudgetGate      *core.BudgetGate
+	PendingSkillGC  *core.PendingSkillGC
+	CostTracker     *core.CostTracker
 	DB              *sql.DB
 	editionSubsystems []EditionSubsystem
 	archiveStop       chan struct{} // stops the TTL pruning goroutine (audit: was goroutine leak)

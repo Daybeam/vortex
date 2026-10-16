@@ -8,7 +8,45 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// maxRunesPerLine caps each line included in the gateway output. This prevents
+// a single pathological line (e.g. a 10 MB minified bundle or base64 blob) from
+// blowing up the context window. 1000 runes ≈ 3 KB UTF-8 — generous enough for
+// any normal log line, stack trace, or table row.
+const maxRunesPerLine = 1000
+
+// truncateLineRuneSafe truncates s to at most maxRunes Unicode code points,
+// appending "…[truncated]" if truncation occurred. Rune-safe: never splits a
+// multi-byte sequence (prevents mojibake in CJK text).
+func truncateLineRuneSafe(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:maxRunes]) + "…[truncated]"
+}
+
+// joinTruncated joins lines with "\n" after truncating each to maxRunes.
+// This prevents a single pathological line from blowing up the output.
+func joinTruncated(lines []string, maxRunes int) string {
+	trunc := make([]string, len(lines))
+	for i, l := range lines {
+		trunc[i] = truncateLineRuneSafe(l, maxRunes)
+	}
+	return strings.Join(trunc, "\n")
+}
+
+// neverBloatGuard returns result if it is smaller than raw, otherwise returns
+// raw. This ensures the gateway never inflates the input — a summary that is
+// larger than the original is worse than useless.
+func neverBloatGuard(result, raw []byte) []byte {
+	if len(result) >= len(raw) {
+		return raw
+	}
+	return result
+}
 
 // AdaptiveOutputResult handles multi-platform size checking, truncation, and fallback disk-dump.
 func AdaptiveOutputResult(rawStdout []byte, command string) []byte {
@@ -28,39 +66,55 @@ func AdaptiveOutputResult(rawStdout []byte, command string) []byte {
 		headCount := 30
 		tailCount := 30
 		if totalLines <= headCount+tailCount {
-			return []byte(fmt.Sprintf("[Output large: %d KB / %d lines. Full log saved to: %s]\n%s",
-				outputBytes/1024, totalLines, dumpPath, normalized))
+			// Few lines but large bytes → truncate each line to prevent bloat
+			// from a single pathological line (e.g. 10 MB minified bundle).
+			truncLines := make([]string, len(lines))
+			for i, l := range lines {
+				truncLines[i] = truncateLineRuneSafe(l, maxRunesPerLine)
+			}
+			result := fmt.Sprintf("[Output large: %d KB / %d lines. Full log saved to: %s]\n%s",
+				outputBytes/1024, totalLines, dumpPath, strings.Join(truncLines, "\n"))
+			return neverBloatGuard([]byte(result), rawStdout)
 		}
 
-		head := strings.Join(lines[:headCount], "\n")
-		tail := strings.Join(lines[totalLines-tailCount:], "\n")
+		head := joinTruncated(lines[:headCount], maxRunesPerLine)
+		tail := joinTruncated(lines[totalLines-tailCount:], maxRunesPerLine)
 
 		summary := fmt.Sprintf(
 			"[⚖️ OUTPUT GATEWAY: Output too large (%d KB, %d lines). Full content persisted to: %s]\n"+
 				"--- FIRST 30 LINES ---\n%s\n\n... [%d lines / %d KB omitted, checking for panic/error keywords] ...\n\n--- LAST 30 LINES ---\n%s",
 			outputBytes/1024, totalLines, dumpPath, head, totalLines-headCount-tailCount, (outputBytes-len(head)-len(tail))/1024, tail,
 		)
-		return []byte(summary)
+		return neverBloatGuard([]byte(summary), rawStdout)
 	}
 
 	headCount := 50
 	tailCount := 150
 	if totalLines <= headCount+tailCount {
-		return rawStdout
+		// Few lines but potentially large bytes → truncate each line to prevent
+		// a single pathological line (e.g. 50 KB minified JSON) from passing
+		// through uncompressed. If no line exceeds the cap, joinTruncated
+		// returns the same content and neverBloatGuard returns rawStdout.
+		return neverBloatGuard([]byte(joinTruncated(lines, maxRunesPerLine)), rawStdout)
 	}
 
-	head := strings.Join(lines[:headCount], "\n")
-	tail := strings.Join(lines[totalLines-tailCount:], "\n")
+	head := joinTruncated(lines[:headCount], maxRunesPerLine)
+	tail := joinTruncated(lines[totalLines-tailCount:], maxRunesPerLine)
 	omittedLines := totalLines - headCount - tailCount
 
 	omittedZone := strings.Join(lines[headCount:totalLines-tailCount], "\n")
 	extraSnippet := extractErrorKeywords(omittedZone)
+	// If no error keywords found, sample representative lines from the middle
+	// to give the LLM some visibility into the omitted section.
+	if extraSnippet == "" {
+		extraSnippet = sampleMiddleLines(lines[headCount:totalLines-tailCount], maxRunesPerLine)
+	}
 
 	resultStr := fmt.Sprintf(
 		"[⚠️ OUTPUT TRUNCATED: %d lines total. Showing first %d and last %d lines.]\n%s\n\n... [%d lines omitted%s] ...\n\n%s",
 		totalLines, headCount, tailCount, head, omittedLines, extraSnippet, tail,
 	)
-	return []byte(resultStr)
+	return neverBloatGuard([]byte(resultStr), rawStdout)
 }
 
 // dumpRetentionTTL is the maximum age of cmd_dump_* files before lazy cleanup
@@ -91,7 +145,33 @@ func dumpToWorkspaceTmp(data []byte, command string) string {
 		log.Printf("WARN: dumpToWorkspaceTmp: failed to write %s: %v", fullPath, err)
 	}
 	absPath, _ := filepath.Abs(fullPath)
+	writeDumpIndex(tmpDir)
 	return absPath
+}
+
+// writeDumpIndex writes a TSV index of all cmd_dump_* files in dir.
+// This lets the LLM discover and read dump files via read_file, without
+// needing to list the directory with a shell command.
+func writeDumpIndex(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var rows []string
+	rows = append(rows, "filename\ttimestamp\tsize_kb")
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "cmd_dump_") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		rows = append(rows, fmt.Sprintf("%s\t%d\t%d",
+			e.Name(), info.ModTime().Unix(), info.Size()/1024))
+	}
+	indexPath := filepath.Join(dir, "dump_index.tsv")
+	_ = os.WriteFile(indexPath, []byte(strings.Join(rows, "\n")), 0644)
 }
 
 // cleanupStaleDumps removes cmd_dump_* files older than dumpRetentionTTL.
@@ -153,7 +233,7 @@ func extractErrorKeywords(text string) string {
 		lower := strings.ToLower(line)
 		for _, kw := range keywords {
 			if strings.Contains(lower, strings.ToLower(kw)) {
-				found = append(found, "  ↳ Match: "+strings.TrimSpace(line))
+				found = append(found, "  ↳ Match: "+truncateLineRuneSafe(strings.TrimSpace(line), maxRunesPerLine))
 				break
 			}
 		}
@@ -165,4 +245,31 @@ func extractErrorKeywords(text string) string {
 		return " | Found critical hints:\n" + strings.Join(found, "\n")
 	}
 	return ""
+}
+
+// sampleMiddleLines picks up to 3 representative lines from the omitted zone
+// (at 25%, 50%, 75% positions). This gives the LLM a glimpse of the middle
+// content even when no error keywords are found, preventing total blindness
+// about the omitted section.
+func sampleMiddleLines(lines []string, maxRunes int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	positions := []float64{0.25, 0.5, 0.75}
+	var samples []string
+	for _, p := range positions {
+		idx := int(float64(len(lines)) * p)
+		if idx >= len(lines) {
+			idx = len(lines) - 1
+		}
+		line := strings.TrimSpace(lines[idx])
+		if line == "" {
+			continue
+		}
+		samples = append(samples, "  ↳ Sample: "+truncateLineRuneSafe(line, maxRunes))
+	}
+	if len(samples) == 0 {
+		return ""
+	}
+	return " | Middle samples:\n" + strings.Join(samples, "\n")
 }

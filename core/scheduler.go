@@ -161,6 +161,9 @@ type DirectedEngine struct {
 
 	// auditLogger (#15): tamper-evident SHA-256 hash chain for decisions.
 	auditLogger *AuditLogger
+
+	// costTracker (#18): per-LLM-call token spend to SQLite.
+	costTracker *CostTracker
 }
 
 const defaultMaxHashCacheEntries = 10000

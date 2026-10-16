@@ -87,9 +87,14 @@ func (s *SOP) UnmarshalJSON(data []byte) error {
 			for _, item := range v {
 				var step SOPStep
 				b, _ := json.Marshal(item)
-				if err := json.Unmarshal(b, &step); err == nil && step.ID != "" {
-					s.Steps[step.ID] = step
+				// audit L-16-1: return error instead of silently skipping malformed entries.
+				if err := json.Unmarshal(b, &step); err != nil {
+					return fmt.Errorf("parse SOP steps: %w", err)
 				}
+				if step.ID == "" {
+					return fmt.Errorf("parse SOP steps: step missing ID")
+				}
+				s.Steps[step.ID] = step
 			}
 		}
 	}

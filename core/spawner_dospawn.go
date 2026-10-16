@@ -1,0 +1,907 @@
+package core
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/observability"
+	"github.com/daybeam/vortex/providers"
+	"github.com/daybeam/vortex/schemas"
+	"github.com/daybeam/vortex/store"
+)
+
+func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult, error) {
+	prep, earlyResult, err := s.prepareSpawn(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if earlyResult != nil {
+		return earlyResult, nil
+	}
+
+	// Unpack preparation
+	role := prep.role
+	candidateConfigs := prep.candidateConfigs
+	bindings := prep.bindings
+	initialBindings := prep.initialBindings
+	progressiveEnabled := prep.progressiveEnabled
+	precedents := prep.precedents
+	toolConstraints := prep.toolConstraints
+	mergedContext := prep.mergedContext
+	prunedSkills := prep.prunedSkills
+	toolFewShots := prep.toolFewShots
+	userBlocks := prep.userBlocks
+	// == Tool Execution Loop (VDA Enhanced) ==================================
+
+	var trace []store.ToolInteraction
+	var decisionIDs []string
+	var statesVisited []string // PGPO (ADDED 2026-09-08)
+	var previousState string   // PGPO (ADDED 2026-09-08)
+	toolFailCount := make(map[string]int)
+	// #11 (eval §8.41): Per-task identical-call counter for dedup.
+	// Key = toolName + ":" + fnv(args). Allows 2 identical calls; the 3rd
+	// requires a _reason argument (legitimate retries like data refresh pass).
+	// Per-step scope: different steps may legitimately make the same call
+	// (e.g., parallel searches gathering information). Task-level scope would
+	// block normal cross-step work.
+	toolCallCount := make(map[string]int) // callKey → count (resets per step)
+	sieveGuardianHits := 0
+	// P1 fix (2026-10-03, eval §0.5): Consecutive parse failure counter.
+	// After 3 consecutive unparseable outputs, break the spin loop instead
+	// of burning 19-43 provider calls on identical failures.
+	consecutiveParseFailures := 0
+	const maxConsecutiveParseFailures = 3
+
+	// #15 (eval §8.35): No-progress turn detection. Tracks consecutive turns
+	// where ALL tool calls were fs-only (write_file/read_file/execute_code)
+	// with zero domain MCP calls. A high streak indicates the model is stuck
+	// in a write→read self-proof loop burning the turn budget. Pure metrics —
+	// no behavior change; threshold/action to be added after an arm validates.
+	fsOnlyTurnStreak := 0
+	// #4+#15 (eval §8.37.2/§8.40): Configurable fs-only streak limit.
+	// When the model makes N consecutive turns using ONLY filesystem tools
+	// (write_file/read_file/execute_code) without any domain MCP calls,
+	// break the turn loop — the model is stuck in a self-proof loop.
+	//
+	// NECESSITY: Premature — no production evidence of this pattern. maxTurns
+	// (default 50) + #11 dedup already bound the problem. The gap this catches
+	// (different fs-only calls each turn, no domain progress) is narrow.
+	// Design: measure-first-then-act. Deploy with metrics only (limit=0),
+	// monitor orchestrator.progress.fs_only_streak_max, enable threshold only
+	// if metrics justify it. See docs/completed/2026-10-03/ §#4+#15.
+	//
+	// Default 0 = disabled (metrics only). Set ORCH_FS_ONLY_STREAK_LIMIT=5
+	// to enable. Start conservative to avoid aborting legitimate long
+	// reasoning chains that use fs-only tools productively.
+	// audit P-3-residual: cached via fsOnlyStreakLimitCache (sync.OnceValue).
+	fsOnlyStreakLimit := fsOnlyStreakLimitCache()
+
+	maxTurns := s.calculateMaxTurns(ctx, req, role)
+	// applyStrategyBias is now handled inside calculateMaxTurns via PolicyDecider
+
+	var effectiveProviderID string
+	var effectiveModelID string
+
+	// Empty response retry: retry the turn when the provider returns HTTP 200
+	// but zero tokens (intermittent server-side empty response, e.g. Xunfei MaaS).
+	// See eval §10.4: ~40% of Xunfei responses had non-zero usage but empty content.
+	const maxEmptyRespRetries = 2
+	emptyRespRetries := 0
+
+	// Outer-ring observability (ADDED 2026-10-12): systemBlocks / mcpServers
+	// are rebuilt per candidate inside the loops below; keep the last-built
+	// MCP server list so the per-turn outer-ring accounting after the
+	// candidate loop can price the tool schemas actually sent.
+	var lastMCPServers []providers.MCPServerDef
+
+turnLoop:
+	for turn := 0; turn < maxTurns; turn++ {
+		// Abort if the task context was cancelled (e.g. CancelTask or shutdown).
+		if ctx.Err() != nil {
+			return s.failedOutput(role.BaseCapability, fmt.Sprintf("context cancelled: %v", ctx.Err())), nil
+		}
+
+		// A1 (Effect Boundary Defense): per-turn idempotency context.
+		// Duplicate tool calls within the same turn are skipped to prevent
+		// repeated execution (A1 anomaly). Resets each turn — different
+		// turns may legitimately repeat calls (e.g., after provider retry).
+		// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
+		turnCtx := NewTurnIdempotencyContext()
+
+		// VDA: Attach visual context from current state
+		attachments := s.resolveContextAttachments(ctx, req.TaskID, req.StepID)
+
+		var resp *providers.ProviderResponse
+		var currentPCfg *config.ProviderConfig
+
+		for candIdx, cand := range candidateConfigs {
+			pCfg := s.resolveCandidateConfig(req.Hub, role, cand.providerID, cand.model)
+			currentPCfg = pCfg
+
+			// FIX (2026-08-16/17): the global rate-limit cooldown set by
+			// scheduler.go's SetCooldown() was write-only -- nothing ever
+			// consulted Registry.IsCoolingDown(), so a provider marked as
+			// cooling down after a 429 was retried immediately anyway by any
+			// concurrent step. Skip to the next candidate (if any) while this
+			// one is cooling down; if it's the last/only candidate, fail open
+			// and attempt it anyway rather than blocking the step entirely --
+			// the cooldown is a best-effort optimization, not a hard gate.
+			if req.Hub != nil && req.Hub.Registry != nil {
+				if cooling, remaining := req.Hub.Registry.IsCoolingDown(providers.PoolIDFor(pCfg)); cooling && candIdx < len(candidateConfigs)-1 {
+					s.logger.Log(EventProviderCooldownSkip, req.TaskID, req.StepID, map[string]any{
+						"pool_id":       providers.PoolIDFor(pCfg),
+						"remaining_sec": remaining.Seconds(),
+						"candidate_idx": candIdx,
+					})
+					continue
+				}
+			}
+
+			var provider providers.Provider
+
+			slot, err := s.routeProvider(providers.PoolIDFor(pCfg), role.BaseCapability)
+			if err == nil {
+				provider = slot.Provider
+			} else {
+				provider, err = providers.Get(pCfg, req.Hub.Registry.ExternalRuntimes)
+				if err != nil {
+					if candIdx < len(candidateConfigs)-1 {
+						continue
+					}
+					return nil, err
+				}
+			}
+
+			// Dynamic Protocol: Re-build prompts and servers for each candidate family
+			systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, mergedContext, toolFewShots, req.Isolation, precedents, req.Task, "", req.TaskID)
+			if err != nil {
+				return s.failedOutput(role.BaseCapability, fmt.Sprintf("failed to render prompt: %v", err)), nil
+			}
+			mcpServers := s.buildMCPServers(ctx, req.Hub, req.TaskID, bindings, pCfg.Provider)
+			lastMCPServers = mcpServers
+
+			// Priority 4: Dynamic Re-routing & Progressive Disclosure Hint
+			if turn == 0 && progressiveEnabled {
+				// Check if we actually hid many tools
+				totalTools := 0
+				for _, b := range initialBindings {
+					m := req.Hub.GetMCP(b.MCPID)
+					if m != nil {
+						totalTools += len(m.AvailableTools)
+					}
+				}
+				visibleTools := 0
+				for _, b := range bindings {
+					visibleTools += len(b.AllowedTools)
+				}
+
+				if totalTools > visibleTools+5 {
+					hint := fmt.Sprintf("\n[SYSTEM HINT]: I have over %d specialized tools available but am currently exposing only the %d most relevant discovery/status tools to keep your context focused. Use discovery tools (list, search, status) to explore the environment; as your intent becomes more specific, I will automatically unlock the necessary specialized tools.", totalTools, visibleTools)
+					userBlocks = append(userBlocks, schemas.ContentBlock{Text: hint, CacheControl: "ephemeral"})
+				}
+			}
+
+			// Apply generation parameter overrides
+			temp := pCfg.Temperature
+			if req.Temperature != nil {
+				temp = req.Temperature
+			}
+			freqPen := pCfg.FrequencyPenalty
+			if req.FrequencyPenalty != nil {
+				freqPen = req.FrequencyPenalty
+			}
+
+			// Apply Output Constraints
+			// FIX (2026-09-07): Revert ForceToolCall to only turn-0 pressure.
+			// ForceToolCall=ANY on Gemini is a hard constraint that forbids text
+			// output — forcing it across the whole budget would trap the model
+			// into calling tools it doesn't need (like `think` with no args) just
+			// to satisfy the schema. The real fix is the re-prompt nudge below:
+			// when the model writes text early, tell it to keep calling tools.
+			// This preserves the model's ability to decide when it's done.
+			constraints := make(map[string]any)
+			forceTool := turn < maxTurns-1 && len(trace) == 0 && !disableForceTool()
+			if forceTool {
+				toolCallSchema := map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"name":      map[string]any{"type": "string"},
+							"arguments": map[string]any{"type": "object"},
+						},
+						"required": []string{"name", "arguments"},
+					},
+				}
+				field, val := s.constraintAdapter.Resolve(pCfg.Provider, toolCallSchema)
+				if field != "" {
+					constraints[field] = val
+				}
+			}
+
+			var streamBuffer strings.Builder
+			var patternWindow []byte
+			ctxWithTimeout, cancel := context.WithTimeout(ctx, 180*time.Second)
+
+			s.logger.Log(EventProviderCallStarted, req.TaskID, req.StepID, map[string]any{
+				"turn":              turn,
+				"provider":          pCfg.Provider,
+				"model":             pCfg.Model,
+				"mcp_servers_count": len(mcpServers),
+				"constraints":       constraints,
+				"candidate_idx":     candIdx,
+			})
+
+			if orchestratorDebug() {
+				fmt.Fprintf(os.Stderr, "[DEBUG] Calling Provider %s for Task %s Turn %d (candidate %d)\n", pCfg.Model, req.TaskID, turn, candIdx)
+				// v26 probe: prompt emptiness forensics
+				_sysLen, _usrLen := 0, 0
+				for _, b := range systemBlocks {
+					_sysLen += len(b.Text)
+				}
+				for _, b := range userBlocks {
+					_usrLen += len(b.Text)
+				}
+				fmt.Fprintf(os.Stderr, "[DEBUG][PROBE] task=%s turn=%d systemBlocks=%d(%dB) userBlocks=%d(%dB) sysFlat=%dB usrFlat=%dB tools=%d\n",
+					req.TaskID, turn, len(systemBlocks), _sysLen, len(userBlocks), _usrLen,
+					len(flattenContentBlocks(systemBlocks)), len(flattenContentBlocks(userBlocks)), len(mcpServers))
+			}
+
+			// --- Sieve Context Management (SOP 3.0) ---
+			reqSieve := &schemas.CompleteRequest{
+				SystemBlocks:    systemBlocks,
+				UserBlocks:      userBlocks,
+				Model:           pCfg.Model,
+				CompressionHint: req.CompressionHint,
+			}
+			auditRes, err := s.contextManager.Audit(ctxWithTimeout, provider, reqSieve)
+			if err == nil && auditRes.Decision != LevelNone {
+				squeezed, squeezeRes, sErr := s.contextManager.Squeeze(ctxWithTimeout, provider, reqSieve, auditRes.Decision)
+				if sErr == nil {
+					// FIX (2026-10-12, Kaggle B-arm empty-prompt root cause):
+					// Squeeze's returned CompleteRequest only populates the flat
+					// System/User strings; SystemBlocks/UserBlocks are left nil.
+					// Assigning them back unconditionally wiped the ENTIRE prompt
+					// whenever Audit decided any non-None level (mock/llama.cpp
+					// CountTokens returns garbage) — the model then received an
+					// empty system+user and could only greet/clarify with zero
+					// tool calls. Preserve content: prefer blocks, else rebuild
+					// blocks from the compressed flat strings.
+					if len(squeezed.SystemBlocks) > 0 || len(squeezed.UserBlocks) > 0 {
+						systemBlocks = squeezed.SystemBlocks
+						userBlocks = squeezed.UserBlocks
+					} else if squeezed.System != "" || squeezed.User != "" {
+						if squeezed.System != "" {
+							systemBlocks = []schemas.ContentBlock{{Type: "text", Text: squeezed.System}}
+						}
+						if squeezed.User != "" {
+							userBlocks = []schemas.ContentBlock{{Type: "text", Text: squeezed.User}}
+						}
+					}
+					if squeezeRes.Decision == LevelCritical {
+						cancel()
+						return nil, fmt.Errorf("DYNAMIC_ESCALATION_REQUIRED: %s", squeezeRes.ActionTaken)
+					}
+				}
+			}
+
+			resp, err = provider.StreamComplete(ctxWithTimeout, providers.CompleteRequest{
+				SystemBlocks:     systemBlocks,
+				UserBlocks:       userBlocks,
+				System:           flattenContentBlocks(systemBlocks),
+				User:             flattenContentBlocks(userBlocks),
+				Model:            pCfg.Model,
+				MaxTokens:        4096,
+				Temperature:      temp,
+				FrequencyPenalty: freqPen,
+				MCPServers:       mcpServers,
+				Attachments:      attachments,
+				Secrets:          req.Hub.Registry.Secrets,
+				ForceToolCall:    forceTool,
+				Constraints:      constraints,
+			}, func(chunk string) error {
+				streamBuffer.WriteString(chunk)
+				patternWindow = append(patternWindow, chunk...)
+				if len(patternWindow) > 150 {
+					patternWindow = patternWindow[len(patternWindow)-150:]
+				}
+				if len(patternWindow) >= 150 {
+					// M-9 (2026-10-04): Convert patternWindow to string once
+					// instead of twice (was: string() for tail + string() for Count).
+					windowStr := string(patternWindow)
+					tail := windowStr[len(windowStr)-30:]
+					if strings.Count(windowStr, tail) >= 4 {
+						return fmt.Errorf("ErrPatternLoopBrake")
+					}
+				}
+				return nil
+			})
+			cancel()
+
+			if err != nil && strings.Contains(err.Error(), "DELEGATION_REQUIRED") {
+				// Defect 1 fix: include tool definitions in delegation return
+				toolDefs := s.collectDelegationToolDefs(req.Hub, bindings)
+				return &SpawnResult{
+					Output: schemas.SubagentOutput{
+						Status:     schemas.StatusDelegationRequired,
+						Confidence: 1.0,
+						Result: map[string]any{
+							"system_prompt":    flattenContentBlocks(systemBlocks),
+							"user_prompt":      flattenContentBlocks(userBlocks),
+							"tool_definitions": toolDefs,
+						},
+						Capability: role.BaseCapability,
+					},
+				}, nil
+			}
+
+			// #20 (eval §8.46): Reactive context compression. When the provider
+			// returns a context-limit error (prompt too long for the model's
+			// window), compress the conversation history by dropping older
+			// middle blocks and retry the same provider once. This prevents
+			// a hard 400 crash that kills the step — the model gets a second
+			// chance with a shorter context.
+			if err != nil && isContextLimitError(err) {
+				compressed := compressUserBlocks(userBlocks)
+				if compressed != nil {
+					observability.GetGlobalMetrics().Inc("orchestrator.context.compressed", 1)
+					s.logger.Log("EventContextCompressed", req.TaskID, req.StepID, map[string]any{
+						"turn":          turn,
+						"provider":      pCfg.Provider,
+						"model":         pCfg.Model,
+						"blocks_before": len(userBlocks),
+						"blocks_after":  len(compressed),
+						"error":         err.Error(),
+					})
+					userBlocks = compressed
+
+					// Retry with compressed context.
+					retryCtx, retryCancel := context.WithTimeout(ctx, 120*time.Second)
+					resp, err = provider.StreamComplete(retryCtx, providers.CompleteRequest{
+						SystemBlocks:     systemBlocks,
+						UserBlocks:       userBlocks,
+						System:           flattenContentBlocks(systemBlocks),
+						User:             flattenContentBlocks(userBlocks),
+						Model:            pCfg.Model,
+						MaxTokens:        4096,
+						Temperature:      temp,
+						FrequencyPenalty: freqPen,
+						MCPServers:       mcpServers,
+						Attachments:      attachments,
+						Secrets:          req.Hub.Registry.Secrets,
+						ForceToolCall:    forceTool,
+						Constraints:      constraints,
+					}, func(chunk string) error {
+						streamBuffer.WriteString(chunk)
+						return nil
+					})
+					retryCancel()
+
+					if err == nil {
+						observability.GetGlobalMetrics().Inc("orchestrator.context.compress_retry_success", 1)
+						s.logger.Log("EventContextCompressRetrySuccess", req.TaskID, req.StepID, map[string]any{
+							"turn":     turn,
+							"provider": pCfg.Provider,
+							"model":    pCfg.Model,
+						})
+						effectiveProviderID = pCfg.PoolID
+						effectiveModelID = pCfg.Model
+						break // Turn succeeded with compressed context
+					}
+					// Retry also failed — fall through to normal error handling.
+					s.logger.Log("EventContextCompressRetryFailed", req.TaskID, req.StepID, map[string]any{
+						"turn":     turn,
+						"provider": pCfg.Provider,
+						"model":    pCfg.Model,
+						"error":    err.Error(),
+					})
+				}
+			}
+
+			if err == nil {
+				// Empty Response Circuit Breaker (ADDED 2026-09-18):
+				// Provider returned HTTP 200 but model produced zero tokens and
+				// no tool calls. This happens when vLLM lacks --tool-call-parser,
+				// context overflows KV cache, or model safety filters fire.
+				// Without this check, Spawner loops up to maxTurns (50) doing
+				// nothing, burning wall-clock time until orchestrator_wait_task
+				// timeout (90s) kills the step as "partial".
+				if resp.CompletionTokens == 0 && len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Text) == "" {
+					s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+						"turn":            turn,
+						"failed_provider": pCfg.Provider,
+						"failed_model":    pCfg.Model,
+						"error":           "empty_response_zero_tokens",
+						"prompt_tokens":   resp.PromptTokens,
+						"next_candidate": func() string {
+							if candIdx < len(candidateConfigs)-1 {
+								return candidateConfigs[candIdx+1].providerID
+							}
+							return ""
+						}(),
+					})
+					if candIdx < len(candidateConfigs)-1 {
+						continue // try next candidate provider/model
+					}
+					// No more candidates: retry before giving up (handles intermittent
+					// server-side empty responses, e.g. Xunfei MaaS §10.4).
+					retry, exhaustErr := shouldRetryEmptyResponse(&emptyRespRetries, maxEmptyRespRetries)
+					if retry {
+						s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+							"error": "empty_response_zero_tokens",
+							"retry": emptyRespRetries,
+							"max":   maxEmptyRespRetries,
+						})
+						continue turnLoop
+					}
+					// Retries exhausted: fast-fail
+					s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+						"error":   "empty_response_zero_tokens",
+						"details": fmt.Sprintf("all candidates returned 0 completion tokens after %d retries; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter, provider intermittent empty response", maxEmptyRespRetries),
+					})
+					// Persist partial trace for observability (eval §8.48.6).
+					s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
+					return nil, exhaustErr
+				}
+				effectiveProviderID = pCfg.PoolID
+				effectiveModelID = pCfg.Model
+				break // Turn succeeded
+			}
+
+			// Handle Error & Fallback
+			if isRetryableError(err) {
+				if candIdx < len(candidateConfigs)-1 {
+					s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+						"turn":            turn,
+						"failed_provider": pCfg.Provider,
+						"failed_model":    pCfg.Model,
+						"error":           err.Error(),
+						"next_candidate":  candidateConfigs[candIdx+1].providerID,
+					})
+
+					// Trigger-driven Skill Injection (ADDED 2026-08-16)
+					// If we have a skill specifically for this error, suggest it to the model.
+					if s.expStore != nil {
+						if repairs := s.expStore.QuerySkillsBySignal(ctx, err.Error()); len(repairs) > 0 {
+							advice := fmt.Sprintf("%s: Encountered %q. Consider using these previously successful repair skills: %v", MarkerSystemAdvice, err.Error(), repairs)
+							userBlocks = append(userBlocks, schemas.ContentBlock{Text: advice, CacheControl: "ephemeral"})
+						}
+					}
+					continue
+				}
+			}
+
+			// Final failure
+			s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+				"error":   "Provider call failed (all candidates exhausted)",
+				"details": err.Error(),
+			})
+			// Persist partial trace for observability (eval §8.48.6).
+			s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
+			return nil, err
+		}
+
+		// Record Usage Stats
+		GetGlobalStats().RecordUsage(currentPCfg.Provider, currentPCfg.Model, resp.PromptTokens, resp.CompletionTokens, len(resp.ToolCalls), resp.CacheWriteTokens, resp.CacheReadTokens)
+
+		// Outer-ring accounting (ADDED 2026-10-12): the system-prompt profile is
+		// captured at Build() time and only covers the system ring. Fold in the
+		// MCP tool-schema cost and the conversation history actually sent this
+		// turn, plus the provider-reported prompt/completion tokens, so
+		// /api/context/profile renders the full context budget.
+		historyTokens := 0
+		for i := range userBlocks {
+			historyTokens += providers.EstimateTokens(userBlocks[i].Text)
+		}
+		s.UpdateSystemPromptOuterRing(estimateMCPServersTokens(lastMCPServers), historyTokens, resp.PromptTokens, resp.CompletionTokens)
+
+		// ── Cost Governance: Cache efficiency sentinel (P0) ───────────────
+		// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 1.
+		// Pure observer: never mutates execution flow. Alerting ≠ blocking.
+		if alert, n := s.cacheSentinel.Observe(req.TaskID, req.StepID, resp.PromptTokens, resp.CacheReadTokens); alert {
+			s.logger.Log(EventCacheInefficiency, req.TaskID, req.StepID, map[string]any{
+				"consecutive_zero_rounds": n,
+				"prompt_tokens":           resp.PromptTokens,
+				"cache_read_tokens":       resp.CacheReadTokens,
+				"model":                   currentPCfg.Model,
+				"possible_causes": []string{
+					"gateway/SDK not forwarding usage.cache_read_input_tokens",
+					"prompt prefix changes every turn (timestamp/random injection) breaking cache stability",
+					"current model channel does not support prompt caching",
+					"Anthropic cache_control markers misplaced",
+				},
+			})
+		}
+
+		// ── Priority 5: Capture Structured Decision Nodes ────────────────
+		var turnDecisionID string
+		if matches := thoughtRe.FindAllStringSubmatch(resp.Text, -1); len(matches) > 0 {
+			var thoughts []string
+			var reasoning strings.Builder
+			for _, m := range matches {
+				thoughts = append(thoughts, strings.TrimSpace(m[1]))
+				reasoning.WriteString(m[1])
+				reasoning.WriteString("\n")
+			}
+			s.logger.Log("EventStepThought", req.TaskID, req.StepID, map[string]any{
+				"thought": strings.Join(thoughts, "\n---\n"),
+			})
+
+			if req.Hub != nil && req.Hub.Graph != nil {
+				turnDecisionID = fmt.Sprintf("dec_%s_%d", req.StepID, turn)
+				node := &schemas.DecisionNode{
+					ID:        turnDecisionID,
+					StepID:    req.StepID,
+					Turn:      turn,
+					Reasoning: strings.TrimSpace(reasoning.String()),
+					Timestamp: time.Now(),
+				}
+				if len(resp.ToolCalls) > 0 {
+					node.Type = "selection"
+					var tools []string
+					for _, tc := range resp.ToolCalls {
+						tools = append(tools, tc.Name)
+					}
+					node.Action = fmt.Sprintf("call_tools: %v", tools)
+				} else {
+					node.Type = "synthesis"
+					node.Action = "finalize_answer"
+				}
+
+				// Basic Inference Causality: Link to context refs used in this step
+				for k := range req.ContextRefs {
+					node.Causes = append(node.Causes, k)
+				}
+
+				req.Hub.Graph.RecordDecision(turnDecisionID, node)
+				decisionIDs = append(decisionIDs, turnDecisionID)
+
+				// Priority 6: Learn from the new decision
+				if s.expStore != nil {
+					s.expStore.UpsertDecisionPrecedent(ctx, node)
+				}
+			}
+		}
+
+		if len(resp.ToolCalls) == 0 {
+			cleanText := thoughtRe.ReplaceAllString(resp.Text, "")
+
+			output := schemas.ParseOutput(cleanText, role.BaseCapability)
+			output.Usage = &schemas.Usage{
+				PromptTokens:     resp.PromptTokens,
+				CompletionTokens: resp.CompletionTokens,
+				TotalTokens:      resp.PromptTokens + resp.CompletionTokens,
+			}
+			noToolCallsYet := len(trace) == 0
+			selfReportedLowConfidence := output.Status == schemas.StatusPartial && output.Confidence < 0.4
+
+			// P1 fix (2026-10-03, eval §0.5): Detect parse failures and track consecutive count.
+			// ParseOutput fallback sets Assumptions to "output not parseable" or
+			// "output parseable but semantically hollow". Use this to distinguish
+			// "model didn't call tools" from "model called tools but output was garbage".
+			parseFailed := false
+			for _, a := range output.Assumptions {
+				if strings.Contains(a, "not parseable") || strings.Contains(a, "semantically hollow") {
+					parseFailed = true
+					break
+				}
+			}
+			if parseFailed {
+				consecutiveParseFailures++
+			} else {
+				consecutiveParseFailures = 0
+			}
+
+			// [EVAL-OBS] 2026-10-07 observation print: diagnose 'how many rounds the engine ran
+			// within a single τ² turn, what each round called, and why it didn't exit'. Enabled by ORCH_EVAL_OBS env var, off by default.
+			if evalObsEnabled() {
+				fmt.Fprintf(os.Stderr, "[EVAL-OBS] task=%s step=%s turn=%d/%d calls=%d trace=%d status=%s conf=%.2f parse=%v(consec=%d) noTool=%v lowConf=%v\n",
+					req.TaskID, req.StepID, turn+1, maxTurns, len(resp.ToolCalls), len(trace),
+					output.Status, output.Confidence, parseFailed, consecutiveParseFailures, noToolCallsYet, selfReportedLowConfidence)
+				for _, tc := range resp.ToolCalls {
+					fmt.Fprintf(os.Stderr, "[EVAL-OBS]   -> %s %v\n", tc.Name, tc.Arguments)
+				}
+				if strings.TrimSpace(cleanText) != "" {
+					txt := strings.TrimSpace(cleanText)
+					if len(txt) > 200 {
+						txt = txt[:200]
+					}
+					fmt.Fprintf(os.Stderr, "[EVAL-OBS]   text: %s\n", strings.ReplaceAll(txt, "\n", " | "))
+				}
+			}
+
+			// P1 fix (2026-10-03, eval §0.5): Spin breaker.
+			// After N consecutive parse failures, stop spinning and return the
+			// best partial result. Burning the entire turn budget on identical
+			// failures wastes 19-43 provider calls for zero benefit.
+			if consecutiveParseFailures >= maxConsecutiveParseFailures {
+				output.Warnings = append(output.Warnings, fmt.Sprintf(
+					"orchestrator: broke spin loop after %d consecutive parse failures", consecutiveParseFailures))
+				s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+					"turn":                       turn,
+					"consecutive_parse_failures": consecutiveParseFailures,
+					"action":                     "spin_break",
+				})
+				observability.GetGlobalMetrics().Inc("orchestrator.spin.broken", 1)
+				return &SpawnResult{
+					Output:        output,
+					ProviderID:    effectiveProviderID,
+					ModelID:       effectiveModelID,
+					Ref:           req.TaskID + ":" + req.StepID,
+					TurnsUsed:     turn + 1,
+					StatesVisited: statesVisited,
+				}, nil
+			}
+
+			// FIX (2026-09-07): Malformatted Tool Call Guard.
+			// When the model outputs pseudo-XML like <anim:call> instead of real JSON tool calls,
+			// intercept it and inject a stern correction prompt so it doesn't get trapped.
+			if strings.Contains(cleanText, "<anim:call") || strings.Contains(cleanText, "<tool_call") {
+				msg := SpawnerInvalidToolFormatMsg
+				for i := range userBlocks {
+					userBlocks[i].CacheControl = ""
+				}
+				userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
+				userBlocks = append(userBlocks, schemas.ContentBlock{Text: msg, CacheControl: "ephemeral"})
+				continue
+			}
+			// WITHOUT ever calling a tool. Once the model has made tool calls
+			// (len(trace) > 0), subsequent text is legitimate chain-of-thought
+			// reasoning — not an early exit. Let the model declare completion
+			// on its own; Auditor (verifyExitCriteria) will catch incomplete
+			// results at the exit gate and trigger auto-refine. This preserves
+			// the model's ability to reason between tool calls, which is
+			// essential for multi-step DAGs.
+			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) && !disableForceTool() {
+				if evalObsEnabled() {
+					fmt.Fprintf(os.Stderr, "[EVAL-OBS] NUDGE triggered turn=%d noTool=%v lowConf=%v parse=%v\n",
+						turn+1, noToolCallsYet, selfReportedLowConfidence, parseFailed)
+				}
+				msg := SpawnerNoToolsMsg
+				if output.Status == schemas.StatusCapabilityRequired && len(output.RequiredCapabilities) > 0 {
+					msg = fmt.Sprintf("%s Before finalizing capability_required, double-check your bound tools. If none fulfill %v, explain and finalize.", MarkerSystem, output.RequiredCapabilities)
+				}
+				// P1 fix (2026-10-03, eval §0.5): When the spin is caused by parse
+				// failure (not just "no tools"), include format guidance so the model
+				// knows BOTH problems: (1) call tools, (2) output valid JSON.
+				// Without this, the model retries with the same bad format → spin.
+				if parseFailed {
+					msg = SpawnerNoToolsBadJSONMsg
+				}
+				for i := range userBlocks {
+					userBlocks[i].CacheControl = ""
+				}
+				userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
+				userBlocks = append(userBlocks, schemas.ContentBlock{Text: msg, CacheControl: "ephemeral"})
+				continue
+			}
+
+			if noToolCallsYet && output.Status == schemas.StatusOK {
+				output.Status = schemas.StatusPartial
+				if output.Confidence > 0.4 {
+					output.Confidence = 0.4
+				}
+				output.Warnings = append(output.Warnings, "orchestrator: model reported status=ok but no tool calls were recorded; downgraded to partial")
+			}
+
+			// ── Priority 5: Update Decision Outcome (Final) ──────────────────
+			if turnDecisionID != "" && req.Hub != nil && req.Hub.Graph != nil {
+				req.Hub.Graph.UpdateDecisionOutcome(turnDecisionID, string(output.Status))
+			}
+
+			s.taskStoreSet(ctx, req.TaskID, req.StepID, &store.StepResult{
+				Data:           output.Result,
+				Confidence:     output.Confidence,
+				MissingContext: output.MissingContext,
+				Capability:     role.BaseCapability,
+				ProviderID:     effectiveProviderID,
+				ModelID:        effectiveModelID,
+				Attachments:    output.Attachments,
+				Trace:          trace,
+				DecisionIDs:    decisionIDs,
+				StatesVisited:  statesVisited,
+				CreatedAt:      time.Now(),
+			})
+
+			return &SpawnResult{
+				Output:        output,
+				ProviderID:    effectiveProviderID,
+				ModelID:       effectiveModelID,
+				Ref:           req.TaskID + ":" + req.StepID,
+				StatesVisited: statesVisited,
+				TurnsUsed:     turn + 1,
+			}, nil
+		}
+
+		// Handle Tool Calls
+		var toolResults []string
+		var turnAttachments []schemas.Attachment
+		needsVerification := false
+
+		// ── Sieve Guardian: Tool Loop Detection (Two-Tier Escalation) ───────
+		if valid, reason := s.checkSieveGuardian(req.TaskID, req.StepID, turn, resp.ToolCalls, trace); !valid {
+			sieveGuardianHits++
+			observability.GetGlobalMetrics().Inc("orchestrator.sieve.interceptions", 1)
+			if sieveGuardianHits == 1 {
+				userBlocks = append(userBlocks, schemas.ContentBlock{
+					Text: fmt.Sprintf(SpawnerLoopDetectedFmt, reason),
+				})
+				continue
+			}
+			if noToolProvider, perr := providers.Get(currentPCfg, req.Hub.Registry.ExternalRuntimes); perr == nil {
+				noToolResp, nerr := noToolProvider.StreamComplete(ctx, providers.CompleteRequest{
+					UserBlocks: append(userBlocks, schemas.ContentBlock{
+						Text: SpawnerLoopPersistMsg,
+					}),
+					System:    SysPromptBestAnswer,
+					Model:     currentPCfg.Model,
+					MaxTokens: 4096,
+				}, nil)
+				if nerr == nil && noToolResp.Text != "" {
+					degradedOutput := schemas.ParseOutput(noToolResp.Text, role.BaseCapability)
+					degradedOutput.Status = schemas.StatusPartial
+					if degradedOutput.Confidence > 0.3 {
+						degradedOutput.Confidence = 0.3
+					}
+					degradedOutput.Warnings = append(degradedOutput.Warnings, "degraded: "+reason)
+					return &SpawnResult{
+						Output:        degradedOutput,
+						ProviderID:    effectiveProviderID,
+						ModelID:       effectiveModelID,
+						Ref:           req.TaskID + ":" + req.StepID,
+						TurnsUsed:     turn + 2,
+						StatesVisited: statesVisited,
+					}, nil
+				}
+			}
+			return s.failedOutput(role.BaseCapability, reason), nil
+		}
+
+		// Execute tool calls via extracted method (Option B split).
+		tcState := &toolExecState{
+			toolResults:       toolResults,
+			trace:             trace,
+			toolCallCount:     toolCallCount,
+			toolFailCount:     toolFailCount,
+			needsVerification: needsVerification,
+			turnAttachments:   turnAttachments,
+			statesVisited:     statesVisited,
+			previousState:     previousState,
+		}
+		s.processToolCalls(ctx, req, resp, bindings, turnDecisionID, turnCtx, tcState)
+		toolResults = tcState.toolResults
+		trace = tcState.trace
+		toolCallCount = tcState.toolCallCount
+		toolFailCount = tcState.toolFailCount
+		needsVerification = tcState.needsVerification
+		turnAttachments = tcState.turnAttachments
+		statesVisited = tcState.statesVisited
+		previousState = tcState.previousState
+
+		// ── Priority 3: Gateway Watchdog (Active Conflict Probing) ────────
+		if alert := s.watchdog.Sniff(resp.ToolCalls, req.Hub); alert != nil {
+			toolResults = append(toolResults, fmt.Sprintf("\n%s", alert.Message))
+			s.logger.Log(EventSwarmWatchdogTriggered, req.TaskID, req.StepID, map[string]any{
+				"type": alert.Type,
+			})
+		}
+
+		// ── VDA: Forced Visual Audit ──────────────────────────────────────
+		if needsVerification {
+			for _, b := range bindings {
+				mcp := req.Hub.GetMCP(b.MCPID)
+				if mcp == nil {
+					continue
+				}
+				if containsTool(mcp.AvailableTools, "capture_screenshot") {
+					cli, err := s.mcpMgr.ensureMCPClient(ctx, mcp, req.TaskID)
+					if err == nil {
+						screen, err := cli.SendRequest(ctx, "tools/call", map[string]any{
+							"name":      "capture_screenshot",
+							"arguments": map[string]any{},
+						})
+						if err == nil {
+							if att, ok := screen.(schemas.SubagentOutput); ok {
+								turnAttachments = append(turnAttachments, att.Attachments...)
+							}
+							toolResults = append(toolResults, "System: Automatic verification screenshot captured.")
+						}
+					}
+					break
+				}
+			}
+		}
+
+		s.persistAttachments(req.TaskID, req.StepID, turnAttachments)
+
+		// ── Priority 5: Update Decision Outcome ──────────────────────────
+		if turnDecisionID != "" && req.Hub != nil && req.Hub.Graph != nil {
+			req.Hub.Graph.UpdateDecisionOutcome(turnDecisionID, fmt.Sprintf("executed %d tools", len(resp.ToolCalls)))
+		}
+
+		// Priority 4: Re-route tools for the next turn based on updated context
+		// (Progressive Disclosure)
+		bindings = s.toolRouter.Route(ctx, RouteRequest{
+			Task:               req.Task + " " + resp.Text,
+			Bindings:           initialBindings,
+			Turn:               turn + 1,
+			ProgressiveMode:    progressiveEnabled,
+			PredecessorSkillID: req.PredecessorSkillID,
+		})
+
+		vdaPrompt := ""
+		if needsVerification {
+			vdaPrompt = SpawnerVDAPrompt
+		}
+
+		// Update history blocks - Rolling Marker strategy
+		for i := range userBlocks {
+			userBlocks[i].CacheControl = ""
+		}
+		userBlocks = append(userBlocks, schemas.ContentBlock{Text: resp.Text}) // Assistant turn
+
+		// Mechanism 1: Single-Action Observation Loop
+		// Mechanism 2: Error-Driven Self-Healing Classifier
+		observation := strings.Join(toolResults, "\n")
+		healingAdvice := s.healer.Diagnose(observation)
+
+		resMD := fmt.Sprintf("%s\n%s%s%s", MarkerEnvObservation, observation, healingAdvice, vdaPrompt)
+		userBlocks = append(userBlocks, schemas.ContentBlock{Text: resMD, CacheControl: "ephemeral"}) // Tool results turn
+
+		// #15 (eval §8.35): No-progress turn detection. If this turn had tool
+		// calls but ALL were fs-only (no domain MCP calls), increment the
+		// streak. Otherwise reset. Emit metric so an arm can validate before
+		// adding a threshold/action.
+		if len(resp.ToolCalls) > 0 {
+			allFsOnly := true
+			for _, tc := range resp.ToolCalls {
+				if !CoreToolNames[tc.Name] {
+					allFsOnly = false
+					break
+				}
+			}
+			if allFsOnly {
+				fsOnlyTurnStreak++
+			} else {
+				if fsOnlyTurnStreak > 0 {
+					observability.GetGlobalMetrics().Inc("orchestrator.progress.fs_only_streak_max", int64(fsOnlyTurnStreak))
+				}
+				fsOnlyTurnStreak = 0
+			}
+			if fsOnlyTurnStreak >= 2 {
+				observability.GetGlobalMetrics().Inc("orchestrator.progress.stalled_turns", 1)
+			}
+			// #4+#15 (eval §8.37.2/§8.40): Break the turn loop if the fs-only
+			// streak exceeds the configured limit. The model is stuck in a
+			// write→read self-proof loop with no domain progress.
+			if fsOnlyStreakLimit > 0 && fsOnlyTurnStreak >= fsOnlyStreakLimit {
+				observability.GetGlobalMetrics().Inc("orchestrator.progress.fs_only_stall_break", 1)
+				s.logger.Log("EventFsOnlyStallBreak", req.TaskID, req.StepID, map[string]any{
+					"turn":         turn,
+					"streak":       fsOnlyTurnStreak,
+					"limit":        fsOnlyStreakLimit,
+					"max_turns":    maxTurns,
+					"tool_results": len(toolResults),
+				})
+				// Persist partial trace for observability (eval §8.48.6).
+				s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
+				return nil, fmt.Errorf("fs_only_stall: %d consecutive turns used only filesystem tools (write_file/read_file/execute_code) without domain MCP calls; breaking to conserve budget (limit=%d)", fsOnlyTurnStreak, fsOnlyStreakLimit)
+			}
+		}
+	}
+
+	// FIX (2026-09-07): instead of hard-failing, emit a sentinel error the
+	// scheduler converts into a resumable pending decision
+	// (schemas.DecisionMaxTurnsExhausted). The step keeps its partial progress
+	// (trace is persisted as the step's tool interactions) so a resume can
+	// continue from here rather than restarting blind.
+	// FIX (eval §8.48.6): the comment above claimed trace was persisted, but
+	// no taskStoreSet call existed. Now actually persist it.
+	s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
+	return nil, fmt.Errorf("%s: tool execution loop reached max turns (%d) without a final answer; %d tool interaction(s) executed",
+		ErrMaxTurnsExhausted, maxTurns, len(trace))
+}

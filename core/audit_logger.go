@@ -105,6 +105,12 @@ func (al *AuditLogger) Log(action, taskID, stepID, decisionID string, dtype, cho
 	return nil
 }
 
+// SetAuditLogger wires a tamper-evident audit chain into the scheduler.
+// Call once after NewDirectedEngine; nil-safe (passing nil disables logging).
+func (s *DirectedEngine) SetAuditLogger(al *AuditLogger) {
+	s.auditLogger = al
+}
+
 // splitLastLine returns the last non-empty line from a string.
 func splitLastLine(data string) string {
 	for i := len(data) - 1; i >= 0; i-- {

@@ -1,8 +1,10 @@
 package core
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSummarizeOutput_SmallContent_Passthrough(t *testing.T) {
@@ -260,4 +262,217 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(buf[pos:])
+}
+
+// TestSummarizeLog_MultiKeywordLine_DeterministicHighestSeverity is a regression
+// test for bug SUM-1: summarizeLog used `range levelCounts` (random Go map
+// iteration order) to categorize lines, so a line containing multiple level
+// keywords (e.g. "ERROR: see INFO log") was non-deterministically counted as
+// whichever keyword the random iteration visited first. This could silently drop
+// ERROR lines from the errorLines summary — the most important part.
+//
+// After the fix, keywords are checked in fixed priority order (FATAL > ERROR >
+// WARN > INFO > DEBUG > TRACE), so a multi-keyword line always resolves to the
+// highest severity. We build a log where every line contains both ERROR and
+// INFO and assert ALL are counted as ERROR.
+func TestSummarizeLog_MultiKeywordLine_DeterministicHighestSeverity(t *testing.T) {
+	const numLines = 300 // ~300 lines × ~30 bytes ≈ 9KB > 8KB threshold
+	var sb strings.Builder
+	for i := 0; i < numLines; i++ {
+		// Every line contains BOTH "ERROR" and "INFO" — before the fix, map
+		// randomness meant ~1/6 were counted as ERROR. After the fix, all are.
+		sb.WriteString("ERROR code=" + itoa(i) + " INFO context=load\n")
+	}
+	data := []byte(sb.String())
+	if len(data) < 8*1024 {
+		t.Fatalf("test data too small (%d bytes) to trigger summarization", len(data))
+	}
+
+	got := SummarizeOutput(data, "log")
+	if !strings.Contains(got, "Log Summary") {
+		t.Fatalf("expected log summary, got: %s", got[:100])
+	}
+	// Every line must be counted as ERROR (highest severity), not INFO.
+	wantErr := fmt.Sprintf("    ERROR: %d", numLines)
+	if !strings.Contains(got, wantErr) {
+		t.Errorf("SUM-1 regression: expected all %d lines counted as ERROR\nwant substring: %q\ngot:\n%s", numLines, wantErr, got)
+	}
+	// INFO must NOT be counted (every line resolved to ERROR, not INFO).
+	if strings.Contains(got, "    INFO:") {
+		t.Errorf("SUM-1 regression: lines leaked into INFO count (non-deterministic map order)\ngot:\n%s", got)
+	}
+}
+
+// TestSummarizeTable_ExactlyThreeRows_NoZeroOmitted is a regression test for
+// bug SUM-2: summarizeTable printed "... [0 rows omitted] ..." when the table
+// had exactly 3 rows, because the omission marker fired unconditionally at
+// shown==3 with count nonEmpty-3 == 0. Nothing was omitted, so the marker is
+// nonsensical. After the fix, the marker is guarded by nonEmpty > 3.
+func TestSummarizeTable_ExactlyThreeRows_NoZeroOmitted(t *testing.T) {
+	// 3 pipe-rows, each ~3KB, so total > 8KB threshold triggers summarization.
+	// detectFormat needs pipeCount >= 3 (3 lines with >= 2 pipes) → "table".
+	pad := strings.Repeat("x", 3000)
+	var sb strings.Builder
+	sb.WriteString("| col1 | col2 | col3 |\n")
+	sb.WriteString("| " + pad + " | a | b |\n")
+	sb.WriteString("| " + pad + " | c | d |\n")
+	sb.WriteString("| " + pad + " | e | f |\n")
+	data := []byte(sb.String())
+	if len(data) < 8*1024 {
+		t.Fatalf("test data too small (%d bytes) to trigger summarization", len(data))
+	}
+
+	got := SummarizeOutput(data, "table")
+	if !strings.Contains(got, "Table Summary") {
+		t.Fatalf("expected table summary, got: %s", got[:100])
+	}
+	// The "[0 rows omitted]" marker must NOT appear when nothing was omitted.
+	if strings.Contains(got, "[0 rows omitted]") {
+		t.Errorf("SUM-2 regression: table with exactly 3 rows printed \"[0 rows omitted]\"\ngot:\n%s", got)
+	}
+}
+
+// TestSummarizeLog_LongErrorLines_Truncated verifies that long error lines in
+// the log summary are truncated to maxRunesPerLine runes. Before the fix, a
+// 5 KB error line (e.g. a stack trace with a huge payload) was included
+// verbatim in the "Error/Fatal lines" section, bloating the summary.
+func TestSummarizeLog_LongErrorLines_Truncated(t *testing.T) {
+	longPad := strings.Repeat("x", 5000) // 5 KB per error line, > maxRunesPerLine
+	var sb strings.Builder
+	for i := 0; i < 20; i++ {
+		sb.WriteString("ERROR " + longPad + "\n")
+	}
+	for i := 0; i < 280; i++ {
+		sb.WriteString("INFO processing item\n")
+	}
+	data := []byte(sb.String())
+	if len(data) < 8*1024 {
+		t.Fatalf("test data too small (%d bytes) to trigger summarization", len(data))
+	}
+
+	got := SummarizeOutput(data, "log")
+	if !strings.Contains(got, "Log Summary") {
+		t.Fatalf("expected log summary, got: %s", got[:100])
+	}
+	// No line in the summary should exceed maxRunesPerLine + marker.
+	for _, line := range strings.Split(got, "\n") {
+		if utf8.RuneCountInString(line) > maxRunesPerLine+20 {
+			t.Errorf("long error line not truncated: line has %d runes > %d+20\nline: %s...",
+				utf8.RuneCountInString(line), maxRunesPerLine, line[:min(100, len(line))])
+			break
+		}
+	}
+}
+
+// TestSummarizeTable_LongRows_Truncated verifies that long rows in the table
+// summary are truncated to maxRunesPerLine runes. Before the fix, a 5 KB row
+// (e.g. a wide CSV line) was included verbatim in the first-3-rows section,
+// bloating the summary.
+func TestSummarizeTable_LongRows_Truncated(t *testing.T) {
+	longPad := strings.Repeat("x", 5000) // 5 KB per row, > maxRunesPerLine
+	var sb strings.Builder
+	for i := 0; i < 5; i++ {
+		sb.WriteString("| " + longPad + " | a | b |\n")
+	}
+	data := []byte(sb.String())
+	if len(data) < 8*1024 {
+		t.Fatalf("test data too small (%d bytes) to trigger summarization", len(data))
+	}
+
+	got := SummarizeOutput(data, "table")
+	if !strings.Contains(got, "Table Summary") {
+		t.Fatalf("expected table summary, got: %s", got[:100])
+	}
+	// No line in the summary should exceed maxRunesPerLine + marker.
+	for _, line := range strings.Split(got, "\n") {
+		if utf8.RuneCountInString(line) > maxRunesPerLine+20 {
+			t.Errorf("long table row not truncated: line has %d runes > %d+20\nline: %s...",
+				utf8.RuneCountInString(line), maxRunesPerLine, line[:min(100, len(line))])
+			break
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// ---------------------------------------------------------------------------
+// FileSkeleton edge-case tests — the existing tests only covered happy paths
+// (valid Go/Python/HTML/JSON with detectable symbols). These tests verify
+// graceful handling of empty/invalid/degenerate inputs.
+// ---------------------------------------------------------------------------
+
+// TestFileSkeleton_EmptyFile verifies that empty data doesn't panic and
+// returns a valid header for each supported extension.
+func TestFileSkeleton_EmptyFile(t *testing.T) {
+	// Known extensions have dedicated skeleton functions that return a header
+	// even for empty data. Unknown extensions (e.g. .txt) fall through to
+	// SummarizeOutput which returns empty for empty data — that's correct.
+	exts := []string{".go", ".json", ".html", ".py", ".js"}
+	for _, ext := range exts {
+		got := FileSkeleton([]byte{}, "test"+ext)
+		if got == "" {
+			t.Errorf("FileSkeleton(empty, .%s) returned empty string — expected header", ext)
+		}
+	}
+}
+
+// TestFileSkeleton_NilData verifies that nil data doesn't panic.
+func TestFileSkeleton_NilData(t *testing.T) {
+	// Should not panic for any extension.
+	for _, ext := range []string{".go", ".json", ".html"} {
+		_ = FileSkeleton(nil, "test"+ext)
+	}
+}
+
+// TestFileSkeleton_InvalidJSON verifies that malformed JSON with a .json
+// extension doesn't panic and returns a header. jsonSkeleton uses
+// json.Decoder which breaks on error, so only the header is returned.
+func TestFileSkeleton_InvalidJSON(t *testing.T) {
+	invalid := []byte(`{"broken": "json", "missing":}`)
+	got := FileSkeleton(invalid, "test.json")
+	if !strings.Contains(got, "JSON Skeleton") {
+		t.Errorf("expected JSON skeleton header for invalid JSON, got: %s", got)
+	}
+}
+
+// TestFileSkeleton_NoSymbols verifies that a Go file with only comments
+// (no func/type/var/const) returns a header with no symbol lines.
+func TestFileSkeleton_NoSymbols(t *testing.T) {
+	code := `// This file has only comments.
+// No functions, types, vars, or consts.
+// Just documentation.
+`
+	got := FileSkeleton([]byte(code), "test.go")
+	if !strings.Contains(got, "Code Skeleton") {
+		t.Errorf("expected code skeleton header, got: %s", got)
+	}
+	// Should NOT contain any symbol markers (L1: func, L1: type, etc.)
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, " func ") || strings.Contains(line, " type ") ||
+			strings.Contains(line, " var ") || strings.Contains(line, " const ") {
+			t.Errorf("unexpected symbol in comment-only file: %s", line)
+		}
+	}
+}
+
+// TestFileSkeleton_LargeFileTruncation verifies that codeSkeleton's 4000-byte
+// output cap works — a file with many symbols should be truncated.
+func TestFileSkeleton_LargeFileTruncation(t *testing.T) {
+	var sb strings.Builder
+	for i := 0; i < 500; i++ {
+		sb.WriteString("func func" + itoa(i) + "() {}\n")
+	}
+	got := FileSkeleton([]byte(sb.String()), "test.go")
+	if !strings.Contains(got, "omitted") {
+		t.Errorf("expected truncation marker for 500-func file, got len=%d", len(got))
+	}
+	// Output should be capped around 4000 bytes.
+	if len(got) > 5000 {
+		t.Errorf("output too large: %d bytes, expected ~4000 cap", len(got))
+	}
 }
