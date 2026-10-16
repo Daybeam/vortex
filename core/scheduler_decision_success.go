@@ -34,6 +34,10 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 	payload["role_id"] = step.RoleID
 	s.publishEvent(taskID, step.ID, EventStepCompleted, payload)
 
+	if output.Usage != nil {
+		s.costTracker.Record(result.ModelID, taskID, step.ID, output.Usage.PromptTokens, output.Usage.CompletionTokens)
+	}
+
 	if step.TriggerError != "" && step.AdditionalPromptContext != "" {
 		s.DepositExperienceEvolution(s.lifecycleCtx, graph, step)
 	}
