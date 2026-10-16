@@ -10,23 +10,40 @@ import (
 // Used by both read_file (mode=summary) and run_command (auto-trigger for large output).
 // Falls back to AdaptiveOutputResult for unknown or small content.
 func SummarizeOutput(data []byte, hint string) string {
-	if len(data) < 8*1024 {
+	format := detectFormat(data)
+
+	// Structured content (JSON, JSONL, table, log) can be summarized at a
+	// lower threshold because the summary preserves essential structure
+	// (keys, counts, levels). Plain text uses the full 8 KB threshold to
+	// avoid over-aggressive summarization of small outputs.
+	threshold := 8 * 1024
+	if format != "plain" && format != "" {
+		threshold = 2 * 1024
+	}
+	if len(data) < threshold {
 		return string(data)
 	}
 
-	format := detectFormat(data)
+	var result string
 	switch format {
 	case "json":
-		return summarizeJSONOutput(data)
+		result = summarizeJSONOutput(data)
 	case "jsonl":
-		return summarizeJSONL(data)
+		result = summarizeJSONL(data)
 	case "table":
-		return summarizeTable(data)
+		result = summarizeTable(data)
 	case "log":
-		return summarizeLog(data)
+		result = summarizeLog(data)
 	default:
-		return string(AdaptiveOutputResult(data, hint))
+		result = string(AdaptiveOutputResult(data, hint))
 	}
+
+	// Never-bloat guard: if the summary is larger than the original, return
+	// the original. A summary that inflates the input is worse than useless.
+	if len(result) >= len(data) {
+		return string(data)
+	}
+	return result
 }
 
 // detectFormat sniffs the first few lines to identify the content format.
@@ -210,10 +227,13 @@ func summarizeTable(data []byte) string {
 			continue
 		}
 		if shown < 3 {
-			sb.WriteString(fmt.Sprintf("  %s\n", strings.TrimSpace(line)))
+			sb.WriteString(fmt.Sprintf("  %s\n", truncateLineRuneSafe(strings.TrimSpace(line), maxRunesPerLine)))
 		}
 		shown++
-		if shown == 3 {
+		// audit SUM-2: only print the omission marker when rows were actually
+		// omitted. With exactly 3 rows, nonEmpty-3 == 0 → "[0 rows omitted]" is
+		// nonsensical; guard with nonEmpty > 3.
+		if shown == 3 && nonEmpty > 3 {
 			sb.WriteString(fmt.Sprintf("  ... [%d rows omitted] ...\n", nonEmpty-3))
 			break
 		}
@@ -225,15 +245,20 @@ func summarizeLog(data []byte) string {
 	lines := strings.Split(string(data), "\n")
 	levelCounts := map[string]int{"ERROR": 0, "WARN": 0, "INFO": 0, "DEBUG": 0, "FATAL": 0, "TRACE": 0}
 
+	// audit SUM-1: iterate keywords in fixed priority order (FATAL > ERROR > WARN >
+	// INFO > DEBUG > TRACE) instead of `range levelCounts` (random map order).
+	// A line containing multiple keywords (e.g. "ERROR: see INFO log") must always
+	// resolve to the highest-severity match so ERROR/FATAL lines are never missed.
+	logPriority := []string{"FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"}
 	var errorLines []string
 	for _, line := range lines {
 		upper := strings.ToUpper(line)
-		for kw := range levelCounts {
+		for _, kw := range logPriority {
 			if strings.Contains(upper, kw) {
 				levelCounts[kw]++
-				if (kw == "ERROR" || kw == "FATAL") && len(errorLines) < 10 {
-					errorLines = append(errorLines, strings.TrimSpace(line))
-				}
+			if (kw == "ERROR" || kw == "FATAL") && len(errorLines) < 10 {
+				errorLines = append(errorLines, truncateLineRuneSafe(strings.TrimSpace(line), maxRunesPerLine))
+			}
 				break
 			}
 		}
