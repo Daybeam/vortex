@@ -28,11 +28,107 @@ type MemoryItem struct {
 	Timestamp      time.Time  `json:"timestamp"`
 	TTL            *time.Time `json:"ttl,omitempty"` // auto-expiry for staged data
 	Checksum       string     `json:"checksum,omitempty"`
+	// Fact-level graph edges for 1-hop semantic traversal during recall.
+	// See docs/plan/search_adaption_design.md §2.3.
+	CausalLinks []string `json:"causal_links,omitempty"` // node IDs of causally related items
+	EntityLinks []string `json:"entity_links,omitempty"` // node IDs of entity-co-occurrence items
 }
 
 const (
 	maxInMemoryItems = 10000
+
+	// defaultRRFMaxPerSource caps each search arm before RRF fusion,
+	// preventing a noisy BM25 arm from flooding the fusion pool.
+	// 0 = no cap. See docs/plan/search_adaption_design.md §2.2.
+	defaultRRFMaxPerSource = 50
 )
+
+// QueryOptions extends Search with optional temporal filtering.
+// Zero values mean "no filter" (backward compatible).
+// See docs/plan/search_adaption_design.md §2.1.
+type QueryOptions struct {
+	CreatedAfter  time.Time  // only items with Timestamp >= CreatedAfter
+	CreatedBefore time.Time  // only items with Timestamp <= CreatedBefore
+}
+
+// filterByTimeRange removes items outside the [CreatedAfter, CreatedBefore] window.
+// Zero-value times are treated as unbounded.
+func filterByTimeRange(items []MemoryItem, opts QueryOptions) []MemoryItem {
+	if opts.CreatedAfter.IsZero() && opts.CreatedBefore.IsZero() {
+		return items
+	}
+	filtered := make([]MemoryItem, 0, len(items))
+	for _, item := range items {
+		if !opts.CreatedAfter.IsZero() && item.Timestamp.Before(opts.CreatedAfter) {
+			continue
+		}
+		if !opts.CreatedBefore.IsZero() && item.Timestamp.After(opts.CreatedBefore) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+// AddItemEdge records a fact-level edge between two MemoryItems.
+// edgeType is "causal" or "entity". The edge is stored on the from-item's
+// link slice and is in-memory only (persisted when the item is next Append-ed).
+func (a *ContextArchive) AddItemEdge(fromNodeID, toNodeID, edgeType string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.items {
+		if a.items[i].NodeID == fromNodeID {
+			switch edgeType {
+			case "causal":
+				a.items[i].CausalLinks = append(a.items[i].CausalLinks, toNodeID)
+			case "entity":
+				a.items[i].EntityLinks = append(a.items[i].EntityLinks, toNodeID)
+			}
+			return
+		}
+	}
+}
+
+// expandWithLinkedItems adds 1-hop neighbors from CausalLinks and EntityLinks
+// to the result set. Deduplicates by NodeID. Items not found in the archive
+// are silently skipped.
+func (a *ContextArchive) expandWithLinkedItems(items []MemoryItem) []MemoryItem {
+	if len(items) == 0 {
+		return items
+	}
+	// Collect existing node IDs for dedup.
+	seen := make(map[string]bool, len(items))
+	for _, item := range items {
+		seen[item.NodeID] = true
+	}
+	// Collect linked node IDs.
+	var linkedIDs []string
+	for _, item := range items {
+		linkedIDs = append(linkedIDs, item.CausalLinks...)
+		linkedIDs = append(linkedIDs, item.EntityLinks...)
+	}
+	if len(linkedIDs) == 0 {
+		return items
+	}
+	// Fetch linked items from archive.
+	a.mu.RLock()
+	expanded := make([]MemoryItem, 0, len(items)+len(linkedIDs))
+	expanded = append(expanded, items...)
+	for _, id := range linkedIDs {
+		if seen[id] {
+			continue
+		}
+		for _, item := range a.items {
+			if item.NodeID == id {
+				expanded = append(expanded, item)
+				seen[id] = true
+				break
+			}
+		}
+	}
+	a.mu.RUnlock()
+	return expanded
+}
 
 // ContextArchive handles appending and reading MemoryItems.
 // Append is sync.WriteFile append; read is incremental.
@@ -232,6 +328,11 @@ func (it *MemoryItem) Sanitize(currentTaskID string) {
 
 // Search runs RRF hybrid search against the archive.
 func (a *ContextArchive) Search(query string, embedClient EmbeddingClient, k int, taskScope, currentTaskID string) []MemoryItem {
+	return a.SearchWithOptions(query, embedClient, k, taskScope, currentTaskID, QueryOptions{})
+}
+
+// SearchWithOptions extends Search with temporal filtering (QueryOptions).
+func (a *ContextArchive) SearchWithOptions(query string, embedClient EmbeddingClient, k int, taskScope, currentTaskID string, opts QueryOptions) []MemoryItem {
 	// Ensure loaded and indexed (Optimized Lazy Path)
 	a.Load()
 	a.BuildIndex()
@@ -245,6 +346,9 @@ func (a *ContextArchive) Search(query string, embedClient EmbeddingClient, k int
 	if taskScope != "" {
 		items = filterItemsByTask(items, taskScope)
 	}
+
+	// Pre-filter by temporal window BEFORE ranking
+	items = filterByTimeRange(items, opts)
 
 	a.indexMu.RLock()
 	bm25Rank := map[string]float64{}
@@ -273,7 +377,7 @@ func (a *ContextArchive) Search(query string, embedClient EmbeddingClient, k int
 		embedCancel()
 	}
 
-	merged := search.RRFMerge(bm25Rank, denseRank)
+	merged := search.RRFMergeCapped(defaultRRFMaxPerSource, bm25Rank, denseRank)
 
 	type scoredItem struct {
 		id    string
@@ -367,14 +471,29 @@ func (a *ContextArchive) SearchForest(
 	redundancyThreshold float64,
 	taskScope, currentTaskID string,
 ) (ForestResult, error) {
+	return a.SearchForestWithOptions(query, embedClient, k, redundancyThreshold, taskScope, currentTaskID, QueryOptions{})
+}
+
+// SearchForestWithOptions extends SearchForest with temporal filtering.
+func (a *ContextArchive) SearchForestWithOptions(
+	query string,
+	embedClient EmbeddingClient,
+	k int,
+	redundancyThreshold float64,
+	taskScope, currentTaskID string,
+	opts QueryOptions,
+) (ForestResult, error) {
 	if len(query) == 0 {
 		return ForestResult{}, nil
 	}
 
-	rrf := a.Search(query, embedClient, k*3, taskScope, currentTaskID) // top-L seeds (L ≈ 3K)
+	rrf := a.SearchWithOptions(query, embedClient, k*3, taskScope, currentTaskID, opts) // top-L seeds (L ≈ 3K)
 	if len(rrf) == 0 {
 		return ForestResult{}, nil
 	}
+
+	// Expand with 1-hop neighbors from fact-level graph edges (causal/entity).
+	rrf = a.expandWithLinkedItems(rrf)
 
 	seedIDs := make([]string, 0, len(rrf))
 	embeddings := make(map[string][]float32)

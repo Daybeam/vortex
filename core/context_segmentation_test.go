@@ -281,3 +281,42 @@ func abs(f float64) float64 {
 	}
 	return f
 }
+
+// ---------------------------------------------------------------------------
+// Edge-case tests for microSummary and truncateStr — the existing tests only
+// covered the happy path (short input passes through, long input truncated).
+// ---------------------------------------------------------------------------
+
+// TestMicroSummary_Empty verifies that an empty string returns empty (not a
+// header or marker). This prevents injecting "..." into empty context slots.
+func TestMicroSummary_Empty(t *testing.T) {
+	if got := microSummary("", 100); got != "" {
+		t.Errorf("microSummary(empty) = %q, want empty string", got)
+	}
+}
+
+// TestMicroSummary_ExactBoundary verifies that a string exactly at the limit
+// is NOT truncated (no off-by-one adding "..." to a full-length string).
+func TestMicroSummary_ExactBoundary(t *testing.T) {
+	s := strings.Repeat("a", 100)
+	got := microSummary(s, 100)
+	if got != s {
+		t.Errorf("microSummary at exact boundary should not truncate, got len=%d, want len=%d", len(got), len(s))
+	}
+}
+
+// TestTruncateStr_Empty verifies that an empty string returns empty.
+func TestTruncateStr_Empty(t *testing.T) {
+	if got := truncateStr("", 10); got != "" {
+		t.Errorf("truncateStr(empty) = %q, want empty string", got)
+	}
+}
+
+// TestTruncateStr_ExactBoundary verifies that a string exactly at the limit
+// is NOT truncated (no off-by-one).
+func TestTruncateStr_ExactBoundary(t *testing.T) {
+	s := "hello"
+	if got := truncateStr(s, 5); got != s {
+		t.Errorf("truncateStr at exact boundary should not truncate, got %q, want %q", got, s)
+	}
+}
