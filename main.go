@@ -328,6 +328,15 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	}
 	scheduler.Sessions = core.NewSessionManager(reg.System.Sandbox.AllowedWorkspaces, 0)
 
+	scheduler.SetAuditLogger(core.NewAuditLogger(filepath.Join(logDir, "audit_chain.json")))
+	ct, ctErr := core.NewCostTracker(filepath.Join(logDir, "cost_records.db"))
+	if ctErr != nil {
+		log.Printf("[warning] cost tracker init failed: %v", ctErr)
+	} else {
+		defer ct.Close()
+	}
+	scheduler.SetCostTracker(ct)
+
 	// audit H10: wait for fire-and-forget DB saves to drain before db.Close.
 	// Must be deferred BEFORE scheduler.Stop so LIFO order runs it AFTER
 	// scheduler.Stop (which cancels lifecycleCtx) but BEFORE db.Close.
