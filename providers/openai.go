@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/observability"
@@ -53,18 +53,34 @@ func (p *OpenAIProvider) Name() string { return p.name }
 // Off by default: Qwen3-4B-Instruct-2507 is a non-thinking model, and injecting
 // this field there would only add an unnecessary variable to the qwen3 run.
 //
-// audit NEW-L3 (2026-10-04): cached via sync.OnceValue so os.Getenv is called
-// once at first use, not on every request (hot path).
-var disableThinking = sync.OnceValue(func() bool {
+// Migrated from sync.OnceValue to atomic.Bool for hot-reload support.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
+var disableThinkingFlag atomic.Bool
+var debugEnabledFlag atomic.Bool
+
+func init() {
 	v := strings.TrimSpace(os.Getenv("ORCH_DISABLE_THINKING"))
-	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
-})
+	if v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") {
+		disableThinkingFlag.Store(true)
+	}
+	if os.Getenv("VORTEX_DEBUG") != "" {
+		debugEnabledFlag.Store(true)
+	}
+}
+
+// SetDisableThinking toggles the disable_thinking flag at runtime.
+// Called at startup and on config hot-reload.
+func SetDisableThinking(disabled bool) { disableThinkingFlag.Store(disabled) }
+
+// SetDebugEnabled toggles the debug probe flag at runtime.
+// Called at startup and on config hot-reload.
+func SetDebugEnabled(enabled bool) { debugEnabledFlag.Store(enabled) }
 
 func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest, onChunk func(string) error) (*ProviderResponse, error) {
 	chatURL := getOpenAIEndpoint(p.cfg.BaseURL, "/v1/chat/completions")
 
 	// v26 probe: request-shape forensics at provider entry
-	if os.Getenv("VORTEX_DEBUG") != "" {
+	if debugEnabledFlag.Load() {
 		_nt := 0
 		for _, s := range req.MCPServers {
 			_nt += len(s.Tools)
@@ -112,7 +128,7 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 
 	// ORCH_DISABLE_THINKING=1 → makes thinking models (Qwen3.5-4B) give content directly,
 	// avoiding parsing empty string triggering P1 spin. Off by default (qwen3-4b is a non-thinking model).
-	if disableThinking() {
+	if disableThinkingFlag.Load() {
 		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}
 
@@ -337,7 +353,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 	}
 
 	// ORCH_DISABLE_THINKING=1 → same as above, non-streaming path must also include it (otherwise Q3.5 can still parse empty string).
-	if disableThinking() {
+	if disableThinkingFlag.Load() {
 		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}
 

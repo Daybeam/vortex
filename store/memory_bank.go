@@ -61,6 +61,127 @@ func NewMemoryBankStore(baseDir string, backend IMemoryBankBackend) *MemoryBankS
 	}
 }
 
+// Save writes all MemoryBank categories to their respective markdown files.
+// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 2.
+func (s *MemoryBankStore) Save(mb MemoryBank) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := os.MkdirAll(s.baseDir, 0755); err != nil {
+		return err
+	}
+
+	// activeContext.md
+	var ac strings.Builder
+	if len(mb.ActiveContext.Goals) > 0 {
+		ac.WriteString("## Goals\n")
+		for _, g := range mb.ActiveContext.Goals {
+			ac.WriteString("- " + g + "\n")
+		}
+	}
+	if len(mb.ActiveContext.RecentChanges) > 0 {
+		ac.WriteString("## Recent Changes\n")
+		for _, c := range mb.ActiveContext.RecentChanges {
+			ac.WriteString("- " + c + "\n")
+		}
+	}
+	if len(mb.ActiveContext.OpenQuestions) > 0 {
+		ac.WriteString("## Open Questions\n")
+		for _, q := range mb.ActiveContext.OpenQuestions {
+			ac.WriteString("- " + q + "\n")
+		}
+	}
+	if err := os.WriteFile(filepath.Join(s.baseDir, "activeContext.md"), []byte(ac.String()), 0644); err != nil {
+		return err
+	}
+
+	// decisionLog.md
+	var dl strings.Builder
+	for _, d := range mb.Decisions {
+		dl.WriteString("### " + d.Title + "\n")
+		if d.Context != "" {
+			dl.WriteString(d.Context + "\n")
+		}
+		if d.Decision != "" {
+			dl.WriteString("**Decision:** " + d.Decision + "\n")
+		}
+		if d.Rationale != "" {
+			dl.WriteString("**Rationale:** " + d.Rationale + "\n")
+		}
+		dl.WriteString("\n")
+	}
+	if err := os.WriteFile(filepath.Join(s.baseDir, "decisionLog.md"), []byte(dl.String()), 0644); err != nil {
+		return err
+	}
+
+	// productContext.md
+	if err := os.WriteFile(filepath.Join(s.baseDir, "productContext.md"), []byte(mb.ProductContext), 0644); err != nil {
+		return err
+	}
+
+	// progress.md
+	var pg strings.Builder
+	if len(mb.Progress.Done) > 0 {
+		pg.WriteString("## Done\n")
+		for _, d := range mb.Progress.Done {
+			pg.WriteString("- [x] " + d + "\n")
+		}
+	}
+	if len(mb.Progress.Current) > 0 {
+		pg.WriteString("## In Progress\n")
+		for _, c := range mb.Progress.Current {
+			pg.WriteString("- [ ] " + c + "\n")
+		}
+	}
+	if len(mb.Progress.Next) > 0 {
+		pg.WriteString("## Next\n")
+		for _, n := range mb.Progress.Next {
+			pg.WriteString("- [ ] " + n + "\n")
+		}
+	}
+	if err := os.WriteFile(filepath.Join(s.baseDir, "progress.md"), []byte(pg.String()), 0644); err != nil {
+		return err
+	}
+
+	// systemPatterns.md
+	var sp strings.Builder
+	for _, p := range mb.SystemPatterns {
+		sp.WriteString("- " + p + "\n")
+	}
+	if err := os.WriteFile(filepath.Join(s.baseDir, "systemPatterns.md"), []byte(sp.String()), 0644); err != nil {
+		return err
+	}
+
+	// userProfile.md — reuse existing SaveUserProfile logic inline
+	var up strings.Builder
+	if len(mb.UserProfile.Preferences) > 0 {
+		up.WriteString("## Preferences\n")
+		for _, p := range mb.UserProfile.Preferences {
+			up.WriteString("- " + p + "\n")
+		}
+	}
+	if len(mb.UserProfile.Expertise) > 0 {
+		up.WriteString("## Expertise\n")
+		for _, e := range mb.UserProfile.Expertise {
+			up.WriteString("- " + e + "\n")
+		}
+	}
+	if len(mb.UserProfile.PastDelegations) > 0 {
+		up.WriteString("## Past Delegations\n")
+		for _, d := range mb.UserProfile.PastDelegations {
+			up.WriteString("- " + d + "\n")
+		}
+	}
+	if mb.UserProfile.CommunicationStyle != "" {
+		up.WriteString("## Communication Style\n" + mb.UserProfile.CommunicationStyle + "\n")
+	}
+	if err := os.WriteFile(filepath.Join(s.baseDir, "userProfile.md"), []byte(up.String()), 0644); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // SaveUserProfile writes the user profile to userProfile.md in the memory-bank directory.
 func (s *MemoryBankStore) SaveUserProfile(up UserProfile) error {
 	s.mu.Lock()
