@@ -357,8 +357,14 @@ func (f *FoldEngine) buildFoldSummaryBlock(blocks []*FoldBlock, taskScope string
 		}
 		buf.WriteString(fmt.Sprintf("## [%s] (%s) %s\n%s\n\n",
 			b.BlockID, tierLabel, b.TopicTitle, b.Summary))
+		// Per-block recovery hints: decompress for precise recovery,
+		// search_archive for semantic search of related history.
+		buf.WriteString("To recover full details:\n")
+		if b.SegmentID != "" {
+			buf.WriteString(fmt.Sprintf("- decompress(segment_id=\"%s\") — recover this segment's full conversation\n", b.SegmentID))
+		}
+		buf.WriteString(fmt.Sprintf("- search_archive(query=\"%s\") — semantic search of related history\n\n", buildSearchQuery(b)))
 	}
-	buf.WriteString("\nUse the `decompress` tool with a segment_id to recover original content if needed.\n")
 
 	return schemas.ContentBlock{
 		Text:         buf.String(),
@@ -368,6 +374,20 @@ func (f *FoldEngine) buildFoldSummaryBlock(blocks []*FoldBlock, taskScope string
 			"fold_count": len(blocks),
 		},
 	}
+}
+
+// buildSearchQuery generates a search query from a FoldBlock's TopicTitle + Summary.
+// Used to provide a search_archive hint in fold summary blocks.
+func buildSearchQuery(block *FoldBlock) string {
+	q := block.TopicTitle
+	if len(block.Summary) > 0 {
+		summaryPart := block.Summary
+		if len(summaryPart) > 80 {
+			summaryPart = summaryPart[:80]
+		}
+		q = q + " " + summaryPart
+	}
+	return q
 }
 
 // insertFoldBlock inserts a fold summary block into the blocks slice.

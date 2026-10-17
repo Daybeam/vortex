@@ -115,7 +115,8 @@ func TestBuildMCPServers_CoreToolsOrderLast(t *testing.T) {
 func buildMCPServersForTest(t *testing.T, withDomainMCP bool) []providers.MCPServerDef {
 	t.Helper()
 	s := &Spawner{
-		mcpMgr: &MCPConnectionManager{},
+		mcpMgr:    &MCPConnectionManager{},
+		registry:  &config.Registry{}, // P-17-3: zero-value SystemSettings → CoreToolsOrderLast=false (correct default)
 	}
 	hub := &ContextHub{}
 	ctx := context.Background()

@@ -159,6 +159,17 @@ func TestIsContextLimitError(t *testing.T) {
 		{"llama.cpp exact 400", fmt.Errorf(`bad request: {"error":{"code":400,"message":"request (17164 tokens) exceeds the available context size (16384)"}}`), true},
 		{"vllm context size", fmt.Errorf(`HTTP 400: {"error":{"message":"input length 18000 exceeds available context size 16384"}}`), true},
 		{"ollama context size", fmt.Errorf("context size exceeded: 17164 > 16384"), true},
+		// Regression: eval §9.3 (2026-10-16) — OLD llama.cpp wording (<=b11517),
+		// empirical from Kaggle v36a3b engine logs (task_0dfad180 turn_13):
+		//   "request (14441 token: exceeds n_ctx=12288","n_prompt_token":14441,"n_ctx":12288
+		// The §8.48.7 "context size" fix does NOT match this wording (no
+		// "context"/"tokens" substring) → 20/46 tasks × 61 lines of 400 all
+		// bypassed compression and died in the cascade. Field-only variant
+		// (message without any context wording) must also match via n_ctx.
+		{"llama.cpp old n_ctx 400 (v36a3b empirical)", fmt.Errorf(`bad request: {"error":{"code":400,"message":"request (14441 token: exceeds n_ctx=12288","n_prompt_token": 14441,"n_ctx":12288}}`), true},
+		{"llama.cpp old n_ctx sanitized (SanitizeError stars)", fmt.Errorf(`bad request: {"error":{"code":400,"message":"request (14441 token: exce****","n_prompt_token": 1444****,"n_ctx":12288}}`), true},
+		{"llama.cpp fields-only no context wording", fmt.Errorf(`bad request: {"error":{"code":400,"message":"request too large","n_prompt_tokens":26012,"n_ctx":16384}}`), true},
+		{"llama.cpp new format n_ctx field (b11624 empirical)", fmt.Errorf(`bad request: {"error":{"code":400,"message":"request (26012 tokens) exceeds the available context size (16384 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":26012,"n_ctx":16384}}`), true},
 		{"unrelated 400", fmt.Errorf("HTTP 400: invalid model name"), false},
 		{"unrelated timeout", fmt.Errorf("context deadline exceeded"), false},
 		{"rate limit", fmt.Errorf("HTTP 429: rate limited"), false},

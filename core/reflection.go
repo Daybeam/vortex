@@ -357,7 +357,10 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 	}
 
 	// 6. Extract user profile signals (heuristic, no LLM call).
-	re.extractUserProfile(ctx, graph)
+	// Gated by MemoryBankEnabled (ADDED 2026-10-17).
+	if re.mbStore != nil && re.registry != nil && re.registry.System.MemoryBankEnabled {
+		re.extractUserProfile(ctx, graph)
+	}
 }
 
 func (re *ReflectionEngine) isNovelTask(ctx context.Context, task string) bool {

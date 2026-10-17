@@ -136,3 +136,62 @@ func TestRedactEgressWithOwner_CombinesBasicAndCrossTenant(t *testing.T) {
 		t.Error("secret not redacted")
 	}
 }
+
+// ─── SetEgressRedactionDisabled Tests ─────────────────────────────────────
+
+// TestSetEgressRedactionDisabled_DisablesRedaction verifies that calling
+// SetEgressRedactionDisabled(true) makes RedactEgress a no-op.
+func TestSetEgressRedactionDisabled_DisablesRedaction(t *testing.T) {
+	// Save and restore state
+	defer SetEgressRedactionDisabled(false)
+
+	SetEgressRedactionDisabled(true)
+	input := `key=sk-abcdefghijklmnopqrstuvwxyz123456 email=admin@test.com`
+	got := RedactEgress(input)
+	if got != input {
+		t.Errorf("RedactEgress should be a no-op when disabled, got %q", got)
+	}
+}
+
+// TestSetEgressRedactionDisabled_ReEnablesRedaction verifies that calling
+// SetEgressRedactionDisabled(false) re-enables redaction.
+func TestSetEgressRedactionDisabled_ReEnablesRedaction(t *testing.T) {
+	defer SetEgressRedactionDisabled(false)
+
+	SetEgressRedactionDisabled(true)
+	SetEgressRedactionDisabled(false)
+
+	input := `key=sk-abcdefghijklmnopqrstuvwxyz123456`
+	got := RedactEgress(input)
+	if strings.Contains(got, "sk-abcdefghijklmnopqrstuvwxyz123456") {
+		t.Error("RedactEgress should redact when re-enabled")
+	}
+}
+
+// TestSetEgressRedactionDisabled_HotReload verifies the hot-reload pattern:
+// disable → redact is no-op → re-enable → redact works again.
+func TestSetEgressRedactionDisabled_HotReload(t *testing.T) {
+	defer SetEgressRedactionDisabled(false)
+
+	input := `key=sk-abcdefghijklmnopqrstuvwxyz123456`
+
+	// Initially enabled (default)
+	got := RedactEgress(input)
+	if strings.Contains(got, "sk-abcdefghijklmnopqrstuvwxyz123456") {
+		t.Error("RedactEgress should redact by default")
+	}
+
+	// Disable (simulating config reload with disable_egress_redaction=true)
+	SetEgressRedactionDisabled(true)
+	got = RedactEgress(input)
+	if got != input {
+		t.Errorf("RedactEgress should be no-op after disable, got %q", got)
+	}
+
+	// Re-enable (simulating config reload with disable_egress_redaction=false)
+	SetEgressRedactionDisabled(false)
+	got = RedactEgress(input)
+	if strings.Contains(got, "sk-abcdefghijklmnopqrstuvwxyz123456") {
+		t.Error("RedactEgress should redact after re-enable")
+	}
+}
