@@ -214,6 +214,7 @@ External MCP servers provide additional tools. Define in `mcps`.
 | `confidence_threshold` | float | 0.7 | Minimum confidence for auto-accepting a decision. |
 | `max_decision_outcomes` | int | 2000 | Maximum decision outcomes retained. |
 | `max_context_keep` | int | 100 | Maximum context items kept per task. |
+| `max_tool_result_chars` | int | 0 | Max chars per tool result. `0` = dynamic from model context window. `>0` = explicit override. |
 | `max_tool_turns` | int | 25 | Maximum tool invocations per task step. |
 | `max_spawn_depth` | int | 3 | Maximum nested task spawn depth. |
 | `default_jit_ttl` | int | 3600 | Default JIT tool TTL in seconds. |
@@ -224,6 +225,69 @@ External MCP servers provide additional tools. Define in `mcps`.
 | `output_dir` | string | `"outputs"` | Directory for task output files. |
 | `delegation_mode` | bool | false | Enable delegation mode (reduces cost, limits escalation). |
 | `staging_enabled` | bool | false | Enable staging area for draft outputs. |
+| `non_interactive` | bool | false | Auto-resolve blocked decisions with conservative defaults for CI/batch eval. `human_approval_required` is never auto-resolved unless `allow_human_approval_auto_resolve` is true. |
+| `allow_critical_auto_resolve` | bool | false | When `non_interactive` is on, allow critical-tier decisions to be auto-resolved by the decider role or conservative defaults. Default false = critical decisions always wait (safety gate). |
+| `allow_human_approval_auto_resolve` | bool | false | When `non_interactive` is on, allow `human_approval_required` decisions to be auto-resolved. Stricter override than `allow_critical_auto_resolve`. Default false. |
+| `memory_bank_enabled` | bool | true | Controls MemoryBank prompt injection (ChatHarness) and auto-extraction (ReflectionEngine). Set false to disable. |
+| `decision_decider_role` | string | `""` | When `non_interactive` is on, spawn this role to evaluate blocked decisions instead of using hardcoded defaults. Empty = use conservative defaults. |
+| `max_consecutive_skips` | int | 3 | Caps how many decisions in a row can be auto-resolved as "skip" before "skip" is filtered. Only applies when `non_interactive` is true. |
+| `chat_memory_window_size` | int | 10 | Number of recent turns RollingWindowMemory keeps raw before compressing older turns. |
+| `chat_memory_max_tokens` | int | 0 | Token budget for chat history. `0` = no budget. `>0` = oldest messages dropped when exceeded. |
+| `readiness_gate_soft` | bool | false | Soften delegation readiness gate from "NEVER blindly delegate" to a suggestion. Set true for weak models (≤7B) that over-apply the hard rule. |
+| `require_write_reason` | bool | false | Make the write-reflection gate a hard veto instead of a nudge. Default false = nudge and let write proceed. |
+| `default_task_token_budget` | int64 | 0 | Default token budget per task. `0` = no budget. |
+| `experience_graph_budget` | int | 0 | Maximum experience graph entries. `0` = unlimited. |
+| `staging_retention_hours` | int | 0 | Staging area retention period in hours. |
+| `max_task_chars` | int | 0 | Maximum task description length in chars. `0` = no limit. |
+| `tool_repetition_threshold` | int | 0 | Maximum consecutive identical tool calls before breaking. `0` = no limit. |
+| `external_interceptors` | PluginConfig[] | `[]` | External interceptor scripts with integrity verification (see below). |
+
+### PluginConfig
+
+External interceptor scripts with SHA256 integrity verification and permission declarations. Can be specified as a plain string (backward compat: just the script path) or a full object.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `script` | string | — | Path to script file. |
+| `lang` | string | auto | Language: `python`, `node`, `lua`, `custom`. Auto-detected if empty. |
+| `sha256` | string | `""` | Content hash for integrity verification. Empty = warn but allow (backward compat). |
+| `permissions` | PluginPermissions | `{}` | Capability declaration (env vars, write access, etc.). |
+| `timeout_ms` | int | 10000 | Execution timeout in milliseconds. |
+
+**Example (plain string, backward compat):**
+```json
+"external_interceptors": ["./scripts/filter.py"]
+```
+
+**Example (full object with integrity):**
+```json
+"external_interceptors": [
+  {
+    "script": "./scripts/filter.py",
+    "lang": "python",
+    "sha256": "a1b2c3d4...",
+    "timeout_ms": 5000
+  }
+]
+```
+
+## Feature Flags
+
+Feature flags are runtime toggles loaded from `config.json` (`system.feature_flags`) and overridable via `VORTEX_`-prefixed environment variables. Flags are atomically synced to all providers and the client, and hot-reloaded when `.env` changes.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `debug` | bool | false | Enable debug logging. |
+| `core_tools_order_last` | bool | false | Order core tools after custom tools in the tool list. |
+| `disable_force_tool` | bool | false | Disable the `force_tool` mechanism. |
+| `disable_egress_redaction` | bool | false | Disable egress redaction of secrets in output. |
+| `disable_cgroup_sandbox` | bool | false | Disable cgroup-based sandboxing (Linux). |
+| `disable_pattern_kill` | bool | false | Disable pattern-based process killing. |
+| `disable_thinking` | bool | false | Disable thinking/reasoning mode for providers that support it. |
+| `eval_obs` | bool | false | Enable evaluation observability mode. |
+| `fs_only_streak_limit` | int | 0 | Cap consecutive filesystem-only tool calls. `0` = no limit. |
+
+**Environment variable overrides:** Each flag can be overridden via `VORTEX_FEATURE_<FLAG_NAME>` (e.g. `VORTEX_FEATURE_DEBUG=1`, `VORTEX_FEATURE_DISABLE_THINKING=true`).
 
 ## Configuration Recipes
 
@@ -306,6 +370,9 @@ All environment variables use the `VORTEX_` prefix.
 | `VORTEX_REPLAY_ENABLED` | Enable event replay on startup. |
 | `VORTEX_ALLOW_DEPLOY_WRITE` | Allow deploy tool to write (security gate). |
 | `VORTEX_PUBLIC_KEY` | Public key for signature verification. |
+| `VORTEX_MEMORY_BANK_ENABLED` | Override `memory_bank_enabled` at startup (`true`/`false`). |
+| `VORTEX_NON_INTERACTIVE` | Override `non_interactive` at startup (`true`/`false`). |
+| `VORTEX_FEATURE_*` | Override feature flags (e.g. `VORTEX_FEATURE_DEBUG=1`). |
 
 API keys are referenced by name via `api_key_env` — set them in `.env`:
 
