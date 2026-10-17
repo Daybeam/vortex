@@ -16,6 +16,13 @@ persists experience for self-correction, and exposes tools for external control.
 - **JIT code execution** — Python, Node, Bun, and Lua REPL sessions for dynamic tool generation
 - **Role + skill system** — bind capabilities to agent personas, compose multi-role ensembles
 - **Signal field** — reflection and adaptive budgeting based on execution signals
+- **Cycle breaker** — detects repeated step failures and retries with delta backtrack (injects previous output summary to avoid full re-run)
+- **Output gateway** — adaptive body truncation based on model context window, sticky result accumulation across retries, and artifact externalization (large outputs written to file instead of inlined)
+- **Plugin integrity verification** — SHA256 hash verification and permission declarations for external interceptor scripts
+- **Feature flags** — runtime toggles for sandbox, egress redaction, thinking mode, and more; with atomic sync and `.env` hot-reload
+- **Memory bank control layer** — toggle MemoryBank prompt injection and auto-extraction; persists user profile and session context
+- **Non-interactive mode** — auto-resolves blocked decisions with conservative defaults for CI/batch eval; optional critical-tier override and decider role delegation
+- **MCP env cache** — caches MCP server environment variables with invalidation on config reload
 
 **Interfaces:**
 - **MCP** (stdio + raw SSE) — 12 core orchestration tools for MCP-compatible clients (Claude Desktop, IDEs, etc.):
