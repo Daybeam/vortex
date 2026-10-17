@@ -12,7 +12,7 @@ import (
 
 func TestAdaptiveOutputResult_Small(t *testing.T) {
 	smallData := []byte("hello world\nline 2\n")
-	res := AdaptiveOutputResult(smallData, "echo test")
+	res := AdaptiveOutputResult(smallData, "echo test", "")
 	if !bytes.Equal(res, smallData) {
 		t.Fatalf("expected small data to pass through unmodified")
 	}
@@ -33,7 +33,7 @@ func TestAdaptiveOutputResult_MediumTruncate(t *testing.T) {
 		data = append(bytes.Repeat([]byte("x"), 9*1024), data...)
 	}
 
-	res := AdaptiveOutputResult(data, "long_cmd")
+	res := AdaptiveOutputResult(data, "long_cmd", "")
 	if !bytes.Contains(res, []byte("OUTPUT TRUNCATED")) && !bytes.Contains(res, []byte("OUTPUT GATEWAY")) {
 		t.Fatalf("expected output to be truncated or gatewayed")
 	}
@@ -57,7 +57,7 @@ func fmtLine(i int) string {
 func TestAdaptiveOutputResult_NeverBloat_SingleHugeLine(t *testing.T) {
 	huge := strings.Repeat("x", 200*1024) // 200 KB single line, > 128 KB threshold
 	data := []byte(huge)
-	got := AdaptiveOutputResult(data, "test")
+	got := AdaptiveOutputResult(data, "test", "")
 	if len(got) >= len(data) {
 		t.Errorf("never-bloat violated: output %d bytes >= input %d bytes", len(got), len(data))
 	}
@@ -76,7 +76,7 @@ func TestAdaptiveOutputResult_PerLineTruncation(t *testing.T) {
 		sb.WriteString("line " + itoa(i) + "\n")
 	}
 	data := []byte(sb.String())
-	got := string(AdaptiveOutputResult(data, "test"))
+	got := string(AdaptiveOutputResult(data, "test", ""))
 
 	maxLineRunes := 0
 	for _, line := range strings.Split(got, "\n") {
@@ -104,7 +104,7 @@ func TestAdaptiveOutputResult_PureChinese_NoMojibake(t *testing.T) {
 		sb.WriteString(chinese + "\n")
 	}
 	data := []byte(sb.String())
-	got := AdaptiveOutputResult(data, "test")
+	got := AdaptiveOutputResult(data, "test", "")
 	if !utf8.Valid(got) {
 		t.Errorf("mojibake detected: output contains invalid UTF-8 (rune splitting)")
 	}
@@ -143,8 +143,8 @@ func TestAdaptiveOutputResult_Determinism(t *testing.T) {
 		sb.WriteString("line " + itoa(i) + " content for testing determinism\n")
 	}
 	data := []byte(sb.String())
-	got1 := string(AdaptiveOutputResult(data, "test"))
-	got2 := string(AdaptiveOutputResult(data, "test"))
+	got1 := string(AdaptiveOutputResult(data, "test", ""))
+	got2 := string(AdaptiveOutputResult(data, "test", ""))
 	if got1 != got2 {
 		t.Errorf("non-deterministic: same input produced different outputs (len1=%d, len2=%d)", len(got1), len(got2))
 	}
@@ -164,7 +164,7 @@ func TestAdaptiveOutputResult_NeverBloat_MediumBranch(t *testing.T) {
 		t.Fatalf("test data too small (%d bytes) to trigger summarization", len(data))
 	}
 
-	got := AdaptiveOutputResult(data, "test")
+	got := AdaptiveOutputResult(data, "test", "")
 	if len(got) > len(data) {
 		t.Errorf("never-bloat violated: output %d bytes > input %d bytes", len(got), len(data))
 	}
@@ -185,7 +185,7 @@ func TestAdaptiveOutputResult_FewLinesLongLines_Truncated(t *testing.T) {
 		t.Fatalf("test data too large (%d bytes) — should be in medium branch", len(data))
 	}
 
-	got := AdaptiveOutputResult(data, "test")
+	got := AdaptiveOutputResult(data, "test", "")
 	// Output should be significantly smaller than input (truncated).
 	if len(got) >= len(data) {
 		t.Errorf("Gap 3: few-lines-long-lines not truncated: output %d bytes >= input %d bytes", len(got), len(data))
@@ -213,7 +213,7 @@ func TestAdaptiveOutputResult_MidSectionSampling(t *testing.T) {
 		t.Fatalf("test data too small (%d bytes)", len(data))
 	}
 
-	got := string(AdaptiveOutputResult(data, "test"))
+	got := string(AdaptiveOutputResult(data, "test", ""))
 	// With no error keywords, the middle samples should be present.
 	if !strings.Contains(got, "Middle samples") {
 		t.Errorf("Gap 4: expected middle samples in output, got:\n%s", got[:200])
@@ -271,5 +271,73 @@ func TestSummarizeOutput_LowThreshold_StructuredContent(t *testing.T) {
 	// Should be summarized, not passed through verbatim.
 	if !strings.Contains(got, "JSON Summary") {
 		t.Errorf("Gap 7: expected JSON summary for %d KB structured content, got: %s", len(data)/1024, got[:100])
+	}
+}
+
+// ── MCP source-aware path tests ────────────────────────────────────────────
+
+func TestAdaptiveOutputResult_MCP_Small_PassThrough(t *testing.T) {
+	data := []byte(`{"content":[{"type":"text","text":"small result"}]}`)
+	res := AdaptiveOutputResult(data, "search", "mcp:filesystem")
+	if !bytes.Equal(res, data) {
+		t.Errorf("MCP result <8KB should pass through unmodified")
+	}
+}
+
+func TestAdaptiveOutputResult_MCP_Large_FileDump(t *testing.T) {
+	// Create a >8KB MCP result.
+	large := `{"content":[{"type":"text","text":"` + strings.Repeat("D", 10000) + `"}]}`
+	data := []byte(large)
+	res := AdaptiveOutputResult(data, "search", "mcp:filesystem")
+
+	resStr := string(res)
+	// Should NOT contain line-based CLI markers.
+	if strings.Contains(resStr, "FIRST 30 LINES") {
+		t.Errorf("MCP path should not use CLI line-based truncation")
+	}
+	if strings.Contains(resStr, "OUTPUT GATEWAY") {
+		t.Errorf("MCP path should not use CLI output gateway format")
+	}
+	// Should contain MCP file-dump reference.
+	if !strings.Contains(resStr, "MCP result") {
+		t.Errorf("MCP large result should contain MCP result reference")
+	}
+	if !strings.Contains(resStr, "read_file") {
+		t.Errorf("MCP large result should mention read_file for full access")
+	}
+}
+
+func TestAdaptiveOutputResult_CLI_Source_UsesLineBasedPath(t *testing.T) {
+	// CLI source should use the existing line-based path, not MCP path.
+	// Data must be >8KB to trigger truncation.
+	var buf bytes.Buffer
+	for i := 0; i < 500; i++ {
+		buf.WriteString(fmt.Sprintf("line %d: %s\n", i, strings.Repeat("x", 50)))
+	}
+	data := buf.Bytes()
+	if len(data) < 8*1024 {
+		t.Fatalf("test data must be >8KB, got %d bytes", len(data))
+	}
+	res := AdaptiveOutputResult(data, "run_command", "orchestrator")
+	resStr := string(res)
+
+	// Should NOT contain MCP-specific markers.
+	if strings.Contains(resStr, "MCP result") {
+		t.Errorf("CLI source should not use MCP path")
+	}
+	// Should contain CLI truncation markers.
+	if !strings.Contains(resStr, "TRUNCATED") && !strings.Contains(resStr, "OUTPUT GATEWAY") {
+		t.Errorf("CLI source should use line-based truncation")
+	}
+}
+
+func TestAdaptiveOutputResult_EmptySource_UsesCLIPath(t *testing.T) {
+	// Empty source should default to CLI path (not MCP).
+	data := []byte(strings.Repeat("E", 10000))
+	res := AdaptiveOutputResult(data, "test", "")
+	resStr := string(res)
+
+	if strings.Contains(resStr, "MCP result") {
+		t.Errorf("Empty source should not use MCP path")
 	}
 }

@@ -22,7 +22,7 @@ for i in range(500):
 		return
 	}
 
-	gated := AdaptiveOutputResult(res.Stdout, "python3")
+	gated := AdaptiveOutputResult(res.Stdout, "python3", "")
 	gatedStr := string(gated)
 
 	if !strings.Contains(gatedStr, "TRUNCATED") && !strings.Contains(gatedStr, "GATEWAY") {
@@ -36,7 +36,7 @@ for i in range(500):
 // TestGatewayIntegration_EmptyOutput verifies that empty command output
 // doesn't panic and returns empty bytes (not a header or marker).
 func TestGatewayIntegration_EmptyOutput(t *testing.T) {
-	got := AdaptiveOutputResult([]byte{}, "test")
+	got := AdaptiveOutputResult([]byte{}, "test", "")
 	if len(got) != 0 {
 		t.Errorf("empty input should return empty, got %d bytes: %q", len(got), got)
 	}
@@ -54,7 +54,7 @@ func TestGatewayIntegration_NoErrorKeywords(t *testing.T) {
 		t.Fatalf("test data too small (%d bytes)", len(data))
 	}
 
-	got := string(AdaptiveOutputResult(data, "test"))
+	got := string(AdaptiveOutputResult(data, "test", ""))
 	// Should be truncated (not passed through verbatim).
 	if len(got) >= len(data) {
 		t.Errorf("output with no error keywords should still be truncated: got %d bytes >= input %d bytes", len(got), len(data))

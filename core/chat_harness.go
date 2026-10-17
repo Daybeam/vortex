@@ -651,6 +651,14 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 						}
 					}
 				}
+
+				// ── Artifact Externalization ──────────────────────────
+				// Large tool results are written to a file and replaced with
+				// a skeleton + path reference, keeping context windows bounded
+				// while preserving full recall via read_file + search_archive.
+				if len(result) > artifactThreshold && h.OutputBase != "" {
+					result = h.externalizeArtifact(result, tc.Name, taskID)
+				}
 			}
 
 			// Phase 2: extract structured metadata from tool result for
@@ -733,6 +741,37 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 		}
 		return "Delegated to orchestrator task " + id, nil
 	}
+	if name == "search_archive" {
+		query, _ := args["query"].(string)
+		limit := 5
+		if l, ok := args["limit"].(float64); ok && int(l) > 0 && int(l) <= 10 {
+			limit = int(l)
+		}
+		if query == "" {
+			return "", fmt.Errorf("search_archive: query is required")
+		}
+		if h.Archive == nil {
+			return "", fmt.Errorf("search_archive: archive not available")
+		}
+		forest, err := h.Archive.SearchForest(query, h.Embed, limit, 0.9, taskID, taskID)
+		if err != nil {
+			return "", fmt.Errorf("search_archive: %v", err)
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Found %d matching items:\n\n", len(forest.Nodes)))
+		for i, n := range forest.Nodes {
+			sb.WriteString(fmt.Sprintf("## %d. [%s] %s\n", i+1, n.NodeID, n.Intent))
+			if n.Summary != "" {
+				sb.WriteString(n.Summary + "\n\n")
+			}
+			// If this is an externalized artifact, show the file path for
+			// direct read_file recall.
+			if len(n.SourceKeys) > 0 {
+				sb.WriteString(fmt.Sprintf("File: %s (use read_file to access)\n\n", n.SourceKeys[0]))
+			}
+		}
+		return sb.String(), nil
+	}
 	return HandleCoreTool(ctx, name, args, h.OutputBase, taskID)
 }
 
@@ -766,4 +805,110 @@ func toolCallSignature(calls []schemas.ToolCall) string {
 		b.WriteByte(';')
 	}
 	return b.String()
+}
+
+// artifactThreshold is the byte size above which ChatHarness tool results are
+// externalized to a file and replaced with a structural skeleton + path reference.
+// Below this, the result stays inline (no overhead). Above it, the content is
+// written to a file and replaced with a FileSkeleton + path reference.
+// Intentionally lower than AdaptiveOutputResult's 8KB because chat models have
+// tighter context budgets (no task-level compression).
+const artifactThreshold = 2 * 1024 // 2 KB
+
+// sanitizeToolName replaces non-alphanumeric characters with underscores for
+// safe use in filenames.
+func sanitizeToolName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// detectAndSkeletonize inspects raw content and applies the best skeletonizer.
+// Detection is heuristic (prefix check), not perfect — it's an optimization,
+// not a security boundary. All underlying functions already exist in
+// file_skeleton.go and output_summarizer.go.
+func detectAndSkeletonize(data []byte, toolName string) string {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return "[empty]"
+	}
+	lower := strings.ToLower(trimmed)
+
+	// HTML/SVG: starts with < (covers <html>, <!DOCTYPE>, <svg>, etc.)
+	if strings.HasPrefix(lower, "<") {
+		return tagSkeleton(data)
+	}
+
+	// JSON: starts with { or [
+	if trimmed[0] == '{' || trimmed[0] == '[' {
+		if json.Valid(data) {
+			return jsonSkeleton(data)
+		}
+	}
+
+	// Code: if toolName is write_file/execute_code/read_file, apply code skeleton
+	switch toolName {
+	case "write_file", "execute_code", "read_file":
+		if skel := codeSkeleton(data, goSymbols); len(skel) > 50 {
+			return skel
+		}
+		if skel := codeSkeleton(data, jsSymbols); len(skel) > 50 {
+			return skel
+		}
+		if skel := codeSkeleton(data, pySymbols); len(skel) > 50 {
+			return skel
+		}
+	}
+
+	// Fallback: head/tail + middle sampling
+	return SummarizeOutput(data, toolName)
+}
+
+// externalizeArtifact writes a large tool result to a file and returns a
+// skeleton + path reference for in-context use. The full content remains
+// accessible via read_file and is indexed in the ContextArchive for
+// search_archive recall. On any error, returns the original result.
+func (h *ChatHarness) externalizeArtifact(result, toolName, taskID string) string {
+	if h.OutputBase == "" {
+		return result
+	}
+	artDir := filepath.Join(h.OutputBase, taskID, "artifacts")
+	if err := os.MkdirAll(artDir, 0755); err != nil {
+		return result
+	}
+	filename := fmt.Sprintf("art_%d_%s.txt", time.Now().UnixNano(), sanitizeToolName(toolName))
+	fullPath := filepath.Join(artDir, filename)
+	if err := os.WriteFile(fullPath, []byte(result), 0644); err != nil {
+		return result
+	}
+	absPath, _ := filepath.Abs(fullPath)
+
+	skeleton := detectAndSkeletonize([]byte(result), toolName)
+
+	// Index in ContextArchive for search_archive recall.
+	if h.Archive != nil {
+		summary := skeleton
+		if len(summary) > 500 {
+			summary = summary[:500] + "\n... (skeleton truncated, see file)"
+		}
+		_ = h.Archive.Append(MemoryItem{
+			TaskID:     taskID,
+			NodeID:     fmt.Sprintf("artifact_%s_%d", taskID, time.Now().UnixNano()),
+			Intent:     fmt.Sprintf("[artifact: %s]", toolName),
+			Summary:    summary,
+			SourceKeys: []string{absPath},
+			Timestamp:  time.Now(),
+		})
+	}
+
+	return fmt.Sprintf(
+		"[Artifact externalized: %d KB. Skeleton below. Full content at: %s]\n%s\n[Use read_file to access full content.]",
+		len(result)/1024, absPath, skeleton,
+	)
 }
