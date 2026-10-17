@@ -46,6 +46,12 @@ type Registry struct {
 	// like the System One reranker without restarting the process.
 	reloadCallbacks []func()
 
+	// envReloadHook is called by StartWatcher when the .env file changes,
+	// before loadWithFallback. The hook should re-read .env into os.Environ
+	// (e.g. loadDotEnvForReload). Must be set before StartWatcher starts.
+	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 5.
+	envReloadHook func()
+
 	loadedModTime    time.Time
 	loadedSize       int64
 	loadedSnapshotMu sync.RWMutex
@@ -63,6 +69,17 @@ func (r *Registry) OnReload(f func()) {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 	r.reloadCallbacks = append(r.reloadCallbacks, f)
+}
+
+// SetEnvReloadHook sets a function called by StartWatcher when the .env
+// file changes, before loadWithFallback. The hook should re-read .env
+// into os.Environ (e.g. loadDotEnvForReload). Must be called before
+// StartWatcher starts.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 5.
+func (r *Registry) SetEnvReloadHook(hook func()) {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+	r.envReloadHook = hook
 }
 
 // ProviderHealth tracks the reliability of a specific provider.

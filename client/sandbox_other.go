@@ -52,7 +52,8 @@ func ApplySandbox(pid int, c SandboxConstraints) (cleanup func(), err error) {
 	// on Kaggle: engine task start -> cgroup mkdir -> container killed ~1s).
 	// All call sites treat an ApplySandbox error as a non-fatal WARNING, so
 	// disabling here degrades gracefully to "no resource limits".
-	if os.Getenv("ORCH_DISABLE_CGROUP_SANDBOX") == "1" {
+	// Migrated to atomic.Bool (client.feature_flags) for hot-reload support.
+	if cgroupSandboxDisabled.Load() {
 		return func() {}, fmt.Errorf("jit-sandbox: disabled via ORCH_DISABLE_CGROUP_SANDBOX")
 	}
 	if cgroupRoot == "" {
