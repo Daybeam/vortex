@@ -3,10 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"sync"
 	"time"
 
@@ -20,25 +18,9 @@ import (
 // ── Package-level compiled regex (PB-3: avoid recompiling per turn) ────────
 var thoughtRe = regexp.MustCompile("(?s)<thought>(.*?)</thought>")
 
-// ── Cached env reads (audit P-3: os.Getenv in hot path does syscall + map
-// scan per call; cached once via sync.OnceValue for zero per-turn overhead.) ─
-var orchestratorDebug = sync.OnceValue(func() bool { return os.Getenv("VORTEX_DEBUG") != "" })
-var coreToolsOrderLast = sync.OnceValue(func() bool { return os.Getenv("VORTEX_CORE_TOOLS_ORDER") == "last" })
-
-// audit P-MED-4: cache env vars read per-turn in the spawner loop.
-var disableForceTool = sync.OnceValue(func() bool { return os.Getenv("ORCH_DISABLE_FORCE_TOOL") == "1" })
-var evalObsEnabled = sync.OnceValue(func() bool { return os.Getenv("ORCH_EVAL_OBS") != "" })
-
-// fsOnlyStreakLimitCache caches the ORCH_FS_ONLY_STREAK_LIMIT env var
-// (audit P-3-residual: was read via os.Getenv once per Spawn call).
-// Default 0 = disabled (metrics only).
-var fsOnlyStreakLimitCache = sync.OnceValue(func() int {
-	v := os.Getenv("ORCH_FS_ONLY_STREAK_LIMIT")
-	if n, err := strconv.Atoi(v); err == nil && n > 0 {
-		return n
-	}
-	return 0
-})
+// Feature flags are now read from Registry.System.FeatureFlags (hot-reloadable
+// via StartWatcher). Env var overrides applied in applySystemDefaults.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
 
 // ToolCallReasonLLMInitiated is the default reason string for LLM-initiated
 // tool calls. Extracted as a constant so tests can reference the production
@@ -135,8 +117,8 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 	}
 
 	// Multi-language Governance Interceptors (ADDED 2026-07-14)
-	for _, scriptPath := range reg.System.ExternalInterceptors {
-		interceptors = append(interceptors, NewExternalInterceptor(scriptPath, reg.ExternalRuntimes, logger))
+	for _, pc := range reg.System.ExternalInterceptors {
+		interceptors = append(interceptors, NewExternalInterceptor(pc, reg.ExternalRuntimes, logger))
 	}
 
 	caskg := NewCaSKGManager(filepath.Join("data", "causal_skill_graph.json"))
@@ -155,7 +137,7 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 			&TimeProvider{},
 		},
 		outputBase:        outputBase,
-		processor:         NewOutputProcessor(),
+		processor:         NewOutputProcessor(getMaxToolResultChars(reg)),
 		toolRouter:        NewToolRouter(reg, caskg),
 		skillRouter:       NewSkillRouter(reg),
 		constraintAdapter: NewConstraintAdapter(),
@@ -217,8 +199,41 @@ func (s *Spawner) SetCapabilityProfileStore(cps *store.CapabilityProfileStore) {
 // SetModelRegistry wires the pluggable model registry for context-window-aware
 // prompt budgeting. When set, GetEffectiveHandoffThreshold falls back to the
 // registry's embedded metadata when pCfg.MaxContextWindow is unset.
+// It also recomputes the OutputProcessor's MaxBodyChars from the model
+// registry's MaxContextWindow when the user has NOT set an explicit
+// MaxToolResultChars config (zero = "use dynamic default").
 func (s *Spawner) SetModelRegistry(mr *registry.ModelRegistry) {
 	s.modelRegistry = mr
+
+	// If the user set an explicit MaxToolResultChars, respect it — don't override.
+	// Otherwise, try to derive a dynamic default from the model registry.
+	if mr == nil || s.registry == nil || s.processor == nil {
+		return
+	}
+	s.registry.Mu.RLock()
+	explicit := s.registry.System.MaxToolResultChars
+	defaultProv := s.registry.DefaultProvider
+	var pCfg *config.ProviderConfig
+	if defaultProv != "" && s.registry.Providers != nil {
+		pCfg = s.registry.Providers[defaultProv]
+	}
+	s.registry.Mu.RUnlock()
+
+	if explicit > 0 {
+		return // user override; leave processor as-is
+	}
+	if pCfg == nil || pCfg.Model == "" {
+		return
+	}
+
+	// Use provider's explicit MaxContextWindow if set; otherwise query model registry.
+	maxCtx := pCfg.MaxContextWindow
+	if maxCtx <= 0 {
+		maxCtx = mr.GetCapabilities(pCfg.Model).MaxContextWindow
+	}
+	if maxCtx > 0 {
+		s.processor.SetMaxBodyChars(computeDynamicMaxBodyChars(maxCtx))
+	}
 }
 
 // AddContextProvider adds a provider for dynamic prompt injection.
@@ -273,6 +288,15 @@ func (s *Spawner) SetFoldEngine(fe *FoldEngine) {
 	s.foldEngine = fe
 	if s.pa != nil {
 		s.pa.SetFoldEngine(fe)
+	}
+}
+
+// SetMemoryBankStore wires the MemoryBankStore for UserProfile injection
+// into sub-agent prompts. ADDED 2026-10-17.
+// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 3.
+func (s *Spawner) SetMemoryBankStore(mb *store.MemoryBankStore) {
+	if s.pa != nil {
+		s.pa.SetMemoryBankStore(mb)
 	}
 }
 

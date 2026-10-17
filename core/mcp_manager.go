@@ -24,6 +24,17 @@ import (
 // (audit P-MED-5: was called per remote MCP tool invocation).
 var mcpEnvCache sync.Map
 
+// InvalidateMCPEnvCache clears all cached MCP env var values. Called on
+// config hot-reload so cachedGetenv re-reads os.Getenv, picking up .env
+// changes. Registered as a reload callback in main.go.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 4.
+func InvalidateMCPEnvCache() {
+	mcpEnvCache.Range(func(key, _ any) bool {
+		mcpEnvCache.Delete(key)
+		return true
+	})
+}
+
 func cachedGetenv(key string) string {
 	if v, ok := mcpEnvCache.Load(key); ok {
 		return v.(string)
@@ -380,6 +391,29 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 		}
 		out = append(out, def)
 	}
+
+	// Change 4b: For untrusted MCPs, filter out write/mutate tools.
+	// Only read-only tools (list, get, search, read, query, etc.) are exposed.
+	if !mcp.Trusted {
+		filtered := make([]schemas.ToolDefinition, 0, len(out))
+		removed := 0
+		for _, tool := range out {
+			if IsWriteTool(tool.Name) {
+				removed++
+				continue
+			}
+			filtered = append(filtered, tool)
+		}
+		if removed > 0 {
+			m.logger.Log("EventMCPUntrusted", "", "", map[string]any{
+				"mcp_id":        mcp.ID,
+				"filtered_tools": removed,
+				"remaining_tools": len(filtered),
+			})
+		}
+		out = filtered
+	}
+
 	return out, nil
 }
 
@@ -494,7 +528,8 @@ func (m *MCPConnectionManager) ensureMCPClient(ctx context.Context, mcp *config.
 		// SIGTERM-on-task-start failures (v12-v23, 2026-10-12).
 		// ORCH_DISABLE_PATTERN_KILL=1 skips this risky cleanup: Close() already
 		// does a precise KillProcessTreeByPID, so orphan leakage is minimal.
-		if os.Getenv("ORCH_DISABLE_PATTERN_KILL") != "1" {
+		// Migrated to Registry.System.FeatureFlags (hot-reloadable).
+		if !m.registry.System.FeatureFlags.DisablePatternKill {
 			_ = client.KillProcessTree(cmd)
 		}
 

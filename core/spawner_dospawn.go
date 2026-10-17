@@ -77,8 +77,8 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// Default 0 = disabled (metrics only). Set ORCH_FS_ONLY_STREAK_LIMIT=5
 	// to enable. Start conservative to avoid aborting legitimate long
 	// reasoning chains that use fs-only tools productively.
-	// audit P-3-residual: cached via fsOnlyStreakLimitCache (sync.OnceValue).
-	fsOnlyStreakLimit := fsOnlyStreakLimitCache()
+	// Migrated to Registry.System.FeatureFlags (hot-reloadable).
+	fsOnlyStreakLimit := s.registry.System.FeatureFlags.FSOnlyStreakLimit
 
 	maxTurns := s.calculateMaxTurns(ctx, req, role)
 	// applyStrategyBias is now handled inside calculateMaxTurns via PolicyDecider
@@ -97,6 +97,11 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// MCP server list so the per-turn outer-ring accounting after the
 	// candidate loop can price the tool schemas actually sent.
 	var lastMCPServers []providers.MCPServerDef
+
+	// stickyContext accumulates auth/login results across turns. Prepended to
+	// UserBlocks before each StreamComplete so the model always has persistent
+	// context near the top (AppWorld eval: prevent burial at position 5/51).
+	var stickyContext string
 
 turnLoop:
 	for turn := 0; turn < maxTurns; turn++ {
@@ -204,7 +209,7 @@ turnLoop:
 			// when the model writes text early, tell it to keep calling tools.
 			// This preserves the model's ability to decide when it's done.
 			constraints := make(map[string]any)
-			forceTool := turn < maxTurns-1 && len(trace) == 0 && !disableForceTool()
+			forceTool := turn < maxTurns-1 && len(trace) == 0 && !s.registry.System.FeatureFlags.DisableForceTool
 			if forceTool {
 				toolCallSchema := map[string]any{
 					"type": "array",
@@ -236,7 +241,7 @@ turnLoop:
 				"candidate_idx":     candIdx,
 			})
 
-			if orchestratorDebug() {
+			if s.registry.System.FeatureFlags.Debug {
 				fmt.Fprintf(os.Stderr, "[DEBUG] Calling Provider %s for Task %s Turn %d (candidate %d)\n", pCfg.Model, req.TaskID, turn, candIdx)
 				// v26 probe: prompt emptiness forensics
 				_sysLen, _usrLen := 0, 0
@@ -291,7 +296,7 @@ turnLoop:
 
 			resp, err = provider.StreamComplete(ctxWithTimeout, providers.CompleteRequest{
 				SystemBlocks:     systemBlocks,
-				UserBlocks:       userBlocks,
+				UserBlocks:       prependSticky(userBlocks, stickyContext),
 				System:           flattenContentBlocks(systemBlocks),
 				User:             flattenContentBlocks(userBlocks),
 				Model:            pCfg.Model,
@@ -363,7 +368,7 @@ turnLoop:
 					retryCtx, retryCancel := context.WithTimeout(ctx, 120*time.Second)
 					resp, err = provider.StreamComplete(retryCtx, providers.CompleteRequest{
 						SystemBlocks:     systemBlocks,
-						UserBlocks:       userBlocks,
+						UserBlocks:       prependSticky(userBlocks, stickyContext),
 						System:           flattenContentBlocks(systemBlocks),
 						User:             flattenContentBlocks(userBlocks),
 						Model:            pCfg.Model,
@@ -598,7 +603,7 @@ turnLoop:
 
 			// [EVAL-OBS] 2026-10-07 observation print: diagnose 'how many rounds the engine ran
 			// within a single τ² turn, what each round called, and why it didn't exit'. Enabled by ORCH_EVAL_OBS env var, off by default.
-			if evalObsEnabled() {
+			if s.registry.System.FeatureFlags.EvalObs {
 				fmt.Fprintf(os.Stderr, "[EVAL-OBS] task=%s step=%s turn=%d/%d calls=%d trace=%d status=%s conf=%.2f parse=%v(consec=%d) noTool=%v lowConf=%v\n",
 					req.TaskID, req.StepID, turn+1, maxTurns, len(resp.ToolCalls), len(trace),
 					output.Status, output.Confidence, parseFailed, consecutiveParseFailures, noToolCallsYet, selfReportedLowConfidence)
@@ -656,8 +661,8 @@ turnLoop:
 			// results at the exit gate and trigger auto-refine. This preserves
 			// the model's ability to reason between tool calls, which is
 			// essential for multi-step DAGs.
-			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) && !disableForceTool() {
-				if evalObsEnabled() {
+			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) && !s.registry.System.FeatureFlags.DisableForceTool {
+				if s.registry.System.FeatureFlags.EvalObs {
 					fmt.Fprintf(os.Stderr, "[EVAL-OBS] NUDGE triggered turn=%d noTool=%v lowConf=%v parse=%v\n",
 						turn+1, noToolCallsYet, selfReportedLowConfidence, parseFailed)
 				}
@@ -781,6 +786,10 @@ turnLoop:
 		turnAttachments = tcState.turnAttachments
 		statesVisited = tcState.statesVisited
 		previousState = tcState.previousState
+
+		// Accumulate sticky results (auth/login) into stickyContext for
+		// prepending to subsequent turns. Dedup by substring containment.
+		stickyContext = accumulateSticky(stickyContext, tcState.stickyResults)
 
 		// ── Priority 3: Gateway Watchdog (Active Conflict Probing) ────────
 		if alert := s.watchdog.Sniff(resp.ToolCalls, req.Hub); alert != nil {

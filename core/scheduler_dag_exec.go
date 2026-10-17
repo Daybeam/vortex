@@ -317,6 +317,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			Isolation:               step.Isolation,
 			AdditionalPromptContext: step.AdditionalPromptContext,
 			EnableStepPlan:          step.EnableStepPlan,
+			PreviousOutputSummary:   step.PreviousOutputSummary,
 		})
 
 		if err == nil {
