@@ -17,6 +17,17 @@ import (
 // audit PERF-HIGH-2 (2026-10-08): eliminates per-LLM-request syscall.
 var envAPIKeyCache sync.Map
 
+// InvalidateAllEnvAPIKeys clears all cached env API keys. Called after a
+// config reload (loadLocked) so ResolveAPIKey re-reads os.Getenv, picking
+// up .env changes when StartWatcher triggers a reload.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 4.
+func InvalidateAllEnvAPIKeys() {
+	envAPIKeyCache.Range(func(key, _ any) bool {
+		envAPIKeyCache.Delete(key)
+		return true
+	})
+}
+
 func (p *ProviderConfig) ResolveAPIKey(sp schemas.SecretProvider) string {
 	if p.APIKey != "" {
 		return p.APIKey
@@ -495,10 +506,29 @@ type RetentionSettings struct {
 	VacuumOnStartup        bool   `json:"vacuum_on_startup,omitempty"`
 }
 
+// FeatureFlags holds behavior toggles that were previously env-var-only
+// (sync.OnceValue cached, no hot-reload). Migrating them into config.json
+// enables hot-reload via StartWatcher. Env vars still override config values
+// for backward compatibility (see applySystemDefaults).
+//
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
+type FeatureFlags struct {
+	Debug                  bool `json:"debug,omitempty"`
+	CoreToolsOrderLast     bool `json:"core_tools_order_last,omitempty"`
+	DisableForceTool       bool `json:"disable_force_tool,omitempty"`
+	DisableEgressRedaction bool `json:"disable_egress_redaction,omitempty"`
+	DisableCgroupSandbox   bool `json:"disable_cgroup_sandbox,omitempty"`
+	DisablePatternKill     bool `json:"disable_pattern_kill,omitempty"`
+	DisableThinking        bool `json:"disable_thinking,omitempty"`
+	EvalObs                bool `json:"eval_obs,omitempty"`
+	FSOnlyStreakLimit      int  `json:"fs_only_streak_limit,omitempty"`
+}
+
 type SystemSettings struct {
 	ConfidenceThreshold       float64  `json:"confidence_threshold"`
 	MaxDecisionOutcomes       int      `json:"max_decision_outcomes"`
 	MaxContextKeep            int      `json:"max_context_keep"`
+	MaxToolResultChars        int      `json:"max_tool_result_chars,omitempty"` // 0 = dynamic from model context window; >0 = explicit override
 	MaxToolTurns              int      `json:"max_tool_turns,omitempty"`
 	MaxSpawnDepth             int      `json:"max_spawn_depth,omitempty"`
 	DefaultJITTTL             int      `json:"default_jit_ttl"`
@@ -509,7 +539,7 @@ type SystemSettings struct {
 	CookbookCacheEnabled      bool     `json:"cookbook_cache_enabled,omitempty"`
 	SkillSyncIntervalHours    int      `json:"skill_sync_interval_hours,omitempty"` // periodic skill sync interval (default 24h)
 	Bookmarks                 []string `json:"bookmarks,omitempty"`
-	ExternalInterceptors      []string `json:"external_interceptors,omitempty"`
+	ExternalInterceptors      []PluginConfig `json:"external_interceptors,omitempty"`
 	SwarmFallbackDelay        int      `json:"swarm_fallback_delay,omitempty"`
 	SwarmAgentCount           int      `json:"swarm_agent_count,omitempty"` // audit L1: was hardcoded 5
 	DelegationMode            bool     `json:"delegation_mode,omitempty"`
@@ -521,6 +551,24 @@ type SystemSettings struct {
 	// human_approval_required is NEVER auto-resolved (deliberate safety gate).
 	// E5 fix (2026-10-02).
 	NonInteractive bool `json:"non_interactive,omitempty"`
+	// AllowCriticalAutoResolve (ADDED 2026-10-17): when NonInteractive is on
+	// and this is true, RiskTierCritical decisions are auto-resolved by the
+	// decider / conservative defaults instead of hanging forever. Escape valve
+	// for CI/batch eval where no human can resolve critical decisions.
+	// Default false: critical decisions always wait (safety gate, unchanged).
+	// See docs/completed/2026-10-17/CRITICAL_TIER_AUTO_RESOLVE_OVERRIDE_DESIGN.md.
+	AllowCriticalAutoResolve bool `json:"allow_critical_auto_resolve,omitempty"`
+	// AllowHumanApprovalAutoResolve (ADDED 2026-10-17): when true,
+	// human_approval_required decisions in NonInteractive mode are resolved
+	// by the decider / conservative default ("abort") instead of hanging.
+	// Stricter override than AllowCriticalAutoResolve — bypasses a legal gate.
+	// Default false.
+	AllowHumanApprovalAutoResolve bool `json:"allow_human_approval_auto_resolve,omitempty"`
+	// MemoryBankEnabled controls whether MemoryBank injection (ChatHarness
+	// system prompt) and auto-extraction (ReflectionEngine) are active.
+	// Default true (backward compatible). Set to false to disable.
+	// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md.
+	MemoryBankEnabled bool `json:"memory_bank_enabled"`
 	// DecisionDeciderRole: when NonInteractive is on and this is set, the engine
 	// spawns this role to evaluate each blocked decision and choose an option,
 	// instead of falling back to hardcoded conservative defaults. The decider
@@ -631,6 +679,11 @@ type SystemSettings struct {
 	// a session sandbox; Admin/local callers are unaffected.
 	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md.
 	WorkspacePolicy WorkspacePolicyConfig `json:"workspace_policy,omitempty"`
+
+	// FeatureFlags (ADDED 2026-10-17): behavior toggles migrated from env vars.
+	// Hot-reloadable via StartWatcher. Env vars override for backward compat.
+	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
+	FeatureFlags FeatureFlags `json:"feature_flags,omitempty"`
 }
 
 // WorkspacePolicyConfig configures tier-gated workspace scope resolution.
@@ -699,10 +752,12 @@ type SystemOneConfig struct {
 // Script is the path to a .lua/.py/.js/.sh script; Filter optionally restricts
 // which tasks/steps/roles trigger the hook.
 type HookConfig struct {
-	Point     string     `json:"point"`                // chat_habit|chat_pre_turn|chat_post_turn|step_pre|step_post|task_completion|decision_required
-	Script    string     `json:"script"`               // path to hook script
-	TimeoutMs int        `json:"timeout_ms,omitempty"` // 0 = 10s default
-	Filter    HookFilter `json:"filter,omitempty"`
+	Point     string           `json:"point"`                // chat_habit|chat_pre_turn|chat_post_turn|step_pre|step_post|task_completion|decision_required
+	Script    string           `json:"script"`               // path to hook script
+	SHA256    string           `json:"sha256,omitempty"`     // content hash; empty = warn but allow (backward compat)
+	Permissions PluginPermissions `json:"permissions,omitempty"` // capability declaration
+	TimeoutMs int              `json:"timeout_ms,omitempty"` // 0 = 10s default
+	Filter    HookFilter       `json:"filter,omitempty"`
 }
 
 // HookFilter restricts when a hook fires. All conditions must match (AND).
@@ -713,6 +768,45 @@ type HookFilter struct {
 	StepIDGlob   string `json:"step_id_glob,omitempty"`  // glob match on step ID
 }
 
+// PluginPermissions declares what a plugin script is allowed to access.
+// Enforced at execution time via env filtering and sandbox configuration.
+type PluginPermissions struct {
+	Network    []string `json:"network,omitempty"`    // allowed domains; empty = no network
+	Filesystem []string `json:"filesystem,omitempty"` // "read:path/" or "write:path/"; empty = no fs
+	EnvVars    []string `json:"env_vars,omitempty"`   // allowed env var names; empty = none
+	Subprocess bool     `json:"subprocess,omitempty"` // allow spawning child processes
+}
+
+// PluginConfig is the unified declaration for a developer-supplied plugin script.
+// Used by ExternalInterceptor, HookRunner, and ExternalScriptProvider.
+// Supports backward-compatible unmarshaling from a plain string (script path).
+type PluginConfig struct {
+	Script      string            `json:"script"`                // path to script file
+	Lang        string            `json:"lang,omitempty"`        // python|node|lua|custom; auto-detected if empty
+	SHA256      string            `json:"sha256,omitempty"`      // content hash; empty = warn but allow (backward compat)
+	Permissions PluginPermissions `json:"permissions,omitempty"` // capability declaration
+	TimeoutMs   int               `json:"timeout_ms,omitempty"`  // 0 = 10s default
+}
+
+// UnmarshalJSON allows PluginConfig to be specified as either a plain string
+// (backward compat: just the script path) or a full object with hash/permissions.
+func (p *PluginConfig) UnmarshalJSON(data []byte) error {
+	// Try string first (backward compat: plain path)
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		p.Script = s
+		return nil
+	}
+	// Fall back to full struct
+	type alias PluginConfig
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*p = PluginConfig(a)
+	return nil
+}
+
 // NamedAPIKey pairs a bearer token with an owner identity and tier.
 // When APIKeys is configured, tieredBearerAuth resolves the presented token
 // against this list and propagates OwnerID via tools.AuthOwnerKey.
@@ -720,6 +814,60 @@ type NamedAPIKey struct {
 	Key     string `json:"key"`
 	OwnerID string `json:"owner_id"`
 	Tier    string `json:"tier"` // "admin" | "public"
+}
+
+// AuthConfig controls the three-mode auth switch: none (dev/CI), apikey
+// (existing tieredBearerAuth), oauth (OAuth 2.1 + PKCE + JWT).
+// See docs/plan/OAUTH_AUTHORIZATION_SERVER_DESIGN.md.
+type AuthConfig struct {
+	Mode string `json:"auth_mode"` // "none" | "apikey" | "oauth"
+
+	// APIKey mode (existing tieredBearerAuth)
+	AdminKey  string       `json:"admin_key"`
+	PublicKey string       `json:"public_key"`
+	APIKeys   []NamedAPIKey `json:"api_keys"`
+
+	// OAuth mode (OAuth 2.1 Authorization Server)
+	OAuth OAuthConfig `json:"oauth"`
+}
+
+// OAuthConfig holds settings for the embedded OAuth 2.1 Authorization Server.
+type OAuthConfig struct {
+	Issuer         string `json:"issuer"`          // e.g. "https://orch.example.com"
+	SigningKey     string `json:"signing_key"`     // HS256 symmetric signing key
+	DCREnabled     bool   `json:"dcr_enabled"`     // DCR (RFC 7591) endpoint toggle
+	FallbackAPIKey bool   `json:"fallback_apikey"` // OAuth fail → degrade to APIKey
+}
+
+// LoadAuthConfig builds AuthConfig from environment variables.
+// Defaults to Mode="none" (backward-compatible: no auth, direct passthrough).
+func LoadAuthConfig() AuthConfig {
+	cfg := AuthConfig{
+		Mode: getenv("ORCH_AUTH_MODE", "none"),
+	}
+
+	// APIKey mode
+	cfg.AdminKey = getenv("ORCH_ADMIN_KEY", getenv("VORTEX_ADMIN_KEY", ""))
+	cfg.PublicKey = getenv("ORCH_PUBLIC_KEY", getenv("VORTEX_PUBLIC_KEY", ""))
+
+	// OAuth mode
+	cfg.OAuth = OAuthConfig{
+		Issuer:         os.Getenv("ORCH_OAUTH_ISSUER"),
+		SigningKey:     os.Getenv("ORCH_OAUTH_SIGNING_KEY"),
+		DCREnabled:     os.Getenv("ORCH_OAUTH_DCR_ENABLED") == "true",
+		FallbackAPIKey: os.Getenv("ORCH_OAUTH_FALLBACK_APIKEY") == "true",
+	}
+
+	return cfg
+}
+
+// getenv returns the value of the environment variable named by the key,
+// or def if it is empty.
+func getenv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // OutputDirOrDefault returns the configured output directory or "outputs" if unset.

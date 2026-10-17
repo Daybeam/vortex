@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -94,12 +95,22 @@ func (r *HookRunner) Run(ctx context.Context, point string, hctx HookContext) Ho
 			continue
 		}
 
+		// Verify script integrity before execution (Change 2/3).
+		if err := VerifyScriptIntegrity(h.Script, h.SHA256); err != nil {
+			r.logger.Log("EventPluginIntegrityFailed", hctx.TaskID, hctx.StepID, map[string]any{
+				"point":  point,
+				"script": h.Script,
+				"error":  err.Error(),
+			})
+			continue // fail-safe: skip tampered hook
+		}
+
 		timeout := time.Duration(h.TimeoutMs) * time.Millisecond
 		if timeout == 0 {
 			timeout = 10 * time.Second
 		}
 
-		hr, err := r.runOne(ctx, h.Script, timeout, hctx)
+		hr, err := r.runOne(ctx, h.Script, timeout, hctx, h.Permissions)
 		if err != nil {
 			r.logger.Log("EventHookError", hctx.TaskID, hctx.StepID, map[string]any{
 				"point":  point,
@@ -152,17 +163,17 @@ func matchFilter(f config.HookFilter, hctx HookContext) bool {
 }
 
 // runOne executes a single hook script (Lua or subprocess).
-func (r *HookRunner) runOne(ctx context.Context, scriptPath string, timeout time.Duration, hctx HookContext) (HookResult, error) {
+func (r *HookRunner) runOne(ctx context.Context, scriptPath string, timeout time.Duration, hctx HookContext, perms config.PluginPermissions) (HookResult, error) {
 	ext := strings.ToLower(filepath.Ext(scriptPath))
 
 	switch ext {
 	case ".lua":
 		return r.runLua(ctx, scriptPath, hctx)
 	case ".py", ".js", ".sh":
-		return r.runSubprocess(ctx, scriptPath, timeout, hctx)
+		return r.runSubprocess(ctx, scriptPath, timeout, hctx, perms)
 	default:
 		if cmdParts, ok := r.runtimes.Runtimes[ext]; ok && len(cmdParts) > 0 {
-			return r.runSubprocessWithCmd(ctx, scriptPath, cmdParts[0], cmdParts[1:], timeout, hctx)
+			return r.runSubprocessWithCmd(ctx, scriptPath, cmdParts[0], cmdParts[1:], timeout, hctx, perms)
 		}
 		return HookResult{}, fmt.Errorf("unsupported hook extension: %s", ext)
 	}
@@ -213,7 +224,7 @@ func (r *HookRunner) runLua(ctx context.Context, scriptPath string, hctx HookCon
 }
 
 // runSubprocess executes a .py/.js/.sh hook script via stdin/stdout JSON.
-func (r *HookRunner) runSubprocess(ctx context.Context, scriptPath string, timeout time.Duration, hctx HookContext) (HookResult, error) {
+func (r *HookRunner) runSubprocess(ctx context.Context, scriptPath string, timeout time.Duration, hctx HookContext, perms config.PluginPermissions) (HookResult, error) {
 	ext := strings.ToLower(filepath.Ext(scriptPath))
 	var exe string
 	switch ext {
@@ -232,11 +243,11 @@ func (r *HookRunner) runSubprocess(ctx context.Context, scriptPath string, timeo
 	default:
 		return HookResult{}, fmt.Errorf("unsupported subprocess extension: %s", ext)
 	}
-	return r.runSubprocessWithCmd(ctx, scriptPath, exe, nil, timeout, hctx)
+	return r.runSubprocessWithCmd(ctx, scriptPath, exe, nil, timeout, hctx, perms)
 }
 
 // runSubprocessWithCmd runs a hook script with an arbitrary command.
-func (r *HookRunner) runSubprocessWithCmd(ctx context.Context, scriptPath, exe string, extraArgs []string, timeout time.Duration, hctx HookContext) (HookResult, error) {
+func (r *HookRunner) runSubprocessWithCmd(ctx context.Context, scriptPath, exe string, extraArgs []string, timeout time.Duration, hctx HookContext, perms config.PluginPermissions) (HookResult, error) {
 	inputBytes, _ := json.Marshal(hctx)
 
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -248,6 +259,9 @@ func (r *HookRunner) runSubprocessWithCmd(ctx context.Context, scriptPath, exe s
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+
+	// Permission enforcement: filter env vars (Change 3b).
+	cmd.Env = FilterEnvVars(os.Environ(), perms.EnvVars)
 
 	if err := cmd.Run(); err != nil {
 		return HookResult{}, fmt.Errorf("hook subprocess failed: %w (stderr: %s)", err, stderr.String())

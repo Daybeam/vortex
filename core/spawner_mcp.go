@@ -132,7 +132,7 @@ func (s *Spawner) buildMCPServers(
 		URL:   "core://internal",
 		Tools: CoreToolDefinitions(),
 	}
-	coreLast := coreToolsOrderLast()
+	coreLast := s.registry.System.FeatureFlags.CoreToolsOrderLast
 	if !coreLast {
 		servers = append(servers, coreServer)
 	}

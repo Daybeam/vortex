@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,21 +17,46 @@ import (
 )
 
 // ExternalInterceptor executes an external script (Lua, Python, Node) as a middleware.
-func NewExternalInterceptor(scriptPath string, runtimes config.ExternalRuntimes, logger *Logger) Interceptor {
+// pc.Script is the path; pc.SHA256 is verified at creation time if non-empty;
+// pc.Permissions controls env var filtering and sandbox wrapping.
+func NewExternalInterceptor(pc config.PluginConfig, runtimes config.ExternalRuntimes, logger *Logger) Interceptor {
+	scriptPath := pc.Script
+
+	// Verify script integrity at creation time (Change 2).
+	if err := VerifyScriptIntegrity(scriptPath, pc.SHA256); err != nil {
+		logger.Log("EventPluginIntegrityFailed", "", "", map[string]any{
+			"error": err.Error(),
+			"path":  scriptPath,
+		})
+		// Fail-safe: return a no-op interceptor that logs and passes through.
+		return func(ctx context.Context, req *SpawnRequest, next SpawnerHandler) (*SpawnResult, error) {
+			logger.Log("EventInterceptorError", req.TaskID, req.StepID, map[string]any{
+				"error": fmt.Sprintf("plugin integrity check failed, skipping: %s", scriptPath),
+			})
+			return next(ctx, req)
+		}
+	}
+	if pc.SHA256 == "" {
+		logger.Log("EventPluginNoHash", "", "", map[string]any{
+			"path":  scriptPath,
+			"warn":  "plugin has no integrity hash — execution allowed but not verified",
+		})
+	}
+
 	ext := strings.ToLower(filepath.Ext(scriptPath))
 
 	switch ext {
 	case ".lua":
 		return luaInterceptor(scriptPath, logger)
 	case ".py", ".js":
-		return subprocessInterceptor(scriptPath, runtimes, logger)
+		return subprocessInterceptor(scriptPath, runtimes, logger, pc.Permissions)
 	default:
 		// FIX (2026-07-14): mirror the same fix applied to
 		// providers/external_provider.go - a developer can register any
 		// extension via config.ExternalRuntimes.Runtimes (e.g.
 		// {".rb": ["ruby"]}) without editing this switch and recompiling.
 		if cmdParts, ok := runtimes.Runtimes[ext]; ok && len(cmdParts) > 0 {
-			return subprocessInterceptorWithCommand(scriptPath, cmdParts[0], cmdParts[1:], logger)
+			return subprocessInterceptorWithCommand(scriptPath, cmdParts[0], cmdParts[1:], logger, pc.Permissions)
 		}
 		return func(ctx context.Context, req *SpawnRequest, next SpawnerHandler) (*SpawnResult, error) {
 			logger.Log("EventInterceptorError", req.TaskID, req.StepID, map[string]any{
@@ -89,7 +115,7 @@ func luaInterceptor(scriptPath string, logger *Logger) Interceptor {
 	}
 }
 
-func subprocessInterceptor(scriptPath string, runtimes config.ExternalRuntimes, logger *Logger) Interceptor {
+func subprocessInterceptor(scriptPath string, runtimes config.ExternalRuntimes, logger *Logger, perms config.PluginPermissions) Interceptor {
 	ext := strings.ToLower(filepath.Ext(scriptPath))
 	var exe string
 	if ext == ".py" {
@@ -103,14 +129,15 @@ func subprocessInterceptor(scriptPath string, runtimes config.ExternalRuntimes, 
 			exe = "node"
 		}
 	}
-	return subprocessInterceptorWithCommand(scriptPath, exe, nil, logger)
+	return subprocessInterceptorWithCommand(scriptPath, exe, nil, logger, perms)
 }
 
 // subprocessInterceptorWithCommand runs scriptPath via an arbitrary
 // [exe, extraArgs..., scriptPath] command line. Added 2026-07-14 so any
 // extension registered in config.ExternalRuntimes.Runtimes (not just the
 // built-in .py/.js) can be used as an interceptor.
-func subprocessInterceptorWithCommand(scriptPath, exe string, extraArgs []string, logger *Logger) Interceptor {
+// perms controls env var filtering (Change 3b: permission enforcement).
+func subprocessInterceptorWithCommand(scriptPath, exe string, extraArgs []string, logger *Logger, perms config.PluginPermissions) Interceptor {
 	return func(ctx context.Context, req *SpawnRequest, next SpawnerHandler) (*SpawnResult, error) {
 		runtime := exe
 
@@ -130,6 +157,10 @@ func subprocessInterceptorWithCommand(scriptPath, exe string, extraArgs []string
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
+
+		// Permission enforcement: filter env vars to only those declared
+		// in perms.EnvVars. Empty EnvVars = empty environment (no secrets leaked).
+		cmd.Env = FilterEnvVars(os.Environ(), perms.EnvVars)
 
 		if err := cmd.Run(); err != nil {
 			logger.Log("EventInterceptorError", req.TaskID, req.StepID, map[string]any{

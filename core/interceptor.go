@@ -117,6 +117,14 @@ type SpawnRequest struct {
 	// injected into AdditionalPromptContext for the executor.
 	// See docs/plan/STEP_PLAN_MODE_DESIGN.md.
 	EnableStepPlan bool
+
+	// PreviousOutputSummary (ADDED 2026-10-17): summary of the step's
+	// previous execution output, injected by the Delta Backtrack cycle
+	// breaker. When non-empty, the prompt assembler instructs the model to
+	// supplement missing fields rather than re-run from scratch, avoiding
+	// repeated side effects from irreversible operations.
+	// See docs/plan/DELTA_BACKTRACK_DESIGN.md §改动 3.
+	PreviousOutputSummary string
 }
 
 // SpawnerHandler is the core function signature for spawning a subagent.

@@ -26,7 +26,10 @@ func TestDefaultNonInteractiveChoice(t *testing.T) {
 		{"budget_exhausted → skip", schemas.DecisionBudgetExhausted, []string{"skip", "abort"}, "skip", true},
 		{"max_turns → resume", schemas.DecisionMaxTurnsExhausted, []string{"resume_more_turns", "skip", "abort"}, "resume_more_turns", true},
 		{"autonomous_abort → continue", schemas.DecisionAutonomousAbortRequested, []string{"confirm_abort", "continue"}, "continue", true},
-		// human_approval_required must NEVER auto-resolve (safety gate).
+		// human_approval_required: conservative default is "abort"/"skip".
+		// Neither is in these options → ("", false). When the override
+		// (AllowHumanApprovalAutoResolve) is on and abort/skip IS offered,
+		// it returns that — see critical_tier_override_test.go.
 		{"human_approval → no auto", schemas.DecisionHumanApprovalRequired, []string{"approve", "reject"}, "", false},
 		// rewrite_dag needs a surgery payload → not auto-resolvable.
 		{"rewrite_dag → no auto", schemas.DecisionRewriteDAG, []string{"rewrite_dag", "skip"}, "", false},

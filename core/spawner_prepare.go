@@ -173,6 +173,19 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 	if req.AdditionalPromptContext != "" {
 		userText = fmt.Sprintf("%s\n\n%s\n%s", userText, MarkerRecoveryContext, req.AdditionalPromptContext)
 	}
+	// Delta Backtrack (ADDED 2026-10-17): when the cycle breaker re-executes
+	// this step with memory of its previous output, inject the summary as a
+	// distinct, clearly-marked block. The model supplements missing fields
+	// rather than re-running from scratch, avoiding repeated side effects.
+	// See docs/plan/DELTA_BACKTRACK_DESIGN.md §改动 3.
+	if req.PreviousOutputSummary != "" {
+		userText = fmt.Sprintf(
+			"%s\n\n%s\n你在上一轮已经产出了以下内容：\n%s\n\n"+
+				"请在此基础上仅补充缺失的部分。不要重新执行已经完成的步骤，"+
+				"不要重复调用已完成的外部 API 或执行已完成的写入操作。",
+			userText, MarkerPreviousOutput, req.PreviousOutputSummary,
+		)
+	}
 	userText = s.applyRefBasedHandoff(ctx, req, role, userText, resolvedCtx)
 	var userBlocks []schemas.ContentBlock
 	userBlocks = append(userBlocks, schemas.ContentBlock{Text: userText, CacheControl: "ephemeral"})

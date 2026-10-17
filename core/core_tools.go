@@ -16,10 +16,11 @@ import (
 )
 
 var CoreToolNames = map[string]bool{
-	"write_file":   true,
-	"read_file":    true,
-	"execute_code": true,
-	"decompress":   true,
+	"write_file":     true,
+	"read_file":      true,
+	"execute_code":   true,
+	"decompress":     true,
+	"search_archive": true,
 }
 
 func CoreToolDefinitions() []schemas.ToolDefinition {
@@ -52,7 +53,7 @@ func CoreToolDefinitions() []schemas.ToolDefinition {
 		},
 		{
 			Name:        "execute_code",
-			Description: "Execute code in a sandboxed environment. Supports: python, node, bun, lua. Returns stdout, stderr, and exit code.",
+			Description: "Execute code in a sandboxed environment. Supports: python, node, bun, lua. Returns stdout, stderr, and exit code.\n\nPREFER execute_code over multiple read_file calls when:\n- Counting functions/lines/patterns across many files\n- Extracting structured data from logs/JSON/CSV\n- Comparing or aggregating file contents\nOne script replaces N read_file calls and saves Nx context.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -71,6 +72,18 @@ func CoreToolDefinitions() []schemas.ToolDefinition {
 					"segment_id": map[string]any{"type": "string", "description": "The segment ID to decompress (from the Folded Conversation Segments section)"},
 				},
 				"required": []string{"segment_id"},
+			},
+		},
+		{
+			Name:        "search_archive",
+			Description: "Search the context archive for relevant past conversation turns, step summaries, and task history. Use this when you need to recall what was discussed or done previously — especially after context compression. Returns matching summaries ranked by relevance.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string", "description": "Natural language query describing what you're looking for (e.g. 'output truncation implementation', 'spawner error handling')"},
+					"limit": map[string]any{"type": "integer", "description": "Max results to return (default 5, max 10)", "default": 5},
+				},
+				"required": []string{"query"},
 			},
 		},
 	}
@@ -205,7 +218,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 			selected := strings.Join(lines[s-1:e], "\n")
 			return fmt.Sprintf("[Lines %d-%d of %d]\n%s", s, e, len(lines), selected), nil
 		}
-		gated := AdaptiveOutputResult(data, path)
+		gated := AdaptiveOutputResult(data, path, "orchestrator")
 		return string(gated), nil
 
 	case "execute_code":
@@ -232,6 +245,11 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		// decompress is handled by the Spawner (which has the FoldEngine).
 		// If we reach here, the fold engine is not available.
 		return "", fmt.Errorf("decompress is not available in this context (no fold engine)")
+
+	case "search_archive":
+		// search_archive is handled by the Spawner or ChatHarness (which have
+		// the ContextArchive). If we reach here, the archive is not available.
+		return "", fmt.Errorf("search_archive is not available in this context (no archive)")
 
 	default:
 		return "", fmt.Errorf("unknown core tool: %s", name)
@@ -324,16 +342,16 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 		// Output bounding: guard against oversized stdout/stderr hitting LLM context.
 		// Mirrors SummarizeOutput in tools_command.go — AdaptiveOutputResult applies
 		// Head+Tail truncation + Error Keyword Extraction + workspace dump for large outputs.
-		gatedStdout := string(AdaptiveOutputResult([]byte(stdout.String()), "execute_code"))
-		gatedStderr := string(AdaptiveOutputResult([]byte(stderr.String()), "execute_code"))
+		gatedStdout := string(AdaptiveOutputResult([]byte(stdout.String()), "execute_code", "orchestrator"))
+		gatedStderr := string(AdaptiveOutputResult([]byte(stderr.String()), "execute_code", "orchestrator"))
 		return map[string]any{
 			"stdout": gatedStdout,
 			"stderr": gatedStderr,
 		}, nil
 	}
 	return map[string]any{
-		"stdout":    string(AdaptiveOutputResult([]byte(stdout.String()), "execute_code")),
-		"stderr":    string(AdaptiveOutputResult([]byte(stderr.String()), "execute_code")),
+		"stdout":    string(AdaptiveOutputResult([]byte(stdout.String()), "execute_code", "orchestrator")),
+		"stderr":    string(AdaptiveOutputResult([]byte(stderr.String()), "execute_code", "orchestrator")),
 		"exit_code": cmd.ProcessState.ExitCode(),
 		"error":     errToString(err),
 	}, nil

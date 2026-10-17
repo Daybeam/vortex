@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -386,6 +387,11 @@ func (r *Registry) loadLocked() error {
 	}
 	pruneStale(r.RoleGroups, keepRoleGroups)
 
+	// Invalidate env API key cache so ResolveAPIKey re-reads os.Getenv.
+	// This picks up .env changes when StartWatcher triggers a reload.
+	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 4.
+	InvalidateAllEnvAPIKeys()
+
 	return nil
 }
 
@@ -407,6 +413,15 @@ func (r *Registry) StartWatcher(ctx context.Context) {
 		if err == nil {
 			lastMod = info.ModTime()
 		}
+
+		// Also watch .env for hot-reload.
+		// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 5.
+		envPath := filepath.Join(filepath.Dir(r.configPath), ".env")
+		var envLastMod time.Time
+		if envInfo, envErr := os.Stat(envPath); envErr == nil {
+			envLastMod = envInfo.ModTime()
+		}
+
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -415,11 +430,28 @@ func (r *Registry) StartWatcher(ctx context.Context) {
 				return
 			case <-ticker.C:
 			}
+
+			// Watch config.json (existing)
 			info, err := os.Stat(r.configPath)
 			if err == nil && info.ModTime().After(lastMod) {
 				lastMod = info.ModTime()
 				if err := r.loadWithFallback(); err != nil {
 					log.Printf("CRITICAL: config auto-reload failed: %v", err)
+				}
+			}
+
+			// Watch .env — re-read into os.Environ, then reload config so
+			// applySystemDefaults picks up the new env var values.
+			if envInfo, envErr := os.Stat(envPath); envErr == nil && envInfo.ModTime().After(envLastMod) {
+				envLastMod = envInfo.ModTime()
+				r.Mu.RLock()
+				hook := r.envReloadHook
+				r.Mu.RUnlock()
+				if hook != nil {
+					hook()
+				}
+				if err := r.loadWithFallback(); err != nil {
+					log.Printf("CRITICAL: config auto-reload after .env change failed: %v", err)
 				}
 			}
 		}
@@ -549,6 +581,7 @@ func (r *Registry) bootstrapDefaultsLocked() {
 		SandboxedCPUSecs:       30,
 		MaxLogSizeMB:           100,
 		DefaultTaskTokenBudget: 200000,
+		MemoryBankEnabled:      true,
 	}
 	r.EnableDynamicRoleGen = true
 	r.EnableEphemeralRoleGen = true
@@ -596,7 +629,7 @@ func (r *Registry) applySystemDefaults() {
 		r.System.Bookmarks = []string{}
 	}
 	if r.System.ExternalInterceptors == nil {
-		r.System.ExternalInterceptors = []string{}
+		r.System.ExternalInterceptors = []PluginConfig{}
 	}
 	if r.System.Telemetry.SyncIntervalMins == 0 {
 		r.System.Telemetry.SyncIntervalMins = 60
@@ -614,6 +647,50 @@ func (r *Registry) applySystemDefaults() {
 	// value as-is.
 	if v := os.Getenv("VORTEX_DELEGATION_MODE"); v != "" {
 		r.System.DelegationMode = (v == "true" || v == "1")
+	}
+
+	// MemoryBankEnabled env override (ADDED 2026-10-17).
+	// Env var takes precedence over config.json. Unset = use config value.
+	if v := os.Getenv("ORCH_MEMORY_BANK_ENABLED"); v != "" {
+		r.System.MemoryBankEnabled = (v == "true" || v == "1")
+	}
+
+	// ── Feature Flag Env Overrides ───────────────────────────────────
+	// Backward compat: env var takes precedence over config.json value.
+	// Env unset = use config.json value as-is. This allows operators to
+	// keep using .env for feature flags without editing config.json, while
+	// new deployments can set them in config.json and hot-reload.
+	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 2.
+	ff := &r.System.FeatureFlags
+	if v := os.Getenv("VORTEX_DEBUG"); v != "" {
+		ff.Debug = true
+	}
+	if v := os.Getenv("VORTEX_CORE_TOOLS_ORDER"); v != "" {
+		ff.CoreToolsOrderLast = v == "last"
+	}
+	if v := os.Getenv("ORCH_DISABLE_FORCE_TOOL"); v != "" {
+		ff.DisableForceTool = v == "1"
+	}
+	if v := os.Getenv("ORCH_DISABLE_EGRESS_REDACTION"); v != "" {
+		ff.DisableEgressRedaction = v == "1"
+	}
+	if v := os.Getenv("ORCH_DISABLE_CGROUP_SANDBOX"); v != "" {
+		ff.DisableCgroupSandbox = v == "1"
+	}
+	if v := os.Getenv("ORCH_DISABLE_PATTERN_KILL"); v != "" {
+		ff.DisablePatternKill = v == "1"
+	}
+	if v := os.Getenv("ORCH_DISABLE_THINKING"); v != "" {
+		v = strings.TrimSpace(v)
+		ff.DisableThinking = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+	}
+	if v := os.Getenv("ORCH_EVAL_OBS"); v != "" {
+		ff.EvalObs = true
+	}
+	if v := os.Getenv("ORCH_FS_ONLY_STREAK_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ff.FSOnlyStreakLimit = n
+		}
 	}
 }
 

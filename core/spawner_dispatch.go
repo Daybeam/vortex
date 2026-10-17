@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -70,6 +71,36 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 		} else {
 			result, herr = s.foldEngine.Decompress(segmentID, taskID)
 		}
+	} else if call.Name == "search_archive" {
+		// Handle search_archive with the Spawner's ContextArchive.
+		query, _ := call.Arguments["query"].(string)
+		limit := 5
+		if l, ok := call.Arguments["limit"].(float64); ok && int(l) > 0 && int(l) <= 10 {
+			limit = int(l)
+		}
+		if query == "" {
+			result = "Error: query is required"
+			herr = fmt.Errorf("query is required")
+		} else if s.archive == nil {
+			result = "Error: search_archive is not available (no archive)"
+			herr = fmt.Errorf("archive not available")
+		} else {
+			forest, err := s.archive.SearchForest(query, nil, limit, 0.9, taskID, taskID)
+			if err != nil {
+				result = fmt.Sprintf("Search error: %v", err)
+				herr = err
+			} else {
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("Found %d matching items:\n\n", len(forest.Nodes)))
+				for i, n := range forest.Nodes {
+					sb.WriteString(fmt.Sprintf("## %d. [%s] %s\n", i+1, n.NodeID, n.Intent))
+					if n.Summary != "" {
+						sb.WriteString(n.Summary + "\n\n")
+					}
+				}
+				result = sb.String()
+			}
+		}
 	} else {
 		// A5 (Effect Boundary Defense): dry-run pre-check for high-risk tools.
 		// If the tool has RiskLevel=high and supports dry_run, execute with
@@ -118,8 +149,13 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 	// Output bounding: adaptive truncation for oversized tool results.
 	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4.2.
 	res = RedactEgress(res)
-	if len(res) > 2000 {
-		res = string(AdaptiveOutputResult([]byte(res), call.Name))
+	// Skip second truncation for execute_code — its output is already gated
+	// inside executeCode() via AdaptiveOutputResult (8KB threshold). Double
+	// truncation at 2000 bytes would destroy useful script output that the
+	// model intentionally chose to produce instead of multiple read_file calls.
+	// See docs/plan/MODEL_DRIVEN_ARCHIVE_RETRIEVAL_DESIGN.md §3.3.0.
+	if call.Name != "execute_code" && len(res) > 2000 {
+		res = string(AdaptiveOutputResult([]byte(res), call.Name, "orchestrator"))
 	}
 	interaction := store.ToolInteraction{
 		ToolName:  call.Name,

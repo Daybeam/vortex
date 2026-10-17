@@ -143,6 +143,13 @@ type Metadata struct {
 	Namespace string      `json:"namespace"`
 	Version   string      `json:"version"`
 	Data      interface{} `json:"data"`
+
+	// DeltaBacktrack marks a step as being re-executed in delta-backtrack
+	// mode (supplement missing fields rather than full re-run). Set by
+	// tryBacktrack before re-executing upstream; checked by prompt_assembler
+	// to inject PreviousOutputSummary. Cleared on user-initiated retry.
+	// See docs/plan/DELTA_BACKTRACK_DESIGN.md.
+	DeltaBacktrack bool `json:"delta_backtrack,omitempty"`
 }
 
 // ─── Step ─────────────────────────────────────────────────────────────────
@@ -368,6 +375,12 @@ type Step struct {
 
 	// ODFTP-native recovery context (ADDED 2026-08-30)
 	AdditionalPromptContext string `json:"additional_prompt_context,omitempty"`
+	// PreviousOutputSummary caches the upstream step's previous output
+	// summary for delta-backtrack injection. Set by tryBacktrack before
+	// re-executing upstream. Cleared when the step is fully re-executed
+	// by a user-initiated retry. ADDED (2026-10-17).
+	// See docs/plan/DELTA_BACKTRACK_DESIGN.md.
+	PreviousOutputSummary string `json:"previous_output_summary,omitempty"`
 
 	// Perception 2.0
 	Embedding      []float32 `json:"embedding,omitempty"`

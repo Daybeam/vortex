@@ -484,6 +484,26 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 			step.Status = schemas.StepPending
 			step.RetryCount = 0
 			step.LastError = ""
+			// Delta Backtrack cleanup (ADDED 2026-10-17): clear stale
+			// delta-backtrack context so the user-initiated retry starts
+			// fresh without previous-output injection or cycle-breaker
+			// feedback bleeding in. Also clear deps that may have been
+			// left in delta-backtrack mode by the cycle breaker.
+			// See docs/plan/DELTA_BACKTRACK_DESIGN.md §改动 3.
+			step.PreviousOutputSummary = ""
+			step.AdditionalPromptContext = ""
+			if step.Metadata != nil {
+				step.Metadata.DeltaBacktrack = false
+			}
+			for _, depID := range step.DependsOn {
+				if dep, ok := graph.Steps[depID]; ok {
+					dep.PreviousOutputSummary = ""
+					dep.AdditionalPromptContext = ""
+					if dep.Metadata != nil {
+						dep.Metadata.DeltaBacktrack = false
+					}
+				}
+			}
 		// ADDED (2026-09-07): resume a step suspended at maxTurns by granting it
 		// another chunk of tool-turn budget, then re-running it. Deliberately does
 		// NOT clear TurnsBudgetBonus, so successive resumes accumulate room instead
@@ -509,6 +529,12 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 		case "refine_and_retry":
 			step.Status = schemas.StepPending
 			step.RetryCount = 0
+			// Delta Backtrack cleanup: clear stale previous-output injection.
+			// User feedback (set below) replaces the cycle-breaker's feedback.
+			step.PreviousOutputSummary = ""
+			if step.Metadata != nil {
+				step.Metadata.DeltaBacktrack = false
+			}
 			if dec.Context != nil {
 				if feedback, ok := dec.Context["feedback"].(string); ok {
 					step.AdditionalPromptContext = feedback

@@ -20,6 +20,7 @@ import (
 // loop in doSpawn and the extracted processToolCalls method.
 type toolExecState struct {
 	toolResults       []string
+	stickyResults     []string // auth/login results kept near top of context (AppWorld eval: prevent burial at pos 5/51)
 	trace             []store.ToolInteraction
 	toolCallCount     map[string]int
 	toolFailCount     map[string]int
@@ -27,6 +28,52 @@ type toolExecState struct {
 	turnAttachments   []schemas.Attachment
 	statesVisited     []string
 	previousState     string
+}
+
+// stickyToolPatterns matches tool names that produce persistent context (auth,
+// login, tokens). Results from these tools are kept near the top of the context
+// window to prevent burial at position N/51 (AppWorld eval finding).
+var stickyToolPatterns = []string{
+	"login", "auth", "get_token", "get_session", "get_user",
+	"authenticate", "signin", "connect", "get_api_key", "get_credentials",
+}
+
+// isStickyResult returns true if the tool name matches a sticky pattern.
+// These results are promoted to a "Persistent Context" block prepended to
+// the conversation so the model always has auth/session info near the top.
+func isStickyResult(toolName string) bool {
+	lower := strings.ToLower(toolName)
+	for _, pat := range stickyToolPatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// prependSticky prepends a "Persistent Context" block to the conversation
+// blocks if stickyContext is non-empty. This keeps auth/login results near
+// the top of the context window instead of buried at position N/51.
+func prependSticky(blocks []schemas.ContentBlock, stickyContext string) []schemas.ContentBlock {
+	if stickyContext == "" {
+		return blocks
+	}
+	return append([]schemas.ContentBlock{{
+		Type: "text",
+		Text: "## Persistent Context\n" + stickyContext,
+	}}, blocks...)
+}
+
+// accumulateSticky appends new sticky results to the current sticky context,
+// skipping empty strings and duplicates (by substring containment). Returns
+// the updated context string.
+func accumulateSticky(current string, newResults []string) string {
+	for _, sr := range newResults {
+		if sr != "" && !strings.Contains(current, sr) {
+			current += sr + "\n\n"
+		}
+	}
+	return current
 }
 
 // processToolCalls executes each tool call in the provider response, updating
@@ -374,9 +421,12 @@ func (s *Spawner) processToolCalls(
 				// Output bounding: adaptive truncation for oversized results.
 				md = RedactEgress(md)
 				if len(md) > 2000 {
-					md = string(AdaptiveOutputResult([]byte(md), call.Name))
+					md = string(AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 				}
 				state.toolResults = append(state.toolResults, md)
+				if isStickyResult(call.Name) {
+					state.stickyResults = append(state.stickyResults, md)
+				}
 			}
 		}
 	} else if mcpDef.URL != "" {
@@ -426,9 +476,12 @@ func (s *Spawner) processToolCalls(
 				// Egress redaction (I5): strip secrets before result enters LLM context.
 				md = RedactEgress(md)
 				if len(md) > 2000 {
-					md = string(AdaptiveOutputResult([]byte(md), call.Name))
+					md = string(AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 				}
 				state.toolResults = append(state.toolResults, md)
+				if isStickyResult(call.Name) {
+					state.stickyResults = append(state.stickyResults, md)
+				}
 			}
 		}
 	} else {

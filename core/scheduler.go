@@ -754,10 +754,14 @@ func (e *DirectedEngine) GetCrossFamilyVerifier(providerID string) string {
 }
 
 // SetMemoryBankStore wires the MemoryBankStore into the ReflectionEngine
-// for automatic user profile extraction. Called after construction.
+// for automatic user profile extraction, and into the Spawner for
+// UserProfile injection into sub-agent prompts.
 func (s *DirectedEngine) SetMemoryBankStore(mb *store.MemoryBankStore) {
 	if s.reflection != nil {
 		s.reflection.SetMemoryBankStore(mb)
+	}
+	if s.spawner != nil {
+		s.spawner.SetMemoryBankStore(mb)
 	}
 }
 

@@ -49,7 +49,38 @@ func neverBloatGuard(result, raw []byte) []byte {
 }
 
 // AdaptiveOutputResult handles multi-platform size checking, truncation, and fallback disk-dump.
-func AdaptiveOutputResult(rawStdout []byte, command string) []byte {
+// The source parameter selects the truncation strategy:
+//   - "mcp:*" sources: JSON-aware MCP path (file-dump for >8KB, no line-based
+//     head/tail, no CLI error keywords — preserves JSON structure)
+//   - other sources: CLI path (line-based head/tail, error keyword extraction,
+//     cmd_dump_* file naming — designed for run_command stdout)
+func AdaptiveOutputResult(rawStdout []byte, command string, source string) []byte {
+	// MCP JSON-RPC results: use a structure-preserving path.
+	if strings.HasPrefix(source, "mcp:") {
+		return adaptiveOutputResultMCP(rawStdout, command)
+	}
+	return adaptiveOutputResultCLI(rawStdout, command)
+}
+
+// adaptiveOutputResultMCP handles MCP tool results (JSON-RPC).
+// Unlike the CLI path, it does NOT do line-based head/tail (which breaks JSON)
+// or CLI error keyword extraction (panic:, Traceback — irrelevant for JSON-RPC).
+// For results >8KB, it side-loads to a file so the model can read_file the
+// full content if needed.
+func adaptiveOutputResultMCP(raw []byte, command string) []byte {
+	if len(raw) < 8*1024 {
+		return raw // Gate 1 already handled truncation
+	}
+	dumpPath := dumpToWorkspaceTmp(raw, command)
+	return []byte(fmt.Sprintf(
+		"[MCP result: %d KB. Full content saved to: %s]\n[Use read_file to access full content.]",
+		len(raw)/1024, dumpPath))
+}
+
+// adaptiveOutputResultCLI handles CLI command output (run_command stdout).
+// This is the original line-based strategy: head/tail by lines, error keyword
+// extraction, cmd_dump_* file naming. Designed for semi-structured terminal output.
+func adaptiveOutputResultCLI(rawStdout []byte, command string) []byte {
 	rawStr := string(rawStdout)
 	normalized := strings.ReplaceAll(rawStr, "\r\n", "\n")
 	outputBytes := len(rawStdout)

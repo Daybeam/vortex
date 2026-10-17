@@ -132,7 +132,13 @@ func isRetryableError(err error) bool {
 //   - OpenAI:    "context_length_exceeded" / "This model's maximum context length is"
 //   - Anthropic: "prompt is too long" / "context too long"
 //   - Gemini:    "exceeds the maximum number of tokens"
-//   - llama.cpp: "request (17164 tokens) exceeds the available context size (16384)"
+//   - llama.cpp (new, b11624+): "request (26012 tokens) exceeds the available
+//     context size (16384 tokens), try increasing it" + n_prompt_tokens/n_ctx fields
+//   - llama.cpp (old, <=b11517 — Kaggle v36a3b 批实证 2026-10-13): "request
+//     (14441 token: exceeds n_ctx=12288" + n_prompt_token/n_ctx fields。
+//     🔴 该变体消息里没有 "context"/"tokens" 字样，旧模式表零匹配 →
+//     #20 压缩对旧版 llama-server 从不触发（v36a3b 20/46 task 共 61 行 400
+//     全部直穿 Final failure）。本地 b11624 实测新格式反而含 "context size"。
 //   - vLLM/Ollama/LM Studio: same OpenAI-compatible format as llama.cpp
 //   - Generic:   "too many tokens" / "context length" / "context size"
 //
@@ -143,6 +149,12 @@ func isRetryableError(err error) bool {
 // Regression: eval §8.48.7 — the original 8 cases all missed llama.cpp's real
 // 400 text "exceeds the available context size", so #20 never triggered for
 // any OpenAI-compatible local server. Added "context size" to fix this.
+// Regression: eval §9.3 (2026-10-16) — that fix only covered the NEW llama.cpp
+// wording; the OLD wording ( Kaggle v36a3b实证, message "request (N token:
+// exceeds n_ctx=M", fields n_prompt_token/n_ctx) still matched nothing, so the
+// 400 cascade death chain survived the §8.48.7 fix. Added "n_ctx" /
+// "n_prompt_tokens" (both formats always carry the n_ctx JSON field, and the
+// engine's SanitizeError stars the message but keeps the fields).
 func isContextLimitError(err error) bool {
 	if err == nil {
 		return false
@@ -151,6 +163,8 @@ func isContextLimitError(err error) bool {
 	return strings.Contains(s, "context_length_exceeded") ||
 		strings.Contains(s, "context length") ||
 		strings.Contains(s, "context size") ||
+		strings.Contains(s, "n_ctx") ||
+		strings.Contains(s, "n_prompt_tokens") ||
 		strings.Contains(s, "maximum context") ||
 		strings.Contains(s, "prompt is too long") ||
 		strings.Contains(s, "context too long") ||

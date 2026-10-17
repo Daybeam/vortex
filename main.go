@@ -73,6 +73,17 @@ func main() {
 	reg.StartWatcher(rootCtx)
 	reg.StartCompactor(rootCtx)
 
+	// Register .env hot-reload hook before StartWatcher.
+	envPath := filepath.Join(root, ".env")
+	reg.SetEnvReloadHook(func() { loadDotEnvForReload(envPath) })
+
+	// Push feature flags to package-level atomics + register hot-reload callback.
+	syncFeatureFlags(reg)
+	reg.OnReload(func() {
+		syncFeatureFlags(reg)
+		core.InvalidateMCPEnvCache()
+	})
+
 	// Override outputBase from config if specified (LE-2 fix)
 	outputBase = filepath.Join(root, reg.System.OutputDirOrDefault())
 

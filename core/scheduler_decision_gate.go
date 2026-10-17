@@ -171,14 +171,22 @@ func (s *DirectedEngine) addDecision(
 	//   within 30s, skip auto-resolution (let maxTurns exhaust naturally).
 	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.3.
 	if s.registry != nil && s.registry.System.NonInteractive {
-		// #14: Critical tier never auto-resolves — must wait for human.
+		// #14: Critical tier never auto-resolves — unless explicitly overridden.
 		tier, _ := schemas.DetermineRiskTier(step.Task, step.AdditionalMCPs)
-		if tier == schemas.RiskTierCritical {
+		if tier == schemas.RiskTierCritical && !s.registry.System.AllowCriticalAutoResolve {
 			s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
 				"decision_id": dec.ID,
 				"skipped":     "risk_tier_critical",
 			})
 			return
+		}
+		if tier == schemas.RiskTierCritical {
+			// Override is on — proceeding despite critical tier.
+			s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+				"decision_id": dec.ID,
+				"override":    "allow_critical_auto_resolve",
+				"tier":        string(tier),
+			})
 		}
 
 		// #14: Rate limit non-critical decisions — 30s per step.
@@ -202,8 +210,8 @@ func (s *DirectedEngine) addDecision(
 			"options":      options,
 			"decider_role": deciderRole,
 		})
-	s.goBackground(func() {
-		choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options)
+		s.goBackground(func() {
+			choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options)
 			if choice == "" {
 				return // must not auto-resolve (e.g. human_approval_required)
 			}
@@ -227,6 +235,12 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	ctx map[string]any,
 	options []string,
 ) string {
+	// human_approval_required: legal/compliance gate. Must not auto-resolve
+	// unless explicitly overridden via AllowHumanApprovalAutoResolve.
+	if dtype == schemas.DecisionHumanApprovalRequired &&
+		s.registry != nil && !s.registry.System.AllowHumanApprovalAutoResolve {
+		return "" // must wait for a human
+	}
 	// Delegate strategy: spawn decider role to choose.
 	if deciderRole != "" && s.spawner != nil {
 		observability.GetGlobalMetrics().Inc("orchestrator.decision_gate.calls", 1)
@@ -371,6 +385,12 @@ func defaultNonInteractiveChoice(dtype schemas.DecisionType, options []string) (
 		preferences = []string{"resume_more_turns"}
 	case schemas.DecisionAutonomousAbortRequested:
 		preferences = []string{"continue"}
+	case schemas.DecisionHumanApprovalRequired:
+		// Only reached when AllowHumanApprovalAutoResolve is true (the early
+		// return in resolveNonInteractiveDecision blocks this otherwise).
+		// Conservative default: "abort" — don't do the thing that needed
+		// approval. Fall back to "skip" if abort is unavailable.
+		preferences = []string{"abort", "skip"}
 	default:
 		return "", false
 	}

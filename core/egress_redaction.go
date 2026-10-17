@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // ─── Egress Redaction (I5: 出口最小化) ───────────────────────────────────
@@ -26,31 +27,42 @@ type egressPattern struct {
 	replacement string
 }
 
-// egressPatterns are compiled once (audit P-3: avoid recompiling per call).
+// defaultEgressPatterns are compiled once (audit P-3: avoid recompiling per call).
+var defaultEgressPatterns = []egressPattern{
+	{"openai_key", regexp.MustCompile(`sk-[a-zA-Z0-9]{20,}`), "sk-[REDACTED]"},
+	{"aws_key", regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "AKIA[REDACTED]"},
+	{"private_key", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), "[PRIVATE KEY REDACTED]"},
+	{"bearer_token", regexp.MustCompile(`Bearer\s+[A-Za-z0-9._\-]{20,}`), "Bearer [REDACTED]"},
+	{"jwt", regexp.MustCompile(`eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}`), "[JWT REDACTED]"},
+	{"email", regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`), "[EMAIL REDACTED]"},
+	{"phone_cn", regexp.MustCompile(`1[3-9]\d{9}`), "[PHONE REDACTED]"},
+}
+
+// egressRedactionDisabled is an atomic flag toggled by SetEgressRedactionDisabled.
+// When true, RedactEgress is a no-op. This replaces the former sync.OnceValue
+// that read ORCH_DISABLE_EGRESS_REDACTION once and cached it permanently.
 //
-// EVAL KILL-SWITCH (2026-10-14): ORCH_DISABLE_EGRESS_REDACTION=1 disables all
-// patterns. Rationale — RedactEgress is unconditional in the tool-result path
-// (spawner.go:1657/1706, spawner_dispatch.go:119) with no config toggle, and
-// its email + JWT rules destroy task-critical data in benchmark domains whose
-// *credentials are the task input* (AppWorld: supervisor__show_profile returns
-// the login email, app__login returns a JWT access_token). With it on, the
-// orchestrator arm is structurally unable to complete such tasks, so any
-// A-vs-B delta would measure redaction, not orchestration. Eval-only flag;
-// production behavior is unchanged when unset.
-var egressPatterns = sync.OnceValue(func() []egressPattern {
+// Backward compat: init() reads the env var so the flag is correct before
+// SetEgressRedactionDisabled is called (brief startup window). After startup,
+// SetEgressRedactionDisabled is called with the Registry's FeatureFlags value
+// (which includes the env override via applySystemDefaults), and on every
+// config hot-reload.
+//
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 6.
+var egressRedactionDisabled atomic.Bool
+
+func init() {
 	if os.Getenv("ORCH_DISABLE_EGRESS_REDACTION") == "1" {
-		return nil
+		egressRedactionDisabled.Store(true)
 	}
-	return []egressPattern{
-		{"openai_key", regexp.MustCompile(`sk-[a-zA-Z0-9]{20,}`), "sk-[REDACTED]"},
-		{"aws_key", regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "AKIA[REDACTED]"},
-		{"private_key", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), "[PRIVATE KEY REDACTED]"},
-		{"bearer_token", regexp.MustCompile(`Bearer\s+[A-Za-z0-9._\-]{20,}`), "Bearer [REDACTED]"},
-		{"jwt", regexp.MustCompile(`eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}`), "[JWT REDACTED]"},
-		{"email", regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`), "[EMAIL REDACTED]"},
-		{"phone_cn", regexp.MustCompile(`1[3-9]\d{9}`), "[PHONE REDACTED]"},
-	}
-})
+}
+
+// SetEgressRedactionDisabled toggles egress redaction at runtime.
+// Called at startup and on config hot-reload to push the
+// Registry.System.FeatureFlags.DisableEgressRedaction value.
+func SetEgressRedactionDisabled(disabled bool) {
+	egressRedactionDisabled.Store(disabled)
+}
 
 // crossTenantPattern detects OwnerID/tenant references in tool results.
 var crossTenantPattern = sync.OnceValue(func() *regexp.Regexp {
@@ -60,7 +72,10 @@ var crossTenantPattern = sync.OnceValue(func() *regexp.Regexp {
 // RedactEgress strips known secret patterns from text.
 // Safe to call on every tool result before it enters the LLM context.
 func RedactEgress(text string) string {
-	for _, p := range egressPatterns() {
+	if egressRedactionDisabled.Load() {
+		return text
+	}
+	for _, p := range defaultEgressPatterns {
 		text = p.pattern.ReplaceAllString(text, p.replacement)
 	}
 	return text

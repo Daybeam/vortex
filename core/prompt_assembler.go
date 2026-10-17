@@ -44,6 +44,12 @@ type PromptAssembler struct {
 	// See docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
 	foldEngine *FoldEngine
 
+	// memoryBankStore (ADDED 2026-10-17): injects UserProfile into sub-agent
+	// prompts so spawned agents know user preferences/expertise.
+	// Nil-safe: set via SetMemoryBankStore from Spawner.
+	// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 3.
+	memoryBankStore *store.MemoryBankStore
+
 	// P2-11: Dynamic warm context budget feedback loop.
 	// When subagent duration exceeds the baseline, the budget is tightened
 	// (reduced) to speed up execution. When duration is below baseline,
@@ -73,6 +79,13 @@ func (s *PromptAssembler) SetArchive(a *ContextArchive) {
 // Nil-safe: when nil, fold is skipped (zero behavior change).
 func (s *PromptAssembler) SetFoldEngine(fe *FoldEngine) {
 	s.foldEngine = fe
+}
+
+// SetMemoryBankStore injects the MemoryBankStore for UserProfile injection
+// into sub-agent prompts. Nil-safe: when nil, no UserProfile is injected.
+// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 3.
+func (s *PromptAssembler) SetMemoryBankStore(mb *store.MemoryBankStore) {
+	s.memoryBankStore = mb
 }
 
 // RecordSubagentDuration records the last subagent execution duration and
@@ -176,6 +189,34 @@ func (s *PromptAssembler) Build(
 			Text:         fmt.Sprintf("# Role: %s\n%s", role.Name, instruction),
 			CacheControl: "ephemeral",
 		}, GovTier1, CategoryRoleInstruction))
+	}
+
+	// MemoryBank UserProfile injection (ADDED 2026-10-17).
+	// Sub-agents get the same user context as the gateway agent, so they can
+	// tailor output to user expertise/preferences. Only UserProfile is injected
+	// (not full MemoryBank) to avoid token bloat from ActiveContext/Decisions.
+	// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 3.
+	if s.memoryBankStore != nil && s.registry != nil && s.registry.System.MemoryBankEnabled {
+		if mb, err := s.memoryBankStore.Load(); err == nil && mb != nil {
+			up := mb.UserProfile
+			if len(up.Expertise) > 0 || len(up.Preferences) > 0 || up.CommunicationStyle != "" {
+				var b strings.Builder
+				b.WriteString("\n## User Context\n")
+				if len(up.Expertise) > 0 {
+					b.WriteString("Expertise: " + strings.Join(up.Expertise, ", ") + "\n")
+				}
+				if len(up.Preferences) > 0 {
+					b.WriteString("Preferences: " + strings.Join(up.Preferences, ", ") + "\n")
+				}
+				if up.CommunicationStyle != "" {
+					b.WriteString("Communication style: " + up.CommunicationStyle + "\n")
+				}
+				blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
+					Text:         b.String(),
+					CacheControl: "ephemeral",
+				}, GovTier1, CategoryRoleInstruction))
+			}
+		}
 	}
 
 	// Priority 6: Inject Semantic Precedents (Cognitive Feedback Loop).

@@ -35,7 +35,7 @@ func SummarizeOutput(data []byte, hint string) string {
 	case "log":
 		result = summarizeLog(data)
 	default:
-		result = string(AdaptiveOutputResult(data, hint))
+		result = string(AdaptiveOutputResult(data, hint, ""))
 	}
 
 	// Never-bloat guard: if the summary is larger than the original, return
@@ -112,7 +112,7 @@ func detectFormat(data []byte) string {
 func summarizeJSONOutput(data []byte) string {
 	var v interface{}
 	if err := json.Unmarshal(data, &v); err != nil {
-		return string(AdaptiveOutputResult(data, "json"))
+		return string(AdaptiveOutputResult(data, "json", ""))
 	}
 
 	var sb strings.Builder
