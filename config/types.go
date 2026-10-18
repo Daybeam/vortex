@@ -20,7 +20,7 @@ var envAPIKeyCache sync.Map
 // InvalidateAllEnvAPIKeys clears all cached env API keys. Called after a
 // config reload (loadLocked) so ResolveAPIKey re-reads os.Getenv, picking
 // up .env changes when StartWatcher triggers a reload.
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 4.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 4.
 func InvalidateAllEnvAPIKeys() {
 	envAPIKeyCache.Range(func(key, _ any) bool {
 		envAPIKeyCache.Delete(key)
@@ -393,6 +393,7 @@ func (r *Role) GetBinding(mcpID string) *MCPBinding {
 type MCPBinding struct {
 	MCPID        string   `json:"mcp_id"`
 	AllowedTools []string `json:"allowed_tools"`
+	AlwaysInclude []string `json:"always_include,omitempty"`
 }
 
 func (b *MCPBinding) IsRestricted() bool { return len(b.AllowedTools) > 0 }
@@ -684,6 +685,35 @@ type SystemSettings struct {
 	// Hot-reloadable via StartWatcher. Env vars override for backward compat.
 	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
 	FeatureFlags FeatureFlags `json:"feature_flags,omitempty"`
+
+	// CriticalRiskKeywords / ModerateRiskKeywords (ADDED 2026-10-18):
+	// override the keyword lists used by schemas.DetermineRiskTier.
+	// Empty = use engine defaults (browser/image/generate/... for critical,
+	// patch/refactor/build/test for moderate). Set explicitly to customize
+	// risk classification per deployment without engine changes.
+	// See schemas.SetRiskTierKeywords.
+	CriticalRiskKeywords []string `json:"critical_risk_keywords"`
+	ModerateRiskKeywords []string `json:"moderate_risk_keywords"`
+	// SanitizerEnabled (ADDED 2026-10-18): enables bidirectional PII
+	// tokenization on the provider path. When true, secrets in prompts
+	// (API keys, tokens) are replaced with [REDACTED_N] before sending
+	// to the provider, and restored in responses. Required when the
+	// provider routes through an untrusted third-party relay pool.
+	// Default false: pass-through (no masking, backward compat).
+	SanitizerEnabled bool `json:"sanitizer_enabled,omitempty"`
+
+	// EnablePlannerFirst (ADDED 2026-10-18): enables tier 1(b) planning —
+	// a `task_planner` spawn BEFORE any step exists, whose DAG replaces the
+	// caller's single step. Off by default; see docs 52-planner-wiring-design.md
+	// §8.5 for why AppWorld must keep it off until the tool-catalog question
+	// is settled.
+	EnablePlannerFirst bool `json:"enable_planner_first,omitempty"`
+	// PlannerTimeoutSecs bounds the planner spawn (0 => 90s default).
+	// A 60s hard limit proved too tight for a planner reading a large tool
+	// catalog on a slow endpoint.
+	PlannerTimeoutSecs int `json:"planner_timeout_secs,omitempty"`
+	// PlannerMaxSteps bounds the produced DAG (0 => parser default 12).
+	PlannerMaxSteps int `json:"planner_max_steps,omitempty"`
 }
 
 // WorkspacePolicyConfig configures tier-gated workspace scope resolution.
@@ -843,19 +873,19 @@ type OAuthConfig struct {
 // Defaults to Mode="none" (backward-compatible: no auth, direct passthrough).
 func LoadAuthConfig() AuthConfig {
 	cfg := AuthConfig{
-		Mode: getenv("ORCH_AUTH_MODE", "none"),
+		Mode: getenv("VORTEX_AUTH_MODE", "none"),
 	}
 
 	// APIKey mode
-	cfg.AdminKey = getenv("ORCH_ADMIN_KEY", getenv("VORTEX_ADMIN_KEY", ""))
-	cfg.PublicKey = getenv("ORCH_PUBLIC_KEY", getenv("VORTEX_PUBLIC_KEY", ""))
+	cfg.AdminKey = getenv("VORTEX_ADMIN_KEY", getenv("VORTEX_ADMIN_KEY", ""))
+	cfg.PublicKey = getenv("VORTEX_PUBLIC_KEY", getenv("VORTEX_PUBLIC_KEY", ""))
 
 	// OAuth mode
 	cfg.OAuth = OAuthConfig{
-		Issuer:         os.Getenv("ORCH_OAUTH_ISSUER"),
-		SigningKey:     os.Getenv("ORCH_OAUTH_SIGNING_KEY"),
-		DCREnabled:     os.Getenv("ORCH_OAUTH_DCR_ENABLED") == "true",
-		FallbackAPIKey: os.Getenv("ORCH_OAUTH_FALLBACK_APIKEY") == "true",
+		Issuer:         os.Getenv("VORTEX_OAUTH_ISSUER"),
+		SigningKey:     os.Getenv("VORTEX_OAUTH_SIGNING_KEY"),
+		DCREnabled:     os.Getenv("VORTEX_OAUTH_DCR_ENABLED") == "true",
+		FallbackAPIKey: os.Getenv("VORTEX_OAUTH_FALLBACK_APIKEY") == "true",
 	}
 
 	return cfg

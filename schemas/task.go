@@ -91,6 +91,56 @@ const (
 	RiskTierCritical RiskTier = "critical" // Browser, side-effects, asset gen (Full LLM Auditor + Auto-Refine)
 )
 
+// riskTierKeywords holds configurable keyword lists for DetermineRiskTier.
+// Defaults preserve the original hardcoded behavior. Override via SetRiskTierKeywords.
+// Thread-safe: set once at startup, read concurrently thereafter.
+var riskTierKeywords = struct {
+	mu       sync.RWMutex
+	critical []string
+	moderate []string
+}{
+	critical: []string{"browser", "image", "generate", "scrape", "screenshot", "pollinations", "deploy", "payment"},
+	moderate: []string{"patch", "refactor", "build", "test"},
+}
+
+// SetRiskTierKeywords overrides the keyword lists used by DetermineRiskTier.
+// A nil slice means "leave this tier alone" (keep existing/defaults).
+//
+// A non-nil EMPTY slice intentionally still means "leave alone" here, because
+// this function cannot distinguish "caller wants the tier off" from "caller
+// has nothing to say". Use ClearRiskTierKeywords to disable a tier explicitly.
+// Config callers go through config.loader, which only invokes this for
+// non-nil slices — see config/types.go CriticalRiskKeywords.
+func SetRiskTierKeywords(critical, moderate []string) {
+	riskTierKeywords.mu.Lock()
+	defer riskTierKeywords.mu.Unlock()
+	if len(critical) > 0 {
+		riskTierKeywords.critical = critical
+	}
+	if len(moderate) > 0 {
+		riskTierKeywords.moderate = moderate
+	}
+}
+
+// ClearRiskTierKeywords disables keyword matching for the named tiers.
+// Pass "critical" and/or "moderate". This is how a deployment turns off a
+// default keyword that does not apply to it — e.g. dropping "payment" for an
+// eval harness where the word appears in task text but carries no real
+// side-effect risk, and where a critical tier needlessly appends an auditor
+// step (one extra LLM call per task).
+func ClearRiskTierKeywords(tiers ...string) {
+	riskTierKeywords.mu.Lock()
+	defer riskTierKeywords.mu.Unlock()
+	for _, t := range tiers {
+		switch t {
+		case "critical":
+			riskTierKeywords.critical = []string{}
+		case "moderate":
+			riskTierKeywords.moderate = []string{}
+		}
+	}
+}
+
 // DetermineRiskTier analyzes the task intent and bound MCPs to classify risk.
 // Returns both the RiskTier label and a numeric RiskRating (0.0 - 1.0).
 func DetermineRiskTier(task string, mcpList []string) (RiskTier, float64) {
@@ -100,15 +150,19 @@ func DetermineRiskTier(task string, mcpList []string) (RiskTier, float64) {
 			return RiskTierCritical, 0.95
 		}
 	}
-	if strings.Contains(lower, "browser") || strings.Contains(lower, "image") ||
-		strings.Contains(lower, "generate") || strings.Contains(lower, "scrape") ||
-		strings.Contains(lower, "screenshot") || strings.Contains(lower, "pollinations") ||
-		strings.Contains(lower, "deploy") || strings.Contains(lower, "payment") {
-		return RiskTierCritical, 0.9
+	riskTierKeywords.mu.RLock()
+	critical := riskTierKeywords.critical
+	moderate := riskTierKeywords.moderate
+	riskTierKeywords.mu.RUnlock()
+	for _, kw := range critical {
+		if strings.Contains(lower, kw) {
+			return RiskTierCritical, 0.9
+		}
 	}
-	if strings.Contains(lower, "patch") || strings.Contains(lower, "refactor") ||
-		strings.Contains(lower, "build") || strings.Contains(lower, "test") {
-		return RiskTierModerate, 0.5
+	for _, kw := range moderate {
+		if strings.Contains(lower, kw) {
+			return RiskTierModerate, 0.5
+		}
 	}
 	return RiskTierLight, 0.1
 }
@@ -354,6 +408,7 @@ type Step struct {
 	TurnsBudgetBonus int    `json:"turns_budget_bonus,omitempty"`
 	LastError    string     `json:"last_error,omitempty"`
 	TriggerError string     `json:"trigger_error,omitempty"` // First error that led to successful retry (ADDED 2026-08-16)
+	PartialOutput string    `json:"partial_output,omitempty"` // B1: model's last output before Sieve interception; passed to auditor/next step as context
 	ResultRef    string     `json:"result_ref,omitempty"`
 	Confidence   *float64   `json:"confidence,omitempty"`
 	MissingCtx   []string   `json:"missing_context,omitempty"`

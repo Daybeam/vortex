@@ -25,7 +25,7 @@ func (e *SemanticEnvelope) ToMarkdown(toolName string) string {
 	meta, _ := json.Marshal(e)
 	fmt.Fprintf(&sb, "<!-- meta: %s -->\n\n", string(meta))
 	fmt.Fprintf(&sb, "### [TOOL RESULT] %s\n\n", toolName)
-	fmt.Fprintf(&sb, "**调用原因**\n%s\n\n", e.Reason)
+	fmt.Fprintf(&sb, "**Call Reason**\n%s\n\n", e.Reason)
 
 	statusIcon := "✅"
 	statusText := strings.ToUpper(e.Status)
@@ -33,17 +33,17 @@ func (e *SemanticEnvelope) ToMarkdown(toolName string) string {
 		statusIcon = "❌"
 	} else if e.Status == "stdin_required" {
 		statusIcon = "⏸"
-		statusText = "等待输入"
+		statusText = "AWAITING_INPUT"
 	}
-	fmt.Fprintf(&sb, "**执行状态**\n%s %s | 来源：%s\n\n", statusIcon, statusText, e.Source)
+	fmt.Fprintf(&sb, "**Execution Status**\n%s %s | Source: %s\n\n", statusIcon, statusText, e.Source)
 
 	if len(e.Citations) > 0 {
-		fmt.Fprintf(&sb, "**可引用位置**\n- %s\n\n", strings.Join(e.Citations, "\n- "))
+		fmt.Fprintf(&sb, "**Citable Locations**\n- %s\n\n", strings.Join(e.Citations, "\n- "))
 	}
 
-	fmt.Fprintf(&sb, "**内容**\n%s\n", e.Content)
+	fmt.Fprintf(&sb, "**Content**\n%s\n", e.Content)
 	if e.RawRef != "" {
-		fmt.Fprintf(&sb, "\n*完整数据见 %s*\n", e.RawRef)
+		fmt.Fprintf(&sb, "\n*Full data at %s*\n", e.RawRef)
 	}
 
 	return sb.String()

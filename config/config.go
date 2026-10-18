@@ -49,7 +49,7 @@ type Registry struct {
 	// envReloadHook is called by StartWatcher when the .env file changes,
 	// before loadWithFallback. The hook should re-read .env into os.Environ
 	// (e.g. loadDotEnvForReload). Must be set before StartWatcher starts.
-	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 5.
+	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 5.
 	envReloadHook func()
 
 	loadedModTime    time.Time
@@ -75,7 +75,7 @@ func (r *Registry) OnReload(f func()) {
 // file changes, before loadWithFallback. The hook should re-read .env
 // into os.Environ (e.g. loadDotEnvForReload). Must be called before
 // StartWatcher starts.
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 5.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 5.
 func (r *Registry) SetEnvReloadHook(hook func()) {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
