@@ -23,7 +23,7 @@ func loadDotEnv(path string) {
 // Unlike loadDotEnv, this unconditionally calls os.Setenv so that updated
 // .env values replace stale cached values.
 //
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 5.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 5.
 func loadDotEnvForReload(path string) {
 	loadDotEnvWithMode(path, true)
 }

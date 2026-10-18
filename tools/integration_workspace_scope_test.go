@@ -13,7 +13,7 @@ import (
 // ─── Integration Test: Tier-Gated Workspace Scope — Public Tier Injection ───
 //
 // Design ref: docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §8
-// "集成测试：Public tier LLM 注入 workspace_root → 被拒绝"
+// "Integration test: Public tier LLM injects workspace_root → rejected"
 //
 // This test verifies the entry-layer defense (I1 + I2): when a Public tier
 // caller's LLM is tricked into providing a malicious workspace_root (e.g.
