@@ -137,6 +137,32 @@ func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, a
 				allowed = tools
 			}
 		}
+		// T7 fix (2026-10-18): intersect planner-specified allowlist with
+		// discovered AvailableTools. On a cold engine, ParsePlanDAG accepts
+		// tools as "unverified" (catalog was empty). At execution time, the
+		// MCP handshake has run and AvailableTools is populated. This
+		// intersection filters out any invented tool names. If the
+		// intersection is empty (none of the planned tools exist), fall
+		// back to full access (empty = unrestricted) rather than blocking
+		// the step entirely.
+		if mcpDef := hub.GetMCP(mcpID); mcpDef != nil && len(mcpDef.AvailableTools) > 0 && len(allowed) > 0 {
+			discovered := make(map[string]bool, len(mcpDef.AvailableTools))
+			for _, t := range mcpDef.AvailableTools {
+				discovered[t] = true
+			}
+			intersected := make([]string, 0, len(allowed))
+			for _, t := range allowed {
+				if discovered[t] {
+					intersected = append(intersected, t)
+				}
+			}
+			if len(intersected) > 0 {
+				allowed = intersected
+			} else {
+				// Intersection empty: fall back to full access.
+				allowed = []string{}
+			}
+		}
 		extraBindings = append(extraBindings, config.MCPBinding{
 			MCPID:        mcpID,
 			AllowedTools: allowed,

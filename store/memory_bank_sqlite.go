@@ -92,3 +92,26 @@ func (b *SQLiteMemoryBankBackend) SearchItems(ctx context.Context, category stri
 	}
 	return results, nil
 }
+
+// DeleteByCategory removes all items in the given category.
+// Returns the count of rows deleted.
+// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md §Storage Layer Changes.
+func (b *SQLiteMemoryBankBackend) DeleteByCategory(ctx context.Context, category string) (int64, error) {
+	res, err := b.db.ExecContext(ctx, `DELETE FROM memory_bank WHERE category = ?`, category)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// SearchAndDelete removes items whose content contains the query (LIKE match).
+// Returns the count of rows deleted.
+// Used by `/forget memory <query> confirm`.
+func (b *SQLiteMemoryBankBackend) SearchAndDelete(ctx context.Context, query string) (int64, error) {
+	pattern := "%" + query + "%"
+	res, err := b.db.ExecContext(ctx, `DELETE FROM memory_bank WHERE content LIKE ?`, pattern)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

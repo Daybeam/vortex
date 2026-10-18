@@ -50,7 +50,7 @@ func (idx *CapabilityIndex) Rebuild(reg *config.Registry) {
 			// 2-char English/alphanumeric tokens like "AI", "ML", "QA", "go", "js".
 			// Chinese chars are 3 bytes each in UTF-8, so they were never affected
 			// (the design doc's claim about Chinese 2-char words being dropped was
-			// wrong — "行情" is 6 bytes, always passed). The correct fix is len(t) >= 2:
+			// wrong — "market" is 6 bytes, always passed). The correct fix is len(t) >= 2:
 			// keeps all 2+ byte tokens, drops only single ASCII chars ("a", "I").
 			// See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-2.
 			if len(t) >= 2 {

@@ -21,7 +21,7 @@ func makeCycleID(triggerStepID string, dependsOn []string) string {
 // for delta-backtrack injection. Returns "(no previous output)" if the step
 // has never been executed or no archive is available.
 //
-// See docs/plan/DELTA_BACKTRACK_DESIGN.md §改动 3.
+// See docs/plan/DELTA_BACKTRACK_DESIGN.md §change 3.
 func (s *DirectedEngine) buildPreviousSummary(dep *schemas.Step, taskID string) string {
 	// Source 1: ResultRef — direct output reference via archive search
 	if dep.ResultRef != "" && s.Archive != nil {
@@ -105,11 +105,11 @@ func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.St
 			// Structured feedback with previous context and supplement-only instruction.
 			feedback := fmt.Sprintf(
 				"%s\n"+
-					"上游步骤 %s 的上一轮产出摘要：\n%s\n\n"+
-					"下游步骤 %s 报告以下信息缺失：\n%s\n\n"+
-					"请在保留上一轮所有已完成内容的前提下，仅补充缺失的部分。\n"+
-					"不要重新执行已经完成的步骤。不要重复调用已完成的外部 API 或执行已完成的写入操作。\n"+
-					"本轮是第 %d/%d 轮补充，如仍无法满足，系统将强制降级。",
+					"Previous-round output summary of upstream step %s:\n%s\n\n"+
+					"Downstream step %s reports the following missing information:\n%s\n\n"+
+					"Please supplement only the missing parts while preserving all completed content from the previous round.\n"+
+					"Do NOT re-execute already-completed steps. Do NOT re-call already-completed external APIs or re-perform already-completed write operations.\n"+
+					"This is supplement round %d/%d; if still unsatisfied, the system will force a degradation.",
 				MarkerSystemFeedback,
 				depID,
 				previousSummary,
@@ -156,7 +156,7 @@ func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.St
 	}
 	step.Status = schemas.StepSuspended
 	step.AdditionalPromptContext = fmt.Sprintf(
-		"%s 已达到最大补充轮次(%d轮)，请根据现有信息尽力生成最终输出。",
+		"%s has reached the maximum supplement rounds (%d). Please generate the best possible final output from the available information.",
 		MarkerSystemDegrade, step.MaxLoopRounds,
 	)
 	delete(graph.CycleCounters, cycleID)

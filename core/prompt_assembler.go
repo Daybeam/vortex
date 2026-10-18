@@ -47,8 +47,15 @@ type PromptAssembler struct {
 	// memoryBankStore (ADDED 2026-10-17): injects UserProfile into sub-agent
 	// prompts so spawned agents know user preferences/expertise.
 	// Nil-safe: set via SetMemoryBankStore from Spawner.
-	// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 3.
+	// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
 	memoryBankStore *store.MemoryBankStore
+
+	// promptManager (ADDED 2026-10-18): loads external prompt templates
+	// from prompts/ dir or remote URL, renders with text/template, caches
+	// parsed templates. Used as fallback when role.Instruction is empty.
+	// Nil-safe: when nil or template fetch fails, fallback is skipped.
+	// See ONION_ARCHITECTURE.md §8 "Wire PromptManager".
+	promptManager *PromptManager
 
 	// P2-11: Dynamic warm context budget feedback loop.
 	// When subagent duration exceeds the baseline, the budget is tightened
@@ -83,7 +90,7 @@ func (s *PromptAssembler) SetFoldEngine(fe *FoldEngine) {
 
 // SetMemoryBankStore injects the MemoryBankStore for UserProfile injection
 // into sub-agent prompts. Nil-safe: when nil, no UserProfile is injected.
-// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 3.
+// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
 func (s *PromptAssembler) SetMemoryBankStore(mb *store.MemoryBankStore) {
 	s.memoryBankStore = mb
 }
@@ -157,6 +164,7 @@ func NewPromptAssembler(expStore store.IExperienceStore, loader *ResourceLoader,
 		registry:       reg,
 		logger:         logger,
 		budgetEnforcer: NewPromptBudgetEnforcer(logger),
+		promptManager:  NewPromptManager("prompts", loader),
 	}
 }
 
@@ -189,13 +197,33 @@ func (s *PromptAssembler) Build(
 			Text:         fmt.Sprintf("# Role: %s\n%s", role.Name, instruction),
 			CacheControl: "ephemeral",
 		}, GovTier1, CategoryRoleInstruction))
+	} else if role != nil && s.promptManager != nil {
+		// PromptManager fallback (ADDED 2026-10-18): when a role has no
+		// custom instruction, try loading base_role.md template from prompts/.
+		// Error-safe: on any failure (file missing, parse error), silently
+		// skip — zero behavior change from pre-fallback.
+		tmplCtx := map[string]any{
+			"task": map[string]any{
+				"id":   taskID,
+				"role": role.Name,
+			},
+			"env": map[string]string{
+				"Time": time.Now().Format(time.RFC3339),
+			},
+		}
+		if rendered, err := s.promptManager.GetAndRender("base_role.md", tmplCtx); err == nil && rendered != "" {
+			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
+				Text:         rendered,
+				CacheControl: "ephemeral",
+			}, GovTier1, CategoryRoleInstruction))
+		}
 	}
 
 	// MemoryBank UserProfile injection (ADDED 2026-10-17).
 	// Sub-agents get the same user context as the gateway agent, so they can
 	// tailor output to user expertise/preferences. Only UserProfile is injected
 	// (not full MemoryBank) to avoid token bloat from ActiveContext/Decisions.
-	// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 3.
+	// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
 	if s.memoryBankStore != nil && s.registry != nil && s.registry.System.MemoryBankEnabled {
 		if mb, err := s.memoryBankStore.Load(); err == nil && mb != nil {
 			up := mb.UserProfile
@@ -666,6 +694,6 @@ func CheckDataShapeMismatch(interactions []store.ToolInteraction) string {
 	if len(shapes) < 2 {
 		return ""
 	}
-	return fmt.Sprintf("[WARN] 警告：前后两次调用的数据口径不一致（%s），禁止直接合并对比，请先明确说明口径差异。",
+	return fmt.Sprintf("[WARN] The data calibers of two consecutive calls are inconsistent (%s). Do NOT merge or compare them directly; first explicitly state the caliber difference.",
 		strings.Join(shapes, " vs "))
 }

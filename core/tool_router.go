@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -105,11 +106,17 @@ func (r *ToolRouter) RefreshToolEmbeddings(ctx context.Context, reg *config.Regi
 	}
 
 	// Build BM25 corpus from all tool docs.
+	// NOTE (2026-10-18): RefreshToolEmbeddings is now also called from
+	// buildMCPServers after MCP discovery, i.e. concurrently with sibling DAG
+	// steps that may be inside Route() reading BM25Corpus. Guard the swap.
 	bm25Docs := make(map[string]string, len(docs))
 	for _, d := range docs {
 		bm25Docs[d.id] = d.text
 	}
-	r.BM25Corpus = NewBM25Corpus(1.2, 0.75, bm25Docs)
+	newCorpus := NewBM25Corpus(1.2, 0.75, bm25Docs)
+	r.mu.Lock()
+	r.BM25Corpus = newCorpus
+	r.mu.Unlock()
 
 	if r.EmbedClient == nil {
 		return // BM25-only mode; no embedding to compute.
@@ -274,8 +281,13 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 		stringRank := make(map[string]float64)
 
 		// 1. Sparse Channel: BM25
-		if r.BM25Corpus != nil {
-			bm25Rank = r.BM25Corpus.Score(req.Task)
+		// Snapshot under RLock: RefreshToolEmbeddings may swap the corpus from a
+		// concurrent step's MCP discovery (see its doc comment).
+		r.mu.RLock()
+		corpus := r.BM25Corpus
+		r.mu.RUnlock()
+		if corpus != nil {
+			bm25Rank = corpus.Score(req.Task)
 		}
 
 		// 2. Dense Channel: Embedding
@@ -354,7 +366,11 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 					}
 					usedBudget += tokens
 					filtered = append(filtered, selected)
-					// Mark future tools redundant with this selection
+					// Mark future tools redundant with this selection.
+					// Embedding dedup runs in the same RLock scope as the
+					// candidate snapshot above; re-acquire here because the
+					// snapshot path released it.
+					r.mu.RLock()
 					if vec := r.embeddings[selected]; len(vec) > 0 {
 						for _, cand := range rankedList {
 							if cand == selected || redundant[cand] {
@@ -369,6 +385,7 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 							}
 						}
 					}
+					r.mu.RUnlock()
 				}
 			}
 		} else {
@@ -441,6 +458,55 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 			}
 		}
 		filtered = pruned
+
+		// always_include (C1-②): tools that must survive routing. Appended AFTER
+		// relevance filtering so they are kept even when the task text never
+		// mentions them (e.g. supervisor__complete_task in AppWorld).
+		//
+		// Two hard constraints (2026-10-18):
+		//  1. always_include must NOT widen a restricted binding. A restricted
+		//     binding is an explicit allowlist; letting always_include bypass it
+		//     would silently escalate privileges (the two tests in
+		//     tool_router_always_include_test.go assert the opposite for the
+		//     unrestricted case only — see note there).
+		//  2. always_include must NOT resurrect privileged tools that the
+		//     blocklist just removed.
+		if len(b.AlwaysInclude) > 0 {
+			inScope := make(map[string]bool)
+			if wasRestricted {
+				for _, t := range b.AllowedTools {
+					inScope[t] = true
+				}
+			}
+			seen := make(map[string]bool, len(filtered))
+			for _, t := range filtered {
+				seen[t] = true
+			}
+			var skipped []string
+			for _, t := range b.AlwaysInclude {
+				if seen[t] {
+					continue
+				}
+				if privilegedToolBlocklist[t] {
+					skipped = append(skipped, t)
+					continue
+				}
+				if wasRestricted && !inScope[t] {
+					skipped = append(skipped, t)
+					continue
+				}
+				filtered = append(filtered, t)
+			}
+			if len(skipped) > 0 {
+				// Visibility: a silently ignored always_include entry is a
+				// config bug that would otherwise be invisible until eval fails.
+				slog.Warn("always_include entry ignored by tool router",
+					"mcp", b.MCPID,
+					"restricted", wasRestricted,
+					"skipped", strings.Join(skipped, ","),
+					"reason", "privileged_blocklist_or_outside_allowlist")
+			}
+		}
 
 		routed = append(routed, config.MCPBinding{
 			MCPID:        b.MCPID,

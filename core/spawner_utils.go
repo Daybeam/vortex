@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 
@@ -50,6 +51,143 @@ func (s *Spawner) failedOutput(capability, reason string) *SpawnResult {
 			Capability:  capability,
 		},
 	}
+}
+
+// MinResultBytesForDedup is the minimum joined result size to participate in
+// output stagnation detection. Short results (dates, booleans, "OK") repeat
+// legitimately and would cause false positives.
+const MinResultBytesForDedup = 100
+
+// computeTurnHash computes a hash of the turn's tool calls (name + args) AND
+// results for stagnation detection (C3 fix). Returns shouldTrack=false if:
+//   - results are too short (< MinResultBytesForDedup): short outputs like
+//     dates or "OK" legitimately repeat (e.g., get_current_date, polling).
+//   - all results are errors: errors are already tracked by toolFailCount;
+//     counting them here double-penalizes.
+//
+// The hash includes tool call names + arguments so that different calls
+// producing the same short result (e.g., two tools returning "OK") don't
+// collide — only identical calls + identical results trigger stagnation.
+func computeTurnHash(toolCalls []schemas.ToolCall, toolResults []string) (hash uint64, shouldTrack bool) {
+	joined := strings.Join(toolResults, "\n")
+	if len(joined) < MinResultBytesForDedup {
+		return 0, false
+	}
+	// Skip if all results are errors — errors are tracked by toolFailCount.
+	allErrors := true
+	for _, r := range toolResults {
+		if !strings.Contains(r, "❌") {
+			allErrors = false
+			break
+		}
+	}
+	if allErrors {
+		return 0, false
+	}
+	h := fnv.New64a()
+	for _, tc := range toolCalls {
+		h.Write([]byte(tc.Name))
+		h.Write([]byte(fmt.Sprintf("%v", tc.Arguments)))
+		h.Write([]byte{0}) // separator
+	}
+	h.Write([]byte(joined))
+	return h.Sum64(), true
+}
+
+// partialStagnationOutput builds a SpawnResult with StatusPartial that
+// preserves accumulated work (tool names, trace count) when the model is
+// stuck in output stagnation. Unlike failedOutput, this does not discard
+// all prior turn work — downstream steps can inspect what was accomplished.
+func (s *Spawner) partialStagnationOutput(capability, reason string, trace []store.ToolInteraction) *SpawnResult {
+	toolNames := make([]string, 0, len(trace))
+	for _, t := range trace {
+		toolNames = append(toolNames, t.ToolName)
+	}
+	return &SpawnResult{
+		Output: schemas.SubagentOutput{
+			Status:     schemas.StatusPartial,
+			Confidence: 0.3, // Low but non-zero: some work was done
+			Result: map[string]any{
+				"error":           reason,
+				"tools_used":      toolNames,
+				"tool_call_count": len(trace),
+			},
+			Assumptions: []string{"stagnation_detected: " + reason},
+			Warnings:    []string{reason},
+			Capability:  capability,
+		},
+	}
+}
+
+// MaxPartialOutputChars bounds the size of intercepted PartialOutput injected
+// into a downstream step's prompt. Without this, a multi-MB intercepted output
+// would bloat the prompt and risk context-window overflow.
+const MaxPartialOutputChars = 2000
+
+// securityInterceptionReasons are Sieve interception reasons that indicate the
+// intercepted content is security-sensitive (injection, PII, secret leak). For
+// these, the content must NOT be passed back to the model — doing so would
+// propagate the attack. The Sieve currently only produces "repetition" and
+// "schema violation" reasons, but this is defense-in-depth for future Sieve
+// enhancements that add injection/PII detection.
+var securityInterceptionReasons = []string{"injection", "pii", "security", "malicious", "secret_leak"}
+
+// sanitizePartialOutputForPassthrough prepares an intercepted PartialOutput
+// for injection into a downstream step's prompt (C2 fix). It:
+//  1. Skips passthrough entirely for security-class interception reasons
+//     (injection, PII) — sending blocked content back to the model would
+//     propagate the attack.
+//  2. Applies egress redaction to strip secrets/PII.
+//  3. Truncates to MaxPartialOutputChars to bound prompt growth.
+//  4. Wraps in untrusted-data delimiters so the model treats it as data,
+//     not instructions (prompt injection defense).
+//
+// Returns empty string if passthrough should be skipped entirely.
+func sanitizePartialOutputForPassthrough(partialOutput, interceptionReason string) string {
+	if partialOutput == "" {
+		return ""
+	}
+	// Security-class reasons: don't pass intercepted content back.
+	reasonLower := strings.ToLower(interceptionReason)
+	for _, sec := range securityInterceptionReasons {
+		if strings.Contains(reasonLower, sec) {
+			return ""
+		}
+	}
+	// Egress redaction: strip secrets before sending to model.
+	redacted := RedactEgress(partialOutput)
+	// Truncate to bound prompt growth.
+	if len(redacted) > MaxPartialOutputChars {
+		head := redacted[:MaxPartialOutputChars/2]
+		tail := redacted[len(redacted)-MaxPartialOutputChars/2:]
+		redacted = fmt.Sprintf("%s\n\n... [TRUNCATED %d chars] ...\n\n%s", head, len(redacted)-MaxPartialOutputChars, tail)
+	}
+	// Wrap in untrusted-data delimiters (prompt injection defense).
+	return fmt.Sprintf("<untrusted_data from=\"sieve_interception\">\n%s\n</untrusted_data>", redacted)
+}
+
+// AuditorAllowedTools returns a copy of the parent step's AdditionalMCPs and
+// AdditionalToolAllowlists, filtered to exclude write tools (C5 fix). The
+// auditor should only have read-only tools — it's verifying, not acting.
+// A deep copy is made to avoid mutation leak (shared map/slice reference
+// would let auditor mutations affect the parent step and vice versa).
+func AuditorAllowedTools(parentMCPs []string, parentAllowlists map[string][]string) ([]string, map[string][]string) {
+	// Copy MCPs (new backing array to avoid shared slice mutation).
+	mcps := make([]string, len(parentMCPs))
+	copy(mcps, parentMCPs)
+
+	// Deep copy allowlists with write-tool filtering.
+	allowlists := make(map[string][]string, len(parentAllowlists))
+	for mcpID, tools := range parentAllowlists {
+		filtered := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			if !IsWriteMCPTool(tool) {
+				filtered = append(filtered, tool)
+			}
+		}
+		allowlists[mcpID] = filtered
+	}
+	return mcps, allowlists
 }
 
 func (s *Spawner) resolveCandidateConfig(hub *ContextHub, role *config.Role, providerID, model string) *config.ProviderConfig {
@@ -134,11 +272,11 @@ func isRetryableError(err error) bool {
 //   - Gemini:    "exceeds the maximum number of tokens"
 //   - llama.cpp (new, b11624+): "request (26012 tokens) exceeds the available
 //     context size (16384 tokens), try increasing it" + n_prompt_tokens/n_ctx fields
-//   - llama.cpp (old, <=b11517 — Kaggle v36a3b 批实证 2026-10-13): "request
-//     (14441 token: exceeds n_ctx=12288" + n_prompt_token/n_ctx fields。
-//     🔴 该变体消息里没有 "context"/"tokens" 字样，旧模式表零匹配 →
-//     #20 压缩对旧版 llama-server 从不触发（v36a3b 20/46 task 共 61 行 400
-//     全部直穿 Final failure）。本地 b11624 实测新格式反而含 "context size"。
+//   - llama.cpp (old, <=b11517 — Kaggle v36a3b batch evidence 2026-10-13): "request
+//     (14441 token: exceeds n_ctx=12288" + n_prompt_token/n_ctx fields.
+//     🔴 That variant message has no "context"/"tokens" substring, so the old pattern zero-matches →
+//     #20 compression never triggers for old llama-server (v36a3b 20/46 tasks had 61 lines of 400
+//     all passing straight through to Final failure). Local b11624 tested: the NEW format actually contains "context size".
 //   - vLLM/Ollama/LM Studio: same OpenAI-compatible format as llama.cpp
 //   - Generic:   "too many tokens" / "context length" / "context size"
 //
@@ -150,7 +288,7 @@ func isRetryableError(err error) bool {
 // 400 text "exceeds the available context size", so #20 never triggered for
 // any OpenAI-compatible local server. Added "context size" to fix this.
 // Regression: eval §9.3 (2026-10-16) — that fix only covered the NEW llama.cpp
-// wording; the OLD wording ( Kaggle v36a3b实证, message "request (N token:
+// wording; the OLD wording ( Kaggle v36a3b evidence, message "request (N token:
 // exceeds n_ctx=M", fields n_prompt_token/n_ctx) still matched nothing, so the
 // 400 cascade death chain survived the §8.48.7 fix. Added "n_ctx" /
 // "n_prompt_tokens" (both formats always carry the n_ctx JSON field, and the
