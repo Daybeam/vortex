@@ -152,3 +152,31 @@ func TestSanitizer_UnmaskNoVaultIsFailSafe(t *testing.T) {
 		t.Fatalf("Unmask with no vault should return input unchanged, got: %s", restored)
 	}
 }
+
+// TestSanitizer_UnifiedPatterns_Bidirectional verifies the 6 patterns added in
+// the gap-1 fix (2026-10-18) are masked and restored bidirectionally.
+// These were previously only in RedactEgress (tool results), not in
+// SanitizingProvider (prompt egress) — a relay model saw them unmasked.
+func TestSanitizer_UnifiedPatterns_Bidirectional(t *testing.T) {
+	s := NewSanitizerProxy()
+	defer s.Clear("task1")
+
+	tests := []string{
+		"AWS key AKIAIOSFODNN7EXAMPLE here",
+		"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234\n-----END RSA PRIVATE KEY-----",
+		"Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890",
+		"token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.dozjgNryPpJuzg7p1vX9uX9wX9wX9wX9wX9w",
+		"Contact user@example.com for info",
+		"Phone: 13812345678",
+	}
+	for _, original := range tests {
+		masked := s.Mask(original, "task1")
+		if masked == original {
+			t.Errorf("pattern not masked (input unchanged): %q", original)
+		}
+		restored := s.Unmask(masked, "task1")
+		if restored != original {
+			t.Errorf("bidirectional failure:\n  original: %q\n  masked:   %q\n  restored: %q", original, masked, restored)
+		}
+	}
+}

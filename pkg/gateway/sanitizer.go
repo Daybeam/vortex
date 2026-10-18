@@ -2,16 +2,32 @@ package gateway
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
 )
+
+// tokenPattern matches complete [REDACTED_N] tokens (P3: unmatched detection).
+var tokenPattern = regexp.MustCompile(`\[REDACTED_\d+\]`)
 
 // secretRegexes are the patterns reused from core/scrubber.go.
 // Matched values are replaced with deterministic session-scoped tokens.
 var secretRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{20,})`),      // OpenAI/Anthropic style
 	regexp.MustCompile(`(?i)(AIza[a-zA-Z0-9_\-]{35})`), // Google style
+	// Unified with egress_redaction.go defaultEgressPatterns (gap-1 fix, 2026-10-18).
+	// These 6 patterns were previously only applied to tool results (RedactEgress)
+	// but NOT to prompt egress (SanitizingProvider). A third-party relay model sees
+	// unmasked prompts — AWS keys, JWTs, emails, etc. in system prompts / memory
+	// bank leaked. Now masked bidirectionally like the other secrets.
+	regexp.MustCompile(`(AKIA[0-9A-Z]{16})`),                                              // AWS access key
+	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), // PEM private key
+	regexp.MustCompile(`(Bearer\s+[A-Za-z0-9._\-]{20,})`),                                 // Bearer token
+	regexp.MustCompile(`(eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,})`), // JWT
+	regexp.MustCompile(`([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})`),               // email
+	regexp.MustCompile(`(1[3-9]\d{9})`),                                                   // CN phone
+	// key=value generic catch-all stays last (after specific patterns).
 	regexp.MustCompile(`(?i)(api_key|apikey|password|secret|token|credential)["']?\s*[:=]\s*["']?([a-zA-Z0-9_\-\.]{8,})["']?`),
 }
 
@@ -80,12 +96,21 @@ func (s *SanitizerProxy) Unmask(maskedInput string, taskID string) string {
 
 	vault, ok := s.vaults[taskID]
 	if !ok {
-		return maskedInput // no vault → nothing to restore
+		if tokenPattern.MatchString(maskedInput) {
+			log.Printf("WARN: SanitizerProxy.Unmask: no vault for taskID %q but input contains %d token(s); vault may have been cleared prematurely", taskID, len(tokenPattern.FindAllString(maskedInput, -1)))
+		}
+		return maskedInput
 	}
+
+	result := maskedInput
 	for token, value := range vault.tokenToValue {
-		maskedInput = strings.ReplaceAll(maskedInput, token, value)
+		result = strings.ReplaceAll(result, token, value)
 	}
-	return maskedInput
+
+	if remaining := tokenPattern.FindAllString(result, -1); len(remaining) > 0 {
+		log.Printf("WARN: SanitizerProxy.Unmask: %d unmatched token(s) remain after unmask for taskID %q: %v", len(remaining), taskID, remaining)
+	}
+	return result
 }
 
 // Clear removes the session vault for the given taskID. Call this on task

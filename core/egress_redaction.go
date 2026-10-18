@@ -1,6 +1,7 @@
 package core
 
 import (
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -8,7 +9,7 @@ import (
 	"sync/atomic"
 )
 
-// ─── Egress Redaction (I5: 出口最小化) ───────────────────────────────────
+// ─── Egress Redaction (I5: egress minimization) ───────────────────────────────────
 //
 // Design ref: docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4
 //
@@ -36,11 +37,15 @@ var defaultEgressPatterns = []egressPattern{
 	{"jwt", regexp.MustCompile(`eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}`), "[JWT REDACTED]"},
 	{"email", regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`), "[EMAIL REDACTED]"},
 	{"phone_cn", regexp.MustCompile(`1[3-9]\d{9}`), "[PHONE REDACTED]"},
+	// gap-2 fix (2026-10-18): generic key=value catch-all for custom secret formats
+	// in tool results (e.g. DATABASE_URL=postgres://user:pass). Placed last so
+	// specific patterns (openai_key, aws_key, etc.) match first.
+	{"secret_kv", regexp.MustCompile(`(?i)(api_key|apikey|password|secret|token|credential)["']?\s*[:=]\s*["']?([a-zA-Z0-9_\-\.]{8,})["']?`), "[SECRET REDACTED]"},
 }
 
 // egressRedactionDisabled is an atomic flag toggled by SetEgressRedactionDisabled.
 // When true, RedactEgress is a no-op. This replaces the former sync.OnceValue
-// that read ORCH_DISABLE_EGRESS_REDACTION once and cached it permanently.
+// that read VORTEX_DISABLE_EGRESS_REDACTION once and cached it permanently.
 //
 // Backward compat: init() reads the env var so the flag is correct before
 // SetEgressRedactionDisabled is called (brief startup window). After startup,
@@ -48,11 +53,11 @@ var defaultEgressPatterns = []egressPattern{
 // (which includes the env override via applySystemDefaults), and on every
 // config hot-reload.
 //
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 6.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 6.
 var egressRedactionDisabled atomic.Bool
 
 func init() {
-	if os.Getenv("ORCH_DISABLE_EGRESS_REDACTION") == "1" {
+	if os.Getenv("VORTEX_DISABLE_EGRESS_REDACTION") == "1" {
 		egressRedactionDisabled.Store(true)
 	}
 }
@@ -61,6 +66,9 @@ func init() {
 // Called at startup and on config hot-reload to push the
 // Registry.System.FeatureFlags.DisableEgressRedaction value.
 func SetEgressRedactionDisabled(disabled bool) {
+	if disabled {
+		log.Printf("WARN: egress redaction DISABLED — tool results will NOT be scrubbed before entering LLM context. Do not use with untrusted relay models.")
+	}
 	egressRedactionDisabled.Store(disabled)
 }
 

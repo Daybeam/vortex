@@ -59,6 +59,16 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 					}
 					return nil, fmt.Errorf("role %q not found and ephemeral generation failed: %w", req.RoleID, err)
 				}
+				// NOTE (2026-10-18): a tool-surface cloning step briefly lived
+				// here (CloneToolSurface + pickToolSurfaceTemplate) and was
+				// reverted. It copied another role's BoundMCPBindings onto the
+				// generated role, but that is the wrong layer: a step's tool
+				// surface is already expressible via StepInput.AdditionalMCPs /
+				// AdditionalToolAllowlists, so cloning duplicated the same
+				// capability behind an extra object, an extra serialisation into
+				// the task manifest, and a name-matching heuristic. Roles decide
+				// HOW to think (instruction, synthesised from the cookbook);
+				// steps decide WHAT to use. See docs 52 §12.3.
 				req.Hub.Graph.SetSessionRole(req.RoleID, role)
 				if skill != nil {
 					req.Hub.Graph.SetSessionSkill(skill.ID, skill)

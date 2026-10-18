@@ -195,3 +195,31 @@ func TestSetEgressRedactionDisabled_HotReload(t *testing.T) {
 		t.Error("RedactEgress should redact after re-enable")
 	}
 }
+
+// TestRedactEgress_SecretKeyValue verifies the gap-2 fix (2026-10-18): generic
+// key=value secret formats in tool results are stripped. Previously only
+// standard API-key formats were caught; custom formats like
+// "DATABASE_URL=postgres://user:pass" leaked into the LLM context.
+func TestRedactEgress_SecretKeyValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		leak  string // substring that must NOT appear in redacted output
+	}{
+		{"password_assign", "config: password=mysecretpassword123", "mysecretpassword123"},
+		{"api_key_assign", "api_key=abc123def456ghi789", "abc123def456ghi789"},
+		{"json_secret", `{"secret": "mysecretvalue123"}`, "mysecretvalue123"},
+		{"token_colon", "token: a1b2c3d4e5f6g7h8", "a1b2c3d4e5f6g7h8"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RedactEgress(tc.input)
+			if strings.Contains(got, tc.leak) {
+				t.Errorf("secret value leaked: input=%q output=%q", tc.input, got)
+			}
+			if !strings.Contains(got, "[SECRET REDACTED]") {
+				t.Errorf("expected [SECRET REDACTED] marker, got: %q", got)
+			}
+		})
+	}
+}
