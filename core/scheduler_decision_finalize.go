@@ -66,6 +66,12 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	// Notify waiters
 	s.broadcastDone(graph.TaskID)
 
+	// P2 (2026-10-18): clear sanitizer vault for this task to prevent
+	// unbounded memory growth and enforce ephemeral secret scope.
+	if s.spawner != nil && s.spawner.ClearSanitizer != nil {
+		s.spawner.ClearSanitizer(graph.TaskID)
+	}
+
 	// Write manifest
 	outDir := filepath.Join(s.outputBase, graph.TaskID)
 	if err := os.MkdirAll(outDir, 0755); err != nil { // audit L-3.1: log MkdirAll failure
