@@ -23,6 +23,12 @@ persists experience for self-correction, and exposes tools for external control.
 - **Memory bank control layer** — toggle MemoryBank prompt injection and auto-extraction; persists user profile and session context
 - **Non-interactive mode** — auto-resolves blocked decisions with conservative defaults for CI/batch eval; optional critical-tier override and decider role delegation
 - **MCP env cache** — caches MCP server environment variables with invalidation on config reload
+- **Task planner** — optional pre-step planner spawn that replaces the caller's single step with a multi-step DAG (`enable_planner_first`); configurable timeout and max steps
+- **Sanitizing provider** — bidirectional PII tokenization on the provider path; masks secrets in prompts and restores them in responses (`sanitizer_enabled`)
+- **Asset gate** — immutable asset pipeline gate with SHA-256 hash verification for external assets (`allow_external_assets`)
+- **Risk tier classification** — configurable keyword-based risk tiering for task classification (`critical_risk_keywords`, `moderate_risk_keywords`)
+- **Sticky union routing** — tools called in prior turns survive re-route, preventing mid-task capability loss
+- **Deterministic tool routing** — deterministic tool ordering with always-include bindings for stable MCP tool selection
 
 **Interfaces:**
 - **MCP** (stdio + raw SSE) — 12 core orchestration tools for MCP-compatible clients (Claude Desktop, IDEs, etc.):

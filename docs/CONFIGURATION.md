@@ -135,6 +135,14 @@ Roles define agent personas with bound skills, providers, and instructions. Defi
 }
 ```
 
+### MCPBinding
+
+| Field | Type | Description |
+|---|---|---|
+| `mcp_id` | string | MCP server identifier. |
+| `allowed_tools` | string[] | Restrict access to specific tools. Empty = all tools. |
+| `always_include` | string[] | Tools always included in routing regardless of capability matching. Survives sticky-union re-route. |
+
 ## Role Groups
 
 Role groups combine multiple roles with an execution policy.
@@ -241,6 +249,12 @@ External MCP servers provide additional tools. Define in `mcps`.
 | `max_task_chars` | int | 0 | Maximum task description length in chars. `0` = no limit. |
 | `tool_repetition_threshold` | int | 0 | Maximum consecutive identical tool calls before breaking. `0` = no limit. |
 | `external_interceptors` | PluginConfig[] | `[]` | External interceptor scripts with integrity verification (see below). |
+| `critical_risk_keywords` | string[] | `[]` | Override keywords for critical risk tier classification. Empty = engine defaults (browser/image/generate/...). See `schemas.SetRiskTierKeywords`. |
+| `moderate_risk_keywords` | string[] | `[]` | Override keywords for moderate risk tier classification. Empty = engine defaults (patch/refactor/build/test). |
+| `sanitizer_enabled` | bool | false | Enable bidirectional PII tokenization on the provider path. Secrets in prompts are replaced with `[REDACTED_N]` before sending and restored in responses. Required when routing through untrusted relay pools. |
+| `enable_planner_first` | bool | false | Enable tier-1(b) planning — a `task_planner` spawn before any step exists, whose DAG replaces the caller's single step. |
+| `planner_timeout_secs` | int | 90 | Timeout for the planner spawn. `0` = 90s default. |
+| `planner_max_steps` | int | 12 | Maximum steps in the produced DAG. `0` = parser default. |
 
 ### PluginConfig
 
