@@ -171,20 +171,37 @@ func sanitizePartialOutputForPassthrough(partialOutput, interceptionReason strin
 // auditor should only have read-only tools — it's verifying, not acting.
 // A deep copy is made to avoid mutation leak (shared map/slice reference
 // would let auditor mutations affect the parent step and vice versa).
+//
+// C5 fix (2026-10-19): whitelist approach. MCPs are only included if they
+// have an explicit allowlist entry that survives filtering with at least one
+// read-only tool. This fixes two bugs:
+//  1. MCPs without an allowlist entry were inherited entirely (all write tools).
+//  2. MCPs whose allowlist filtered to empty were treated as "no restriction"
+//     by validator.go (empty = unrestricted), granting full access.
+// Now: no allowlist → skipped; empty after filtering → skipped.
 func AuditorAllowedTools(parentMCPs []string, parentAllowlists map[string][]string) ([]string, map[string][]string) {
-	// Copy MCPs (new backing array to avoid shared slice mutation).
-	mcps := make([]string, len(parentMCPs))
-	copy(mcps, parentMCPs)
-
-	// Deep copy allowlists with write-tool filtering.
 	allowlists := make(map[string][]string, len(parentAllowlists))
-	for mcpID, tools := range parentAllowlists {
+	var mcps []string
+
+	for _, mcpID := range parentMCPs {
+		tools, hasAllowlist := parentAllowlists[mcpID]
+		if !hasAllowlist {
+			// No explicit allowlist → can't guarantee read-only → skip (whitelist).
+			continue
+		}
+
 		filtered := make([]string, 0, len(tools))
 		for _, tool := range tools {
 			if !IsWriteMCPTool(tool) {
 				filtered = append(filtered, tool)
 			}
 		}
+		if len(filtered) == 0 {
+			// All tools were write tools → empty allowlist would mean
+			// "no restriction" in validator.go → skip this MCP entirely.
+			continue
+		}
+		mcps = append(mcps, mcpID)
 		allowlists[mcpID] = filtered
 	}
 	return mcps, allowlists
@@ -384,23 +401,38 @@ func isStateChangingTool(name string) bool {
 // (treating a read tool as write) just require a _reason, which is a mild
 // friction. False negatives (treating a write tool as read) are the real
 // risk, so the list errs on the side of inclusion.
+//
+// C5 fix (2026-10-19): added add_, pay_, like_, follow_, mark_, upload_,
+// execute_, run_, publish_ — these were missing, causing auditor to inherit
+// write tools as read-only.
 var writeToolPrefixes = []string{
 	"cancel_", "update_", "create_", "delete_", "set_", "write_",
 	"send_", "transfer_", "book_", "submit_", "close_", "modify_",
 	"edit_", "insert_", "remove_", "drop_", "put_", "post_", "replace_",
 	"approve_", "reject_", "assign_", "revoke_", "activate_", "deactivate_",
+	// C5 fix (2026-10-19): missing write verbs
+	"add_", "pay_", "like_", "follow_", "mark_", "upload_",
+	"execute_", "run_", "publish_",
 }
 
 // IsWriteMCPTool returns true if the tool name starts with a write verb prefix.
 // Core tools (write_file, read_file, execute_code) are excluded — they are
 // filesystem operations tracked by StagedWorkspace, not domain writes.
 // Exported for contract testing (Feature #17: Write Authorization).
+//
+// C5 fix (2026-10-19): handle app-prefixed tool names (e.g., "app__send_message").
+// The write verb appears after the "app__" prefix, so we strip it before checking.
 func IsWriteMCPTool(name string) bool {
 	if CoreToolNames[name] {
 		return false // core tools are fs-only, tracked by StagedWorkspace
 	}
+	checkName := name
+	// Strip "app__" prefix to check the verb underneath (e.g., "app__send_x" → "send_x")
+	if strings.HasPrefix(name, "app__") {
+		checkName = strings.TrimPrefix(name, "app__")
+	}
 	for _, prefix := range writeToolPrefixes {
-		if strings.HasPrefix(name, prefix) {
+		if strings.HasPrefix(checkName, prefix) {
 			return true
 		}
 	}

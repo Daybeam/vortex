@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -342,51 +341,34 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 				for id, score := range merged {
 					sorted = append(sorted, toolScore{id: id, score: score})
 				}
-				sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
+			// Deterministic sort: primary by score descending, secondary by id
+			// ascending. The secondary key guarantees stable output order when
+			// multiple tools share the same score, preventing non-deterministic
+			// tool selection across runs (which invalidates prompt-cache prefixes
+			// and makes regression tests flaky).
+			sort.Slice(sorted, func(i, j int) bool {
+				if sorted[i].score != sorted[j].score {
+					return sorted[i].score > sorted[j].score
+				}
+				return sorted[i].id < sorted[j].id
+			})
 
-				// Threshold/Limit for filtered tools with token budget + embedding dedup
-				limit := 5
-				if len(sorted) < 5 {
-					limit = len(sorted)
+			// Threshold/Limit for filtered tools with token budget.
+			limit := 5
+			if len(sorted) < 5 {
+				limit = len(sorted)
+			}
+			var usedBudget int
+			for i := 0; i < limit; i++ {
+				selected := sorted[i].id
+				// Check token budget
+				tokens := r.estimateToolTokens(selected, mcpDef)
+				if req.MaxTokenBudget > 0 && usedBudget+tokens > req.MaxTokenBudget && i > 0 {
+					break
 				}
-				var usedBudget int
-				// Collect the RRF-ranked tool IDs to build an embedding similarity matrix
-				rankedList := make([]string, 0, len(sorted))
-				for _, ts := range sorted {
-					rankedList = append(rankedList, ts.id)
-				}
-				// Embedding dedup: mark tools redundant (>0.85 cosine) with an already-selected tool
-				redundant := make(map[string]bool)
-				for i := 0; i < limit && !redundant[sorted[i].id]; i++ {
-					selected := sorted[i].id
-					// Check token budget
-					tokens := r.estimateToolTokens(selected, mcpDef)
-					if req.MaxTokenBudget > 0 && usedBudget+tokens > req.MaxTokenBudget && i > 0 {
-						break
-					}
-					usedBudget += tokens
-					filtered = append(filtered, selected)
-					// Mark future tools redundant with this selection.
-					// Embedding dedup runs in the same RLock scope as the
-					// candidate snapshot above; re-acquire here because the
-					// snapshot path released it.
-					r.mu.RLock()
-					if vec := r.embeddings[selected]; len(vec) > 0 {
-						for _, cand := range rankedList {
-							if cand == selected || redundant[cand] {
-								continue
-							}
-							candVec := r.embeddings[cand]
-							if len(candVec) == 0 {
-								continue
-							}
-							if cosineSimF32(vec, candVec) > 0.85 {
-								redundant[cand] = true
-							}
-						}
-					}
-					r.mu.RUnlock()
-				}
+				usedBudget += tokens
+				filtered = append(filtered, selected)
+			}
 			}
 		} else {
 			// No hybrid (BM25/embedding) signal available -- keep the legacy,
@@ -559,20 +541,6 @@ func (r *ToolRouter) estimateToolTokens(toolName string, mcpDef *config.MCPDef) 
 		}
 	}
 	return len(toolName)/4 + 8
-}
-
-// cosineSimF32 returns the cosine similarity between two float32 vectors.
-func cosineSimF32(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		na += float64(a[i]) * float64(a[i])
-		nb += float64(b[i]) * float64(b[i])
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 func isDiscoveryTool(name string) bool {

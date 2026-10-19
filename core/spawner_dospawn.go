@@ -121,6 +121,13 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// context near the top (AppWorld eval: prevent burial at position 5/51).
 	var stickyContext string
 
+	// R2: Sticky union — tools called in prior turns survive re-route.
+	// Without this, re-routing at each turn can drop tools the model was
+	// actively using (e.g. show_sent_payment_requests called in turn 1,
+	// dropped in turn 2 because the task text changed), breaking multi-turn
+	// workflows and invalidating prompt-cache prefixes.
+	calledTools := make(map[string]bool)
+
 turnLoop:
 	for turn := 0; turn < maxTurns; turn++ {
 		// Abort if the task context was cancelled (e.g. CancelTask or shutdown).
@@ -810,6 +817,11 @@ turnLoop:
 		statesVisited = tcState.statesVisited
 		previousState = tcState.previousState
 
+		// R2: Track tools called across turns for sticky union.
+		for _, tc := range resp.ToolCalls {
+			calledTools[tc.Name] = true
+		}
+
 		// B2 (eval §3.2) + C3 fix: Output hash dedup — detect model stuck
 		// re-fetching identical data (e.g. 129 venmo calls inside execute_code
 		// loops). Consecutive-only: if the hash changes, count resets. The hash
@@ -909,6 +921,10 @@ turnLoop:
 			ProgressiveMode:    progressiveEnabled,
 			PredecessorSkillID: req.PredecessorSkillID,
 		})
+
+		// R2: Sticky union — re-route may drop tools the model was actively
+		// using. Add them back so multi-turn workflows don't break.
+		bindings = s.stickyUnionBindings(bindings, calledTools)
 
 		vdaPrompt := ""
 		if needsVerification {

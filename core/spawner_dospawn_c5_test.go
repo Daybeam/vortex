@@ -71,8 +71,13 @@ func TestAuditorAllowedTools_WriteToolsFiltered(t *testing.T) {
 
 func TestAuditorAllowedTools_SliceCopyNotShared(t *testing.T) {
 	// Mutating the returned MCPs slice must not affect the parent.
+	// C5 fix: MCPs now need an allowlist with surviving read tools to be included.
 	parentMCPs := []string{"mcp1", "mcp2"}
-	auditMCPs, _ := AuditorAllowedTools(parentMCPs, nil)
+	parentAllowlists := map[string][]string{
+		"mcp1": {"read_tool"},
+		"mcp2": {"query"},
+	}
+	auditMCPs, _ := AuditorAllowedTools(parentMCPs, parentAllowlists)
 
 	// Mutate the audit copy
 	if len(auditMCPs) > 0 {
@@ -117,17 +122,69 @@ func TestAuditorAllowedTools_EmptyInput(t *testing.T) {
 }
 
 func TestAuditorAllowedTools_AllWriteToolsFilteredToEmpty(t *testing.T) {
-	// If all tools are write tools, the allowlist should be empty (not nil).
+	// C5 fix (2026-10-19): if all tools are write tools, the MCP should be
+	// SKIPPED entirely (not in mcps, not in allowlists). Previously, the empty
+	// allowlist was kept, and validator.go treated empty as "no restriction"
+	// → full access → auditor could call write tools.
+	parentMCPs := []string{"banking"}
 	parentAllowlists := map[string][]string{
 		"banking": {"transfer_payment", "delete_account", "close_account"},
 	}
-	_, auditAllowlists := AuditorAllowedTools(nil, parentAllowlists)
+	auditMCPs, auditAllowlists := AuditorAllowedTools(parentMCPs, parentAllowlists)
 
-	if auditAllowlists["banking"] == nil {
-		t.Errorf("filtered allowlist should be empty slice, not nil")
+	// MCP should be skipped — not in the returned mcps list
+	for _, mcp := range auditMCPs {
+		if mcp == "banking" {
+			t.Errorf("MCP 'banking' with all-write tools should be skipped, not included in mcps")
+		}
 	}
-	if len(auditAllowlists["banking"]) != 0 {
-		t.Errorf("all-write-tool allowlist should be empty after filtering, got %d tools", len(auditAllowlists["banking"]))
+	// MCP should not be in allowlists either
+	if _, exists := auditAllowlists["banking"]; exists {
+		t.Errorf("MCP 'banking' with all-write tools should be skipped, not in allowlists")
+	}
+}
+
+func TestAuditorAllowedTools_NoAllowlistMeansSkipped(t *testing.T) {
+	// C5 fix (2026-10-19): MCPs without an explicit allowlist entry are
+	// skipped (whitelist approach). Previously they were inherited entirely
+	// with all write tools.
+	parentMCPs := []string{"unknown_mcp"}
+	// No allowlist entry for "unknown_mcp"
+	auditMCPs, auditAllowlists := AuditorAllowedTools(parentMCPs, nil)
+
+	if len(auditMCPs) != 0 {
+		t.Errorf("MCP without allowlist should be skipped (whitelist), got %d mcps: %v", len(auditMCPs), auditMCPs)
+	}
+	if len(auditAllowlists) != 0 {
+		t.Errorf("no allowlists should be returned for MCPs without entries, got %d", len(auditAllowlists))
+	}
+}
+
+func TestIsWriteMCPTool_AppPrefixedNames(t *testing.T) {
+	// C5 fix (2026-10-19): handle app-prefixed tool names (e.g., "app__send_message").
+	// The write verb appears after "app__", so we strip it before checking.
+	writeAppTools := []string{"app__send_message", "app__create_order", "app__delete_user", "app__transfer_funds"}
+	for _, tool := range writeAppTools {
+		if !IsWriteMCPTool(tool) {
+			t.Errorf("app-prefixed write tool %q should be detected as write", tool)
+		}
+	}
+	readAppTools := []string{"app__get_status", "app__query_list", "app__search_items"}
+	for _, tool := range readAppTools {
+		if IsWriteMCPTool(tool) {
+			t.Errorf("app-prefixed read tool %q should NOT be detected as write", tool)
+		}
+	}
+}
+
+func TestIsWriteMCPTool_AddedPrefixes(t *testing.T) {
+	// C5 fix (2026-10-19): verify newly added write prefixes are detected.
+	addedWriteTools := []string{"add_item", "pay_invoice", "like_post", "follow_user",
+		"mark_read", "upload_file", "execute_query", "run_job", "publish_article"}
+	for _, tool := range addedWriteTools {
+		if !IsWriteMCPTool(tool) {
+			t.Errorf("tool %q with newly added write prefix should be detected as write", tool)
+		}
 	}
 }
 
@@ -135,10 +192,11 @@ func TestAuditorAllowedTools_CoreToolsPreserved(t *testing.T) {
 	// Core tools (write_file, read_file, execute_code) are NOT write MCP tools
 	// (they're filesystem ops tracked by StagedWorkspace). They should be
 	// preserved in the auditor's allowlist.
+	parentMCPs := []string{"core"}
 	parentAllowlists := map[string][]string{
 		"core": {"read_file", "write_file", "execute_code"},
 	}
-	_, auditAllowlists := AuditorAllowedTools(nil, parentAllowlists)
+	_, auditAllowlists := AuditorAllowedTools(parentMCPs, parentAllowlists)
 
 	if len(auditAllowlists["core"]) != 3 {
 		t.Errorf("core tools should all be preserved, got %d: %v", len(auditAllowlists["core"]), auditAllowlists["core"])
