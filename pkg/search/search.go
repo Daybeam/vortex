@@ -106,7 +106,16 @@ func RRFMergeCapped(maxPerSource int, rankings ...map[string]float64) map[string
 		for id, score := range ranking {
 			items = append(items, Scored{ID: id, Score: score})
 		}
-		sort.Slice(items, func(i, j int) bool { return items[i].Score > items[j].Score })
+		// Deterministic sort: primary by score descending, secondary by ID
+		// ascending. The secondary key guarantees stable rank assignment when
+		// multiple items share the same score, preventing non-deterministic
+		// RRF score assignment across runs.
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].Score != items[j].Score {
+				return items[i].Score > items[j].Score
+			}
+			return items[i].ID < items[j].ID
+		})
 
 		// Pre-fusion cap: truncate to top maxPerSource items per source.
 		if maxPerSource > 0 && len(items) > maxPerSource {

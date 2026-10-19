@@ -17,4 +17,6 @@ paths = [
   '''core/create_role_decision_test\.go''',
   '''core/prompt_assembler_promptmanager_test\.go''',
   '''core/scheduler_surgery_t5_test\.go''',
+  '''store/fmc_batch_scrub_test\.go''',
+  '''core/sanitizer_scrub_test\.go''',
 ]

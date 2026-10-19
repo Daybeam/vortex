@@ -110,6 +110,9 @@ func (n *CapabilityNavigator) ClassifyIntent(ctx context.Context, query string) 
 		prompt := fmt.Sprintf("Analyze the user query and extract a list of high-level capability tags (e.g., 'research.paper', 'knowledge.compare').\nKnown capabilities: %s\n\nQuery: %s\n\nRespond ONLY with a comma-separated list of tags.",
 			strings.Join(knownTags, ", "), query)
 
+		// C6.4: scrub secrets from the user query before sending to the LLM.
+		prompt = ScrubSecrets(prompt)
+
 		resp, err := provider.Complete(ctx, providers.CompleteRequest{
 			System:  SysPromptIntentClassifier,
 			User:    prompt,

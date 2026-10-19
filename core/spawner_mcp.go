@@ -201,7 +201,11 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 	s.registry.Mu.Unlock()
 
 	mcp.InitFilter()
-	s.toolRouter.RefreshToolEmbeddings(ctx, s.registry)
+	// C1 fix (2026-10-19): nil check — toolRouter may not be initialized
+	// in test contexts or early startup before NewSpawner completes wiring.
+	if s.toolRouter != nil {
+		s.toolRouter.RefreshToolEmbeddings(ctx, s.registry)
+	}
 	s.logger.Log("EventMCPToolsDiscovered", taskID, "", map[string]any{
 		"mcp":   mcp.ID,
 		"count": len(mcp.FullToolDefinitions),
@@ -229,9 +233,10 @@ func (s *Spawner) ensureMCPDiscovery(ctx context.Context, hub *ContextHub, taskI
 		if mcp == nil || mcp.Command == "" {
 			continue // remote MCPs (mcp.URL) handled in buildMCPServers
 		}
-		if len(mcp.FullToolDefinitions) > 0 {
-			continue // already discovered (warm start / re-spawn)
-		}
+		// C1 fix (2026-10-19): don't check FullToolDefinitions here (outside
+		// the lock) — concurrent discovery could be appending to it right now,
+		// causing a data race. The idempotency check inside discoverStdioMCP
+		// (under the lock) handles skip-already-discovered correctly.
 		dLock := s.mcpMgr.discoveryLock(mcp.ID)
 		dLock.Lock()
 		s.discoverStdioMCP(ctx, mcp, taskID)

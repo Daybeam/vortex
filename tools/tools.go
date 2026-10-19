@@ -203,7 +203,13 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 		// cross_owner_denied because CheckTaskOwnership sees tier="" (not
 		// admin) and the caller identity doesn't match the task owner.
 		// See docs/53-appworld-transport-fix-20261018.md §4.
-		if _, ok := ctx.Value(AuthTierKey).(string); !ok {
+		//
+		// SECURITY FIX (2026-10-19): loggedHandler wraps ALL transports, not
+		// just stdio. If an SSE/HTTP path fails to set AuthTierKey, the request
+		// silently became admin → cross-tenant access via CheckTaskOwnership.
+		// Now only inject when the app itself is not public. For public apps,
+		// a missing tier stays empty → CheckTaskOwnership denies (safe default).
+		if _, ok := ctx.Value(AuthTierKey).(string); !ok && app.Tier != TierPublic {
 			ctx = context.WithValue(ctx, AuthTierKey, TierAdmin)
 		}
 

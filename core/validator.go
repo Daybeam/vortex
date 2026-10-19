@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/daybeam/vortex/config"
 )
@@ -156,12 +157,20 @@ func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, a
 					intersected = append(intersected, t)
 				}
 			}
-			if len(intersected) > 0 {
-				allowed = intersected
-			} else {
-				// Intersection empty: fall back to full access.
-				allowed = []string{}
-			}
+		if len(intersected) > 0 {
+			allowed = intersected
+		} else {
+			// Intersection empty: fall back to full access.
+			// T7 observability: warn so operators can detect silent
+			// over-permissioning (planner specified tools, none exist).
+			slog.Warn("tool allowlist intersection empty — falling back to full access",
+				"mcp_id", mcpID,
+				"role", roleID,
+				"planned_tools", allowed,
+				"discovered_count", len(mcpDef.AvailableTools),
+			)
+			allowed = []string{}
+		}
 		}
 		extraBindings = append(extraBindings, config.MCPBinding{
 			MCPID:        mcpID,

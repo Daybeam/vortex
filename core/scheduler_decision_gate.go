@@ -465,8 +465,21 @@ func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string) string 
 	}
 
 	// Build context: task graph + archive step summaries.
+	// T4 fix (2026-10-19): extract ALL needed values under the lock —
+	// graph.Steps is a map (concurrent read+write = panic), graph.Status
+	// and len(graph.Steps) are data races if read after RUnlock.
 	s.Mu.RLock()
 	graph := s.graphs[taskID]
+	var roleHint string
+	var graphStatus string
+	var stepCount int
+	if graph != nil {
+		graphStatus = string(graph.Status)
+		stepCount = len(graph.Steps)
+		if st := graph.Steps[stepID]; st != nil {
+			roleHint = st.RoleID
+		}
+	}
 	s.Mu.RUnlock()
 	if graph == nil {
 		return ""
@@ -501,14 +514,8 @@ func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string) string 
 	// (submitDecision's "replan" option, which needs steps to inject).
 	// The contract below is now JSON, and the catalog is supplied so the
 	// planner can name real tools instead of guessing.
-	roleHint := ""
-	// T4: use the graph snapshot obtained under s.Mu.RLock above (line 539)
-	// instead of re-reading s.graphs[taskID] without the lock.
-	if graph != nil {
-		if st := graph.Steps[stepID]; st != nil {
-			roleHint = st.RoleID
-		}
-	}
+	// T4 fix (2026-10-19): roleHint, graphStatus, stepCount extracted under
+	// s.Mu.RLock above — no more lock-after-unlock reads on graph.Steps/Status.
 	toolCatalog, _ := s.plannerToolCatalog(roleHint)
 	roleList, _ := s.plannerAllowedRoles()
 
@@ -527,7 +534,7 @@ Analyze the situation and produce a revised execution plan. Consider what has al
 %s
 
 Note: the problem step will be marked deprecated and replaced by the steps you emit.`,
-		taskID, stepID, reason, graph.Status, len(graph.Steps), summariesText,
+		taskID, stepID, reason, graphStatus, stepCount, summariesText,
 		roleList, toolCatalog, planJSONContract)
 
 	// Spawn the planner role.

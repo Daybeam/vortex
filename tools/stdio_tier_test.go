@@ -113,3 +113,60 @@ func TestCheckTaskOwnership_StdioWithoutFixFails(t *testing.T) {
 		t.Errorf("pre-fix stdio (no tier) should FAIL ownership check for taskOwner='stdio'")
 	}
 }
+
+// Regression for security fix (2026-10-19):
+// loggedHandler wrapped ALL transports, not just stdio. If an SSE/HTTP path
+// failed to set AuthTierKey, the request silently became admin → cross-tenant
+// access. Fix: only inject TierAdmin when app.Tier != TierPublic.
+//
+// See audit report §2: "769d16808 的默认 admin 注入".
+
+func TestLoggedHandler_PublicAppNoTierDoesNotGetAdmin(t *testing.T) {
+	// A public app (app.Tier == TierPublic) with a missing AuthTierKey
+	// (e.g., an SSE path that forgot to set the tier) must NOT get TierAdmin
+	// injected. Before the fix, this silently escalated to admin → cross-tenant.
+	app := &App{Tier: TierPublic}
+
+	var capturedTier string
+	handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if v, ok := ctx.Value(AuthTierKey).(string); ok {
+			capturedTier = v
+		}
+		return &mcp.CallToolResult{}, nil
+	}
+
+	wrapped := app.loggedHandler("test_tool", handler)
+	// No AuthTierKey set — simulates a missed SSE/HTTP path
+	ctx := context.Background()
+	wrapped(ctx, mcp.CallToolRequest{})
+
+	if capturedTier == TierAdmin {
+		t.Fatal("SECURITY: public app with missing AuthTierKey got TierAdmin injected — cross-tenant access possible")
+	}
+	if capturedTier != "" {
+		t.Errorf("public app with missing AuthTierKey should have empty tier (safe denial), got %q", capturedTier)
+	}
+}
+
+func TestLoggedHandler_AdminAppNoTierGetsAdmin(t *testing.T) {
+	// A non-public app (e.g., stdio harness, app.Tier == "" or TierAdmin)
+	// with a missing AuthTierKey should still get TierAdmin injected.
+	// This preserves the stdio trusted-pipe behavior.
+	app := &App{Tier: ""} // admin/default app
+
+	var capturedTier string
+	handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if v, ok := ctx.Value(AuthTierKey).(string); ok {
+			capturedTier = v
+		}
+		return &mcp.CallToolResult{}, nil
+	}
+
+	wrapped := app.loggedHandler("test_tool", handler)
+	ctx := context.Background()
+	wrapped(ctx, mcp.CallToolRequest{})
+
+	if capturedTier != TierAdmin {
+		t.Errorf("admin/default app with missing AuthTierKey should get TierAdmin injected, got %q", capturedTier)
+	}
+}

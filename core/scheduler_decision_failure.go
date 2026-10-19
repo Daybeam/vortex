@@ -181,7 +181,6 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	if cause == FailureClassContextDeficit {
 		options = append(options, "retry_with_context")
 	}
-	options = append(options, "escalate_model")
 
 	s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 		"root_cause":       string(cause),
