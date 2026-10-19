@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,7 +63,7 @@ func NewMemoryBankStore(baseDir string, backend IMemoryBankBackend) *MemoryBankS
 }
 
 // Save writes all MemoryBank categories to their respective markdown files.
-// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 2.
+// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 2.
 func (s *MemoryBankStore) Save(mb MemoryBank) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -214,6 +215,43 @@ func (s *MemoryBankStore) SaveUserProfile(up UserProfile) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(s.baseDir, "userProfile.md"), []byte(b.String()), 0644)
+}
+
+// DeleteUserScope removes all MemoryBank entries in user-scoped categories
+// (user_profile) from the SQLite backend. Also deletes the userProfile.md
+// file on disk. Returns the count of DB rows deleted.
+//
+// Session-scoped memory is NOT touched — it's covered by the existing TTL
+// mechanism. See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md.
+func (s *MemoryBankStore) DeleteUserScope(ctx context.Context) (int64, error) {
+	sqlite, ok := s.backend.(*SQLiteMemoryBankBackend)
+	if !ok {
+		return 0, fmt.Errorf("backend does not support deletion")
+	}
+
+	var total int64
+	for _, cat := range []string{"user_profile"} {
+		n, err := sqlite.DeleteByCategory(ctx, cat)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+
+	// Also remove the on-disk markdown file.
+	_ = os.Remove(filepath.Join(s.baseDir, "userProfile.md"))
+
+	return total, nil
+}
+
+// SearchAndDelete removes MemoryBank entries whose content contains the query.
+// Returns the count of rows deleted. Used by `/forget memory <query> confirm`.
+func (s *MemoryBankStore) SearchAndDelete(ctx context.Context, query string) (int64, error) {
+	sqlite, ok := s.backend.(*SQLiteMemoryBankBackend)
+	if !ok {
+		return 0, fmt.Errorf("backend does not support deletion")
+	}
+	return sqlite.SearchAndDelete(ctx, query)
 }
 
 func (s *MemoryBankStore) Load() (*MemoryBank, error) {

@@ -107,8 +107,8 @@ func TestFeatureFlags_EnvOverride(t *testing.T) {
 	}
 
 	// Set env var to override disable_force_tool
-	os.Setenv("ORCH_DISABLE_FORCE_TOOL", "1")
-	defer os.Unsetenv("ORCH_DISABLE_FORCE_TOOL")
+	os.Setenv("VORTEX_DISABLE_FORCE_TOOL", "1")
+	defer os.Unsetenv("VORTEX_DISABLE_FORCE_TOOL")
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {
@@ -141,8 +141,8 @@ func TestFeatureFlags_EnvOverrideFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	os.Setenv("ORCH_DISABLE_EGRESS_REDACTION", "0")
-	defer os.Unsetenv("ORCH_DISABLE_EGRESS_REDACTION")
+	os.Setenv("VORTEX_DISABLE_EGRESS_REDACTION", "0")
+	defer os.Unsetenv("VORTEX_DISABLE_EGRESS_REDACTION")
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {
@@ -165,8 +165,8 @@ func TestFeatureFlags_FSOnlyStreakLimit_EnvOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	os.Setenv("ORCH_FS_ONLY_STREAK_LIMIT", "5")
-	defer os.Unsetenv("ORCH_FS_ONLY_STREAK_LIMIT")
+	os.Setenv("VORTEX_FS_ONLY_STREAK_LIMIT", "5")
+	defer os.Unsetenv("VORTEX_FS_ONLY_STREAK_LIMIT")
 
 	reg, err := NewRegistry(configPath)
 	if err != nil {

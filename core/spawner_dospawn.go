@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/gateway"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -50,6 +51,23 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// block normal cross-step work.
 	toolCallCount := make(map[string]int) // callKey → count (resets per step)
 	sieveGuardianHits := 0
+	// B2 (eval §3.2): Output hash dedup for execute_code loop detection.
+	// C3 fix (2026-10-18): Consecutive-only tracking. The previous cumulative
+	// map (resultHashCounts) produced false positives for legitimate polling
+	// (e.g., check_status every 5 turns — same hash on turns 1,6,11,16 would
+	// trigger stagnation even though the model was making progress between
+	// polls). Now we track only consecutive repeats: if the hash changes,
+	// the count resets to 1. Only maxConsecutiveDuplicates identical turns
+	// in a row trigger intervention.
+	//
+	// The hash now includes tool call names + arguments (not just results)
+	// so different calls with the same short output don't collide. Short
+	// results (< MinResultBytesForDedup) and all-error turns are skipped
+	// entirely — they legitimately repeat and are tracked elsewhere.
+	var lastResultHash uint64
+	var consecutiveRepeatCount int
+	outputStagnationHinted := false
+	const maxConsecutiveDuplicates = 3
 	// P1 fix (2026-10-03, eval §0.5): Consecutive parse failure counter.
 	// After 3 consecutive unparseable outputs, break the spin loop instead
 	// of burning 19-43 provider calls on identical failures.
@@ -74,7 +92,7 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// monitor orchestrator.progress.fs_only_streak_max, enable threshold only
 	// if metrics justify it. See docs/completed/2026-10-03/ §#4+#15.
 	//
-	// Default 0 = disabled (metrics only). Set ORCH_FS_ONLY_STREAK_LIMIT=5
+	// Default 0 = disabled (metrics only). Set VORTEX_FS_ONLY_STREAK_LIMIT=5
 	// to enable. Start conservative to avoid aborting legitimate long
 	// reasoning chains that use fs-only tools productively.
 	// Migrated to Registry.System.FeatureFlags (hot-reloadable).
@@ -102,6 +120,13 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// UserBlocks before each StreamComplete so the model always has persistent
 	// context near the top (AppWorld eval: prevent burial at position 5/51).
 	var stickyContext string
+
+	// R2: Sticky union — tools called in prior turns survive re-route.
+	// Without this, re-routing at each turn can drop tools the model was
+	// actively using (e.g. show_sent_payment_requests called in turn 1,
+	// dropped in turn 2 because the task text changed), breaking multi-turn
+	// workflows and invalidating prompt-cache prefixes.
+	calledTools := make(map[string]bool)
 
 turnLoop:
 	for turn := 0; turn < maxTurns; turn++ {
@@ -159,6 +184,11 @@ turnLoop:
 					}
 					return nil, err
 				}
+			}
+
+			if s.sanitizer != nil {
+				ctx = gateway.ContextWithTaskID(ctx, req.TaskID)
+				provider = gateway.NewSanitizingProvider(provider, s.sanitizer)
 			}
 
 			// Dynamic Protocol: Re-build prompts and servers for each candidate family
@@ -602,7 +632,7 @@ turnLoop:
 			}
 
 			// [EVAL-OBS] 2026-10-07 observation print: diagnose 'how many rounds the engine ran
-			// within a single τ² turn, what each round called, and why it didn't exit'. Enabled by ORCH_EVAL_OBS env var, off by default.
+			// within a single τ² turn, what each round called, and why it didn't exit'. Enabled by VORTEX_EVAL_OBS env var, off by default.
 			if s.registry.System.FeatureFlags.EvalObs {
 				fmt.Fprintf(os.Stderr, "[EVAL-OBS] task=%s step=%s turn=%d/%d calls=%d trace=%d status=%s conf=%.2f parse=%v(consec=%d) noTool=%v lowConf=%v\n",
 					req.TaskID, req.StepID, turn+1, maxTurns, len(resp.ToolCalls), len(trace),
@@ -787,6 +817,56 @@ turnLoop:
 		statesVisited = tcState.statesVisited
 		previousState = tcState.previousState
 
+		// R2: Track tools called across turns for sticky union.
+		for _, tc := range resp.ToolCalls {
+			calledTools[tc.Name] = true
+		}
+
+		// B2 (eval §3.2) + C3 fix: Output hash dedup — detect model stuck
+		// re-fetching identical data (e.g. 129 venmo calls inside execute_code
+		// loops). Consecutive-only: if the hash changes, count resets. The hash
+		// includes tool call names + args (not just results) so different calls
+		// with the same output don't collide. Short/error-only turns are skipped.
+		// On failure, returns partial output (not failedOutput) to preserve
+		// accumulated work for downstream steps.
+		if len(toolResults) > 0 {
+			turnHash, shouldTrack := computeTurnHash(resp.ToolCalls, toolResults)
+			if shouldTrack {
+				if turnHash == lastResultHash {
+					consecutiveRepeatCount++
+				} else {
+					lastResultHash = turnHash
+					consecutiveRepeatCount = 1
+				}
+				if consecutiveRepeatCount > maxConsecutiveDuplicates {
+					if !outputStagnationHinted {
+						outputStagnationHinted = true
+						userBlocks = append(userBlocks, schemas.ContentBlock{
+							Text: "System: You have produced identical tool results multiple times. You appear to be stuck re-fetching the same data. Summarize what you have found so far and proceed to complete the task. Do not repeat the same tool calls.",
+						})
+						s.logger.Log("EventOutputStagnationHinted", req.TaskID, req.StepID, map[string]any{
+							"turn": turn, "consecutive_count": consecutiveRepeatCount,
+						})
+					} else {
+						s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+							"error":            "output_stagnation: identical tool results repeated after hint",
+							"consecutive_count": consecutiveRepeatCount,
+							"root_cause":       "model_stuck",
+						})
+						return s.partialStagnationOutput(role.BaseCapability,
+							fmt.Sprintf("output_stagnation: identical tool results repeated %d consecutive times after intervention hint", consecutiveRepeatCount),
+							trace), nil
+					}
+				}
+			} else {
+				// Different turn (short/error-only) — reset consecutive tracking
+				// so a legitimate short result between two identical long turns
+				// doesn't bridge them into a false positive.
+				lastResultHash = 0
+				consecutiveRepeatCount = 0
+			}
+		}
+
 		// Accumulate sticky results (auth/login) into stickyContext for
 		// prepending to subsequent turns. Dedup by substring containment.
 		stickyContext = accumulateSticky(stickyContext, tcState.stickyResults)
@@ -841,6 +921,10 @@ turnLoop:
 			ProgressiveMode:    progressiveEnabled,
 			PredecessorSkillID: req.PredecessorSkillID,
 		})
+
+		// R2: Sticky union — re-route may drop tools the model was actively
+		// using. Add them back so multi-turn workflows don't break.
+		bindings = s.stickyUnionBindings(bindings, calledTools)
 
 		vdaPrompt := ""
 		if needsVerification {

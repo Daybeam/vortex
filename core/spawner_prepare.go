@@ -89,6 +89,17 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 	}
 	initialBindings := bindings // Save full set for progressive re-routing
 
+	// FIX (2026-10-19): Timing race — Route() reads AvailableTools, but
+	// tools/list discovery (which populates it) ran later in buildMCPServers.
+	// On cold start (first task in a new process), AvailableTools was empty →
+	// Route filtered against an empty set → only always_include tools survived.
+	// This restores the documented contract (architecture-mcp-gaps.md §3:
+	// "cache populated once during spawner initialization, reused across steps")
+	// by running stdio MCP discovery BEFORE Route. Idempotent: skips MCPs
+	// already discovered. Remote MCP discovery stays in buildMCPServers
+	// (provider-dependent: skips Anthropic native passthrough).
+	s.ensureMCPDiscovery(ctx, req.Hub, req.TaskID, bindings)
+
 	// Priority 4: Determine if progressive disclosure should be enabled.
 	progressiveEnabled := true
 	if strings.Contains(strings.ToLower(req.Task), "fix") || strings.Contains(strings.ToLower(req.Task), "implement") {
@@ -177,12 +188,12 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 	// this step with memory of its previous output, inject the summary as a
 	// distinct, clearly-marked block. The model supplements missing fields
 	// rather than re-running from scratch, avoiding repeated side effects.
-	// See docs/plan/DELTA_BACKTRACK_DESIGN.md §改动 3.
+	// See docs/plan/DELTA_BACKTRACK_DESIGN.md §change 3.
 	if req.PreviousOutputSummary != "" {
 		userText = fmt.Sprintf(
-			"%s\n\n%s\n你在上一轮已经产出了以下内容：\n%s\n\n"+
-				"请在此基础上仅补充缺失的部分。不要重新执行已经完成的步骤，"+
-				"不要重复调用已完成的外部 API 或执行已完成的写入操作。",
+			"%s\n\n%s\nYou already produced the following content in the previous round:\n%s\n\n"+
+				"Please supplement only the missing parts on top of this. Do NOT re-execute already-completed steps, "+
+				"and do NOT re-call already-completed external APIs or re-perform already-completed write operations.",
 			userText, MarkerPreviousOutput, req.PreviousOutputSummary,
 		)
 	}

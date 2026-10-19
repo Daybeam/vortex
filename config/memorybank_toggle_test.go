@@ -32,9 +32,9 @@ func TestMemoryBankEnabled_DefaultTrue(t *testing.T) {
 }
 
 func TestMemoryBankEnabled_EnvOverride(t *testing.T) {
-	// Env var ORCH_MEMORY_BANK_ENABLED=false should disable.
-	os.Setenv("ORCH_MEMORY_BANK_ENABLED", "false")
-	defer os.Unsetenv("ORCH_MEMORY_BANK_ENABLED")
+	// Env var VORTEX_MEMORY_BANK_ENABLED=false should disable.
+	os.Setenv("VORTEX_MEMORY_BANK_ENABLED", "false")
+	defer os.Unsetenv("VORTEX_MEMORY_BANK_ENABLED")
 
 	r := newTestRegistryForMB()
 	r.bootstrapDefaultsLocked()
@@ -45,7 +45,7 @@ func TestMemoryBankEnabled_EnvOverride(t *testing.T) {
 	}
 
 	// Now test with "true" overriding a config false
-	os.Setenv("ORCH_MEMORY_BANK_ENABLED", "true")
+	os.Setenv("VORTEX_MEMORY_BANK_ENABLED", "true")
 	r = newTestRegistryForMB()
 	r.bootstrapDefaultsLocked()
 	r.System.MemoryBankEnabled = false // simulate config.json setting it to false
@@ -58,7 +58,7 @@ func TestMemoryBankEnabled_EnvOverride(t *testing.T) {
 
 func TestMemoryBankEnabled_EnvUnset_KeepsConfig(t *testing.T) {
 	// When env var is unset, config.json value should be preserved.
-	os.Unsetenv("ORCH_MEMORY_BANK_ENABLED")
+	os.Unsetenv("VORTEX_MEMORY_BANK_ENABLED")
 
 	r := newTestRegistryForMB()
 	r.bootstrapDefaultsLocked()

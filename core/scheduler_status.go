@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -469,6 +470,107 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 		return fmt.Errorf("step %q not found", dec.StepID)
 	}
 
+	// ── create_role (RESTORED 2026-10-18) ──────────────────────────────
+	//
+	// Handled BEFORE the generic choice switch because it needs the LLM,
+	// the cookbook loader and the two-phase draft/apply split -- none of
+	// which fit the "mutate step flags" shape of the cases below.
+	//
+	// What it does NOT do (and why the old handler was removed):
+	//   - never sets registry.EnableDynamicRoleGen
+	//   - never calls GenerateRole (which CommitOps-persists globally)
+	//   - never writes into workspace/skills/
+	// So the original objection ("flips a global switch and can persist
+	// LLM-authored roles with AllowDynamicMCPs:true") no longer applies:
+	// this path is task-scoped by construction.
+	//
+	// Two-phase contract (docs 52 §11.5, "auto-drafting is fine, auto-
+	// activation is not"): the generated role lands in graph.SessionRoles
+	// only, i.e. inside outputs/<taskID>/manifest.json. Promotion to the
+	// global registry is a separate, human-initiated act via
+	// orchestrator_invoke(subsystem="config", action="register_role").
+	if choice == "create_role" {
+		roleID := step.RoleID
+		if v, ok := dec.Context["role_id"].(string); ok && v != "" {
+			roleID = v
+		}
+		if roleID == "" {
+			return fmt.Errorf("create_role: step %q declares no role_id to synthesise", dec.StepID)
+		}
+		// A caller-supplied draft wins: it lets a human pre-write the
+		// instruction while still going through the same activation path.
+		var draftRole config.Role
+		draftFromPayload := false
+		if strings.TrimSpace(payload) != "" {
+			if err := json.Unmarshal([]byte(payload), &draftRole); err != nil {
+				return fmt.Errorf("create_role: invalid role draft payload: %v", err)
+			}
+			draftFromPayload = true
+		}
+
+		if !draftFromPayload {
+			loader := NewResourceLoader()
+			if s.spawner != nil && s.spawner.ResourceLoader != nil {
+				loader = s.spawner.ResourceLoader
+			}
+			gen := NewRoleGenerator(s.registry, loader, s.logger)
+			generated, skill, err := gen.GenerateRoleObjects(
+				s.lifecycleCtx, taskID, dec.StepID, roleID, step.Task,
+			)
+			if err != nil {
+				// The decision stays on the graph, so the operator can fall
+				// back to abort/skip or register the role out-of-band.
+				return fmt.Errorf("create_role: role generation failed: %w", err)
+			}
+			draftRole = *generated
+			if skill != nil {
+				graph.SetSessionSkill(skill.ID, skill)
+			}
+		}
+		if draftRole.ID == "" {
+			draftRole.ID = roleID
+		}
+
+		// Namespace the id so the session role cannot shadow a real global
+		// role of the same name, then store it in this task's session IR.
+		scopedID, err := AppendSessionRole(graph, taskID, &draftRole)
+		if err != nil {
+			return fmt.Errorf("create_role: %v", err)
+		}
+		// The role THIS step dispatches as must be the namespaced one,
+		// otherwise LogInterceptor still resolves the missing original id.
+		if step.RoleID == roleID {
+			step.RoleID = scopedID
+		}
+
+		step.Status = schemas.StepPending
+		step.RetryCount = 0
+		step.LastError = ""
+		// Observability only: Metadata.Data is the free-form slot
+		// (schemas.Metadata has no typed field for this).
+		if step.Metadata == nil {
+			step.Metadata = &schemas.Metadata{Namespace: "role_gen", Version: "1"}
+		}
+		data, _ := step.Metadata.Data.(map[string]any)
+		if data == nil {
+			data = make(map[string]any)
+		}
+		data["synthesized_role_id"] = scopedID
+		data["requested_role_id"] = roleID
+		step.Metadata.Data = data
+
+		s.logger.Log("EventRoleGenerationCompleted", taskID, dec.StepID, map[string]any{
+			"role_id":         scopedID,
+			"requested_as":    roleID,
+			"from_payload":    draftFromPayload,
+			"scope":           "session (manifest.json only)",
+			"decision_choice": "create_role",
+		})
+		if s.auditLogger != nil {
+			s.auditLogger.Log("createRoleSessionDraft", taskID, dec.StepID, decisionID, scopedID, roleID, nil)
+		}
+	}
+
 	// #15: Audit hash chain — record decision submission (tamper-evident).
 	if s.auditLogger != nil {
 		s.auditLogger.Log("submitDecision", taskID, dec.StepID, decisionID, string(dec.Type), choice, dec.Options)
@@ -489,7 +591,7 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 			// fresh without previous-output injection or cycle-breaker
 			// feedback bleeding in. Also clear deps that may have been
 			// left in delta-backtrack mode by the cycle breaker.
-			// See docs/plan/DELTA_BACKTRACK_DESIGN.md §改动 3.
+			// See docs/plan/DELTA_BACKTRACK_DESIGN.md §change 3.
 			step.PreviousOutputSummary = ""
 			step.AdditionalPromptContext = ""
 			if step.Metadata != nil {
@@ -573,6 +675,52 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 			step.Status = schemas.StepPending
 			step.RetryCount = 0
 			step.LastError = ""
+		case "create_role":
+			// Unreachable: the create_role work happens above, before this
+			// switch, because it needs the LLM and the cookbook loader. Kept
+			// as an explicit no-op so the step state already written there is
+			// not clobbered and the generic default branch does not reject
+			// the choice with "unknown choice".
+		case "replan":
+			// Task-level replan (ADDED 2026-10-18).
+			//
+			// Previously "replan" was offered as a decision option by
+			// RequestAutonomousAbort but had NO case here, so choosing it
+			// consumed the decision and changed nothing. The planner's
+			// replacement steps (produced by tryPlannerReplan and stored in
+			// dec.Context["planner_replan"]) are now injected through the
+			// existing DAG surgery primitive.
+			//
+			// Payload precedence: an explicit `output` argument (surgery JSON
+			// supplied by the caller) wins over the planner's stored plan.
+			surgeryJSON := payload
+			if strings.TrimSpace(surgeryJSON) == "" {
+				if v, ok := dec.Context["planner_replan"].(string); ok {
+					surgeryJSON = v
+				}
+			}
+			if strings.TrimSpace(surgeryJSON) == "" {
+				return fmt.Errorf("replan requires replacement steps: no payload and no planner output on this decision")
+			}
+
+			var data SurgeryData
+			if err := json.Unmarshal([]byte(surgeryJSON), &data); err != nil {
+				return fmt.Errorf("invalid replan payload: %v", err)
+			}
+			if data.DeprecatedStepID == "" {
+				data.DeprecatedStepID = dec.StepID
+			}
+			if len(data.ReplacementSteps) == 0 {
+				return fmt.Errorf("replan payload contains no replacement_steps")
+			}
+
+			if err := s.mutateGraphTopologyLocked(graph, data); err != nil {
+				return fmt.Errorf("replan injection failed: %v", err)
+			}
+			s.logger.Log("planner_replan_applied", taskID, dec.StepID, map[string]any{
+				"replacement_steps": len(data.ReplacementSteps),
+				"deprecated":        data.DeprecatedStepID,
+			})
 		default:
 			switch {
 			case strings.HasPrefix(choice, "retry_with_skill:"):

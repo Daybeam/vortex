@@ -183,8 +183,34 @@ func (sm *ScheduleManager) checkReload() {
 	}
 }
 
+// trigger is the automatic path used by scan() when a schedule's NextRun is
+// due. It delegates to submitAndTrack and deliberately discards the result —
+// the auto loop should never block on a single schedule.
 func (sm *ScheduleManager) trigger(s *schemas.Schedule) {
-	sm.logger.Log("schedule_triggered", "", "", map[string]any{
+	_, _ = sm.submitAndTrack(s, "schedule_triggered")
+}
+
+// RunNow triggers a schedule immediately (manual run from the UI), outside its
+// cron/interval window. It works for any persisted schedule regardless of its
+// current Status (paused schedules can still be run on demand). It returns the
+// submitted task ID, or an error if the schedule does not exist or the
+// submission failed.
+func (sm *ScheduleManager) RunNow(id string) (string, error) {
+	s := sm.scheduleStore.Get(id)
+	if s == nil {
+		return "", fmt.Errorf("schedule not found: %s", id)
+	}
+	return sm.submitAndTrack(s, "schedule_manual_trigger")
+}
+
+// submitAndTrack submits a schedule's task to the orchestration engine, updates
+// the schedule's run ledger (LastRun/RunCount/NextRun/MaxRuns), and spins up
+// the completion monitor. It returns the submitted task ID (empty string on
+// submission failure). The event name is used for the leading audit log so
+// callers can distinguish automatic (schedule_triggered) from manual
+// (schedule_manual_trigger) runs.
+func (sm *ScheduleManager) submitAndTrack(s *schemas.Schedule, event string) (string, error) {
+	sm.logger.Log(EventType(event), "", "", map[string]any{
 		"schedule_id":   s.ID,
 		"schedule_name": s.Name,
 	})
@@ -245,6 +271,11 @@ func (sm *ScheduleManager) trigger(s *schemas.Schedule) {
 	}
 
 	sm.scheduleStore.Set(s)
+
+	if err != nil {
+		return "", err
+	}
+	return taskID, nil
 }
 
 func (sm *ScheduleManager) monitorTask(ctx context.Context, taskID string, scheduleID string) {

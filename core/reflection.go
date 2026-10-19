@@ -435,6 +435,12 @@ Trace:
 Goal: Write a Lua script (or an extension of the existing one) that achieves this task.
 Use variables for any hardcoded values that should be parameters.`, rec.Task, rec.Capability, string(traceBytes))
 
+	// C6.4: scrub secrets from the prompt before sending to the LLM.
+	// This is a background skill-crystallization path that runs after task
+	// completion, so the SanitizerProxy vault is already cleared. Use the
+	// stateless pattern-based ScrubSecrets instead.
+	user = ScrubSecrets(user)
+
 	resp, err := provider.Complete(ctx, providers.CompleteRequest{
 		System:    system,
 		User:      user,
@@ -600,6 +606,10 @@ Unify them into a single script that is:
 Output ONLY the unified Lua code. No markdown, no explanation.`
 
 	user := fmt.Sprintf("Capability: %s\n\nVariants to merge:\n\n%s", capability, strings.Join(sourceList, "\n\n------------------\n\n"))
+
+	// C6.4: scrub secrets from the prompt before sending to the LLM.
+	// Lua code variants may contain hardcoded secrets captured from traces.
+	user = ScrubSecrets(user)
 
 	resp, err := provider.Complete(ctx, providers.CompleteRequest{
 		System:    system,

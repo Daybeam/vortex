@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/daybeam/vortex/pkg/interfaces"
+	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -41,6 +42,12 @@ Error signal: %s
 Assign a FailureMode (one of: tool_selection_error, auth_permission_denied, rate_limit_hit, timeout_exceeded, context_overflow, logic_error)
 And provide a 1-sentence Critique of how to avoid this.
 Output MUST be valid JSON: {"failure_mode": "...", "critique": "..."}`, node.SourceText, node.Capability, node.Action, node.ErrorSignal)
+
+		// C6.4: scrub secrets from the prompt before sending to the LLM.
+		// This is a background classification path that runs after task
+		// completion, so the SanitizerProxy vault is already cleared.
+		// Use the stateless pattern-based Redact instead.
+		prompt = observability.Redact(prompt)
 
 		// 2. Call weak LLM
 		resp, err := provider.Complete(ctx, schemas.CompleteRequest{

@@ -240,7 +240,7 @@ func TestTryBacktrack_DeltaMode_FeedbackContainsPreviousSummary(t *testing.T) {
 		t.Fatal("expected feedback to mention downstream step s2")
 	}
 	// It should contain the supplement instruction.
-	if !strings.Contains(upstream.AdditionalPromptContext, "补充") {
+	if !strings.Contains(upstream.AdditionalPromptContext, "supplement") {
 		t.Fatal("expected feedback to contain supplement instruction")
 	}
 	// It should contain the round counter.

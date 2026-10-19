@@ -17,9 +17,9 @@ import (
 // paths (not mocked). Each test exercises the integration point that the design
 // docs explicitly request:
 //
-//   - A1 retry: design doc §6 "集成测试: 重试场景下的 A1 防御验证"
-//   - Workspace scope: design doc §8 "集成测试：Public tier LLM 注入 → 被拒绝"
-//   - Egress redaction: design doc §8 "集成测试：tool result 跨租户 OwnerID → 脱敏"
+//   - A1 retry: design doc §6 "Integration test: A1 defense verification under retry"
+//   - Workspace scope: design doc §8 "Integration test: Public tier LLM injection → rejected"
+//   - Egress redaction: design doc §8 "Integration test: cross-tenant OwnerID in tool result → redacted"
 
 // ─── Test 1: A1 Retry Integration ──────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ import (
 // and 1381.
 //
 // Design ref: docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §6
-// "集成测试: 重试场景下的 A1 防御验证"
+// "Integration test: A1 defense verification under retry"
 func TestIntegration_A1_Retry_DuplicateSkipped_OneEffectRecorded(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := mustNewLogger(t, filepath.Join(tmpDir, "logs"), &config.SystemSettings{})
@@ -126,7 +126,7 @@ func TestIntegration_A1_Retry_DifferentArgs_BothRecorded(t *testing.T) {
 // ResolveWorkspaceRoot, the scheduler re-checks the workspace scope.
 //
 // Design ref: docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.5, §8
-// "集成测试：Public tier LLM 注入 workspace_root → 被拒绝"
+// "Integration test: Public tier LLM injects workspace_root → rejected"
 func TestIntegration_WorkspaceScope_BlockedByValidateWorkspaceScope(t *testing.T) {
 	engine, reg := newDelegationEngine(t)
 
@@ -203,7 +203,7 @@ func TestIntegration_WorkspaceScope_BlockedByValidateWorkspaceScope(t *testing.T
 // RedactEgress code path (spawner_dispatch.go line 119).
 //
 // Design ref: docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4.2, §8
-// "集成测试：tool result 中包含其他租户 OwnerID → 被脱敏"
+// "Integration test: tool result containing another tenant's OwnerID → redacted"
 func TestIntegration_EgressRedaction_SecretsStrippedFromToolResult(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := mustNewLogger(t, filepath.Join(tmpDir, "logs"), &config.SystemSettings{})

@@ -20,7 +20,7 @@ func TestSemanticEnvelope_ToMarkdown(t *testing.T) {
 		"### [TOOL RESULT] test_tool",
 		"Test purpose",
 		"✅ OK",
-		"来源：mcp:test",
+		"Source: mcp:test",
 		"test.go:10",
 		"Hello world",
 	}

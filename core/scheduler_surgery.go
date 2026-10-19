@@ -104,23 +104,46 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 			return fmt.Errorf("replacement step %q already exists in graph", inp.ID)
 		}
 
+		// T5 fix (2026-10-18): scrub references to the deprecated step from
+		// the replacement's DependsOn. A deprecated step never reaches
+		// StepOK, so a replacement that depends on it would silently
+		// deadlock — ReadySteps never returns it. The planner or caller may
+		// legitimately include the deprecated ID (e.g. "redo s2"), so we
+		// scrub rather than reject, and log when we do.
+		scrubbedDeps := make([]string, 0, len(inp.DependsOn))
+		var scrubbedRefs []string
+		for _, dep := range inp.DependsOn {
+			if dep == data.DeprecatedStepID {
+				scrubbedRefs = append(scrubbedRefs, dep)
+				continue
+			}
+			scrubbedDeps = append(scrubbedDeps, dep)
+		}
+		if len(scrubbedRefs) > 0 {
+			s.logger.Log("replan_dep_scrubbed", taskID, inp.ID, map[string]any{
+				"deprecated_step": data.DeprecatedStepID,
+				"removed_refs":    scrubbedRefs,
+			})
+		}
+
 		newStep := &schemas.Step{
-			ID:               inp.ID,
-			RoleID:           inp.RoleID,
-			Task:             inp.Task + inheritance, // Handover heritage
-			DependsOn:        inp.DependsOn,
-			Status:           schemas.StepPending,
-			AdditionalSkills: inp.AdditionalSkills,
-			AdditionalMCPs:   inp.AdditionalMCPs,
-			ContextRefs:      inp.ContextRefs,
-			ExitCriteria:     inp.ExitCriteria,
-			VerifierModel:    inp.VerifierModel,
-			MaxAutoRefine:    inp.MaxAutoRefine,
-			EnableDebate:     inp.EnableDebate,
-			MaxDebateRounds:  inp.MaxDebateRounds,
-			SpawnDepth:       inp.SpawnDepth,
-			MaxSpawnDepth:    inp.MaxSpawnDepth,
-			LastWorkedOn:     time.Now(),
+			ID:                    inp.ID,
+			RoleID:                inp.RoleID,
+			Task:                  inp.Task + inheritance, // Handover heritage
+			DependsOn:             scrubbedDeps,
+			Status:                schemas.StepPending,
+			AdditionalSkills:      inp.AdditionalSkills,
+			AdditionalMCPs:        inp.AdditionalMCPs,
+			AdditionalToolAllowlists: inp.AdditionalToolAllowlists, // T3: preserve tool narrowing across replan
+			ContextRefs:           inp.ContextRefs,
+			ExitCriteria:          inp.ExitCriteria,
+			VerifierModel:         inp.VerifierModel,
+			MaxAutoRefine:         inp.MaxAutoRefine,
+			EnableDebate:          inp.EnableDebate,
+			MaxDebateRounds:       inp.MaxDebateRounds,
+			SpawnDepth:            inp.SpawnDepth,
+			MaxSpawnDepth:         inp.MaxSpawnDepth,
+			LastWorkedOn:          time.Now(),
 		}
 		if newStep.AdditionalSkills == nil {
 			newStep.AdditionalSkills = []string{}
@@ -130,6 +153,9 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 		}
 		if newStep.ContextRefs == nil {
 			newStep.ContextRefs = map[string]string{}
+		}
+		if newStep.AdditionalToolAllowlists == nil {
+			newStep.AdditionalToolAllowlists = map[string][]string{}
 		}
 
 		graph.Steps[inp.ID] = newStep

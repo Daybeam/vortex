@@ -12,7 +12,7 @@ import (
 )
 
 // mustAppend wraps archive.Append and fails the test on error.
-// audit NEW-LOW-2: replaces `mustAppend(t, archive, ...)` (搬龙门) patterns.
+// audit NEW-LOW-2: replaces `mustAppend(t, archive, ...)` (gate moved) patterns.
 func mustAppend(t *testing.T, archive *ContextArchive, item MemoryItem) {
 	t.Helper()
 	if err := archive.Append(item); err != nil {

@@ -123,7 +123,7 @@ type SpawnRequest struct {
 	// breaker. When non-empty, the prompt assembler instructs the model to
 	// supplement missing fields rather than re-run from scratch, avoiding
 	// repeated side effects from irreversible operations.
-	// See docs/plan/DELTA_BACKTRACK_DESIGN.md §改动 3.
+	// See docs/plan/DELTA_BACKTRACK_DESIGN.md §change 3.
 	PreviousOutputSummary string
 }
 

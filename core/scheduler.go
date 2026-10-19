@@ -107,6 +107,7 @@ type DirectedEngine struct {
 	// pathLocks (ADDED 2026-09-13) — fine-grained per-path RWMutex for
 	// concurrent step file-write isolation. See core/path_lock.go.
 	pathLocks *PathLockManager
+	drafts    *DraftStore
 
 	// H-5 (2026-10-04): Debounce map for persistGraph — taskID → last persist
 	// time. Skips redundant persists within 200ms, eliminating the 3-4× per
@@ -209,6 +210,7 @@ func NewDirectedEngine(
 		budgetGuard:         NewBudgetGuard(0), // Default safety margin
 		budgetSentinel:      NewBudgetSentinel(),
 		pathLocks:           NewPathLockManager(),
+		drafts:              NewDraftStore(),
 		hashCache:           make(map[string]string),
 		maxHashCacheEntries: defaultMaxHashCacheEntries,
 		recentDecisions:     make(map[string]time.Time),

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -431,6 +432,64 @@ func (a *ContextArchive) PruneExpired(now time.Time) (pruned int, err error) {
 	a.ttlPruned += pruned
 	a.indexDirty = true
 	return pruned, nil
+}
+
+// ArchiveScope specifies which archive entries to delete.
+// At least one field must be non-empty. Empty fields are treated as
+// "no filter on this dimension".
+//
+// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md.
+type ArchiveScope struct {
+	TaskID string // if non-empty, delete entries with this TaskID
+}
+
+// matchesScope returns true if the item matches at least one non-empty
+// scope field (i.e. should be deleted).
+func (s ArchiveScope) matchesScope(item MemoryItem) bool {
+	if s.TaskID != "" && item.TaskID == s.TaskID {
+		return true
+	}
+	return false
+}
+
+// DeleteByScope removes archive entries matching the scope filter, rewrites
+// the .jsonl file, and marks the BM25 index for rebuild.
+// Returns the count of items deleted.
+//
+// ContextArchive is JSONL-based (not SQLite), so deletion is implemented as
+// filter-in-memory + rewrite-file — the same pattern as PruneExpired.
+// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md §Storage Layer Changes.
+func (a *ContextArchive) DeleteByScope(scope ArchiveScope) (deleted int, err error) {
+	if scope.TaskID == "" {
+		return 0, fmt.Errorf("DeleteByScope: at least one scope field must be non-empty")
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if len(a.items) == 0 {
+		return 0, nil
+	}
+
+	keep := make([]MemoryItem, 0, len(a.items))
+	for _, item := range a.items {
+		if scope.matchesScope(item) {
+			deleted++
+			continue
+		}
+		keep = append(keep, item)
+	}
+
+	if deleted == 0 {
+		return 0, nil
+	}
+
+	a.items = keep
+	if err := a.writeFileLocked(); err != nil {
+		return deleted, err
+	}
+	a.indexDirty = true
+	return deleted, nil
 }
 
 // writeFileLocked rewrites the .jsonl file from a.items and updates lastOffset.

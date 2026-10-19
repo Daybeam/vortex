@@ -1,6 +1,7 @@
 package core
 
 import (
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -59,6 +60,11 @@ func SubscribeBatched(bus *EventBus, eventType string, batchSize int, window tim
 
 	go func() {
 		defer close(out)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("WARN: event_debounce: batching goroutine panicked: %v", r)
+			}
+		}()
 		batch := make([]AgentEvent, 0, batchSize)
 		timer := time.NewTimer(window)
 		defer timer.Stop()
