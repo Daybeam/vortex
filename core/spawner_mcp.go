@@ -114,6 +114,136 @@ func containsStr(list []string, want string) bool {
 	return false
 }
 
+// discoverStdioMCP runs tools/list discovery for a single stdio MCP if not
+// already cached. Returns true if the MCP is usable (has tools, discovered or
+// cached); false if the client cannot be started and no tools are cached.
+//
+// Extracted from buildMCPServers (2026-10-19) to fix the timing race where
+// Route() at spawner_prepare.go:101 read AvailableTools before tools/list
+// discovery, causing cold-start tasks to route against an empty tool set.
+// Now called from ensureMCPDiscovery BEFORE Route, and from buildMCPServers
+// (idempotent: the len(FullToolDefinitions)==0 guard skips re-discovery).
+//
+// Caller MUST hold the per-MCP discoveryLock (audit H8) to serialize
+// concurrent discovery + FullToolDefinitions read/write.
+func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, taskID string) bool {
+	cli, err := s.mcpMgr.ensureMCPClient(ctx, mcp, taskID)
+	if err != nil {
+		// FIX (2026-08-30): Log and continue with cached tools if available.
+		s.logger.Log("EventMCPClientFailed", taskID, "", map[string]any{
+			"mcp":          mcp.ID,
+			"error":        err.Error(),
+			"cached_tools": len(mcp.FullToolDefinitions),
+		})
+		return len(mcp.FullToolDefinitions) > 0
+	}
+
+	if cli == nil || len(mcp.FullToolDefinitions) > 0 {
+		return true // already discovered, or no client but cached tools
+	}
+
+	discCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// audit M7: don't defer cancel() — caller pattern expects explicit cancel.
+	// FIX (2026-08-15): Prioritize tools/list (modern) over list_tools (legacy).
+	res, err := cli.SendRequest(discCtx, "tools/list", map[string]any{})
+	if err != nil {
+		res, err = cli.SendRequest(discCtx, "list_tools", map[string]any{})
+	}
+
+	if err != nil {
+		// #18 (eval §8.31): Surface at ERROR level so it's visible in standard logs.
+		slog.Error("MCP tools/list discovery failed — MCP will have 0 tools",
+			"mcp", mcp.ID,
+			"error", err.Error(),
+			"task", taskID)
+		s.logger.Log("EventMCPToolsDiscoveryFailed", taskID, "", map[string]any{
+			"mcp":   mcp.ID,
+			"error": err.Error(),
+		})
+		cancel()
+		return false
+	}
+
+	var toolsRaw []any
+	if m, ok := res.(map[string]any); ok {
+		if tr, ok := m["tools"].([]any); ok && len(tr) > 0 {
+			toolsRaw = tr
+		}
+	}
+	if toolsRaw == nil {
+		cancel()
+		return false
+	}
+
+	// NOTE (2026-10-18): registry unlock must happen BEFORE InitFilter/
+	// RefreshToolEmbeddings (they take registry.Mu.RLock → self-deadlock).
+	s.registry.Mu.Lock()
+	for _, tRaw := range toolsRaw {
+		t, ok := tRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := t["name"].(string)
+		if name == "" {
+			continue
+		}
+		desc, _ := t["description"].(string)
+		def := schemas.ToolDefinition{
+			Name:        name,
+			Description: desc,
+		}
+		if is, ok := t["inputSchema"].(map[string]any); ok {
+			def.InputSchema = is
+		}
+		mcp.FullToolDefinitions = append(mcp.FullToolDefinitions, def)
+		mcp.AvailableTools = append(mcp.AvailableTools, name)
+	}
+	s.registry.Mu.Unlock()
+
+	mcp.InitFilter()
+	// C1 fix (2026-10-19): nil check — toolRouter may not be initialized
+	// in test contexts or early startup before NewSpawner completes wiring.
+	if s.toolRouter != nil {
+		s.toolRouter.RefreshToolEmbeddings(ctx, s.registry)
+	}
+	s.logger.Log("EventMCPToolsDiscovered", taskID, "", map[string]any{
+		"mcp":   mcp.ID,
+		"count": len(mcp.FullToolDefinitions),
+	})
+	cancel()
+	return true
+}
+
+// ensureMCPDiscovery runs tools/list discovery for all stdio MCP bindings
+// BEFORE Route() so that Route sees populated AvailableTools on cold start.
+//
+// FIX (2026-10-19): timing race. Route() at spawner_prepare.go:101 read
+// AvailableTools before buildMCPServers' discovery at spawner_mcp.go:223,
+// causing cold-start tasks to route against an empty tool set (only
+// always_include tools survived). This restores the documented contract
+// ("cache populated once during spawner initialization, reused across
+// steps" per docs/architecture/architecture-mcp-gaps.md §3).
+//
+// Only discovers stdio MCPs (mcp.Command != ""). Remote MCP discovery
+// stays in buildMCPServers (provider-dependent: skips Anthropic passthrough).
+// Idempotent: discoverStdioMCP skips MCPs with FullToolDefinitions populated.
+func (s *Spawner) ensureMCPDiscovery(ctx context.Context, hub *ContextHub, taskID string, bindings []config.MCPBinding) {
+	for _, b := range bindings {
+		mcp := hub.GetMCP(b.MCPID)
+		if mcp == nil || mcp.Command == "" {
+			continue // remote MCPs (mcp.URL) handled in buildMCPServers
+		}
+		// C1 fix (2026-10-19): don't check FullToolDefinitions here (outside
+		// the lock) — concurrent discovery could be appending to it right now,
+		// causing a data race. The idempotency check inside discoverStdioMCP
+		// (under the lock) handles skip-already-discovered correctly.
+		dLock := s.mcpMgr.discoveryLock(mcp.ID)
+		dLock.Lock()
+		s.discoverStdioMCP(ctx, mcp, taskID)
+		dLock.Unlock()
+	}
+}
+
 func (s *Spawner) buildMCPServers(
 	ctx context.Context,
 	hub *ContextHub,
@@ -150,82 +280,12 @@ func (s *Spawner) buildMCPServers(
 		dLock.Lock()
 
 		if mcp.Command != "" {
-			cli, err := s.mcpMgr.ensureMCPClient(ctx, mcp, taskID)
-			if err != nil {
-				// FIX (2026-08-30): Log the error and continue with cached tool
-				// definitions if available. Previously, a failed MCP client spawn
-				// silently skipped the entire MCP binding, causing mcp_servers_count
-				// to be 0 even when FullToolDefinitions were already cached from
-				// the workspace JSON config. This made dynamically-mounted tools
-				// invisible to the model (e.g., book_researcher + leann-mcp).
-				s.logger.Log("EventMCPClientFailed", taskID, "", map[string]any{
-					"mcp":          mcp.ID,
-					"error":        err.Error(),
-					"cached_tools": len(mcp.FullToolDefinitions),
-				})
-				if len(mcp.FullToolDefinitions) == 0 {
-					dLock.Unlock()
-					continue // No cached tools and no client — truly unusable
-				}
-			}
-
-			// Tool Discovery: Fetch full schemas if not already cached
-			if cli != nil && len(mcp.FullToolDefinitions) == 0 {
-				discCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				// audit M7: don't defer cancel() — it accumulates in this for loop.
-				// Call cancel() explicitly at the end of this block instead.
-				// FIX (2026-08-15): Swapped order to prioritize modern standard (tools/list)
-				// over legacy (list_tools). The handshake above in ensureMCPClient
-				// already resolved the -32602 issue for uninitialized calls.
-				var res any
-				var err error
-				res, err = cli.SendRequest(discCtx, "tools/list", map[string]any{})
-				if err != nil {
-					// Fallback to legacy standard
-					res, err = cli.SendRequest(discCtx, "list_tools", map[string]any{})
-				}
-
-				if err == nil {
-					if m, ok := res.(map[string]any); ok {
-						if toolsRaw, ok := m["tools"].([]any); ok {
-							s.registry.Mu.Lock()
-							for _, tRaw := range toolsRaw {
-								if t, ok := tRaw.(map[string]any); ok {
-									name, _ := t["name"].(string)
-									desc, _ := t["description"].(string)
-									def := schemas.ToolDefinition{
-										Name:        name,
-										Description: desc,
-									}
-									if is, ok := t["inputSchema"].(map[string]any); ok {
-										def.InputSchema = is
-									}
-									mcp.FullToolDefinitions = append(mcp.FullToolDefinitions, def)
-								}
-							}
-							s.registry.Mu.Unlock()
-							s.logger.Log("EventMCPToolsDiscovered", taskID, "", map[string]any{
-								"mcp":   mcp.ID,
-								"count": len(mcp.FullToolDefinitions),
-							})
-						}
-					}
-				} else {
-					// #18 (eval §8.31): Surface tools/list failure at ERROR level
-					// so it is visible in standard log output, not just event logs.
-					// Without this, a failed discovery leaves FullToolDefinitions
-					// empty but the MCP is still added to the server list with 0
-					// tools — the engine silently assumes the MCP is usable.
-					slog.Error("MCP tools/list discovery failed — MCP will have 0 tools",
-						"mcp", mcp.ID,
-						"error", err.Error(),
-						"task", taskID)
-					s.logger.Log("EventMCPToolsDiscoveryFailed", taskID, "", map[string]any{
-						"mcp":   mcp.ID,
-						"error": err.Error(),
-					})
-				}
-				cancel() // audit M7: explicit cancel instead of defer (avoids accumulation in for loop)
+			// Discovery (extracted to discoverStdioMCP, also called from
+			// ensureMCPDiscovery before Route to fix the cold-start timing race).
+			// Idempotent: skips if FullToolDefinitions already populated.
+			if !s.discoverStdioMCP(ctx, mcp, taskID) {
+				dLock.Unlock()
+				continue // No cached tools and no client — truly unusable
 			}
 
 			// Filter tools based on allowed list

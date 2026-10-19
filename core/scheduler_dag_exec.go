@@ -288,6 +288,23 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				break
 			}
 		}
+		// B1: If any upstream step has PartialOutput (from Sieve interception),
+		// inject it as context so the auditor/next step can build on it.
+		// C2 fix (2026-10-18): sanitize before passthrough — truncate, egress-
+		// redact, wrap in untrusted-data delimiters, and skip for security-
+		// class interception reasons (injection/PII). Without this, intercepted
+		// content (which may contain prompt injection or secrets) is sent
+		// directly to the model as trusted instructions.
+		taskText := step.Task
+		for _, depID := range step.DependsOn {
+			if dep, ok := graph.Steps[depID]; ok && dep.PartialOutput != "" {
+				sanitized := sanitizePartialOutputForPassthrough(dep.PartialOutput, dep.LastError)
+				if sanitized != "" {
+					taskText = fmt.Sprintf("%s\n\nUPSTREAM PARTIAL OUTPUT (step %s was intercepted by Sieve Guardian; verify or build on this):\n%s", taskText, depID, sanitized)
+				}
+				break
+			}
+		}
 		// P-2.1 Step 2: GraphMu removed; DecisionHistory is now protected by
 		// TaskGraph.decisionMu (accessed via RecordDecision/UpdateDecisionOutcome).
 		result, err := s.spawner.Spawn(ctx, &SpawnRequest{
@@ -296,7 +313,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			TraceID:                  traceID,
 			SpanID:                   spanID,
 			RoleID:                   step.RoleID,
-			Task:                     step.Task,
+			Task:                     taskText,
 			AdditionalSkills:         step.AdditionalSkills,
 			AdditionalMCPs:           step.AdditionalMCPs,
 			AdditionalToolAllowlists: step.AdditionalToolAllowlists,
@@ -506,15 +523,19 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					return
 				}
 
-				// NOTE: create_role is intentionally omitted from options.
-				// Automatically enabling dynamic role generation is a security risk
-				// (it globally flips EnableDynamicRoleGen and can persist LLM-authored
-				// roles with AllowDynamicMCPs:true). Admins must use
-				// orchestrator_invoke(subsystem="config", action="register_role") directly.
+				// create_role is offered as a decision option again (RESTORED
+				// 2026-10-18, see docs 52 §11.5/§12.3). It had been removed
+				// because the old handler flipped the GLOBAL EnableDynamicRoleGen
+				// and could persist LLM-authored roles with AllowDynamicMCPs:true
+				// -- a real security hole. The restored handler does neither: it
+				// generates a task-scoped draft via GenerateRoleObjects, parks it
+				// in graph.SessionRoles, and never touches the registry or disk
+				// config. See SubmitDecisionWithPayload's "create_role" case.
 				s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 					"error":           "Role missing: " + err.Error(),
-					"action_required": "Use orchestrator_invoke(subsystem=\"config\", action=\"register_role\") to create the role, then retry the task.",
-				}, []string{"skip", "abort"})
+					"role_id":         step.RoleID,
+					"action_required": "Choose create_role to synthesise a task-scoped role from the cookbook, or register one globally via orchestrator_invoke(subsystem=\"config\", action=\"register_role\").",
+				}, []string{"create_role", "retry", "skip", "abort"})
 
 				// FORCE PERSIST: Ensure Docker volumes see the blocked status immediately
 				s.persistGraph(graph)
@@ -573,6 +594,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				"root_cause": string(FailureClassContractViolation),
 			})
 			step.LastError = store.SanitizeError("sieve_intercepted: " + reason)
+			step.PartialOutput = outputText
 			step.RetryCount++
 			if step.RetryCount > step.MaxRetries {
 				break

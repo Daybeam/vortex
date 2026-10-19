@@ -3,7 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
-	"math"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,11 +105,17 @@ func (r *ToolRouter) RefreshToolEmbeddings(ctx context.Context, reg *config.Regi
 	}
 
 	// Build BM25 corpus from all tool docs.
+	// NOTE (2026-10-18): RefreshToolEmbeddings is now also called from
+	// buildMCPServers after MCP discovery, i.e. concurrently with sibling DAG
+	// steps that may be inside Route() reading BM25Corpus. Guard the swap.
 	bm25Docs := make(map[string]string, len(docs))
 	for _, d := range docs {
 		bm25Docs[d.id] = d.text
 	}
-	r.BM25Corpus = NewBM25Corpus(1.2, 0.75, bm25Docs)
+	newCorpus := NewBM25Corpus(1.2, 0.75, bm25Docs)
+	r.mu.Lock()
+	r.BM25Corpus = newCorpus
+	r.mu.Unlock()
 
 	if r.EmbedClient == nil {
 		return // BM25-only mode; no embedding to compute.
@@ -274,8 +280,13 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 		stringRank := make(map[string]float64)
 
 		// 1. Sparse Channel: BM25
-		if r.BM25Corpus != nil {
-			bm25Rank = r.BM25Corpus.Score(req.Task)
+		// Snapshot under RLock: RefreshToolEmbeddings may swap the corpus from a
+		// concurrent step's MCP discovery (see its doc comment).
+		r.mu.RLock()
+		corpus := r.BM25Corpus
+		r.mu.RUnlock()
+		if corpus != nil {
+			bm25Rank = corpus.Score(req.Task)
 		}
 
 		// 2. Dense Channel: Embedding
@@ -330,46 +341,34 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 				for id, score := range merged {
 					sorted = append(sorted, toolScore{id: id, score: score})
 				}
-				sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
+			// Deterministic sort: primary by score descending, secondary by id
+			// ascending. The secondary key guarantees stable output order when
+			// multiple tools share the same score, preventing non-deterministic
+			// tool selection across runs (which invalidates prompt-cache prefixes
+			// and makes regression tests flaky).
+			sort.Slice(sorted, func(i, j int) bool {
+				if sorted[i].score != sorted[j].score {
+					return sorted[i].score > sorted[j].score
+				}
+				return sorted[i].id < sorted[j].id
+			})
 
-				// Threshold/Limit for filtered tools with token budget + embedding dedup
-				limit := 5
-				if len(sorted) < 5 {
-					limit = len(sorted)
+			// Threshold/Limit for filtered tools with token budget.
+			limit := 5
+			if len(sorted) < 5 {
+				limit = len(sorted)
+			}
+			var usedBudget int
+			for i := 0; i < limit; i++ {
+				selected := sorted[i].id
+				// Check token budget
+				tokens := r.estimateToolTokens(selected, mcpDef)
+				if req.MaxTokenBudget > 0 && usedBudget+tokens > req.MaxTokenBudget && i > 0 {
+					break
 				}
-				var usedBudget int
-				// Collect the RRF-ranked tool IDs to build an embedding similarity matrix
-				rankedList := make([]string, 0, len(sorted))
-				for _, ts := range sorted {
-					rankedList = append(rankedList, ts.id)
-				}
-				// Embedding dedup: mark tools redundant (>0.85 cosine) with an already-selected tool
-				redundant := make(map[string]bool)
-				for i := 0; i < limit && !redundant[sorted[i].id]; i++ {
-					selected := sorted[i].id
-					// Check token budget
-					tokens := r.estimateToolTokens(selected, mcpDef)
-					if req.MaxTokenBudget > 0 && usedBudget+tokens > req.MaxTokenBudget && i > 0 {
-						break
-					}
-					usedBudget += tokens
-					filtered = append(filtered, selected)
-					// Mark future tools redundant with this selection
-					if vec := r.embeddings[selected]; len(vec) > 0 {
-						for _, cand := range rankedList {
-							if cand == selected || redundant[cand] {
-								continue
-							}
-							candVec := r.embeddings[cand]
-							if len(candVec) == 0 {
-								continue
-							}
-							if cosineSimF32(vec, candVec) > 0.85 {
-								redundant[cand] = true
-							}
-						}
-					}
-				}
+				usedBudget += tokens
+				filtered = append(filtered, selected)
+			}
 			}
 		} else {
 			// No hybrid (BM25/embedding) signal available -- keep the legacy,
@@ -442,6 +441,55 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 		}
 		filtered = pruned
 
+		// always_include (C1-②): tools that must survive routing. Appended AFTER
+		// relevance filtering so they are kept even when the task text never
+		// mentions them (e.g. supervisor__complete_task in AppWorld).
+		//
+		// Two hard constraints (2026-10-18):
+		//  1. always_include must NOT widen a restricted binding. A restricted
+		//     binding is an explicit allowlist; letting always_include bypass it
+		//     would silently escalate privileges (the two tests in
+		//     tool_router_always_include_test.go assert the opposite for the
+		//     unrestricted case only — see note there).
+		//  2. always_include must NOT resurrect privileged tools that the
+		//     blocklist just removed.
+		if len(b.AlwaysInclude) > 0 {
+			inScope := make(map[string]bool)
+			if wasRestricted {
+				for _, t := range b.AllowedTools {
+					inScope[t] = true
+				}
+			}
+			seen := make(map[string]bool, len(filtered))
+			for _, t := range filtered {
+				seen[t] = true
+			}
+			var skipped []string
+			for _, t := range b.AlwaysInclude {
+				if seen[t] {
+					continue
+				}
+				if privilegedToolBlocklist[t] {
+					skipped = append(skipped, t)
+					continue
+				}
+				if wasRestricted && !inScope[t] {
+					skipped = append(skipped, t)
+					continue
+				}
+				filtered = append(filtered, t)
+			}
+			if len(skipped) > 0 {
+				// Visibility: a silently ignored always_include entry is a
+				// config bug that would otherwise be invisible until eval fails.
+				slog.Warn("always_include entry ignored by tool router",
+					"mcp", b.MCPID,
+					"restricted", wasRestricted,
+					"skipped", strings.Join(skipped, ","),
+					"reason", "privileged_blocklist_or_outside_allowlist")
+			}
+		}
+
 		routed = append(routed, config.MCPBinding{
 			MCPID:        b.MCPID,
 			AllowedTools: filtered,
@@ -493,20 +541,6 @@ func (r *ToolRouter) estimateToolTokens(toolName string, mcpDef *config.MCPDef) 
 		}
 	}
 	return len(toolName)/4 + 8
-}
-
-// cosineSimF32 returns the cosine similarity between two float32 vectors.
-func cosineSimF32(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		na += float64(a[i]) * float64(a[i])
-		nb += float64(b[i]) * float64(b[i])
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 func isDiscoveryTool(name string) bool {

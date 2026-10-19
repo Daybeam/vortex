@@ -27,7 +27,7 @@ var mcpEnvCache sync.Map
 // InvalidateMCPEnvCache clears all cached MCP env var values. Called on
 // config hot-reload so cachedGetenv re-reads os.Getenv, picking up .env
 // changes. Registered as a reload callback in main.go.
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 4.
+// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 4.
 func InvalidateMCPEnvCache() {
 	mcpEnvCache.Range(func(key, _ any) bool {
 		mcpEnvCache.Delete(key)
@@ -526,7 +526,7 @@ func (m *MCPConnectionManager) ensureMCPClient(ctx context.Context, mcp *config.
 		// matches the host script itself (Kaggle: `python3 -u /kaggle/src/script.py`
 		// → whole container killed). This was the root cause of the B-arm
 		// SIGTERM-on-task-start failures (v12-v23, 2026-10-12).
-		// ORCH_DISABLE_PATTERN_KILL=1 skips this risky cleanup: Close() already
+		// VORTEX_DISABLE_PATTERN_KILL=1 skips this risky cleanup: Close() already
 		// does a precise KillProcessTreeByPID, so orphan leakage is minimal.
 		// Migrated to Registry.System.FeatureFlags (hot-reloadable).
 		if !m.registry.System.FeatureFlags.DisablePatternKill {

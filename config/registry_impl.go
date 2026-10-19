@@ -129,10 +129,39 @@ func (r *Registry) ResolveToolBindings(role *Role, extra []MCPBinding) []MCPBind
 		}
 	}
 
+	// Extra bindings may NARROW an existing binding, never widen it.
+	//
+	// Bug being fixed (2026-10-18): this loop used to skip any MCP that was
+	// already present, so a per-step AllowedTools list for a role-bound MCP
+	// was silently discarded. appworld_agent binds `appworld` with
+	// AllowDynamicMCPs=false, so every planner-chosen tool allowlist was
+	// dropped and each step ran with the role's full tool surface — the
+	// planner's explicit tool selection had no effect at all.
+	//
+	// Narrowing rules:
+	//   - extra names an MCP the role does not bind, role allows dynamic MCPs
+	//     → add it with exactly the given AllowedTools.
+	//   - extra names a bound MCP and gives a non-empty AllowedTools
+	//     → replace that MCP's AllowedTools with the extra list.
+	//   - extra gives an EMPTY AllowedTools for a bound MCP → ignore. Empty
+	//     means "unspecified" on this path, and treating it as "allow
+	//     everything" would widen privileges.
+	//   - AlwaysInclude is a role-level safety net (e.g. supervisor__complete_task)
+	//     and is preserved across the replacement.
 	for _, b := range extra {
-		if _, exists := effective[b.MCPID]; !exists {
+		cur, bound := effective[b.MCPID]
+		if !bound {
 			effective[b.MCPID] = b
+			continue
 		}
+		if len(b.AllowedTools) == 0 {
+			continue
+		}
+		cur.AllowedTools = append([]string(nil), b.AllowedTools...)
+		if cur.AlwaysInclude == nil {
+			cur.AlwaysInclude = b.AlwaysInclude
+		}
+		effective[b.MCPID] = cur
 	}
 	result := make([]MCPBinding, 0, len(effective))
 	for _, b := range effective {

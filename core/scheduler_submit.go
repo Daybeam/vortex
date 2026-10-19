@@ -109,7 +109,38 @@ func (s *DirectedEngine) SubmitWithSession(inputs []schemas.StepInput, sessionID
 	return s.SubmitWithSessionIR(inputs, nil, nil, nil, "", sessionID, "", 0, 0, "")
 }
 
-func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles []*config.Role, skills []*config.Skill, providers []*config.ProviderConfig, mainProviderID string, sessionID string, workspaceRoot string, timeoutSecs int, tokenBudget int64, ownerID string) (string, error) {
+func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles []*config.Role, skills []*config.Skill, providers []*config.ProviderConfig, mainProviderID string, sessionID string, workspaceRoot string, timeoutSecs int, tokenBudget int64, ownerID string) (taskID string, err error) {
+	// C4: capture original inputs before any modification (expandSkills,
+	// planner-first). The defer must store the caller's original input,
+	// not planner-produced steps.
+	originalInputs := make([]schemas.StepInput, len(inputs))
+	copy(originalInputs, inputs)
+
+	// C4: only store drafts for errors after validation passes. Security
+	// rejections (workspace scope, guard violations) must not persist
+	// potentially malicious content in memory.
+	passedValidation := false
+
+	defer func() {
+		if err == nil || s.drafts == nil || len(originalInputs) == 0 || !passedValidation {
+			return
+		}
+		draftID := "draft_" + uuid.New().String()[:8]
+		steps := make([]any, len(originalInputs))
+		for i, inp := range originalInputs {
+			steps[i] = inp
+		}
+		s.drafts.Save(&TaskDraft{
+			DraftID:    draftID,
+			Steps:      steps,
+			CreatedAt:  time.Now(),
+			LastError:  err.Error(),
+			FailedStep: -1,
+		})
+		// C4: do NOT set taskID = draftID on error. Callers must check err
+		// first; returning a draft ID as taskID risks it being used as a
+		// task identifier.
+	}()
 	// ── Tier-Gated Workspace Scope: Complete Mediation (I3) ───────────
 	// Defense-in-depth: even if the tools layer's ResolveWorkspaceRoot
 	// was bypassed (e.g. direct API handler), the scheduler re-checks
@@ -143,6 +174,10 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		return "", err
 	}
 
+	// C4: all validation/security checks passed. Drafts may now be saved
+	// for downstream errors (but not for the security rejections above).
+	passedValidation = true
+
 	// ── Directory-Skill Expansion (PRD §2.2, Skill Interpreter) ──────
 	// If the first input targets a role bound to a DirectorySkill, expand
 	// it into a multi-step DAG. No-op when no DirectorySkill is bound.
@@ -151,6 +186,51 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		return "", expandErr
 	}
 	inputs = expandInputs
+	// ────────────────────────────────────────────────────────────────
+
+	// ── Tier 1(b) Pre-Submission Planning (ADDED 2026-10-18) ─────────
+	// A weak main agent submits ONE step ("do the whole thing"). The
+	// engine then hands that request to the builtin task_planner role,
+	// which returns a validated DAG. Without this, the fast-path below
+	// catches every such submission and the whole concept of task-level
+	// planning never executes.
+	//
+	// Risk containment (this function is the entry point of every
+	// submission flow — impact=HIGH):
+	//   - Opt-in. system.enable_planner_first defaults to false, so
+	//     existing deployments see byte-identical behaviour.
+	//   - Only fires for a lone dependency-free step. Multi-step
+	//     submissions mean the main agent already designed the DAG;
+	//     re-planning them would override an explicit decision.
+	//   - Best-effort. Any failure (role missing, timeout, unparseable
+	//     plan) leaves `inputs` untouched and execution proceeds exactly
+	//     as before.
+	//   - Budgeted. system.planner_timeout_secs caps the single extra
+	//     call (default 90s).
+	// See docs 52-planner-wiring-design.md §S6.
+	if len(inputs) == 1 && len(inputs[0].DependsOn) == 0 && s.plannerFirstEnabled() {
+		probeTask := inputs[0].Task
+		planTaskID := schemas.NewTaskID()
+		planned, reason := s.RequestPlanning(planTaskID, inputs[0].RoleID, probeTask, 0)
+		if reason != "" {
+			s.logger.Log("planner_first_skipped", planTaskID, inputs[0].ID, map[string]any{
+				"reason": reason,
+			})
+		}
+		if len(planned) > 0 {
+			// The planner owns the DAG now. Preserve the caller's
+			// per-run settings that are not part of a plan (skills,
+			// context refs, deliver contract, verifier config) onto
+			// the terminal steps, otherwise the plan would silently
+			// drop them.
+			inheritCallerSettings(planned, inputs[0])
+			s.logger.Log("planner_first_applied", planTaskID, inputs[0].ID, map[string]any{
+				"steps": len(planned),
+				"role":  inputs[0].RoleID,
+			})
+			inputs = planned
+		}
+	}
 	// ────────────────────────────────────────────────────────────────
 
 	// Smart Routing Fast-Path (ADDED 2026-08-27):
@@ -450,7 +530,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		return taskID, nil
 	}
 
-	taskID := schemas.NewTaskID()
+	taskID = schemas.NewTaskID()
 	traceID := NewTraceID()
 	steps := make(map[string]*schemas.Step, len(inputs))
 

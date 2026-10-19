@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -313,6 +314,9 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 	return "", false
 }
 
+// askSystemOneForDecision is a stub — System One decision model is not
+// available in the open core. Always returns ("", false) so the caller
+// falls back to the LLM decider or conservative defaults.
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,
@@ -461,8 +465,21 @@ func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string) string 
 	}
 
 	// Build context: task graph + archive step summaries.
+	// T4 fix (2026-10-19): extract ALL needed values under the lock —
+	// graph.Steps is a map (concurrent read+write = panic), graph.Status
+	// and len(graph.Steps) are data races if read after RUnlock.
 	s.Mu.RLock()
 	graph := s.graphs[taskID]
+	var roleHint string
+	var graphStatus string
+	var stepCount int
+	if graph != nil {
+		graphStatus = string(graph.Status)
+		stepCount = len(graph.Steps)
+		if st := graph.Steps[stepID]; st != nil {
+			roleHint = st.RoleID
+		}
+	}
 	s.Mu.RUnlock()
 	if graph == nil {
 		return ""
@@ -490,6 +507,18 @@ func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string) string 
 	}
 
 	// Build planning prompt.
+	//
+	// 2026-10-18: the prompt previously ended with "Output your revised plan
+	// as markdown", contradicting the task_planner role instruction (which
+	// demands a JSON task graph) and the only consumer of this value
+	// (submitDecision's "replan" option, which needs steps to inject).
+	// The contract below is now JSON, and the catalog is supplied so the
+	// planner can name real tools instead of guessing.
+	// T4 fix (2026-10-19): roleHint, graphStatus, stepCount extracted under
+	// s.Mu.RLock above — no more lock-after-unlock reads on graph.Steps/Status.
+	toolCatalog, _ := s.plannerToolCatalog(roleHint)
+	roleList, _ := s.plannerAllowedRoles()
+
 	prompt := fmt.Sprintf(`You are a Task Planner. The current execution has hit a problem and needs re-planning.
 
 Task ID: %s
@@ -500,12 +529,27 @@ Current DAG status: %s
 Steps: %d
 
 Analyze the situation and produce a revised execution plan. Consider what has already been done and what needs to change.%s
+%s
+%s
+%s
 
-Output your revised plan as markdown.`,
-		taskID, stepID, reason, graph.Status, len(graph.Steps), summariesText)
+Note: the problem step will be marked deprecated and replaced by the steps you emit.`,
+		taskID, stepID, reason, graphStatus, stepCount, summariesText,
+		roleList, toolCatalog, planJSONContract)
 
 	// Spawn the planner role.
-	plannerCtx, cancel := context.WithTimeout(s.lifecycleCtx, 60*time.Second)
+	//
+	// Timeout is configurable: a 60s hard limit was too tight for a planner
+	// that must read a large tool catalog on a slow endpoint.
+	timeoutSecs := 90
+	if s.registry != nil {
+		s.registry.Mu.RLock()
+		if v := s.registry.System.PlannerTimeoutSecs; v > 0 {
+			timeoutSecs = v
+		}
+		s.registry.Mu.RUnlock()
+	}
+	plannerCtx, cancel := context.WithTimeout(s.lifecycleCtx, time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 
 	res, err := s.spawner.Spawn(plannerCtx, &SpawnRequest{
@@ -519,5 +563,87 @@ Output your revised plan as markdown.`,
 		return ""
 	}
 
-	return fmt.Sprintf("%v", res.Output.Result)
+	raw := plannerResultText(res)
+	if raw == "" {
+		return ""
+	}
+
+	// Validate now, at decision-creation time, so a broken plan never
+	// reaches submitDecision as a "replan" option that would silently do
+	// nothing. A rejected plan is logged with the reason and the option is
+	// simply not offered.
+	steps, perr := s.parsePlannerOutput(raw, roleHint)
+	if perr != nil {
+		s.logger.Log("planner_replan_rejected", taskID, stepID, map[string]any{
+			"reason": perr.Error(),
+			"raw":    truncateForLog(raw, 2000),
+		})
+		return ""
+	}
+	if len(steps) == 0 {
+		return ""
+	}
+
+	payload, merr := json.Marshal(map[string]any{"replacement_steps": steps})
+	if merr != nil {
+		return ""
+	}
+	return string(payload)
+}
+
+// parsePlannerOutput validates raw planner text into StepInputs using the
+// same contract the submission path uses, so the two entry points cannot
+// drift apart.
+func (s *DirectedEngine) parsePlannerOutput(raw, targetRole string) ([]schemas.StepInput, error) {
+	_, catalog := s.plannerToolCatalog(targetRole)
+	opt := s.plannerParseOptions(targetRole, catalog)
+	return schemas.ParsePlanDAG(raw, opt)
+}
+
+// plannerResultText extracts the model's text from a SpawnResult regardless
+// of which of the several shapes the subagent returned.
+//
+// Why the "steps" case exists (2026-10-18): a planner that answers with the
+// bare contract object {"steps": [...]} — exactly what planJSONContract asks
+// for — is parsed by schemas.ParseOutput into Result["steps"], not
+// Result["text"], because the object has no "result"/"confidence" fields to
+// populate SubagentOutput. The old fallback then printed the Go map with
+// fmt.Sprintf("%v") ("map[steps:[map[allowed_tools:[...]]]]"), which is not
+// JSON, so ParsePlanDAG rejected a perfectly valid plan with "could not
+// recover valid JSON". Observed with google/gemini-3-flash-preview on
+// 4fab96f_3 / the 2+2 probe. Re-serialising with encoding/json keeps the
+// structure intact and lets extractJSONObject do its job.
+func plannerResultText(res *SpawnResult) string {
+	if res == nil {
+		return ""
+	}
+	if s, ok := res.Output.Result["text"].(string); ok && strings.TrimSpace(s) != "" {
+		return s
+	}
+	if s, ok := res.Output.Result["reply"].(string); ok && strings.TrimSpace(s) != "" {
+		return s
+	}
+	for _, k := range []string{"result", "output", "content", "answer"} {
+		if s, ok := res.Output.Result[k].(string); ok && strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	// A structured plan that skipped the subagent output wrapper. Marshal it
+	// back to JSON rather than to Go-syntax `map[...]`.
+	if v, ok := res.Output.Result["steps"]; ok {
+		if b, err := json.Marshal(map[string]any{"steps": v}); err == nil {
+			return string(b)
+		}
+	}
+	// Last resort: the whole result. Marshal as JSON first (still parseable
+	// when it contains the plan); only then fall back to Go-syntax printing,
+	// which ParsePlanDAG will reject — correctly, since it is not JSON.
+	if len(res.Output.Result) > 0 {
+		if b, err := json.Marshal(res.Output.Result); err == nil && json.Valid(b) {
+			if s := string(b); strings.TrimSpace(s) != "{}" && strings.TrimSpace(s) != "null" {
+				return truncateForLog(s, 20000)
+			}
+		}
+	}
+	return truncateForLog(fmt.Sprintf("%v", res.Output.Result), 20000)
 }

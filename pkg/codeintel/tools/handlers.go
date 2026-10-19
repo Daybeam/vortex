@@ -85,85 +85,85 @@ func AllTools() []ToolDef {
 	return []ToolDef{
 		{
 			Name:        "index_project",
-			Description: "【第一步：索引】扫描并索引 Go 项目。在开始任何分析或编辑任务前，必须运行此工具。它会构建语义地图。如果你发现符号找不到了，请重新运行此工具以刷新缓存。",
-			InputSchema: schema([]string{"root_dir"}, "root_dir", str("项目根目录的绝对路径")),
+			Description: "[Step 1: Index] Scan and index a Go project. You MUST run this tool before starting any analysis or editing task. It builds a semantic map. If you find symbols are missing, re-run this tool to refresh the cache.",
+			InputSchema: schema([]string{"root_dir"}, "root_dir", str("Absolute path of the project root directory")),
 		},
 		{
 			Name:        "find_symbol",
-			Description: "【定位定义】查找符号（函数/类型/接口/变量）的定义。在修改代码前，必须使用此工具确认定义的精确位置、签名和文档。",
-			InputSchema: schema([]string{"name"}, "name", str("符号名称，例如 ProcessOrder")),
+			Description: "[Locate Definition] Find the definition of a symbol (function/type/interface/variable). Before modifying code, you MUST use this tool to confirm the exact location, signature, and docs of the definition.",
+			InputSchema: schema([]string{"name"}, "name", str("Symbol name, e.g. ProcessOrder")),
 		},
 		{
 			Name:        "find_references",
-			Description: "【查找引用】在整个代码库中查找符号的所有使用位置。在重命名、删除或修改函数签名之前，**严禁**跳过此步骤。",
+			Description: "[Find References] Find all usages of a symbol across the entire codebase. Before renaming, deleting, or modifying a function signature, **NEVER** skip this step.",
 			InputSchema: schema([]string{"name"},
-				"name", str("符号名称"),
-				"file", str("可选：缩小范围到特定定义文件"),
+				"name", str("Symbol name"),
+				"file", str("Optional: narrow scope to a specific definition file"),
 			),
 		},
 		{
 			Name:        "impact_analysis",
-			Description: "【高危：爆炸半径分析】计算修改一个符号的影响范围。它会返回直接和间接调用者。在修改任何导出（Exported）符号前，**必须**先运行此分析。如果风险等级为 high 或 critical，请谨慎操作并告知用户。",
+			Description: "[High-Risk: Blast Radius Analysis] Compute the impact scope of modifying a symbol. Returns direct and indirect callers. Before modifying any exported symbol, you **MUST** run this analysis first. If the risk level is high or critical, proceed cautiously and inform the user.",
 			InputSchema: schema([]string{"symbol_name"},
-				"symbol_name", str("要分析的符号"),
-				"file", str("可选：缩小范围到特定文件"),
+				"symbol_name", str("Symbol to analyze"),
+				"file", str("Optional: narrow scope to a specific file"),
 			),
 		},
 		{
 			Name:        "symbol_view",
-			Description: "【全景视图】一次性获取符号的定义、调用者、被调用者、引用和接口实现。这是探索陌生代码逻辑时的**最佳首选工具**。",
+			Description: "[Panoramic View] Get the symbol's definition, callers, callees, references, and interface implementations all at once. This is the **best first-choice tool** when exploring unfamiliar code logic.",
 			InputSchema: schema([]string{"name"},
-				"name", str("符号名称"),
-				"file", str("可选：如果名称有歧义则提供"),
+				"name", str("Symbol name"),
+				"file", str("Optional: provide if the name is ambiguous"),
 			),
 		},
 		{
 			Name:        "get_diagnostics",
-			Description: "【体检】运行类型检查并返回所有错误。在大规模编辑后或提交前，请运行此工具确保项目没有被你改坏。它比编译更快。",
+			Description: "[Health Check] Run type checking and return all errors. After large-scale edits or before committing, run this tool to ensure you have not broken the project. It is faster than compiling.",
 			InputSchema: schema(nil),
 		},
 		{
-			Name:        "begin_session",
-			Description: "【编辑 SOP 第1步】启动原子编辑会话。所有写入都将在内存中暂存。返回 session_id。**不要直接写磁盘，请始终使用会话流程。**",
+			Name: "begin_session",
+			Description: "[Edit SOP Step 1] Start an atomic editing session. All writes will be staged in memory. Returns session_id. **Do NOT write to disk directly; always use the session flow.**",
 			InputSchema: schema(nil),
 		},
 		{
 			Name:        "session_write",
-			Description: "【编辑 SOP 第2步】将文件修改暂存到会话中。必须提供文件的**完整新内容**。注意：此操作不会改变磁盘文件，直到你 commit。",
+			Description: "[Edit SOP Step 2] Stage a file modification into the session. You MUST provide the **complete new content** of the file. Note: this does not change the on-disk file until you commit.",
 			InputSchema: schema([]string{"session_id", "file", "content"},
-				"session_id", str("来自 begin_session 的 ID"),
-				"file", str("文件的绝对路径"),
-				"content", str("新的完整文件内容"),
+				"session_id", str("ID from begin_session"),
+				"file", str("Absolute path of the file"),
+				"content", str("New complete file content"),
 			),
 		},
 		{
 			Name:        "session_validate",
-			Description: "【编辑 SOP 第3步：强制步骤】在内存中验证你暂存的所有修改。它会检查你引入的修改是否导致了类型错误。**严禁在未通过验证（error_count 为 0）的情况下提交。**",
-			InputSchema: schema([]string{"session_id"}, "session_id", str("会话 ID")),
+			Description: "[Edit SOP Step 3: Mandatory] Validate all staged modifications in memory. Checks whether your changes introduced type errors. **NEVER commit without passing validation (error_count is 0).**",
+			InputSchema: schema([]string{"session_id"}, "session_id", str("Session ID")),
 		},
 		{
 			Name:        "session_commit",
-			Description: "【编辑 SOP 第4步】将暂存的所有修改原子化地写入磁盘。只有在 session_validate 成功后才能调用。如果返回 CONFLICT 错误，说明在你编辑期间文件被外部修改了，你必须 rollback 并重试。",
-			InputSchema: schema([]string{"session_id"}, "session_id", str("会话 ID")),
+			Description: "[Edit SOP Step 4] Atomically write all staged modifications to disk. May only be called after session_validate succeeds. If it returns a CONFLICT error, the file was modified externally during your edit; you must rollback and retry.",
+			InputSchema: schema([]string{"session_id"}, "session_id", str("Session ID")),
 		},
 		{
 			Name:        "session_rollback",
-			Description: "【丢弃修改】放弃当前会话中所有的暂存修改并清理环境。如果你发现改乱了或验证失败无法修复，请果断使用此工具。",
-			InputSchema: schema([]string{"session_id"}, "session_id", str("会话 ID")),
+			Description: "[Discard Changes] Abandon all staged modifications in the current session and clean up. If you find you have made a mess or validation fails and cannot be fixed, use this tool without hesitation.",
+			InputSchema: schema([]string{"session_id"}, "session_id", str("Session ID")),
 		},
 		{
 			Name:        "search_code",
-			Description: "【文本搜索】跨包进行全文搜索。当你不知道符号名，只知道部分关键词时使用。支持区分大小写。",
+			Description: "[Text Search] Full-text search across packages. Use when you do not know the symbol name but only partial keywords. Supports case-sensitive matching.",
 			InputSchema: schema([]string{"query"},
-				"query", str("搜索关键词"),
-				"case_sensitive", boolProp("是否区分大小写（默认 false）"),
+				"query", str("Search keywords"),
+				"case_sensitive", boolProp("Whether to match case-sensitively (default false)"),
 			),
 		},
 		{
 			Name:        "list_project_structure",
-			Description: "【项目概览】返回项目的目录树结构。用于在开始任务前了解代码布局。会自动忽略 vendor, node_modules 等无关目录。",
+			Description: "[Project Overview] Return the project's directory tree structure. Use to understand code layout before starting a task. Automatically ignores irrelevant directories such as vendor, node_modules.",
 			InputSchema: schema(nil,
-				"depth", intProp("搜索深度（默认 3）"),
+				"depth", intProp("Search depth (default 3)"),
 			),
 		},
 	}
@@ -172,6 +172,7 @@ func AllTools() []ToolDef {
 func intProp(desc string) string {
 	return fmt.Sprintf(`{"type":"integer","description":%q}`, desc)
 }
+
 
 // Dispatch routes a tool call to the appropriate handler.
 func (h *Handler) Dispatch(name string, args map[string]interface{}) ToolResult {
@@ -257,130 +258,94 @@ func (h *Handler) indexProject(rootDir string) ToolResult {
 }
 
 func (h *Handler) findSymbol(name string) ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	syms := h.analyzer.FindSymbol(name)
 	return okResult(map[string]interface{}{"found": len(syms), "symbols": nilSafe(syms)})
 }
 
 func (h *Handler) findReferences(name, file string) ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	refs := h.analyzer.FindReferences(name, file)
 	return okResult(map[string]interface{}{"symbol": name, "count": len(refs), "references": nilSafe(refs)})
 }
 
 func (h *Handler) getCallers(funcName string) ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	callers := h.analyzer.GetCallers(funcName)
 	return okResult(map[string]interface{}{"function": funcName, "caller_count": len(callers), "callers": nilSafe(callers)})
 }
 
 func (h *Handler) getCallees(funcName, file string) ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	callees := h.analyzer.GetCallees(funcName, file)
 	return okResult(map[string]interface{}{"function": funcName, "callee_count": len(callees), "callees": nilSafe(callees)})
 }
 
 func (h *Handler) getImplementors(ifaceName string) ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	impls := h.analyzer.GetImplementors(ifaceName)
 	return okResult(map[string]interface{}{"interface": ifaceName, "count": len(impls), "implementors": nilSafe(impls)})
 }
 
 func (h *Handler) symbolView(name, file string) ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	view, err := h.analyzer.SymbolView(name, file)
-	if err != nil {
-		return failf("%v", err)
-	}
+	if err != nil { return failf("%v", err) }
 	return okResult(view)
 }
 
 func (h *Handler) impactAnalysis(symbolName, file string) ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	result, err := h.analyzer.ImpactAnalysis(symbolName, file)
-	if err != nil {
-		return failf("%v", err)
-	}
+	if err != nil { return failf("%v", err) }
 	return okResult(result)
 }
 
 func (h *Handler) listSymbols(filter string) ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	syms := h.analyzer.ListSymbols(filter)
 	return okResult(map[string]interface{}{"count": len(syms), "symbols": nilSafe(syms)})
 }
 
 func (h *Handler) getDiagnostics() ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	diags := h.analyzer.GetDiagnostics()
 	return okResult(map[string]interface{}{"error_count": len(diags), "diagnostics": nilSafe(diags)})
 }
 
 func (h *Handler) readFile(file string) ToolResult {
 	data, err := readFileBytesImpl(file)
-	if err != nil {
-		return failf("read failed: %v", err)
-	}
+	if err != nil { return failf("read failed: %v", err) }
 	content := string(data)
 	return okResult(map[string]interface{}{
-		"file":    file,
-		"lines":   strings.Count(content, "\n") + 1,
+		"file": file,
+		"lines": strings.Count(content, "\n") + 1,
 		"content": content,
 	})
 }
 
 func (h *Handler) searchCode(query string, caseSensitive bool) ToolResult {
-	if h.analyzer == nil {
-		return fail("not indexed")
-	}
+	if h.analyzer == nil { return fail("not indexed") }
 	matches := h.analyzer.SearchCode(query, caseSensitive)
 	return okResult(map[string]interface{}{"query": query, "count": len(matches), "matches": nilSafe(matches)})
 }
 
 func (h *Handler) beginSession() ToolResult {
-	if h.overlay == nil {
-		return fail("not indexed")
-	}
+	if h.overlay == nil { return fail("not indexed") }
 	id := h.overlay.Begin()
 	return okResult(map[string]string{"session_id": id, "status": "open"})
 }
 
 func (h *Handler) sessionWrite(sessionID, file, content string) ToolResult {
-	if h.overlay == nil {
-		return fail("not indexed")
-	}
-	if err := h.overlay.WriteFile(sessionID, file, content); err != nil {
-		return failf("stage failed: %v", err)
-	}
+	if h.overlay == nil { return fail("not indexed") }
+	if err := h.overlay.WriteFile(sessionID, file, content); err != nil { return failf("stage failed: %v", err) }
 	return okResult(map[string]string{"session_id": sessionID, "file": file, "status": "staged"})
 }
 
 func (h *Handler) sessionValidate(sessionID string) ToolResult {
-	if h.overlay == nil {
-		return fail("not indexed")
-	}
+	if h.overlay == nil { return fail("not indexed") }
 	diags, err := h.overlay.Validate(sessionID)
-	if err != nil {
-		return failf("validation error: %v", err)
-	}
+	if err != nil { return failf("validation error: %v", err) }
 	return okResult(map[string]interface{}{"session_id": sessionID, "error_count": len(diags), "diagnostics": nilSafe(diags)})
 }
 
@@ -406,23 +371,15 @@ func (h *Handler) sessionCommit(sessionID string) ToolResult {
 }
 
 func (h *Handler) sessionRollback(sessionID string) ToolResult {
-	if h.overlay == nil {
-		return fail("not indexed")
-	}
-	if err := h.overlay.Rollback(sessionID); err != nil {
-		return failf("rollback failed: %v", err)
-	}
+	if h.overlay == nil { return fail("not indexed") }
+	if err := h.overlay.Rollback(sessionID); err != nil { return failf("rollback failed: %v", err) }
 	return okResult(map[string]string{"session_id": sessionID, "status": "rolled_back"})
 }
 
 func (h *Handler) sessionStatus(sessionID string) ToolResult {
-	if h.overlay == nil {
-		return fail("not indexed")
-	}
+	if h.overlay == nil { return fail("not indexed") }
 	sess, err := h.overlay.GetSession(sessionID)
-	if err != nil {
-		return failf("%v", err)
-	}
+	if err != nil { return failf("%v", err) }
 	return okResult(sess)
 }
 
@@ -431,8 +388,6 @@ func readFileBytesImpl(file string) ([]byte, error) {
 }
 
 func nilSafe[S ~[]E, E any](s S) S {
-	if s == nil {
-		return S{}
-	}
+	if s == nil { return S{} }
 	return s
 }

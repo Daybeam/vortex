@@ -195,6 +195,24 @@ func jsonOK(v any) (*mcp.CallToolResult, error) {
 // loggedHandler wraps an MCP tool handler with structured logging for observability.
 func (app *App) loggedHandler(name string, handler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// stdio transport doesn't go through HTTP auth middleware, so AuthTierKey
+		// is not set in the context. stdio is a trusted local pipe — inject
+		// TierAdmin when the tier is missing (don't override explicit settings).
+		// This matches the "Dev Mode (No keys configured)" semantic in
+		// main_web.go:855-861. Without this, stdio tool calls fail with
+		// cross_owner_denied because CheckTaskOwnership sees tier="" (not
+		// admin) and the caller identity doesn't match the task owner.
+		// See docs/53-appworld-transport-fix-20261018.md §4.
+		//
+		// SECURITY FIX (2026-10-19): loggedHandler wraps ALL transports, not
+		// just stdio. If an SSE/HTTP path fails to set AuthTierKey, the request
+		// silently became admin → cross-tenant access via CheckTaskOwnership.
+		// Now only inject when the app itself is not public. For public apps,
+		// a missing tier stays empty → CheckTaskOwnership denies (safe default).
+		if _, ok := ctx.Value(AuthTierKey).(string); !ok && app.Tier != TierPublic {
+			ctx = context.WithValue(ctx, AuthTierKey, TierAdmin)
+		}
+
 		if app.Logger == nil {
 			return handler(ctx, req)
 		}

@@ -209,6 +209,14 @@ func (r *Registry) loadLocked() error {
 		r.setLoadedSnapshot(info.ModTime(), info.Size())
 	}
 
+	// Asset gate: verify external assets against manifest.lock if present.
+	// Fail-soft: log warning on tampering, do not refuse startup.
+	if AllowExternalAssets() {
+		if err := VerifyAssetManifest(r.configPath); err != nil {
+			log.Printf("WARNING: asset integrity check failed: %v", err)
+		}
+	}
+
 	r.DefaultProvider = cfg.DefaultProvider
 	if r.DefaultProvider == "" {
 		// FIX (2026-09-03): restored, dropped during the loader.go split.
@@ -218,6 +226,26 @@ func (r *Registry) loadLocked() error {
 	r.ExternalRuntimes = cfg.ExternalRuntimes
 	r.System = cfg.System
 	r.applySystemDefaults()
+	// RiskTier keyword overrides (2026-10-18). nil = keep engine defaults;
+	// present-empty (`[]`) = that tier's keyword matching is turned off.
+	// SetRiskTierKeywords treats empty as "leave alone", so the explicit
+	// disable has to go through ClearRiskTierKeywords. Bypassing this with a
+	// plain SetRiskTierKeywords(empty, empty) would silently keep "payment"
+	// and friends active. See config/types.go CriticalRiskKeywords.
+	if r.System.CriticalRiskKeywords != nil {
+		if len(r.System.CriticalRiskKeywords) == 0 {
+			schemas.ClearRiskTierKeywords("critical")
+		} else {
+			schemas.SetRiskTierKeywords(r.System.CriticalRiskKeywords, nil)
+		}
+	}
+	if r.System.ModerateRiskKeywords != nil {
+		if len(r.System.ModerateRiskKeywords) == 0 {
+			schemas.ClearRiskTierKeywords("moderate")
+		} else {
+			schemas.SetRiskTierKeywords(nil, r.System.ModerateRiskKeywords)
+		}
+	}
 	r.EnableDynamicRoleGen = cfg.EnableDynamicRoleGen
 	r.EnableEphemeralRoleGen = cfg.EnableEphemeralRoleGen
 	r.RequirePlanReview = cfg.RequirePlanReview
@@ -263,16 +291,18 @@ func (r *Registry) loadLocked() error {
 		skillsDir = filepath.Join(ConfigDir(r.configPath), "workspace/skills/")
 	}
 	keepSkills := make(map[string]bool)
-	files, _ := os.ReadDir(skillsDir)
-	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".json") {
-			skillData, err := os.ReadFile(filepath.Join(skillsDir, file.Name()))
-			if err == nil {
-				var s Skill
-				if err := json.Unmarshal(skillData, &s); err == nil {
-					s.InitFilter()
-					r.Skills[s.ID] = &s
-					keepSkills[s.ID] = true
+	if AllowExternalAssets() {
+		files, _ := os.ReadDir(skillsDir)
+		for _, file := range files {
+			if !file.IsDir() && strings.HasSuffix(file.Name(), ".json") {
+				skillData, err := os.ReadFile(filepath.Join(skillsDir, file.Name()))
+				if err == nil {
+					var s Skill
+					if err := json.Unmarshal(skillData, &s); err == nil {
+						s.InitFilter()
+						r.Skills[s.ID] = &s
+						keepSkills[s.ID] = true
+					}
 				}
 			}
 		}
@@ -317,7 +347,12 @@ func (r *Registry) loadLocked() error {
 	if rolesDir == "" {
 		rolesDir = filepath.Join(ConfigDir(r.configPath), "workspace/roles/")
 	}
-	folderRoles, _ := loadFolderRoles(rolesDir)
+	var folderRoles map[string]*Role
+	if AllowExternalAssets() {
+		folderRoles, _ = loadFolderRoles(rolesDir)
+	} else {
+		folderRoles = map[string]*Role{}
+	}
 	parsed := make(map[string]*Role)
 	for i := range cfg.Roles {
 		role := cfg.Roles[i]
@@ -389,7 +424,7 @@ func (r *Registry) loadLocked() error {
 
 	// Invalidate env API key cache so ResolveAPIKey re-reads os.Getenv.
 	// This picks up .env changes when StartWatcher triggers a reload.
-	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 4.
+	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 4.
 	InvalidateAllEnvAPIKeys()
 
 	return nil
@@ -415,7 +450,7 @@ func (r *Registry) StartWatcher(ctx context.Context) {
 		}
 
 		// Also watch .env for hot-reload.
-		// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 5.
+		// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 5.
 		envPath := filepath.Join(filepath.Dir(r.configPath), ".env")
 		var envLastMod time.Time
 		if envInfo, envErr := os.Stat(envPath); envErr == nil {
@@ -651,7 +686,7 @@ func (r *Registry) applySystemDefaults() {
 
 	// MemoryBankEnabled env override (ADDED 2026-10-17).
 	// Env var takes precedence over config.json. Unset = use config value.
-	if v := os.Getenv("ORCH_MEMORY_BANK_ENABLED"); v != "" {
+	if v := os.Getenv("VORTEX_MEMORY_BANK_ENABLED"); v != "" {
 		r.System.MemoryBankEnabled = (v == "true" || v == "1")
 	}
 
@@ -660,7 +695,7 @@ func (r *Registry) applySystemDefaults() {
 	// Env unset = use config.json value as-is. This allows operators to
 	// keep using .env for feature flags without editing config.json, while
 	// new deployments can set them in config.json and hot-reload.
-	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §改动 2.
+	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 2.
 	ff := &r.System.FeatureFlags
 	if v := os.Getenv("VORTEX_DEBUG"); v != "" {
 		ff.Debug = true
@@ -668,26 +703,26 @@ func (r *Registry) applySystemDefaults() {
 	if v := os.Getenv("VORTEX_CORE_TOOLS_ORDER"); v != "" {
 		ff.CoreToolsOrderLast = v == "last"
 	}
-	if v := os.Getenv("ORCH_DISABLE_FORCE_TOOL"); v != "" {
+	if v := os.Getenv("VORTEX_DISABLE_FORCE_TOOL"); v != "" {
 		ff.DisableForceTool = v == "1"
 	}
-	if v := os.Getenv("ORCH_DISABLE_EGRESS_REDACTION"); v != "" {
+	if v := os.Getenv("VORTEX_DISABLE_EGRESS_REDACTION"); v != "" {
 		ff.DisableEgressRedaction = v == "1"
 	}
-	if v := os.Getenv("ORCH_DISABLE_CGROUP_SANDBOX"); v != "" {
+	if v := os.Getenv("VORTEX_DISABLE_CGROUP_SANDBOX"); v != "" {
 		ff.DisableCgroupSandbox = v == "1"
 	}
-	if v := os.Getenv("ORCH_DISABLE_PATTERN_KILL"); v != "" {
+	if v := os.Getenv("VORTEX_DISABLE_PATTERN_KILL"); v != "" {
 		ff.DisablePatternKill = v == "1"
 	}
-	if v := os.Getenv("ORCH_DISABLE_THINKING"); v != "" {
+	if v := os.Getenv("VORTEX_DISABLE_THINKING"); v != "" {
 		v = strings.TrimSpace(v)
 		ff.DisableThinking = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 	}
-	if v := os.Getenv("ORCH_EVAL_OBS"); v != "" {
+	if v := os.Getenv("VORTEX_EVAL_OBS"); v != "" {
 		ff.EvalObs = true
 	}
-	if v := os.Getenv("ORCH_FS_ONLY_STREAK_LIMIT"); v != "" {
+	if v := os.Getenv("VORTEX_FS_ONLY_STREAK_LIMIT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			ff.FSOnlyStreakLimit = n
 		}

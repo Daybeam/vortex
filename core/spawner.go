@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/gateway"
 	"github.com/daybeam/vortex/pkg/registry"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -73,6 +74,10 @@ type Spawner struct {
 	capProfileStore          *store.CapabilityProfileStore
 	capLookup                providers.CapabilityProfileLookup
 	modelRegistry            *registry.ModelRegistry
+	sanitizer                *gateway.SanitizerProxy
+	// ClearSanitizer clears the sanitizer vault for a completed task (P2).
+	// Nil-safe: when nil or sanitizer is nil, call is a no-op.
+	ClearSanitizer           func(taskID string)
 
 	// signalCollector and policyDecider decouple data collection from policy
 	// computation in calculateMaxTurns. See core/policy_signals.go and
@@ -151,6 +156,18 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		irtEstimator:      NewIRTBudgetEstimator(50),
 		cacheSentinel:     NewCacheSentinel(),
 		allowedWorkspaces: reg.System.Sandbox.AllowedWorkspaces,
+	}
+	if reg.System.SanitizerEnabled {
+		spawner.sanitizer = gateway.NewSanitizerProxy()
+	}
+
+	// ClearSanitizer clears the sanitizer vault for a completed task.
+	// Called by DirectedEngine.finalize to prevent unbounded memory growth
+	// and enforce ephemeral scope (P2 fix, 2026-10-18).
+	spawner.ClearSanitizer = func(taskID string) {
+		if spawner.sanitizer != nil {
+			spawner.sanitizer.Clear(taskID)
+		}
 	}
 
 	// Wire policy signal collection and decision (decoupled from spawner_policy.go)
@@ -293,7 +310,7 @@ func (s *Spawner) SetFoldEngine(fe *FoldEngine) {
 
 // SetMemoryBankStore wires the MemoryBankStore for UserProfile injection
 // into sub-agent prompts. ADDED 2026-10-17.
-// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §改动 3.
+// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
 func (s *Spawner) SetMemoryBankStore(mb *store.MemoryBankStore) {
 	if s.pa != nil {
 		s.pa.SetMemoryBankStore(mb)

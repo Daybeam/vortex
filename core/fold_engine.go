@@ -223,7 +223,7 @@ func (f *FoldEngine) foldTier2Merge(state *FoldState, taskScope string) {
 	merged := &FoldBlock{
 		BlockID:    fmt.Sprintf("fold_t2_%d", time.Now().UnixNano()),
 		SegmentID:  "", // tier-2 spans multiple segments
-		TopicTitle: fmt.Sprintf("跨段摘要: %s", strings.Join(titles, "; ")),
+		TopicTitle: fmt.Sprintf("cross-segment summary: %s", strings.Join(titles, "; ")),
 		Summary:    truncateStr(strings.Join(summaries, "\n---\n"), foldSummaryMaxChars),
 		ItemIDs:    allItemIDs,
 		ItemCount:  len(allItemIDs),

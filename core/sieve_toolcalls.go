@@ -156,7 +156,7 @@ func detectCycle(history []string, minRepeats int) bool {
 
 // InspectTruncationArtifact checks if the model is over-generalizing from
 // truncated tool results. When the last tool's Meta.Truncated is true and
-// the model output contains universal quantifiers (全部/所有/all/complete/etc.),
+// the model output contains universal quantifiers (all/every/complete/etc., incl. CJK 全部/所有),
 // the Sieve blocks the output and forces the model to narrow its conclusion.
 //
 // See docs/plan/STRUCTURED_TOOL_METADATA_DESIGN.md §2.2.

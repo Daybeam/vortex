@@ -59,7 +59,7 @@ var disableThinkingFlag atomic.Bool
 var debugEnabledFlag atomic.Bool
 
 func init() {
-	v := strings.TrimSpace(os.Getenv("ORCH_DISABLE_THINKING"))
+	v := strings.TrimSpace(os.Getenv("VORTEX_DISABLE_THINKING"))
 	if v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") {
 		disableThinkingFlag.Store(true)
 	}
@@ -126,7 +126,7 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 		body["frequency_penalty"] = *req.FrequencyPenalty
 	}
 
-	// ORCH_DISABLE_THINKING=1 → makes thinking models (Qwen3.5-4B) give content directly,
+	// VORTEX_DISABLE_THINKING=1 → makes thinking models (Qwen3.5-4B) give content directly,
 	// avoiding parsing empty string triggering P1 spin. Off by default (qwen3-4b is a non-thinking model).
 	if disableThinkingFlag.Load() {
 		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
@@ -352,7 +352,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 		body["frequency_penalty"] = *req.FrequencyPenalty
 	}
 
-	// ORCH_DISABLE_THINKING=1 → same as above, non-streaming path must also include it (otherwise Q3.5 can still parse empty string).
+	// VORTEX_DISABLE_THINKING=1 → same as above, non-streaming path must also include it (otherwise Q3.5 can still parse empty string).
 	if disableThinkingFlag.Load() {
 		body["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}

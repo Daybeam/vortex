@@ -47,7 +47,7 @@ func TestC6_ChatSession_ConcurrentPersistAppend(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
-				// audit NEW-LOW-1: was `_ = st.Persist(s)` (搬龙门).
+				// audit NEW-LOW-1: was `_ = st.Persist(s)` (gate moved).
 				// Explicitly handle error — concurrent file writes may
 				// conflict on some platforms; log but don't fail since
 				// this test is for race detection, not persist correctness.

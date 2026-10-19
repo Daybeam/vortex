@@ -14,6 +14,7 @@ import (
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/jsonrepair"
 	"github.com/daybeam/vortex/providers"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // RoleGenerator automatically creates roles from a cookbook source when a requested role is missing.
@@ -409,4 +410,46 @@ REPAIRED_OK:
 	}
 
 	return newRole, newSkill, nil
+}
+
+// AppendSessionRole stores a generated role in the task graph's session IR
+// under a collision-proof id.
+//
+// CONTRACT (important — this is what makes ephemeral roles safe):
+//
+//   - It never touches registry.Roles, so the role is invisible to every
+//     other task and to the global planner.
+//   - It never calls Persist()/CommitOps, so nothing is written to config.json.
+//   - The id is namespaced "ephemeral_<taskID>_<suffix>" so it cannot shadow a
+//     real role even if the LLM generates a name that collides.
+//
+// CAVEAT (measured 2026-10-18, docs 52 §12.2): "ephemeral" here means
+// "not in the global registry", NOT "never hits disk". TaskGraph.ToStatusDict
+// /persistGraph serialise SessionRoles into outputs/<taskID>/manifest.json,
+// and ContextHub.GetRole will unmarshal them back on a resumed task. The
+// blast radius is still one task directory, but the word "ephemeral" should
+// not be read as "memory-only".
+func AppendSessionRole(graph *schemas.TaskGraph, taskID string, role *config.Role) (string, error) {
+	if graph == nil {
+		return "", fmt.Errorf("AppendSessionRole: graph is nil")
+	}
+	if role == nil || role.ID == "" {
+		return "", fmt.Errorf("AppendSessionRole: role and role.id are required")
+	}
+	// T2: force-clean ephemeral roles before persisting, regardless of payload
+	// source. Prevents public-tier callers from injecting dynamic MCPs/skills
+	// or mutable roles via create_role.
+	role.AllowDynamicMCPs = false
+	role.AllowDynamicSkills = false
+	role.Generatable = false
+	role.MutableByAgent = false
+	role.BoundMCPBindings = nil
+	suffix := role.ID
+	if len(suffix) > 40 {
+		suffix = suffix[:40]
+	}
+	scoped := "ephemeral_" + taskID + "_" + suffix
+	role.ID = scoped
+	graph.SetSessionRole(scoped, role)
+	return scoped, nil
 }

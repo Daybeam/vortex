@@ -58,6 +58,39 @@ func SmartRouteIntent(task string) ([]string, string, string) {
 	return nil, "", ""
 }
 
+// shouldRouteToFulfill determines if submit_decision routes to FulfillStep
+// (true) or SubmitDecisionWithPayload (false). T1: replan/create_role/
+// rewrite_dag carry structured payload and must go through
+// SubmitDecisionWithPayload even when output is non-empty.
+func shouldRouteToFulfill(choice, output string) bool {
+	return (choice == "fulfill" || output != "") && choice != "rewrite_dag" && choice != "replan" && choice != "create_role"
+}
+
+// validateTierChoice returns an error if the given choice is not permitted
+// for the given tier. T2: replan/create_role are open to public tier but
+// public callers cannot inject payload (replan uses pre-computed planner
+// plan, create_role uses GenerateRoleObjects).
+func validateTierChoice(tier, choice, output string) error {
+	if tier != TierPublic {
+		return nil
+	}
+	switch choice {
+	case "skip", "abort", "retry", "refine_and_retry", "fulfill", "resume_more_turns":
+		return nil
+	case "replan":
+		if output != "" {
+			return fmt.Errorf("public tier replan must not provide output payload (injection risk: use pre-computed planner plan)")
+		}
+	case "create_role":
+		if output != "" {
+			return fmt.Errorf("public tier create_role must not provide role draft payload (injection risk: use GenerateRoleObjects)")
+		}
+	default:
+		return fmt.Errorf("choice %q requires admin tier (public tier allows skip|abort|retry|refine_and_retry|fulfill|resume_more_turns|replan|create_role)", choice)
+	}
+	return nil
+}
+
 func registerTaskList(s *server.MCPServer, app *App) {
 	submitDesc := `Delegates complex or specialized tasks to a supervised execution engine.
 Plans multi-step work and coordinates across specialized professional roles.
@@ -333,11 +366,26 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 					)
 				}
 
+				// C5 fix: filter write tools + deep copy to avoid mutation leak.
+				auditMCPs, auditAllowlists := core.AuditorAllowedTools(orig.AdditionalMCPs, orig.AdditionalToolAllowlists)
+
 				augmentedInputs = append(augmentedInputs, schemas.StepInput{
 					ID:         auditID,
 					RoleID:     "auditor",
 					DependsOn:  []string{orig.ID},
 					Task:       auditTask,
+					// U5 (2026-10-18): auditor inherits parent step's MCP
+					// bindings so it can verify against the same data sources.
+					// Universal: an auditor without fact-checking tools is
+					// structurally biased toward PASS. See eval §3.2b(4).
+					//
+					// C5 fix (2026-10-18): filter write tools from the
+					// inherited allowlists — the auditor should only have
+					// read-only tools (it's verifying, not acting). Also
+					// deep-copy to avoid mutation leak (shared map/slice
+					// reference would let auditor mutations affect parent).
+					AdditionalMCPs:           auditMCPs,
+					AdditionalToolAllowlists: auditAllowlists,
 				})
 			case schemas.RiskTierModerate:
 				notif["hint"] = "consider adding exit_criteria for structured verification"
@@ -592,18 +640,18 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		humanApproval, _ := args["human_approval"].(map[string]any)
 		hasApproval := humanApproval != nil && len(humanApproval) > 0
 
-		// Public tier choice allowlist (fulfill is allowed here for simplicity since it just
-		// records a delegation output; sensitive actions remain admin-only)
-		if app.Tier == TierPublic {
-			switch choice {
-			case "skip", "abort", "retry", "refine_and_retry", "fulfill", "resume_more_turns":
-					default:
-						return errResult(fmt.Sprintf("choice %q requires admin tier (public tier allows skip|abort|retry|refine_and_retry|fulfill|resume_more_turns)", choice))
-					}
+		// Public tier choice allowlist.
+		// T2: replan/create_role are open to public tier BUT public callers
+		// cannot inject payload — replan uses pre-computed planner plan,
+		// create_role uses GenerateRoleObjects.
+		if err := validateTierChoice(app.Tier, choice, output); err != nil {
+			return errResult(err.Error())
 		}
 
-		// Route: fulfill path if output provided, or if choice explicitly says "fulfill"
-		if (choice == "fulfill" || output != "") && choice != "rewrite_dag" {
+		// Route: fulfill path if output provided, or if choice explicitly says "fulfill".
+		// T1: replan/create_role/rewrite_dag carry structured payload and must
+		// route through SubmitDecisionWithPayload, not FulfillStep.
+		if shouldRouteToFulfill(choice, output) {
 			if output == "" {
 				return errResult("choice='fulfill' or output payload requires 'output' field with the result JSON")
 			}

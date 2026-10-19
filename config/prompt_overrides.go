@@ -69,6 +69,10 @@ func promptOverridesDir(configPath string) string {
 // given to a malformed workspace/skills/*.json or workspace/sops/*.json
 // file elsewhere in Load().
 func loadPromptOverrides(configPath string) PromptOverrides {
+	// Asset gate: skip external override files in tamper-proof mode.
+	if !AllowExternalAssets() {
+		return PromptOverrides{}
+	}
 	dir := promptOverridesDir(configPath)
 	roleOverrides := loadRoleInstructionOverrides(filepath.Join(dir, "roles"))
 	return PromptOverrides{
