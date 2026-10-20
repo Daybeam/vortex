@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -26,6 +27,32 @@ import (
 // builtin role, `MutateGraphTopology` existed as a DAG surgery primitive, but
 // nothing connected "planner output" to "graph injection". See
 // docs/plan 52-planner-wiring-design.md in the eval kit.
+
+// plannerParseAttempts bounds how many times RequestPlanning asks the model for
+// a plan. One retry, not more: the observed failure is a formatting lapse, not
+// a capability gap, and every extra attempt is a full LLM round trip on the
+// critical path before the first step even starts.
+const plannerParseAttempts = 2
+
+// plannerRetryNudge is appended to the prompt on the retry. It shows the model
+// its own opening bytes so "you did not produce JSON" is checkable rather than
+// a claim it has to trust.
+func plannerRetryNudge(prev string) string {
+	prev = strings.TrimSpace(prev)
+	if prev == "" {
+		prev = "<empty>"
+	}
+	if len(prev) > 400 {
+		prev = prev[:400] + "…"
+	}
+	return "## Retry — your previous answer was rejected\n\n" +
+		"It could not be parsed as a JSON object. It began with:\n\n" +
+		prev + "\n\n" +
+		"Discard that answer completely. Reply again with ONLY the JSON object " +
+		"defined by the Output Contract above: no <thought> block, no " +
+		"explanation, no numbered outline, no markdown fence. Your first " +
+		"character must be { and you must stop after the closing }."
+}
 
 // planJSONContract is the exact output contract appended to every planner
 // prompt. It must stay in sync with schemas.PlanDAG / schemas.PlanStep.
@@ -57,7 +84,10 @@ Hard rules — violating any of these makes the plan unusable and it will be dis
    express fan-out; use "depends_on" to express join.
 6. Emit only work that is still pending. Never re-emit an already completed step.
 7. "allowed_tools" is the ONLY set of tools a step may call. If a step needs to
-   authenticate first, the login tool must be listed too.`
+   authenticate first, the login tool must be listed too.
+8. No reasoning preamble. Do NOT open with a <thought> block, an analysis, or a
+   numbered outline. The first character of your answer must be "{" and the
+   last must be "}".`
 
 // plannerToolCatalog renders the tool catalog a planner is allowed to choose
 // from, grouped by MCP. Only tools that are actually discoverable are listed,
@@ -93,29 +123,30 @@ func (s *DirectedEngine) plannerToolCatalog(roleID string) (string, map[string]m
 		return "", catalog
 	}
 
-	// Prefer the role's bound MCPs — the planner is planning *for* that role,
-	// so exposing unrelated servers would invite invalid assignments.
-	var mcpIDs []string
-	s.registry.Mu.RLock()
-	if role, ok := s.registry.Roles[roleID]; ok && role != nil {
-		for _, b := range role.BoundMCPBindings {
-			if b.MCPID != "" {
-				mcpIDs = append(mcpIDs, b.MCPID)
-			}
-		}
+	// Phase 4 integration (2026-10-20): delegate scope enforcement to the
+	// shared enforceScope function from discovery.go. Same visibility logic
+	// as the discover MCP tool — single source of truth for scoping.
+	// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 4.
+	mcpIDs, scopeErr := enforceScope(s.registry, DiscoveryScope{Mode: "role", RoleID: roleID, AllowPool: false})
+	if scopeErr != nil {
+		s.logger.Log("EventPlannerEmptyCatalog", "", roleID, map[string]any{
+			"role_id": roleID,
+			"reason":  "scope_error: " + scopeErr.Error(),
+		})
 	}
 	if len(mcpIDs) == 0 {
-		// No binding declared: fall back to every configured MCP. This keeps
-		// generic (non-AppWorld) deployments working, where roles often rely
-		// on dynamic MCP assignment.
-		for id := range s.registry.MCPs {
-			mcpIDs = append(mcpIDs, id)
-		}
-		for id := range s.registry.DynamicMCPs {
-			mcpIDs = append(mcpIDs, id)
-		}
+		// D2 fix (2026-10-20): Privilege escalation — do NOT fall back to
+		// the entire MCP pool. A role with no BoundMCPBindings should see an
+		// empty catalog. If the role has AllowDynamicMCPs=true, it will
+		// receive MCPs at execution time via AdditionalMCPs; the spawner
+		// will discover and route them then. The planner can still assign
+		// work to this role (omit allowed_tools); it just can't pre-specify
+		// tool names it hasn't discovered yet.
+		s.logger.Log("EventPlannerEmptyCatalog", "", roleID, map[string]any{
+			"role_id": roleID,
+			"reason":  "no_bound_mcp_bindings",
+		})
 	}
-	s.registry.Mu.RUnlock()
 
 	sort.Strings(mcpIDs)
 
@@ -163,18 +194,28 @@ func (s *DirectedEngine) plannerToolCatalog(roleID string) (string, map[string]m
 
 // plannerAllowedRoles renders + returns the role ids a plan may assign.
 // Only roles that exist in the registry are offered.
+//
+// Phase 4 integration (2026-10-20): delegates role discovery to DiscoverImpl,
+// sharing the discovery logic with the discover MCP tool. MCP ID enrichment
+// still reads from the registry (DiscoveryRoleSummary doesn't include MCP IDs).
+// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 4.
 func (s *DirectedEngine) plannerAllowedRoles() (string, map[string]bool) {
 	allowed := map[string]bool{}
 	if s.registry == nil {
 		return "", allowed
 	}
 
+	result, err := DiscoverImpl(s.registry, DiscoveryScope{Mode: "pool", AllowPool: true}, "roles", "", 1, 1000)
+	if err != nil || result == nil {
+		return "", allowed
+	}
+
+	summaryMap := make(map[string]DiscoveryRoleSummary, len(result.Roles))
 	var ids []string
-	s.registry.Mu.RLock()
-	for id, r := range s.registry.Roles {
+	for _, summary := range result.Roles {
 		// A planner must not assign work to itself or to the arbiter — that
 		// would create planning loops.
-		if id == "task_planner" || id == "decision_arbiter" || id == "sop_generator" {
+		if summary.ID == "task_planner" || summary.ID == "decision_arbiter" || summary.ID == "sop_generator" {
 			continue
 		}
 		// orchestrator_default is injected by config.loader for EVERY config
@@ -185,36 +226,49 @@ func (s *DirectedEngine) plannerAllowedRoles() (string, map[string]bool) {
 		// catalog; letting that through produces a step that silently cannot
 		// do the work. Observed 2026-10-18 (gemini-3-flash on the 2+2 probe
 		// emitted role_id=orchestrator_default + allowed_tools=[execute_code]).
-		if id == "orchestrator_default" {
+		if summary.ID == "orchestrator_default" {
 			continue
 		}
-		if r == nil {
-			continue
-		}
-		allowed[id] = true
-		ids = append(ids, id)
+		allowed[summary.ID] = true
+		ids = append(ids, summary.ID)
+		summaryMap[summary.ID] = summary
 	}
-	s.registry.Mu.RUnlock()
 
 	if len(ids) == 0 {
 		return "", allowed
 	}
 	sort.Strings(ids)
 
+	// Batch MCP ID lookup with a single lock acquisition.
+	s.registry.Mu.RLock()
+	mcpIDsByRole := make(map[string][]string, len(ids))
+	for _, id := range ids {
+		if r := s.registry.Roles[id]; r != nil {
+			for _, b := range r.BoundMCPBindings {
+				mcpIDsByRole[id] = append(mcpIDsByRole[id], b.MCPID)
+			}
+		}
+	}
+	s.registry.Mu.RUnlock()
+
 	var sb strings.Builder
 	sb.WriteString("\n### Allowed role ids\n")
 	for _, id := range ids {
-		s.registry.Mu.RLock()
-		bc := ""
-		if r := s.registry.Roles[id]; r != nil {
-			bc = strings.TrimSpace(r.BaseCapability)
-		}
-		s.registry.Mu.RUnlock()
+		summary := summaryMap[id]
+		bc := strings.TrimSpace(summary.BaseCapability)
 		if bc != "" {
-			sb.WriteString(fmt.Sprintf("- `%s` (%s)\n", id, firstLine(bc, 120)))
+			sb.WriteString(fmt.Sprintf("- `%s` (%s)", id, firstLine(bc, 120)))
 		} else {
-			sb.WriteString(fmt.Sprintf("- `%s`\n", id))
+			sb.WriteString(fmt.Sprintf("- `%s`", id))
 		}
+		// Enrich with tool count (from DiscoverImpl) and bound MCP IDs
+		// (from registry). Helps the planner make informed role assignments
+		// without a separate discover call per role.
+		mcpIDs := mcpIDsByRole[id]
+		if len(mcpIDs) > 0 {
+			sb.WriteString(fmt.Sprintf(" [tools: %d, mcps: %s]", summary.ToolCount, strings.Join(mcpIDs, ",")))
+		}
+		sb.WriteString("\n")
 	}
 	return sb.String(), allowed
 }
@@ -252,6 +306,21 @@ func (s *DirectedEngine) plannerFirstEnabled() bool {
 	s.registry.Mu.RLock()
 	defer s.registry.Mu.RUnlock()
 	return s.registry.System.EnablePlannerFirst
+}
+
+// rejectSimpleTasksEnabled reports whether the validateTaskComplexity guard
+// (reject single-step local tasks with no skills/MCPs) is opt-in enabled.
+// Default false: the Smart Routing Fast-Path already handles such tasks with
+// near-zero overhead, so the guard is off by default to let them through.
+// Set RejectSimpleTasks=true in system config to restore the legacy
+// hard-reject behaviour for local (llama.cpp/vLLM) deployments.
+func (s *DirectedEngine) rejectSimpleTasksEnabled() bool {
+	if s.registry == nil {
+		return false
+	}
+	s.registry.Mu.RLock()
+	defer s.registry.Mu.RUnlock()
+	return s.registry.System.RejectSimpleTasks
 }
 
 // plannerParseOptions builds the validation options for a given target role.
@@ -317,8 +386,39 @@ func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSec
 		return nil, "empty task"
 	}
 
+	// ── Catalog freshness (ADDED 2026-10-19) ──────────────────────────────
+	// The planner runs before any step exists, so nothing has discovered the
+	// target role's MCPs yet and plannerToolCatalog below would render an empty
+	// catalog — which ParsePlanDAG rejects as "tool catalog unavailable". The
+	// planner is the one component expected to see every capability, so its
+	// catalog must not depend on a step having executed first.
+	//
+	// Discovery is cached per MCPDef and idempotent, so the first step of the
+	// plan does not pay for it twice.
+	discSecs := 90
+	if s.registry.System.PlannerTimeoutSecs > 0 {
+		discSecs = s.registry.System.PlannerTimeoutSecs
+	}
+	discCtx, discCancel := context.WithTimeout(s.lifecycleCtx, time.Duration(discSecs)*time.Second)
+	discovered := s.spawner.ensureMCPDiscoveryForRole(discCtx, roleID, taskID)
+	discCancel()
+	if discovered > 0 {
+		s.logger.Log("planner_catalog_discovered", taskID, "", map[string]any{
+			"mcps": discovered,
+		})
+	}
+
 	roleList, allowedRoles := s.plannerAllowedRoles()
 	toolCatalog, catalog := s.plannerToolCatalog(roleID)
+
+	// Count total tools across all MCPs in the catalog so the planner's
+	// output budget can scale with tool-set size. A fixed 8192-token cap
+	// truncates plans once the catalog exceeds ~100 tools (measured at
+	// 453 tools in production, 2026-10-20). See plannerMaxOutputTokens.
+	toolCount := 0
+	for _, tools := range catalog {
+		toolCount += len(tools)
+	}
 
 	var sb strings.Builder
 	sb.WriteString("You are a Task Planner for a supervised execution engine.\n")
@@ -331,7 +431,28 @@ func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSec
 	sb.WriteString(toolCatalog)
 	sb.WriteString(planJSONContract)
 	sb.WriteString("\n\nAdditional rules for this call:\n")
-	sb.WriteString("- Prefer the FEWEST steps that still express real parallelism.\n")
+	// 🔴 Do NOT reintroduce a "prefer the fewest steps" rule here. It used to
+	// read exactly that, and it fights the role instruction: the planner is
+	// told (in config) that even a plain read belongs in its own step, then
+	// told here to minimise step count, and the later instruction wins. That
+	// produced the observed degeneration — "I'll use a single appworld_agent
+	// step as it's a cohesive task" (task_96ac531e, 2026-10-19).
+	//
+	// The rule below is what both layers now say: a step boundary is a CONTEXT
+	// decision. Split when a step's raw output is large and only its conclusion
+	// is needed downstream — that is the entire reason to run work in a
+	// subagent instead of inline. Do not split for tidiness.
+	//
+	// Measured 2026-10-19 (4fab96f_3): the "always split read from write" rule
+	// produced a 3-step plan whose steps re-queried the same data, scoring 1/8,
+	// while a single step scored 8/8 on the same task. A one-step plan is
+	// therefore legitimate, and planner_first_single_step counts it — the thing
+	// worth detecting is a planner that says one step EVERY time, not one that
+	// says it when it is right.
+	sb.WriteString("- Step count follows context shape, not tidiness. Split only when a\n")
+	sb.WriteString("  step's raw output would otherwise flood the downstream context, or when\n")
+	sb.WriteString("  two units need disjoint toolsets. A single step is a valid answer when\n")
+	sb.WriteString("  the work is genuinely one or two calls.\n")
 	sb.WriteString("- Every step's \"task\" must be self-contained: assume the executing\n")
 	sb.WriteString("  agent sees only that text plus its own tool list.\n")
 	sb.WriteString("- Do NOT emit a verification/audit step. Verification is handled by\n")
@@ -344,55 +465,178 @@ func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSec
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(s.lifecycleCtx, time.Duration(timeoutSecs)*time.Second)
+	ctx, cancel := context.WithTimeout(s.lifecycleCtx, time.Duration(timeoutSecs*plannerParseAttempts)*time.Second)
 	defer cancel()
 
 	stepID := "plan_" + taskID
 	if taskID == "" {
 		stepID = "plan_probe"
 	}
-	res, err := s.spawner.Spawn(ctx, &SpawnRequest{
-		TaskID:      taskID,
-		StepID:      stepID,
-		RoleID:      "task_planner",
-		Task:        sb.String(),
-		RoutingMode: schemas.RoutingModeLegacy,
-	})
-	if err != nil || res == nil {
-		reason := "planner spawn returned nothing"
-		if err != nil {
-			reason = "planner spawn failed: " + err.Error()
+
+	basePrompt := sb.String()
+	var (
+		raw        string
+		steps      []schemas.StepInput
+		lastReason string
+	)
+	for attempt := 1; attempt <= plannerParseAttempts; attempt++ {
+		prompt := basePrompt
+		if attempt > 1 {
+			// Do not re-send the identical prompt: a model that ignored the
+			// contract once will ignore it again. Name the violation and quote
+			// its own opening bytes back at it.
+			prompt = basePrompt + "\n\n" + plannerRetryNudge(raw)
+			s.logger.Log("planner_first_retry", taskID, "", map[string]any{
+				"attempt": attempt,
+				"reason":  lastReason,
+			})
 		}
+
+		res, err := s.spawner.Spawn(ctx, &SpawnRequest{
+			TaskID:      taskID,
+			StepID:      stepID,
+			RoleID:      "task_planner",
+			Task:        prompt,
+			RoutingMode: schemas.RoutingModeLegacy,
+			// A plan overflows a prose-sized answer cap; see
+			// plannerMaxOutputTokens for the measurement.
+			MaxOutputTokens: s.plannerMaxOutputTokens(toolCount),
+		})
+		if err != nil || res == nil {
+			reason := "planner spawn returned nothing"
+			if err != nil {
+				reason = "planner spawn failed: " + err.Error()
+			}
+			return nil, reason
+		}
+
+		raw = unwrapPlanEnvelope(plannerResultText(res))
+		if strings.TrimSpace(raw) == "" {
+			lastReason = "planner returned empty output"
+			steps = nil
+			continue
+		}
+
+		var perr error
+		steps, perr = schemas.ParsePlanDAG(raw, schemas.PlanParseOptions{
+			AllowedRoles: allowedRoles,
+			ToolCatalog:  catalog,
+			SingleMCP:    s.plannerSingleMCP(roleID),
+			MaxSteps:     s.plannerMaxSteps(),
+		})
+		if perr == nil && len(steps) > 0 {
+			// Sufficiency, not just parseability. A plan that parses and covers
+			// only the preparation is the most expensive failure mode there is:
+			// every step succeeds, the agent behaves, and the task is unmet.
+			if gap := planCoverageGap(task, steps); gap != "" {
+				lastReason = gap
+				s.logger.Log("planner_coverage_gap", taskID, "", map[string]any{
+					"reason":  gap,
+					"steps":   len(steps),
+					"attempt": attempt,
+				})
+				steps = nil
+				continue
+			}
+			lastReason = ""
+			break
+		}
+		if perr != nil {
+			lastReason = perr.Error()
+		} else {
+			lastReason = "planner produced no steps"
+		}
+		steps = nil
+	}
+
+	if len(steps) == 0 {
+		reason := lastReason
+		if reason == "" {
+			reason = "planner produced no usable plan"
+		}
+		s.logger.Log("planner_first_rejected", taskID, "", map[string]any{
+			"reason":   reason,
+			"raw":      truncateForLog(raw, 2000),
+			"attempts": plannerParseAttempts,
+		})
 		return nil, reason
 	}
 
-	raw := plannerResultText(res)
-	if strings.TrimSpace(raw) == "" {
-		return nil, "planner returned empty output"
-	}
-
-	steps, perr := schemas.ParsePlanDAG(raw, schemas.PlanParseOptions{
-		AllowedRoles: allowedRoles,
-		ToolCatalog:  catalog,
-		SingleMCP:    s.plannerSingleMCP(roleID),
-		MaxSteps:     s.plannerMaxSteps(),
-	})
-	if perr != nil {
-		s.logger.Log("planner_first_rejected", taskID, "", map[string]any{
-			"reason": perr.Error(),
-			"raw":    truncateForLog(raw, 2000),
-		})
-		return nil, perr.Error()
-	}
-	if len(steps) == 0 {
-		return nil, "planner produced no steps"
-	}
-
 	s.logger.Log("planner_first_ok", taskID, "", map[string]any{
-		"steps":      len(steps),
+		"steps":       len(steps),
 		"target_role": roleID,
 	})
+
+	// Degeneration signal (ADDED 2026-10-19): a planner that always answers
+	// "one step" has quietly turned the DAG path into the smart-routing
+	// fast-path. That verdict is legitimate for a genuinely atomic request, but
+	// it has to be *counted*, otherwise "planning never happens" stays
+	// invisible. Compare this event's count against planner_first_ok per batch.
+	if len(steps) == 1 {
+		s.logger.Log("planner_first_single_step", taskID, "", map[string]any{
+			"role":   roleID,
+			"detail": "planner judged one step sufficient; a DAG adds nothing here",
+		})
+	}
 	return steps, ""
+}
+
+// unwrapPlanEnvelope peels the output wrappers a planner model puts around the
+// plan it was asked for.
+//
+// Measured 2026-10-19 (gemini-3-flash, AppWorld 4fab96f_3): asked for a bare
+// {"steps": [...]}, the planner answered with the engine's own subagent
+// envelope —
+//
+//	{"status":"ok","confidence":1.0,"result":{"steps":[...]}}
+//
+// — and, because the spawner had already wrapped that once, plannerResultText
+// handed back {"raw":"<the envelope as an escaped string>"}. ParsePlanDAG then
+// rejected a perfectly good plan with "plan contains no steps". The plan inside
+// was better than anything the fast-path produced: it had already selected
+// phone__get_current_date_and_time and the phone contact tools for step 1.
+//
+// Only wrappers are removed. The moment an object has a "steps" key it is
+// returned verbatim, so a plan whose own content happens to contain keys named
+// "result" or "content" is never mistaken for a wrapper.
+func unwrapPlanEnvelope(raw string) string {
+	s := strings.TrimSpace(raw)
+	for depth := 0; depth < 4; depth++ { // bounded: wrappers nest shallowly
+		var m map[string]any
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
+			return s // not JSON yet (markdown fences etc.) — leave it to the parser
+		}
+		if _, ok := m["steps"]; ok {
+			return s
+		}
+		var next any
+		found := false
+		for _, k := range []string{"raw", "result", "output", "content", "answer", "text"} {
+			if v, ok := m[k]; ok {
+				next, found = v, true
+				break
+			}
+		}
+		if !found {
+			return s
+		}
+		switch v := next.(type) {
+		case string:
+			if strings.TrimSpace(v) == "" {
+				return s
+			}
+			s = v
+		case map[string]any:
+			b, err := json.Marshal(v)
+			if err != nil {
+				return s
+			}
+			s = string(b)
+		default:
+			return s
+		}
+	}
+	return s
 }
 
 // plannerSingleMCP returns the MCP id assumed for steps that omit mcp_id.
@@ -418,6 +662,39 @@ func (s *DirectedEngine) plannerMaxSteps() int {
 	s.registry.Mu.RLock()
 	defer s.registry.Mu.RUnlock()
 	return s.registry.System.PlannerMaxSteps
+}
+
+// plannerMaxOutputTokens returns the response token cap for one planner call.
+//
+// 8192, not the engine's default 4096: a plan is a structured document — one
+// object per step, each carrying a self-contained task description plus an
+// explicit tool list. Measured 2026-10-19 (gemini-3-flash, AppWorld 4fab96f_3),
+// a 6-step plan was cut off at exactly 4096 tokens in the middle of a tool
+// name; jsonrepair then closed the fragment into the syntactically valid string
+// "venmo__", and the plan was rejected for an unknown tool after two LLM round
+// trips. Nothing about that failure was the model's fault.
+//
+// §5.6 fix (2026-10-20): 8192 is sufficient for ≤100 tools but truncates at
+// 453 (AppWorld full tool surface). Scale linearly beyond 100 tools: each
+// additional tool adds ~32 tokens of allowed_tools listing overhead in the
+// plan JSON. Capped at 32768 to avoid over-allocating.
+func (s *DirectedEngine) plannerMaxOutputTokens(numTools int) int {
+	if s.registry == nil {
+		return 8192
+	}
+	s.registry.Mu.RLock()
+	defer s.registry.Mu.RUnlock()
+	if s.registry.System.PlannerMaxOutputTokens > 0 {
+		return s.registry.System.PlannerMaxOutputTokens
+	}
+	if numTools <= 100 {
+		return 8192
+	}
+	scaled := 8192 + (numTools-100)*32
+	if scaled > 32768 {
+		return 32768
+	}
+	return scaled
 }
 
 // planTerminalStepIDs returns the ids of steps nothing else depends on.

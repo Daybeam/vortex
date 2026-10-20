@@ -170,12 +170,24 @@ func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.St
 
 	// addDecision calls broadcastDone which takes s.Mu.Lock — must NOT
 	// be called while holding the lock (sync.RWMutex is not reentrant).
+	// P5 fix (2026-10-20): Offer only choices that have handlers.
+	// "accept_degraded" and "provide_context" had no handlers in
+	// scheduler_status.go, causing Interactive/Delegate mode to hang.
+	// "accept_degraded" encourages failure and competes with refine.
+	// "provide_context" is redundant with refine_and_retry (both re-run
+	// with injected context). "refine_and_retry" reads dec.Context["feedback"]
+	// and injects it as AdditionalPromptContext for the next attempt.
+	// "abort" preserves PartialOutput (does not clear it).
 	s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 		"root_cause":      "cycle_fuse",
 		"cycle_id":        cycleID,
 		"max_rounds":      step.MaxLoopRounds,
 		"missing_context": output.MissingContext,
-	}, []string{"abort", "accept_degraded", "provide_context"})
+		"feedback": fmt.Sprintf(
+			"Cycle fuse: step %s reached max supplement rounds (%d) without satisfying missing context: %s. "+
+				"Try a different approach to gather the missing information.",
+			step.ID, step.MaxLoopRounds, strings.Join(output.MissingContext, "; ")),
+	}, []string{"abort", "refine_and_retry"})
 
 	return true
 }

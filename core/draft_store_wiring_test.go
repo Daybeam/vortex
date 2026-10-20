@@ -13,11 +13,17 @@ import (
 // violation, guard rejection) must NOT save a draft. Before C4, any
 // error stored a draft, persisting potentially malicious content.
 // Also: taskID must be empty on error (was draftID before C4).
-
+//
+// Note (2026-10-20): the "too-simple" rejection is now opt-in via
+// System.RejectSimpleTasks. We opt in here because the test exercises the
+// validation-failure → no-draft path, not the FastPath default-off path.
 func TestDraftStore_ValidationFailureNoDraftNoTaskID(t *testing.T) {
 	s := &DirectedEngine{
-		drafts:   NewDraftStore(),
-		registry: &config.Registry{DefaultProvider: "local"},
+		drafts: NewDraftStore(),
+		registry: &config.Registry{
+			DefaultProvider: "local",
+			System:          config.SystemSettings{RejectSimpleTasks: true},
+		},
 	}
 
 	inputs := []schemas.StepInput{
@@ -26,7 +32,7 @@ func TestDraftStore_ValidationFailureNoDraftNoTaskID(t *testing.T) {
 
 	taskID, err := s.SubmitWithSessionIR(inputs, nil, nil, nil, "", "", "", 0, 0, "")
 	if err == nil {
-		t.Fatal("expected submission to fail for too-simple local task")
+		t.Fatal("expected submission to fail for too-simple local task (RejectSimpleTasks=true)")
 	}
 
 	// C4: taskID must be empty on error (not draftID)

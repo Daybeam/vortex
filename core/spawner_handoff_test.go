@@ -333,3 +333,40 @@ func TestAntiCliff_RefBasedHandoff_IntegrationModelAdaptive(t *testing.T) {
 		t.Error("40KB payload should trigger side-load even with fallback 32KB threshold")
 	}
 }
+
+// TestApplyRefBasedHandoff_PreservesAugmentedUserText is a regression test
+// for C14 (2026-10-20): applyRefBasedHandoff used req.Task instead of the
+// userText parameter, losing AdditionalPromptContext and PreviousOutputSummary
+// that were injected by the caller (spawner_prepare.go:204-218).
+//
+// Before the fix: the output contained req.Task + upstream context, dropping
+// the augmented parts of userText. After the fix: the output preserves the
+// full userText (including recovery context) + upstream context.
+func TestApplyRefBasedHandoff_PreservesAugmentedUserText(t *testing.T) {
+	sp, tmpDir := buildTestSpawnerForHandoff(t, 100000) // high threshold → inline path
+	defer os.RemoveAll(tmpDir)
+
+	reg := &config.Registry{Providers: make(map[string]*config.ProviderConfig)}
+	hub := NewContextHub(reg, nil, nil)
+	req := &SpawnRequest{
+		TaskID: "task1",
+		StepID: "step1",
+		Task:   "original task",
+		Hub:    hub,
+	}
+	// Simulate the augmentation done by spawner_prepare.go:204-218:
+	// userText = req.Task + AdditionalPromptContext + PreviousOutputSummary.
+	augmentedUserText := "original task\n\n### Recovery Context\nextra recovery info"
+
+	upstreamCtx := map[string]any{"key": "value"}
+	result := sp.applyRefBasedHandoff(context.Background(), req, nil, augmentedUserText, upstreamCtx)
+
+	// The augmented content must survive — before the fix, req.Task was used
+	// and "extra recovery info" was silently dropped.
+	if !strings.Contains(result, "extra recovery info") {
+		t.Errorf("augmented userText content was lost — applyRefBasedHandoff used req.Task instead of userText.\nGot: %s", result)
+	}
+	if !strings.Contains(result, "### Upstream Context") {
+		t.Errorf("upstream context header missing from result.\nGot: %s", result)
+	}
+}

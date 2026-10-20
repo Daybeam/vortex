@@ -53,14 +53,21 @@ func (r *Registry) SeedBuiltins(rolesDir, sopsDir, skillsDir string) error {
 // workspace/prompts/roles/<role_id>.txt and take priority when present
 // (see PromptOverrides.RoleInstructions).
 
-const sopGeneratorInstruction = `You are the SOP Generator. Given a task description, explore the available MCP tools, design a workflow DAG, and produce a valid SOP JSON. Submit it via the update_sop tool.
+const sopGeneratorInstruction = `You are the SOP Generator and Capability Creation surface. Given a task description, explore the available MCP tools, design a workflow DAG, and produce a valid SOP JSON. Submit it via the update_sop tool.
+
+You are also responsible for generating new roles when no existing role satisfies the task requirements. Role generation reads from the cookbook to synthesize high-quality role definitions with low hallucination. This is why you have AllowDynamicSkills, AllowDynamicMCPs, and Generatable privileges — you are the only builtin role that can create dynamic capabilities.
 
 Guidelines:
 1. First, enumerate all available tools and their parameter schemas.
 2. Identify which tools are needed for the task.
 3. Design a step-by-step DAG with clear dependencies and exit criteria.
-4. Assign appropriate roles to each step.
-5. Output the SOP as valid JSON and submit via update_sop.`
+4. Assign appropriate roles to each step. If no suitable role exists, generate one from the cookbook.
+5. Output the SOP as valid JSON and submit via update_sop.
+
+Constraints:
+- You can create dynamic skills and mount dynamic MCPs (unlike task_planner).
+- Generated role definitions become persistent system prompts — prioritize accuracy and low hallucination.
+- Cookbook content may be large; extract only relevant engineering principles, not raw content.`
 
 const decisionArbiterInstruction = `You are a decision arbiter for an autonomous task orchestration engine. A workflow step has blocked and requires a decision. You will receive the decision type, context, and available options. Choose exactly ONE option.
 
@@ -93,10 +100,43 @@ Guidelines:
 
 Constraints:
 - You ONLY plan. You do not execute any steps or use any tools.
-- You cannot create dynamic skills or MCPs — use only existing ones.
+- You do not create roles, skills, or MCPs. Use only existing capabilities.
+- If a role is missing, return an error — do not attempt to generate one. Role generation is sop_generator's responsibility.
 - The DAG must be acyclic — no circular dependencies.`
 
 // ── Built-in Roles ────────────────────────────────────────────────────────
+//
+// Fallback Role Semantics (Phase 3, 2026-10-20):
+//
+// All three builtin roles share BaseCapability="plan" but serve as FALLBACKS
+// for different execution modes. They are DORMANT by default in MCP mode
+// (where the main agent handles planning, decisions, and SOP creation directly)
+// and activate only when the main agent is absent, weak, or non-interactive.
+//
+//   task_planner   — Fallback planner for weak-model / standalone mode.
+//                    Activated by system.enable_planner_first (defaults false).
+//                    ONLY fires for single, dependency-free step submissions
+//                    (scheduler_submit.go:211). Multi-step submissions bypass
+//                    it — the main agent already designed the DAG.
+//                    Dormant in MCP mode when the main agent provides explicit
+//                    steps via orchestrator_submit_task.
+//
+//   decision_arbiter — Fallback decider for NonInteractive mode (CI/batch).
+//                      Activated by system.NonInteractive flag
+//                      (scheduler_decision_gate.go:195). In interactive/MCP
+//                      mode, decisions are exposed via pending_decisions and
+//                      the main agent calls orchestrator_submit_decision.
+//
+//   sop_generator  — Capability creation surface, NOT a fallback planner.
+//                    Generates SOPs, roles, and skills from the cookbook
+//                    (RoleGenerator). Active when role generation is needed
+//                    (Generatable=true → spawner_utils.go:813 triggers
+//                    DYNAMIC_ESCALATION_REQUIRED). Has unique privileges
+//                    (AllowDynamicSkills, AllowDynamicMCPs, Generatable)
+//                    that task_planner does NOT have — different quality
+//                    regime (persistent role defs vs ephemeral DAGs).
+//
+// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 3.
 
 var builtinRoles = []Role{
 	{
@@ -107,6 +147,13 @@ var builtinRoles = []Role{
 		AllowDynamicSkills: true,
 		AllowDynamicMCPs:   true,
 		Generatable:        true,
+		// WHY these privileges: sop_generator is the capability creation surface.
+		// It generates SOPs, roles, and skills from the cookbook (RoleGenerator).
+		// Generatable=true means it can be auto-generated when missing (spawner_utils.go:813).
+		// AllowDynamicSkills/MCPs=true means it can create dynamic capabilities.
+		// task_planner has all three=false because it only plans — it must NOT create
+		// capabilities (different quality regime: ephemeral DAG vs persistent role defs).
+		// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §2.4.
 	},
 	{
 		ID:             "decision_arbiter",
@@ -125,9 +172,11 @@ var builtinRoles = []Role{
 		Purpose:        "Plans and modifies the DAG when the main agent (weak model) hits complexity threshold or is blocked.",
 		BestFor:        "Weak-model fallback, complex DAG authoring, task decomposition",
 		MutableByAgent:     false, // agent cannot self-modify, same as decision_arbiter
-		AllowDynamicSkills: false, // only plans, does not execute
-		AllowDynamicMCPs:   false,
-		Generatable:        false,
+		AllowDynamicSkills: false, // only plans, does not execute — cannot create skills
+		AllowDynamicMCPs:   false, // only plans, does not execute — cannot mount MCPs
+		Generatable:        false, // cannot be auto-generated — it's a fixed builtin planner
+		// Contrast with sop_generator: task_planner produces ephemeral one-shot DAGs,
+		// not persistent role definitions. Different quality regime, different privileges.
 	},
 }
 

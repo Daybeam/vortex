@@ -397,8 +397,8 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 	}
 
-	var finalText strings.Builder // audit H1: was `var finalText string` with += (O(n²))
-	recentSigs := make([]string, 0, 5) // fallback windowed loop detection when Sieve is nil (Gap-3)
+	var finalText strings.Builder               // audit H1: was `var finalText string` with += (O(n²))
+	recentSigs := make([]string, 0, 5)          // fallback windowed loop detection when Sieve is nil (Gap-3)
 	toolFailErrors := make(map[string][]string) // per-tool recent error messages (capped at 5)
 	noTextTurns := 0                            // consecutive turns with tool calls but no text output
 	overflowRetried := false                    // Tier 2: ensure context overflow retry happens only once

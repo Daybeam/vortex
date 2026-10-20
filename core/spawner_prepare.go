@@ -81,6 +81,27 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 			return nil, s.failedOutput(role.BaseCapability, fmt.Sprintf("Blocked: manifest routing failed. Missing required capabilities: %v", missing)), nil
 		}
 	} else {
+		// Run MCP discovery before ResolveFinalMCPs so that AvailableTools
+		// is populated when the T7 intersection runs. On a cold start (first
+		// task in a new process), AvailableTools is empty until tools/list
+		// discovery completes. Without this, the T7 intersection in
+		// ResolveFinalMCPs is a no-op (len(AvailableTools) == 0), and
+		// planner-specified tool names that don't actually exist pass through
+		// unverified.
+		//
+		// When LazyDiscovery is enabled, this eager discovery is skipped —
+		// Route will trigger discovery lazily on first access.
+		if !s.registry.System.LazyDiscovery {
+			var preBindings []config.MCPBinding
+			if role != nil {
+				preBindings = append(preBindings, role.BoundMCPBindings...)
+			}
+			for _, mcpID := range req.AdditionalMCPs {
+				preBindings = append(preBindings, config.MCPBinding{MCPID: mcpID})
+			}
+			s.ensureMCPDiscovery(ctx, req.Hub, req.TaskID, preBindings)
+		}
+
 		var err error
 		bindings, err = ResolveFinalMCPs(req.Hub, req.RoleID, req.AdditionalMCPs, req.AdditionalToolAllowlists)
 		if err != nil {
@@ -93,12 +114,14 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 	// tools/list discovery (which populates it) ran later in buildMCPServers.
 	// On cold start (first task in a new process), AvailableTools was empty →
 	// Route filtered against an empty set → only always_include tools survived.
-	// This restores the documented contract (architecture-mcp-gaps.md §3:
-	// "cache populated once during spawner initialization, reused across steps")
-	// by running stdio MCP discovery BEFORE Route. Idempotent: skips MCPs
-	// already discovered. Remote MCP discovery stays in buildMCPServers
-	// (provider-dependent: skips Anthropic native passthrough).
-	s.ensureMCPDiscovery(ctx, req.Hub, req.TaskID, bindings)
+	// This restores the documented contract by running stdio MCP discovery
+	// BEFORE Route. Idempotent: skips MCPs already discovered.
+	//
+	// When LazyDiscovery is enabled, this is skipped — Route triggers
+	// discovery internally via lazyDiscoveryHook.
+	if !s.registry.System.LazyDiscovery {
+		s.ensureMCPDiscovery(ctx, req.Hub, req.TaskID, bindings)
+	}
 
 	// Priority 4: Determine if progressive disclosure should be enabled.
 	progressiveEnabled := true
@@ -115,6 +138,8 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 			Turn:               0,
 			ProgressiveMode:    progressiveEnabled,
 			PredecessorSkillID: req.PredecessorSkillID,
+			MaxTokenBudget:     s.toolSchemaBudget(),
+			TaskID:             req.TaskID,
 		})
 	}
 
@@ -242,4 +267,17 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 		userText:           userText,
 		userBlocks:         userBlocks,
 	}, nil, nil
+}
+
+// toolSchemaBudget returns the configured cap on the total size of the tool
+// schemas the router may expose in one step. 0 means "let the router apply its
+// own default" (core.defaultToolSchemaBudgetTokens) — the same sentinel
+// convention as SystemSettings.MaxToolResultChars.
+//
+// Nil-safe: tests and early startup may not have a registry wired yet.
+func (s *Spawner) toolSchemaBudget() int {
+	if s.registry == nil {
+		return 0
+	}
+	return s.registry.System.MaxToolSchemaBudgetTokens
 }

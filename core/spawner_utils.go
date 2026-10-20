@@ -167,17 +167,18 @@ func sanitizePartialOutputForPassthrough(partialOutput, interceptionReason strin
 }
 
 // AuditorAllowedTools returns a copy of the parent step's AdditionalMCPs and
-// AdditionalToolAllowlists, filtered to exclude write tools (C5 fix). The
+// AdditionalToolAllowlists, filtered to exclude write tools. The
 // auditor should only have read-only tools — it's verifying, not acting.
 // A deep copy is made to avoid mutation leak (shared map/slice reference
 // would let auditor mutations affect the parent step and vice versa).
 //
-// C5 fix (2026-10-19): whitelist approach. MCPs are only included if they
+// Whitelist approach: MCPs are only included if they
 // have an explicit allowlist entry that survives filtering with at least one
 // read-only tool. This fixes two bugs:
 //  1. MCPs without an allowlist entry were inherited entirely (all write tools).
 //  2. MCPs whose allowlist filtered to empty were treated as "no restriction"
 //     by validator.go (empty = unrestricted), granting full access.
+//
 // Now: no allowlist → skipped; empty after filtering → skipped.
 func AuditorAllowedTools(parentMCPs []string, parentAllowlists map[string][]string) ([]string, map[string][]string) {
 	allowlists := make(map[string][]string, len(parentAllowlists))
@@ -402,7 +403,7 @@ func isStateChangingTool(name string) bool {
 // friction. False negatives (treating a write tool as read) are the real
 // risk, so the list errs on the side of inclusion.
 //
-// C5 fix (2026-10-19): added add_, pay_, like_, follow_, mark_, upload_,
+// Added add_, pay_, like_, follow_, mark_, upload_,
 // execute_, run_, publish_ — these were missing, causing auditor to inherit
 // write tools as read-only.
 var writeToolPrefixes = []string{
@@ -410,9 +411,38 @@ var writeToolPrefixes = []string{
 	"send_", "transfer_", "book_", "submit_", "close_", "modify_",
 	"edit_", "insert_", "remove_", "drop_", "put_", "post_", "replace_",
 	"approve_", "reject_", "assign_", "revoke_", "activate_", "deactivate_",
-	// C5 fix (2026-10-19): missing write verbs
+	// Additional write verbs
 	"add_", "pay_", "like_", "follow_", "mark_", "upload_",
 	"execute_", "run_", "publish_",
+}
+
+// stripNamespace returns the fragment of name after the last namespace
+// separator (__, ., /). This handles tool names with arbitrary namespace
+// prefixes uniformly:
+//
+//	"app__send_message"   → "send_message"
+//	"mcp1.create_file"    → "create_file"
+//	"service/delete_user" → "delete_user"
+//	"send_message"        → "send_message"  (no separator)
+//
+// This replaces the hardcoded "app__" prefix stripping with a general
+// approach that doesn't bake any specific namespace convention into the
+// routing logic.
+func stripNamespace(name string) string {
+	bestAfter := -1
+	for _, sep := range []string{"__", ".", "/"} {
+		i := strings.LastIndex(name, sep)
+		if i >= 0 {
+			after := i + len(sep)
+			if after > bestAfter {
+				bestAfter = after
+			}
+		}
+	}
+	if bestAfter > 0 && bestAfter < len(name) {
+		return name[bestAfter:]
+	}
+	return name
 }
 
 // IsWriteMCPTool returns true if the tool name starts with a write verb prefix.
@@ -420,17 +450,13 @@ var writeToolPrefixes = []string{
 // filesystem operations tracked by StagedWorkspace, not domain writes.
 // Exported for contract testing (Feature #17: Write Authorization).
 //
-// C5 fix (2026-10-19): handle app-prefixed tool names (e.g., "app__send_message").
-// The write verb appears after the "app__" prefix, so we strip it before checking.
+// Handle namespaced tool names by stripping the
+// namespace prefix (__, ., /) before checking the verb underneath.
 func IsWriteMCPTool(name string) bool {
 	if CoreToolNames[name] {
 		return false // core tools are fs-only, tracked by StagedWorkspace
 	}
-	checkName := name
-	// Strip "app__" prefix to check the verb underneath (e.g., "app__send_x" → "send_x")
-	if strings.HasPrefix(name, "app__") {
-		checkName = strings.TrimPrefix(name, "app__")
-	}
+	checkName := stripNamespace(name)
 	for _, prefix := range writeToolPrefixes {
 		if strings.HasPrefix(checkName, prefix) {
 			return true
@@ -785,6 +811,31 @@ func (s *Spawner) validateCapabilities(ctx context.Context, req *SpawnRequest, r
 		"error":   "Missing required capabilities",
 	})
 	if role.Generatable {
+		// Phase 2 integration (2026-10-20): try findskills before escalation.
+		// Fast tier-1 path: search existing skill registry for skills matching
+		// the missing capabilities. If found, attach to the request and proceed.
+		// If not found, fall through to DYNAMIC_ESCALATION_REQUIRED (tier-2:
+		// RoleGenerator cookbook LLM call via LogInterceptor).
+		// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 2.
+		var foundSkills []string
+		for _, missingCap := range missing {
+			result, _ := FindSkillsImpl(req.Hub.Registry, "", missingCap, "", 1, 10)
+			if result != nil {
+				for _, sk := range result.Skills {
+					foundSkills = append(foundSkills, sk.ID)
+				}
+			}
+		}
+		if len(foundSkills) > 0 {
+			req.AdditionalSkills = append(req.AdditionalSkills, foundSkills...)
+			s.logger.LogCtx(ctx, "EventFindSkillsResolved", req.TaskID, req.StepID, map[string]any{
+				"role":         req.RoleID,
+				"missing":      missing,
+				"found_skills": foundSkills,
+				"source":       "findskills_tier1",
+			})
+			return nil
+		}
 		return fmt.Errorf("DYNAMIC_ESCALATION_REQUIRED: missing required capabilities [%s]", missingStr)
 	}
 	return fmt.Errorf("Blocked: role %q requires capabilities [%s] which are not available in the current environment", req.RoleID, missingStr)
@@ -863,7 +914,7 @@ func (s *Spawner) applyRefBasedHandoff(ctx context.Context, req *SpawnRequest, r
 				"task":    req.TaskID,
 			}
 			ptrBytes, _ := json.Marshal(refPointer)
-			userText = fmt.Sprintf("%s\n\n### Upstream Context (ref-based)\n%s", req.Task, string(ptrBytes))
+			userText = fmt.Sprintf("%s\n\n### Upstream Context (ref-based)\n%s", userText, string(ptrBytes))
 			s.logger.Log("EventUpstreamContextSideLoaded", req.TaskID, req.StepID, map[string]any{
 				"path":      file.Path,
 				"bytes":     ctxLen,
@@ -876,10 +927,10 @@ func (s *Spawner) applyRefBasedHandoff(ctx context.Context, req *SpawnRequest, r
 				}(),
 			})
 		} else {
-			userText = fmt.Sprintf("%s\n\n### Upstream Context\n%s", req.Task, string(ctxBytes))
+			userText = fmt.Sprintf("%s\n\n### Upstream Context\n%s", userText, string(ctxBytes))
 		}
 	} else {
-		userText = fmt.Sprintf("%s\n\n### Upstream Context\n%s", req.Task, string(ctxBytes))
+		userText = fmt.Sprintf("%s\n\n### Upstream Context\n%s", userText, string(ctxBytes))
 	}
 	return userText
 }

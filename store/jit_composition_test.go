@@ -22,10 +22,20 @@ func newTestExperienceStore() *ExperienceStore {
 	}
 }
 
+// sampleRecords builds a two-step composition. Each step carries the tool
+// calls it actually made, because stepSequenceKey derives the composition
+// signature from the tool sequence -- a record with no trace is treated as
+// "no evidence of a composition" and never merges (see the 2026-10-19 fix).
 func sampleRecords(task string) []StepRecord {
 	return []StepRecord{
-		{RoleID: "system_coder", Capability: "code", Skills: []string{"mcp_builder"}, Task: task},
-		{RoleID: "system_coder", Capability: "verify", Skills: nil, Task: task},
+		{
+			RoleID: "system_coder", Capability: "code", Skills: []string{"mcp_builder"}, Task: task,
+			Trace: []ToolInteraction{{ToolName: "code__write_file"}},
+		},
+		{
+			RoleID: "system_coder", Capability: "verify", Task: task,
+			Trace: []ToolInteraction{{ToolName: "code__run_tests"}},
+		},
 	}
 }
 
@@ -90,7 +100,10 @@ func TestQueryJITCandidates_RequiresBothSamplesAndConfidence(t *testing.T) {
 	}
 	// A different, low-confidence pattern, repeated just as often -- should NOT qualify.
 	lowConfRecords := []StepRecord{
-		{RoleID: "flaky_role", Capability: "flaky_cap", Skills: nil, Task: "run the deploy pipeline again"},
+		{
+			RoleID: "flaky_role", Capability: "flaky_cap", Task: "run the deploy pipeline again",
+			Trace: []ToolInteraction{{ToolName: "flaky__try"}},
+		},
 	}
 	for i := 0; i < 5; i++ {
 		es.upsertTaskPattern("t", "flaky_pipeline", lowConfRecords, 0.3)
@@ -129,26 +142,37 @@ func TestFormatJITCompositionHints_EmptyReturnsEmpty(t *testing.T) {
 	}
 }
 
-// TestFormatJITCompositionHints_ContainsHedgedLanguageAndJITCallForm
-// confirms the rendered hint text (a) is explicitly non-mandatory (matching
-// the hedged-suggestion design established by FormatSOPHints) and (b)
-// references the real, correct orchestrator_invoke call shape for creating
-// a JIT tool, not a guessed/incorrect one.
-func TestFormatJITCompositionHints_ContainsHedgedLanguageAndJITCallForm(t *testing.T) {
+// TestFormatJITCompositionHints_ContainsHedgedLanguageAndNoPrivilegedToolName
+// confirms the rendered hint text (a) is explicitly non-mandatory, matching
+// the hedged-suggestion design established by FormatSOPHints, and (b) does
+// not name a specific tool.
+//
+// (b) is a regression guard. The hint used to recommend
+// orchestrator_invoke(subsystem="jit", action="create"), but core's
+// privilegedToolBlocklist contains orchestrator_invoke, so the router
+// guarantees it is never exposed to a subagent -- the hint was directing the
+// model at a tool it cannot call. store cannot import core (core imports
+// store), hence the literal string check rather than a lookup.
+func TestFormatJITCompositionHints_ContainsHedgedLanguageAndNoPrivilegedToolName(t *testing.T) {
 	patterns := []TaskPattern{{ID: "pat_abc123", SampleCount: 7, AvgConfidence: 0.85, TaskType: "deploy_pipeline"}}
 	got := FormatJITCompositionHints(patterns)
 	if got == "" {
 		t.Fatal("expected non-empty output for a non-empty pattern list")
 	}
 	mustContain := []string{
-		"suggestion, not a requirement",
-		"subsystem=\"jit\"",
-		"action=\"create\"",
+		"not an instruction",
+		"ignore this block",
 		"pat_abc123",
+		"0.85",
 	}
 	for _, want := range mustContain {
 		if !containsSubstr(got, want) {
 			t.Errorf("expected output to contain %q, got: %s", want, got)
+		}
+	}
+	for _, banned := range []string{"orchestrator_invoke", "subsystem=\"jit\""} {
+		if containsSubstr(got, banned) {
+			t.Errorf("hint must not name %q -- the router never exposes privileged tools: %s", banned, got)
 		}
 	}
 }

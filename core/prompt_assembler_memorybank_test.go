@@ -134,3 +134,61 @@ func TestPromptAssembler_UserProfileInjection_EmptyProfile(t *testing.T) {
 		}
 	}
 }
+
+// --- Epistemic Grounding Rule (Self-Healing §2) ---
+
+func TestPromptAssembler_EpistemicGroundingRule_Enabled(t *testing.T) {
+	reg := &config.Registry{
+		Roles: make(map[string]*config.Role),
+	}
+	reg.System.MemoryBankEnabled = true
+
+	pa := NewPromptAssembler(nil, nil, reg, nil)
+
+	blocks, err := pa.Build(
+		context.Background(), nil, nil, nil, "coding",
+		&config.ProviderConfig{}, nil, nil, nil, false, nil,
+		"test task", "", "task-1",
+	)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	found := false
+	for _, b := range blocks {
+		if strings.Contains(b.Text, "Epistemic Grounding Rule") {
+			found = true
+			if !strings.Contains(b.Text, "NOT immutable truth") {
+				t.Errorf("expected 'NOT immutable truth' in rule, got: %s", b.Text)
+			}
+			if !strings.Contains(b.Text, "TRUST THE TOOL") {
+				t.Errorf("expected 'TRUST THE TOOL' directive in rule, got: %s", b.Text)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected Epistemic Grounding Rule block when MemoryBankEnabled=true")
+	}
+}
+
+func TestPromptAssembler_EpistemicGroundingRule_Disabled(t *testing.T) {
+	reg := &config.Registry{
+		Roles: make(map[string]*config.Role),
+	}
+	reg.System.MemoryBankEnabled = false
+
+	pa := NewPromptAssembler(nil, nil, reg, nil)
+
+	blocks, _ := pa.Build(
+		context.Background(), nil, nil, nil, "coding",
+		&config.ProviderConfig{}, nil, nil, nil, false, nil,
+		"test task", "", "task-1",
+	)
+
+	for _, b := range blocks {
+		if strings.Contains(b.Text, "Epistemic Grounding Rule") {
+			t.Fatal("expected NO Epistemic Grounding Rule block when MemoryBankEnabled=false")
+		}
+	}
+}

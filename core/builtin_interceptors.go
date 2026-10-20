@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // LogInterceptor is a simple interceptor that logs the start and end of a task.
@@ -119,10 +120,27 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 			return nil, fmt.Errorf("log_interceptor: spawn returned nil result for step %s", req.StepID)
 		}
 
-		logger.Log(EventStepCompleted, req.TaskID, req.StepID, map[string]any{
+		// A failed status here usually comes from spawner.failedOutput, which
+		// returns (result, nil) instead of an error — so the err branch above
+		// never fires and the reason is invisible unless we surface it. Without
+		// this, a step that dies in 1.6ms with model="" provider="" leaves no
+		// trace of why (observed 2026-10-19 on the first multi-step DAG run).
+		failedDetail := map[string]any{
 			"message": fmt.Sprintf("Interceptor: Execution completed for role %s with status %s", req.RoleID, res.Output.Status),
 			"status":  res.Output.Status,
-		})
+		}
+		if res.Output.Status != schemas.StatusOK && res.Output.Status != schemas.StatusPartial {
+			if v, ok := res.Output.Result["error"]; ok {
+				failedDetail["error"] = fmt.Sprint(v)
+			}
+			if len(res.Output.Warnings) > 0 {
+				failedDetail["warnings"] = res.Output.Warnings
+			}
+			if len(res.Output.Assumptions) > 0 {
+				failedDetail["assumptions"] = res.Output.Assumptions
+			}
+		}
+		logger.Log(EventStepCompleted, req.TaskID, req.StepID, failedDetail)
 
 		return res, err
 	}

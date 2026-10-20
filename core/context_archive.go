@@ -33,6 +33,12 @@ type MemoryItem struct {
 	// See docs/plan/search_adaption_design.md §2.3.
 	CausalLinks []string `json:"causal_links,omitempty"` // node IDs of causally related items
 	EntityLinks []string `json:"entity_links,omitempty"` // node IDs of entity-co-occurrence items
+	// Self-healing §1: SupersededBy state chain. When a new fact overturns an
+	// older conclusion, the older item's Status is set to "superseded" and
+	// SupersededBy points to the newer item's NodeID. SearchWithOptions filters
+	// out superseded/stale items so contradictory facts aren't recalled together.
+	Status       string `json:"status,omitempty"`        // "", "active", "superseded", "stale"
+	SupersededBy string `json:"superseded_by,omitempty"` // NodeID of the replacing item
 }
 
 const (
@@ -48,8 +54,8 @@ const (
 // Zero values mean "no filter" (backward compatible).
 // See docs/plan/search_adaption_design.md §2.1.
 type QueryOptions struct {
-	CreatedAfter  time.Time  // only items with Timestamp >= CreatedAfter
-	CreatedBefore time.Time  // only items with Timestamp <= CreatedBefore
+	CreatedAfter  time.Time // only items with Timestamp >= CreatedAfter
+	CreatedBefore time.Time // only items with Timestamp <= CreatedBefore
 }
 
 // filterByTimeRange removes items outside the [CreatedAfter, CreatedBefore] window.
@@ -67,6 +73,21 @@ func filterByTimeRange(items []MemoryItem, opts QueryOptions) []MemoryItem {
 			continue
 		}
 		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+// filterActiveItems removes items whose Status is "superseded" or "stale"
+// from the result set (self-healing design §1: SupersededBy state chain).
+// Items with empty Status or Status == "active" are kept. This prevents
+// contradictory facts from being recalled together when a newer item has
+// overturned an older conclusion.
+func filterActiveItems(items []MemoryItem) []MemoryItem {
+	filtered := make([]MemoryItem, 0, len(items))
+	for _, item := range items {
+		if item.Status != "superseded" && item.Status != "stale" {
+			filtered = append(filtered, item)
+		}
 	}
 	return filtered
 }
@@ -350,6 +371,9 @@ func (a *ContextArchive) SearchWithOptions(query string, embedClient EmbeddingCl
 
 	// Pre-filter by temporal window BEFORE ranking
 	items = filterByTimeRange(items, opts)
+
+	// Pre-filter by status: skip superseded/stale items (self-healing §1).
+	items = filterActiveItems(items)
 
 	a.indexMu.RLock()
 	bm25Rank := map[string]float64{}

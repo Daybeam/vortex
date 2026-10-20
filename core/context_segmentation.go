@@ -318,9 +318,10 @@ func (m *SegmentManager) FollowTrace(segmentID string, maxDepth int) SegmentTrac
 // producing a single context string that shows topic evolution over time.
 //
 // Example output:
-//   → [10:00] auth design: discussed token rotation strategy
-//   → [10:15] auth design: refined refresh token lifetime to 15min
-//   → [10:30] auth design: concluded with sliding window approach
+//
+//	→ [10:00] auth design: discussed token rotation strategy
+//	→ [10:15] auth design: refined refresh token lifetime to 15min
+//	→ [10:30] auth design: concluded with sliding window approach
 func (m *SegmentManager) WeaveTrace(trace SegmentTrace) string {
 	if len(trace.Segments) == 0 {
 		return ""

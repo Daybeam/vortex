@@ -72,6 +72,12 @@ func adaptiveOutputResultMCP(raw []byte, command string) []byte {
 		return raw // Gate 1 already handled truncation
 	}
 	dumpPath := dumpToWorkspaceTmp(raw, command)
+	if dumpPath == "" {
+		// Dump failed: don't advertise a path the model cannot read — it costs a turn.
+		return []byte(fmt.Sprintf(
+			"[MCP result: %d KB. dump unavailable — the full body could not be persisted; re-run with a narrower filter to see it in context.]",
+			len(raw)/1024))
+	}
 	return []byte(fmt.Sprintf(
 		"[MCP result: %d KB. Full content saved to: %s]\n[Use read_file to access full content.]",
 		len(raw)/1024, dumpPath))
@@ -103,20 +109,31 @@ func adaptiveOutputResultCLI(rawStdout []byte, command string) []byte {
 			for i, l := range lines {
 				truncLines[i] = truncateLineRuneSafe(l, maxRunesPerLine)
 			}
-			result := fmt.Sprintf("[Output large: %d KB / %d lines. Full log saved to: %s]\n%s",
-				outputBytes/1024, totalLines, dumpPath, strings.Join(truncLines, "\n"))
-			return neverBloatGuard([]byte(result), rawStdout)
+		result := fmt.Sprintf("[Output large: %d KB / %d lines. Full log saved to: %s]\n%s",
+			outputBytes/1024, totalLines, dumpPath, strings.Join(truncLines, "\n"))
+		if dumpPath == "" {
+			result = fmt.Sprintf("[Output large: %d KB / %d lines. dump unavailable — the log could not be persisted.]\n%s",
+				outputBytes/1024, totalLines, strings.Join(truncLines, "\n"))
+		}
+		return neverBloatGuard([]byte(result), rawStdout)
 		}
 
 		head := joinTruncated(lines[:headCount], maxRunesPerLine)
 		tail := joinTruncated(lines[totalLines-tailCount:], maxRunesPerLine)
 
-		summary := fmt.Sprintf(
-			"[⚖️ OUTPUT GATEWAY: Output too large (%d KB, %d lines). Full content persisted to: %s]\n"+
+	summary := fmt.Sprintf(
+		"[⚖️ OUTPUT GATEWAY: Output too large (%d KB, %d lines). Full content persisted to: %s]\n"+
+			"--- FIRST 30 LINES ---\n%s\n\n... [%d lines / %d KB omitted, checking for panic/error keywords] ...\n\n--- LAST 30 LINES ---\n%s",
+		outputBytes/1024, totalLines, dumpPath, head, totalLines-headCount-tailCount, (outputBytes-len(head)-len(tail))/1024, tail,
+	)
+	if dumpPath == "" {
+		summary = fmt.Sprintf(
+			"[⚖️ OUTPUT GATEWAY: Output too large (%d KB, %d lines). dump unavailable — the log could not be persisted.]\n"+
 				"--- FIRST 30 LINES ---\n%s\n\n... [%d lines / %d KB omitted, checking for panic/error keywords] ...\n\n--- LAST 30 LINES ---\n%s",
-			outputBytes/1024, totalLines, dumpPath, head, totalLines-headCount-tailCount, (outputBytes-len(head)-len(tail))/1024, tail,
+			outputBytes/1024, totalLines, head, totalLines-headCount-tailCount, (outputBytes-len(head)-len(tail))/1024, tail,
 		)
-		return neverBloatGuard([]byte(summary), rawStdout)
+	}
+	return neverBloatGuard([]byte(summary), rawStdout)
 	}
 
 	headCount := 50
@@ -172,8 +189,11 @@ func dumpToWorkspaceTmp(data []byte, command string) string {
 	filename := fmt.Sprintf("cmd_dump_%d_%d.txt", time.Now().UnixNano(), os.Getpid())
 	fullPath := filepath.Join(tmpDir, filename)
 	if err := os.WriteFile(fullPath, data, 0644); err != nil {
-		// Audit: was silently swallowed — caller would get a path to a non-existent file.
+		// FIX 2026-10-20: return "" so callers can produce an honest "dump
+		// unavailable" message instead of advertising a path to a file that
+		// does not exist — the model would waste a turn trying to read it.
 		log.Printf("WARN: dumpToWorkspaceTmp: failed to write %s: %v", fullPath, err)
+		return ""
 	}
 	absPath, _ := filepath.Abs(fullPath)
 	writeDumpIndex(tmpDir)

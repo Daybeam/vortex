@@ -38,8 +38,8 @@ func NewExternalInterceptor(pc config.PluginConfig, runtimes config.ExternalRunt
 	}
 	if pc.SHA256 == "" {
 		logger.Log("EventPluginNoHash", "", "", map[string]any{
-			"path":  scriptPath,
-			"warn":  "plugin has no integrity hash — execution allowed but not verified",
+			"path": scriptPath,
+			"warn": "plugin has no integrity hash — execution allowed but not verified",
 		})
 	}
 

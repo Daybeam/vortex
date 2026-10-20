@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
@@ -86,8 +85,14 @@ func registerConfigSubsystem(app *App) {
 
 	s.Actions["list_roles"] = Action{
 		Name:        "list_roles",
-		Description: "List all registered agent roles.",
+		Description: "Deprecated: use discover(scope=pool, type=roles) for lightweight summaries. Returns full role objects for backward compatibility.",
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			// Phase 4 (2026-10-20): NOT redirected to DiscoverImpl because the
+			// legacy format returns full config.Role objects (Instruction,
+			// BoundSkills, BoundMCPBindings, etc.) while DiscoverImpl returns
+			// lightweight DiscoveryRoleSummary. Converting back would require
+			// a registry lookup per role — no benefit over direct read.
+			// New callers should use discover(scope=pool, type=roles).
 			app.Registry.Mu.RLock()
 			defer app.Registry.Mu.RUnlock()
 			var roles []config.Role
@@ -289,28 +294,33 @@ func registerConfigSubsystem(app *App) {
 
 	s.Actions["list_mcps"] = Action{
 		Name:        "list_mcps",
-		Description: "List all registered MCP servers and their current status.",
+		Description: "Deprecated: use discover(scope=pool, type=mcps) instead. List all registered MCP servers and their current status.",
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
-			app.Registry.Mu.RLock()
-			defer app.Registry.Mu.RUnlock()
-			var result []map[string]any
-			for id, m := range app.Registry.MCPs {
-				result = append(result, map[string]any{
-					"id":      id,
+			// Phase 4 redirect (2026-10-20): delegates to DiscoverImpl — the
+			// single backend for all discovery. Same output format, same data
+			// source. See docs/plan/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md §10 Phase 4.
+			result, err := core.DiscoverImpl(app.Registry, core.DiscoveryScope{Mode: "pool", AllowPool: true}, "mcps", "", 1, 1000)
+			if err != nil {
+				return nil, err
+			}
+			var legacy []map[string]any
+			for _, m := range result.MCPs {
+				entry := map[string]any{
+					"id":      m.ID,
 					"url":     m.URL,
 					"trusted": m.Trusted,
-					"type":    "static",
-				})
+				}
+				if m.Dynamic {
+					entry["type"] = "dynamic"
+					if m.ExpiresAt != "" {
+						entry["expires_at"] = m.ExpiresAt
+					}
+				} else {
+					entry["type"] = "static"
+				}
+				legacy = append(legacy, entry)
 			}
-			for id, m := range app.Registry.DynamicMCPs {
-				result = append(result, map[string]any{
-					"id":         id,
-					"url":        m.URL,
-					"type":       "dynamic",
-					"expires_at": m.ExpiresAt.Format(time.RFC3339),
-				})
-			}
-			return result, nil
+			return legacy, nil
 		},
 	}
 

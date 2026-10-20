@@ -207,3 +207,99 @@ func TestParsePlanDAG_StepBudget(t *testing.T) {
 		t.Fatalf("expected step-budget rejection, got: %v", err)
 	}
 }
+
+// TestParsePlanDAG_UnwrapsExecutorEnvelope reproduces the exact shape the
+// planner returned on AppWorld 4fab96f_3 (2026-10-19): a correct plan naming
+// phone__get_current_date_and_time, wrapped in the executor's answer contract.
+// It was rejected as "plan contains no steps" twice, the pipeline fell back to a
+// single unplanned step, and the run could not get the current date.
+func TestParsePlanDAG_UnwrapsExecutorEnvelope(t *testing.T) {
+	raw := `{"status":"ok","confidence":1.0,"result":{"steps":[
+	  {"id":"plan_dates","role_id":"appworld_agent","task":"Get today's date",
+	   "allowed_tools":["phone__login"]},
+	  {"id":"send_reminders","role_id":"appworld_agent","task":"Remind overdue",
+	   "depends_on":["plan_dates"],
+	   "allowed_tools":["venmo__remind_payment_request"]}
+	]}}`
+
+	steps, err := ParsePlanDAG(raw, testPlanOptions())
+	if err != nil {
+		t.Fatalf("executor envelope should be unwrapped, got: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("want 2 steps, got %d", len(steps))
+	}
+	if steps[0].ID != "plan_dates" || len(steps[1].DependsOn) != 1 {
+		t.Fatalf("unwrapped plan lost structure: %+v", steps)
+	}
+}
+
+// TestParsePlanDAG_UnwrapsPlanKey covers the other wrapper we saw: the plan
+// sitting under "plan" rather than "result".
+func TestParsePlanDAG_UnwrapsPlanKey(t *testing.T) {
+	raw := `{"plan":{"steps":[{"id":"s1","role_id":"appworld_agent","task":"do it"}]}}`
+	steps, err := ParsePlanDAG(raw, testPlanOptions())
+	if err != nil {
+		t.Fatalf("plan envelope should be unwrapped, got: %v", err)
+	}
+	if len(steps) != 1 || steps[0].ID != "s1" {
+		t.Fatalf("unexpected steps: %+v", steps)
+	}
+}
+
+// TestParsePlanDAG_UnwrapsJSONStringEnvelope covers the doubly-encoded form,
+// where the plan arrived as a JSON string inside "result".
+func TestParsePlanDAG_UnwrapsJSONStringEnvelope(t *testing.T) {
+	raw := `{"status":"ok","result":"{\"steps\":[{\"id\":\"s1\",\"role_id\":\"appworld_agent\",\"task\":\"do it\"}]}"}`
+	steps, err := ParsePlanDAG(raw, testPlanOptions())
+	if err != nil {
+		t.Fatalf("string-encoded plan should be unwrapped, got: %v", err)
+	}
+	if len(steps) != 1 || steps[0].ID != "s1" {
+		t.Fatalf("unexpected steps: %+v", steps)
+	}
+}
+
+// TestParsePlanDAG_NoStepsNamesTheShape: the old rejection said only "plan
+// contains no steps", which does not distinguish an empty plan from a
+// mis-shaped envelope. The detail now names the top-level keys.
+func TestParsePlanDAG_NoStepsNamesTheShape(t *testing.T) {
+	_, err := ParsePlanDAG(`{"thought":"I will do it","answer":"done"}`, testPlanOptions())
+	if err == nil {
+		t.Fatal("expected rejection")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "no steps") {
+		t.Fatalf("expected no-steps reason, got: %v", msg)
+	}
+	for _, want := range []string{"answer", "thought"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("rejection should name top-level key %q so the shape is diagnosable; got: %v", want, msg)
+		}
+	}
+}
+
+// TestParsePlanDAG_SoleRoleFillsMissingRoleID: with exactly one legal role,
+// omitting role_id is noise, not a decision. Rejecting it costs a full planner
+// retry — observed on 4fab96f_3 as "step missing role_id (send_reminders)".
+func TestParsePlanDAG_SoleRoleFillsMissingRoleID(t *testing.T) {
+	raw := `{"steps":[{"id":"send_reminders","task":"Remind overdue"}]}`
+	steps, err := ParsePlanDAG(raw, testPlanOptions())
+	if err != nil {
+		t.Fatalf("sole-role default should apply, got: %v", err)
+	}
+	if steps[0].RoleID != "appworld_agent" {
+		t.Fatalf("role_id not defaulted: %q", steps[0].RoleID)
+	}
+}
+
+// TestParsePlanDAG_MissingRoleIDStillRejectedWhenAmbiguous is the counterweight:
+// two legal roles means the omission is a real choice the model failed to make.
+func TestParsePlanDAG_MissingRoleIDStillRejectedWhenAmbiguous(t *testing.T) {
+	opt := testPlanOptions()
+	opt.AllowedRoles = map[string]bool{"appworld_agent": true, "auditor": true}
+	_, err := ParsePlanDAG(`{"steps":[{"id":"s1","task":"do it"}]}`, opt)
+	if err == nil || !strings.Contains(err.Error(), "missing role_id") {
+		t.Fatalf("ambiguous omission must still be rejected, got: %v", err)
+	}
+}

@@ -78,6 +78,16 @@ type SpawnRequest struct {
 	// step actually get more room instead of re-hitting the same cap.
 	// ADDED (2026-09-07).
 	TurnsBudgetBonus int
+	// MaxOutputTokens overrides the per-spawn response token cap. 0 keeps the
+	// engine default (4096).
+	//
+	// ADDED 2026-10-19. The cap used to be hard-coded, so a caller that must
+	// emit a long structured answer had no way to ask for room. Measured cost:
+	// the task_planner's 6-step JSON plan was cut off mid-tool-name at exactly
+	// 4096 tokens, jsonrepair salvaged the fragment into a syntactically valid
+	// string "venmo__", and the whole plan died on an unknown tool name —
+	// after two LLM round trips.
+	MaxOutputTokens  int
 	Temperature      *float32
 	FrequencyPenalty *float32
 	Metadata         map[string]any

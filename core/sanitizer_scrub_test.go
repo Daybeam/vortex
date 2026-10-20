@@ -25,8 +25,10 @@ func (m *capturingMockProvider) StreamComplete(_ context.Context, req schemas.Co
 	m.capturedUser = req.User
 	return &schemas.ProviderResponse{Text: "tag1,tag2"}, nil
 }
-func (m *capturingMockProvider) Embed(_ context.Context, _ string) ([]float32, error) { return nil, nil }
-func (m *capturingMockProvider) CountTokens(_ context.Context, _ string) (int, error)  { return 0, nil }
+func (m *capturingMockProvider) Embed(_ context.Context, _ string) ([]float32, error) {
+	return nil, nil
+}
+func (m *capturingMockProvider) CountTokens(_ context.Context, _ string) (int, error) { return 0, nil }
 
 // TestReflectionPrompt_ScrubsSecretsFromTrace verifies that ScrubSecrets
 // catches API keys in the exact prompt format used by CrystallizeStepToSkill

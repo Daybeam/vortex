@@ -418,6 +418,39 @@ type Role struct {
 	AllowDynamicSkills  bool              `json:"allow_dynamic_skills"`
 	AllowDynamicMCPs    bool              `json:"allow_dynamic_mcps"`
 	MaxAdditionalSkills int               `json:"max_additional_skills"`
+	// CoreTools narrows the built-in _core tool surface for this role:
+	//   absent (nil)   -> every core tool (backward compatible; the default)
+	//   []             -> none
+	//   ["read_file"]  -> only the named ones
+	//
+	// Added 2026-10-19 for the task_planner. Every spawn gets the _core server
+	// unconditionally (spawner_mcp.go buildMCPServers), which hands a planner
+	// write_file and execute_code — so a planner that decides to "just do the
+	// task" already can, and its instruction claiming "you have no tools" is
+	// simply false. Hiding a tool from the advertised schema is not enough
+	// either: spawner_tool_exec.go dispatches on CoreToolNames alone, with no
+	// role check, so a named call would still run. This field is therefore
+	// enforced at BOTH ends — schema assembly and dispatch.
+	CoreTools []string `json:"core_tools,omitempty"`
+	// MinimalPrompt opts the role out of the framework's own framing. When
+	// true, the prompt assembler omits two fragments it otherwise appends to
+	// every role:
+	//
+	//   (a) "## Core File & Code Tools" — the claim that write_file, read_file
+	//       and execute_code are available. For a role with core_tools: [] that
+	//       claim is false, and a model told it can write files will try to.
+	//   (b) the SubagentOutput contract (status/confidence/result/attachments)
+	//       plus its "you may use <thought> blocks before the JSON" allowance.
+	//       A role that defines its own output shape in its instruction — the
+	//       task planner emitting a bare {"steps": [...]} — is pulled in two
+	//       directions by the generic contract, and the <thought> allowance
+	//       silently spends the response budget before the real answer starts.
+	//
+	// Measured 2026-10-19 (gemini-3-flash, AppWorld 4fab96f_3): the planner
+	// wrote a long <thought> preamble, then began the plan, and the answer was
+	// cut off mid-tool-name; thought-stripping left a 572-byte fragment that
+	// failed as "unknown tool name venmo__".
+	MinimalPrompt bool `json:"minimal_prompt,omitempty"`
 	Provider            string            `json:"provider,omitempty"`
 	Model               string            `json:"model,omitempty"`
 	Fallbacks           []RoleFallback    `json:"fallbacks,omitempty"`
@@ -530,6 +563,12 @@ type SystemSettings struct {
 	MaxDecisionOutcomes       int      `json:"max_decision_outcomes"`
 	MaxContextKeep            int      `json:"max_context_keep"`
 	MaxToolResultChars        int      `json:"max_tool_result_chars,omitempty"` // 0 = dynamic from model context window; >0 = explicit override
+	// MaxToolSchemaBudgetTokens caps the total size of the tool schemas the
+	// router exposes in one step. 0 = router default
+	// (core.defaultToolSchemaBudgetTokens). Expressed in tokens rather than a
+	// tool count because schema size, not entry count, is what consumes the
+	// context window.
+	MaxToolSchemaBudgetTokens int      `json:"max_tool_schema_budget_tokens,omitempty"`
 	MaxToolTurns              int      `json:"max_tool_turns,omitempty"`
 	MaxSpawnDepth             int      `json:"max_spawn_depth,omitempty"`
 	DefaultJITTTL             int      `json:"default_jit_ttl"`
@@ -708,12 +747,39 @@ type SystemSettings struct {
 	// §8.5 for why AppWorld must keep it off until the tool-catalog question
 	// is settled.
 	EnablePlannerFirst bool `json:"enable_planner_first,omitempty"`
+
+	// LazyDiscovery (ADDED 2026-10-20): when true, tools/list discovery for
+	// stdio MCPs runs lazily inside ToolRouter.Route on first access (when
+	// AvailableTools is empty), instead of eagerly in spawner_prepare.go.
+	// Default false: eager discovery (backward compatible).
+	// See docs/plan/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md §10 Phase 2.
+	LazyDiscovery bool `json:"lazy_discovery,omitempty"`
+
+	// RejectSimpleTasks (ADDED 2026-10-20): when true, validateTaskComplexity
+	// rejects single-step local tasks that have no additional skills or MCPs.
+	// Default false (opt-in): the Smart Routing Fast-Path
+	// (scheduler_submit.go:249) already handles single-step dependency-free
+	// tasks with near-zero scheduling overhead (minimal graph entry + Spawn,
+	// no DAG construction, no manifest, no run() loop), so the previous
+	// hardcoded rejection blocked those tasks from reaching FastPath. The
+	// guard is preserved as an opt-in for local (llama.cpp/vLLM) deployments
+	// where operators want to prevent orchestrator misuse as a plain shell
+	// (e.g. submitting {"execute_code": "rm -rf /"}). Remote API deployments
+	// are never affected by this flag regardless of setting.
+	// See §3.4 of docs/plan/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md.
+	RejectSimpleTasks bool `json:"reject_simple_tasks,omitempty"`
 	// PlannerTimeoutSecs bounds the planner spawn (0 => 90s default).
 	// A 60s hard limit proved too tight for a planner reading a large tool
 	// catalog on a slow endpoint.
 	PlannerTimeoutSecs int `json:"planner_timeout_secs,omitempty"`
 	// PlannerMaxSteps bounds the produced DAG (0 => parser default 12).
 	PlannerMaxSteps int `json:"planner_max_steps,omitempty"`
+	// PlannerMaxOutputTokens bounds the planner's own answer length
+	// (0 => 8192). The plan is a structured document, so it needs markedly more
+	// room than a prose answer: measured 2026-10-19, a 6-step plan hit the
+	// engine's hard-coded 4096-token cap mid-tool-name, and the salvaged
+	// fragment ("venmo__") failed the whole plan as an unknown tool.
+	PlannerMaxOutputTokens int `json:"planner_max_output_tokens,omitempty"`
 }
 
 // WorkspacePolicyConfig configures tier-gated workspace scope resolution.

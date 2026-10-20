@@ -31,17 +31,17 @@ func TestReplan_ScrubsDeprecatedStepFromReplacementDeps(t *testing.T) {
 		CurrentNodeID: "root",
 	}
 	graph.Steps["s1"] = &schemas.Step{
-		ID:       "s1",
-		RoleID:   "appworld_agent",
-		Task:     "upstream step that succeeded",
-		Status:   schemas.StepOK,
+		ID:        "s1",
+		RoleID:    "appworld_agent",
+		Task:      "upstream step that succeeded",
+		Status:    schemas.StepOK,
 		DependsOn: nil,
 	}
 	graph.Steps["s2"] = &schemas.Step{
-		ID:       "s2",
-		RoleID:   "appworld_agent",
-		Task:     "failing step to be deprecated",
-		Status:   schemas.StepRunning,
+		ID:        "s2",
+		RoleID:    "appworld_agent",
+		Task:      "failing step to be deprecated",
+		Status:    schemas.StepRunning,
 		DependsOn: []string{"s1"},
 	}
 	graph.PendingDecisions = []*schemas.Decision{{
@@ -114,7 +114,7 @@ func TestReplan_PreservesValidOriginalDeps(t *testing.T) {
 		ID:     "s1",
 		RoleID: "appworld_agent",
 		Task:   "completed upstream",
-		Status:   schemas.StepOK,
+		Status: schemas.StepOK,
 	}
 	graph.Steps["s2"] = &schemas.Step{
 		ID:        "s2",

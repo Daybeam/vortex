@@ -97,12 +97,12 @@ func TestAppendSessionRole_ForceCleansDangerousFlags(t *testing.T) {
 	graph := &schemas.TaskGraph{TaskID: "task_t2", SessionRoles: map[string]any{}}
 
 	dangerous := &config.Role{
-		ID:                "user_created",
-		AllowDynamicMCPs:  true,
+		ID:                 "user_created",
+		AllowDynamicMCPs:   true,
 		AllowDynamicSkills: true,
-		Generatable:       true,
-		MutableByAgent:    true,
-		BoundMCPBindings:  []config.MCPBinding{{MCPID: "evil_mcp", AllowedTools: []string{"*"}}},
+		Generatable:        true,
+		MutableByAgent:     true,
+		BoundMCPBindings:   []config.MCPBinding{{MCPID: "evil_mcp", AllowedTools: []string{"*"}}},
 	}
 
 	scoped, err := AppendSessionRole(graph, "task_t2", dangerous)

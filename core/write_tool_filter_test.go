@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// C5 regression: Auditor step must not inherit parent's write tools, and the
+// Regression: Auditor step must not inherit parent's write tools, and the
 // inherited MCPs/allowlists must be deep copies (not shared references).
 //
 // Bug: The auditor step inherited orig.AdditionalMCPs and
@@ -71,7 +71,7 @@ func TestAuditorAllowedTools_WriteToolsFiltered(t *testing.T) {
 
 func TestAuditorAllowedTools_SliceCopyNotShared(t *testing.T) {
 	// Mutating the returned MCPs slice must not affect the parent.
-	// C5 fix: MCPs now need an allowlist with surviving read tools to be included.
+	// Fix: MCPs now need an allowlist with surviving read tools to be included.
 	parentMCPs := []string{"mcp1", "mcp2"}
 	parentAllowlists := map[string][]string{
 		"mcp1": {"read_tool"},
@@ -122,7 +122,7 @@ func TestAuditorAllowedTools_EmptyInput(t *testing.T) {
 }
 
 func TestAuditorAllowedTools_AllWriteToolsFilteredToEmpty(t *testing.T) {
-	// C5 fix (2026-10-19): if all tools are write tools, the MCP should be
+	// Fix: if all tools are write tools, the MCP should be
 	// SKIPPED entirely (not in mcps, not in allowlists). Previously, the empty
 	// allowlist was kept, and validator.go treated empty as "no restriction"
 	// → full access → auditor could call write tools.
@@ -145,7 +145,7 @@ func TestAuditorAllowedTools_AllWriteToolsFilteredToEmpty(t *testing.T) {
 }
 
 func TestAuditorAllowedTools_NoAllowlistMeansSkipped(t *testing.T) {
-	// C5 fix (2026-10-19): MCPs without an explicit allowlist entry are
+	// Fix: MCPs without an explicit allowlist entry are
 	// skipped (whitelist approach). Previously they were inherited entirely
 	// with all write tools.
 	parentMCPs := []string{"unknown_mcp"}
@@ -161,7 +161,7 @@ func TestAuditorAllowedTools_NoAllowlistMeansSkipped(t *testing.T) {
 }
 
 func TestIsWriteMCPTool_AppPrefixedNames(t *testing.T) {
-	// C5 fix (2026-10-19): handle app-prefixed tool names (e.g., "app__send_message").
+	// Fix: handle app-prefixed tool names (e.g., "app__send_message").
 	// The write verb appears after "app__", so we strip it before checking.
 	writeAppTools := []string{"app__send_message", "app__create_order", "app__delete_user", "app__transfer_funds"}
 	for _, tool := range writeAppTools {
@@ -178,7 +178,7 @@ func TestIsWriteMCPTool_AppPrefixedNames(t *testing.T) {
 }
 
 func TestIsWriteMCPTool_AddedPrefixes(t *testing.T) {
-	// C5 fix (2026-10-19): verify newly added write prefixes are detected.
+	// Fix: verify newly added write prefixes are detected.
 	addedWriteTools := []string{"add_item", "pay_invoice", "like_post", "follow_user",
 		"mark_read", "upload_file", "execute_query", "run_job", "publish_article"}
 	for _, tool := range addedWriteTools {
@@ -200,5 +200,55 @@ func TestAuditorAllowedTools_CoreToolsPreserved(t *testing.T) {
 
 	if len(auditAllowlists["core"]) != 3 {
 		t.Errorf("core tools should all be preserved, got %d: %v", len(auditAllowlists["core"]), auditAllowlists["core"])
+	}
+}
+
+// TestIsWriteMCPTool_GeneralizedNamespaceStripping verifies that IsWriteMCPTool
+// handles arbitrary namespace prefixes and separators (__, ., /), not just the
+// hardcoded "app__" prefix.
+//
+// Before the fix: only "app__" was stripped. Tools like "mcp1.send_message"
+// or "service/delete_user" were not recognized as write tools because the
+// namespace prefix wasn't stripped.
+func TestIsWriteMCPTool_GeneralizedNamespaceStripping(t *testing.T) {
+	// Write tools with various namespace separators and prefixes.
+	writeTools := []string{
+		// __ separator with non-app prefix
+		"mcp__send_message",
+		"tool__create_order",
+		"service__delete_user",
+		// . separator
+		"mcp1.send_message",
+		"tool.create_order",
+		"service.delete_user",
+		// / separator
+		"mcp1/send_message",
+		"tool/create_order",
+		"service/delete_user",
+		// multiple separators (last one wins)
+		"a__b__send_message",
+		"mcp.tool.update_record",
+		"svc/api/post_data",
+		// original app__ still works
+		"app__send_message",
+	}
+	for _, tool := range writeTools {
+		if !IsWriteMCPTool(tool) {
+			t.Errorf("namespaced write tool %q should be detected as write", tool)
+		}
+	}
+
+	// Read tools with various namespace separators — must NOT be detected as write.
+	readTools := []string{
+		"mcp__get_status",
+		"mcp1.query_list",
+		"service/search_items",
+		"app__get_status",
+		"a__b__search_items",
+	}
+	for _, tool := range readTools {
+		if IsWriteMCPTool(tool) {
+			t.Errorf("namespaced read tool %q should NOT be detected as write", tool)
+		}
 	}
 }

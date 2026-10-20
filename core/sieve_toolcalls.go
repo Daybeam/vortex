@@ -196,6 +196,13 @@ func (s *Sieve) ClearHistory(taskID string) {
 	}
 	delete(s.toolResultCache, taskID)
 	delete(s.resultContentHistory, taskID)
+	// resultSeen keys are "<taskID>|<stepID>|<tool>|<hash>".
+	seenPrefix := taskID + "|"
+	for k := range s.resultSeen {
+		if strings.HasPrefix(k, seenPrefix) {
+			delete(s.resultSeen, k)
+		}
+	}
 	delete(s.plans, taskID) // also clear step plan (#4)
 
 	// Adaptive threshold relaxation/tightening (#13): evaluate the completed

@@ -365,6 +365,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write
 				s.Mu.Unlock()
 				s.addDecision(graph, step, schemas.DecisionDelegationRequired, map[string]any{
+					"kind":            DelegationKindDAGSurgery,
 					"error":           "Context overflow: task too complex for single model.",
 					"action_required": "Please split this step into smaller sub-tasks.",
 				}, []string{"skip", "abort"})
@@ -433,10 +434,14 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				if step.RetryCount > step.MaxRetries {
 					break
 				}
+				// audit P-20-1: use NewTimer+Stop instead of time.After to avoid
+				// leaking Timers in retry loops (time.After can't be Stop()'d).
+				timer := time.NewTimer(time.Duration(wait) * time.Second)
 				select {
 				case <-ctx.Done():
+					timer.Stop()
 					return
-				case <-time.After(time.Duration(wait) * time.Second):
+				case <-timer.C:
 				}
 				continue
 			}
@@ -571,10 +576,13 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			}
 			// Exponential Backoff: base 2s * 2^attempt
 			wait := time.Duration(math.Pow(2, float64(step.RetryCount))) * time.Second
+			// audit P-20-1: use NewTimer+Stop instead of time.After (timer leak).
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-time.After(wait):
+			case <-timer.C:
 			}
 			continue
 		}

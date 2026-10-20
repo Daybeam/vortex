@@ -127,23 +127,23 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 		}
 
 		newStep := &schemas.Step{
-			ID:                    inp.ID,
-			RoleID:                inp.RoleID,
-			Task:                  inp.Task + inheritance, // Handover heritage
-			DependsOn:             scrubbedDeps,
-			Status:                schemas.StepPending,
-			AdditionalSkills:      inp.AdditionalSkills,
-			AdditionalMCPs:        inp.AdditionalMCPs,
+			ID:                       inp.ID,
+			RoleID:                   inp.RoleID,
+			Task:                     inp.Task + inheritance, // Handover heritage
+			DependsOn:                scrubbedDeps,
+			Status:                   schemas.StepPending,
+			AdditionalSkills:         inp.AdditionalSkills,
+			AdditionalMCPs:           inp.AdditionalMCPs,
 			AdditionalToolAllowlists: inp.AdditionalToolAllowlists, // T3: preserve tool narrowing across replan
-			ContextRefs:           inp.ContextRefs,
-			ExitCriteria:          inp.ExitCriteria,
-			VerifierModel:         inp.VerifierModel,
-			MaxAutoRefine:         inp.MaxAutoRefine,
-			EnableDebate:          inp.EnableDebate,
-			MaxDebateRounds:       inp.MaxDebateRounds,
-			SpawnDepth:            inp.SpawnDepth,
-			MaxSpawnDepth:         inp.MaxSpawnDepth,
-			LastWorkedOn:          time.Now(),
+			ContextRefs:              inp.ContextRefs,
+			ExitCriteria:             inp.ExitCriteria,
+			VerifierModel:            inp.VerifierModel,
+			MaxAutoRefine:            inp.MaxAutoRefine,
+			EnableDebate:             inp.EnableDebate,
+			MaxDebateRounds:          inp.MaxDebateRounds,
+			SpawnDepth:               inp.SpawnDepth,
+			MaxSpawnDepth:            inp.MaxSpawnDepth,
+			LastWorkedOn:             time.Now(),
 		}
 		if newStep.AdditionalSkills == nil {
 			newStep.AdditionalSkills = []string{}

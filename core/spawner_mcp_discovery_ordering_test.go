@@ -62,8 +62,8 @@ func TestEnsureMCPDiscovery_SkipsRemoteMCPs(t *testing.T) {
 	reg := &config.Registry{
 		MCPs: map[string]*config.MCPDef{
 			"remote-mcp": {
-				ID:     "remote-mcp",
-				URL:    "https://example.com/mcp",
+				ID:      "remote-mcp",
+				URL:     "https://example.com/mcp",
 				Command: "", // remote, not stdio
 			},
 		},

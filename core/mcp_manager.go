@@ -406,8 +406,8 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 		}
 		if removed > 0 {
 			m.logger.Log("EventMCPUntrusted", "", "", map[string]any{
-				"mcp_id":        mcp.ID,
-				"filtered_tools": removed,
+				"mcp_id":          mcp.ID,
+				"filtered_tools":  removed,
 				"remaining_tools": len(filtered),
 			})
 		}
