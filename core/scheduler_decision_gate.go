@@ -16,11 +16,31 @@ import (
 // Contains: addDecision, RequestAutonomousAbort, maybeBlock,
 // handleDelegationRequired, handleDefaultFailure.
 
+// DelegationKind* disambiguates the two situations that both surface as
+// DecisionDelegationRequired. They demand opposite reactions from a caller, so
+// without an explicit discriminator a consumer has to guess from the shape of
+// the context — and guessing wrong means either fulfilling a request to split a
+// step (nonsense payload) or skipping a step whose answer only the caller could
+// have produced (guaranteed zero reward).
+//
+//	external_subagent — the engine has delegated the step's *answer* to whoever
+//	  called it. Context carries a prompt envelope (system_prompt/user_prompt/
+//	  tool_definitions); the caller runs it and returns via
+//	  FulfillStep / submit_decision(choice="fulfill").
+//	dag_surgery — the step overflowed the model's context and the caller should
+//	  split it. Context carries error/action_required and NO prompt; fulfilling
+//	  it is meaningless, the only sensible answers are skip/abort/rewrite_dag.
+const (
+	DelegationKindExternalSubagent = "external_subagent"
+	DelegationKindDAGSurgery       = "dag_surgery"
+)
+
 func (s *DirectedEngine) handleDelegationRequired(graph *schemas.TaskGraph, step *schemas.Step, output schemas.SubagentOutput) {
 	s.Mu.Lock()
 	step.Status = schemas.StepBlocked
 	s.Mu.Unlock()
 	s.addDecision(graph, step, schemas.DecisionDelegationRequired, map[string]any{
+		"kind":    DelegationKindExternalSubagent,
 		"prompt":  output.Result,
 		"role_id": step.RoleID,
 	}, []string{"fulfill", "skip", "abort"})
@@ -314,9 +334,9 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 	return "", false
 }
 
-// askSystemOneForDecision is a stub — System One decision model is not
-// available in the open core. Always returns ("", false) so the caller
-// falls back to the LLM decider or conservative defaults.
+// askSystemOneForDecision is stubbed in the open core — System One is not
+// available. Always returns ("", false) so the caller falls back to the
+// LLM decider or conservative defaults.
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,

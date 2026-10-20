@@ -20,6 +20,16 @@ func (s *DirectedEngine) validateTaskComplexity(inputs []schemas.StepInput) erro
 		return errors.New("steps is required")
 	}
 
+	// RejectSimpleTasks gate (opt-in, ADDED 2026-10-20): when the flag is off
+	// (the default), single-step local tasks are accepted so they can reach
+	// the Smart Routing Fast-Path below, which already handles them with
+	// near-zero overhead (minimal graph entry + Spawn, no DAG/manifest/run
+	// loop). Only opt into the rejection for local (llama.cpp/vLLM)
+	// deployments that want to prevent orchestrator misuse as a plain shell.
+	if !s.rejectSimpleTasksEnabled() {
+		return nil
+	}
+
 	// Rule: Reject tasks that are just a single "local" step with no specialized skills.
 	// These are high-overhead and should be done directly by the caller.
 	if len(inputs) == 1 {
@@ -503,6 +513,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 			if delegationBlocked {
 				s.addDecision(graph, step, schemas.DecisionDelegationRequired, map[string]any{
+					"kind":    DelegationKindExternalSubagent,
 					"prompt":  finalResult.Output.Result,
 					"role_id": step.RoleID,
 				}, []string{"fulfill", "skip", "abort"})

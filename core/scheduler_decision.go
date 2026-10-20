@@ -43,7 +43,15 @@ func (s *DirectedEngine) handleOutput(
 	case output.Status == schemas.StatusDelegationRequired:
 		s.handleDelegationRequired(graph, step, output)
 
-	case output.Status == schemas.StatusCapabilityRequired || output.Status == schemas.StatusPartial || conf < s.registry.System.ConfidenceThreshold:
+	case output.Status == schemas.StatusCapabilityRequired || output.Status == schemas.StatusPartial || output.Status == schemas.StatusFailed || conf < s.registry.System.ConfidenceThreshold:
+		// StatusFailed added (2026-10-20): previously, status="failed" with
+		// high confidence fell through to default → handleDefaultFailure →
+		// maybeBlock with ["skip", "abort"] — NO retry. Recoverable failures
+		// (transient API errors, missing inputs) labeled "failed" by the model
+		// were silently dropped. Now StatusFailed gets the full retry/refine
+		// treatment via handleStepFailure, which offers ["skip", "retry",
+		// "refine_and_retry", "abort"]. The decision maker can still choose
+		// skip/abort for permanent failures — retry is an option, not forced.
 		if verdict := s.handleStepFailure(graph, step, result); verdict == VerdictReturn {
 			return
 		}

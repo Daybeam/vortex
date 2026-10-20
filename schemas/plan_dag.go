@@ -108,13 +108,33 @@ func ParsePlanDAG(raw string, opt PlanParseOptions) ([]StepInput, error) {
 		return nil, &PlanParseError{Reason: "invalid JSON", Detail: err.Error()}
 	}
 
+	// The plan may arrive wrapped in an executor envelope. See
+	// unwrapPlanEnvelope for why this happens and what it cost.
 	if len(dag.Steps) == 0 {
-		return nil, &PlanParseError{Reason: "plan contains no steps"}
+		if steps := unwrapPlanEnvelope(body, 0); len(steps) > 0 {
+			dag.Steps = steps
+		}
+	}
+
+	if len(dag.Steps) == 0 {
+		return nil, &PlanParseError{Reason: "plan contains no steps", Detail: planShape(body)}
 	}
 	if len(dag.Steps) > maxSteps {
 		return nil, &PlanParseError{
 			Reason: "plan exceeds step budget",
 			Detail: fmt.Sprintf("%d > %d", len(dag.Steps), maxSteps),
+		}
+	}
+
+	// A step that omits role_id is unambiguous when the planner had exactly one
+	// role to choose from. Same reasoning as SingleMCP below: with one legal
+	// value, absence is not a decision the model declined to make, it is noise.
+	// Rejecting it costs a whole planner retry — observed on AppWorld
+	// 4fab96f_3 ("step missing role_id (send_reminders)").
+	var soleRole string
+	if len(opt.AllowedRoles) == 1 {
+		for r := range opt.AllowedRoles {
+			soleRole = r
 		}
 	}
 
@@ -138,7 +158,10 @@ func ParsePlanDAG(raw string, opt PlanParseOptions) ([]StepInput, error) {
 		seen[ps.ID] = true
 
 		if ps.RoleID == "" {
-			return nil, &PlanParseError{Reason: "step missing role_id", Detail: ps.ID}
+			if soleRole == "" {
+				return nil, &PlanParseError{Reason: "step missing role_id", Detail: ps.ID}
+			}
+			ps.RoleID = soleRole
 		}
 		if len(opt.AllowedRoles) > 0 && !opt.AllowedRoles[ps.RoleID] {
 			return nil, &PlanParseError{Reason: "unknown role_id", Detail: ps.RoleID}
@@ -253,6 +276,110 @@ func ParsePlanDAG(raw string, opt PlanParseOptions) ([]StepInput, error) {
 	return out, nil
 }
 
+// planEnvelopeKeys are the wrappers a model puts around a plan when it imports
+// the executor's answer contract into the planner role. The planner prompt asks
+// for a bare {"steps":[...]}; the executor prompt asks for
+// {"status","confidence","result":{...}}. The same model serves both roles, and
+// on AppWorld it answered the planner in the executor's shape.
+var planEnvelopeKeys = []string{
+	"result", "plan", "dag", "data", "output", "content", "answer", "response", "payload",
+}
+
+// unwrapPlanEnvelope looks for a steps array nested under one of the envelope
+// keys, at most maxPlanEnvelopeDepth levels deep.
+//
+// Measured 2026-10-19 (AppWorld 4fab96f_3, planner on, gemini-3-flash): the
+// planner produced a plan that named phone__get_current_date_and_time — the one
+// tool the run could not work without — inside
+// {"status":"ok","confidence":1.0,"result":{"steps":[...]}}. ParsePlanDAG
+// unmarshalled the envelope, saw zero steps at the top level, and answered "plan
+// contains no steps". It retried, got the same shape, and the pipeline fell back
+// to a single unplanned step. Two wasted planner calls and the correct plan
+// thrown away, for a wrapper.
+//
+// Unwrapping is safe because every step still goes through the full validation
+// below: ids, roles, dependency integrity, tool catalog membership. The envelope
+// is decoration; the plan inside it is not trusted any more than a bare one.
+const maxPlanEnvelopeDepth = 3
+
+func unwrapPlanEnvelope(body string, depth int) []PlanStep {
+	if depth > maxPlanEnvelopeDepth {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &obj); err != nil {
+		return nil
+	}
+	return findPlanStepsIn(obj, depth)
+}
+
+func findPlanStepsIn(obj map[string]json.RawMessage, depth int) []PlanStep {
+	if depth > maxPlanEnvelopeDepth {
+		return nil
+	}
+	// A nested object may already be the plan itself (e.g. after a JSON string
+	// was decoded), in which case there is no envelope key left to descend into.
+	if steps := stepsFromRaw(obj["steps"]); len(steps) > 0 {
+		return steps
+	}
+	for _, k := range planEnvelopeKeys {
+		child, ok := obj[k]
+		if !ok {
+			continue
+		}
+		// Nested object: {"result": {"steps": [...]}} or {"result": {"plan": {...}}}
+		var inner map[string]json.RawMessage
+		if err := json.Unmarshal(child, &inner); err == nil {
+			if steps := stepsFromRaw(inner["steps"]); len(steps) > 0 {
+				return steps
+			}
+			if steps := findPlanStepsIn(inner, depth+1); len(steps) > 0 {
+				return steps
+			}
+			continue
+		}
+		// Nested JSON carried as a string: {"result": "{\"steps\":[...]}"}
+		var s string
+		if err := json.Unmarshal(child, &s); err != nil || !strings.Contains(s, `"steps"`) {
+			continue
+		}
+		if nested, err := extractJSONObject(s); err == nil {
+			if steps := unwrapPlanEnvelope(nested, depth+1); len(steps) > 0 {
+				return steps
+			}
+		}
+	}
+	return nil
+}
+
+func stepsFromRaw(raw json.RawMessage) []PlanStep {
+	if len(raw) == 0 {
+		return nil
+	}
+	var steps []PlanStep
+	if err := json.Unmarshal(raw, &steps); err != nil {
+		return nil
+	}
+	return steps
+}
+
+// planShape describes what the parser actually saw, so a rejection is
+// diagnosable from the event log alone. "plan contains no steps" told us
+// nothing; "top-level keys: confidence, result, status" would have named the
+// bug on the first occurrence.
+func planShape(body string) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &obj); err != nil {
+		return "unparseable object"
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return "top-level keys: " + strings.Join(keys, ", ")
+}
+
 // extractJSONObject finds the outermost JSON object/array in raw model output,
 // strips markdown fences, and repairs truncation. Returns the JSON body.
 func extractJSONObject(raw string) (string, error) {
@@ -298,12 +425,83 @@ func extractJSONObject(raw string) (string, error) {
 	}
 
 	if !json.Valid([]byte(s)) {
+		// The model wrapped the plan in prose or a reasoning block instead of
+		// emitting it bare. Measured 2026-10-19 (gemini-3-flash, AppWorld
+		// 4fab96f_3): the planner answered with a <thought> block and a numbered
+		// list, then asserted "I'll use a single appworld_agent step ... as it's
+		// a cohesive task" — not one byte of JSON. Neither fence-stripping nor
+		// jsonrepair can help there, because the plan is buried mid-text.
+		//
+		// Prefer the untouched text: fence-stripping above can leave a fragment
+		// when the model fences only part of its answer.
+		if cand, ok := findBalancedObject(raw); ok {
+			s = cand
+		} else if cand, ok := findBalancedObject(s); ok {
+			s = cand
+		}
+	}
+
+	if !json.Valid([]byte(s)) {
 		return "", &PlanParseError{Reason: "could not recover valid JSON from planner output"}
 	}
 	if !strings.HasPrefix(s, "{") {
 		return "", &PlanParseError{Reason: "planner output is not a JSON object"}
 	}
 	return s, nil
+}
+
+// findBalancedObject returns the first brace-balanced {...} span in s that is
+// also valid JSON. Braces inside string literals are skipped, so a task string
+// containing "{}" cannot truncate the scan.
+//
+// This exists because a planner model may answer with reasoning text followed
+// by a plan, with no markdown fence to key on. Scanning for a balanced object
+// is the one rule that works regardless of what prose surrounds the payload.
+func findBalancedObject(s string) (string, bool) {
+	for start := 0; start < len(s); start++ {
+		if s[start] != '{' {
+			continue
+		}
+		if cand, ok := scanBalancedObject(s, start); ok && json.Valid([]byte(cand)) {
+			return cand, true
+		}
+		// That '{' did not open a valid object (it may be part of prose such as
+		// "the { user } placeholder"); keep looking from the next one.
+	}
+	return "", false
+}
+
+// scanBalancedObject walks from the '{' at start to its matching '}', honoring
+// string literals and backslash escapes.
+func scanBalancedObject(s string, start int) (string, bool) {
+	depth := 0
+	inStr, escaped := false, false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 // findPlanCycle returns a human-readable cycle path ("a -> b -> a") or "".

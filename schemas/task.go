@@ -468,7 +468,7 @@ type Step struct {
 
 func (s *Step) IsTerminal() bool {
 	switch s.Status {
-	case StepOK, StepPartial, StepFailed, StepSkipped, StepBlocked:
+	case StepOK, StepPartial, StepFailed, StepSkipped, StepBlocked, StepDeprecated:
 		return true
 	}
 	return false
