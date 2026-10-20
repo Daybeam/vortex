@@ -15,6 +15,21 @@ import (
 	"github.com/daybeam/vortex/store"
 )
 
+// defaultSpawnOutputTokens is the response cap every spawn used to hard-code.
+// It is generous for a step that answers in prose and far too small for one
+// that must emit a long structured document (a plan, a schema, a table).
+const defaultSpawnOutputTokens = 4096
+
+// spawnOutputBudget resolves the response token cap for one spawn. A caller
+// that knows its answer is long (the task planner, whose 6-step JSON plan
+// overflows a prose-sized cap) sets SpawnRequest.MaxOutputTokens.
+func spawnOutputBudget(req *SpawnRequest) int {
+	if req != nil && req.MaxOutputTokens > 0 {
+		return req.MaxOutputTokens
+	}
+	return defaultSpawnOutputTokens
+}
+
 func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult, error) {
 	prep, earlyResult, err := s.prepareSpawn(ctx, req)
 	if err != nil {
@@ -145,6 +160,16 @@ turnLoop:
 		// VDA: Attach visual context from current state
 		attachments := s.resolveContextAttachments(ctx, req.TaskID, req.StepID)
 
+		// Log estimated image token cost so VLM attachments are visible in
+		// observability. See docs/plan/VLM_IMAGE_CONTEXT_OPTIMIZATION_DESIGN.md §1b.
+		if len(attachments) > 0 {
+			imgTokens := (&PromptBudgetEnforcer{}).EstimateImageTokens(attachments)
+			s.logger.Log("EventImageTokensEstimated", req.TaskID, req.StepID, map[string]any{
+				"attachment_count": len(attachments),
+				"estimated_tokens": imgTokens,
+			})
+		}
+
 		var resp *providers.ProviderResponse
 		var currentPCfg *config.ProviderConfig
 
@@ -196,7 +221,7 @@ turnLoop:
 			if err != nil {
 				return s.failedOutput(role.BaseCapability, fmt.Sprintf("failed to render prompt: %v", err)), nil
 			}
-			mcpServers := s.buildMCPServers(ctx, req.Hub, req.TaskID, bindings, pCfg.Provider)
+			mcpServers := s.buildMCPServers(ctx, req.Hub, req.TaskID, bindings, pCfg.Provider, req.RoleID)
 			lastMCPServers = mcpServers
 
 			// Priority 4: Dynamic Re-routing & Progressive Disclosure Hint
@@ -330,7 +355,7 @@ turnLoop:
 				System:           flattenContentBlocks(systemBlocks),
 				User:             flattenContentBlocks(userBlocks),
 				Model:            pCfg.Model,
-				MaxTokens:        4096,
+				MaxTokens:        spawnOutputBudget(req),
 				Temperature:      temp,
 				FrequencyPenalty: freqPen,
 				MCPServers:       mcpServers,
@@ -402,7 +427,7 @@ turnLoop:
 						System:           flattenContentBlocks(systemBlocks),
 						User:             flattenContentBlocks(userBlocks),
 						Model:            pCfg.Model,
-						MaxTokens:        4096,
+						MaxTokens:        spawnOutputBudget(req),
 						Temperature:      temp,
 						FrequencyPenalty: freqPen,
 						MCPServers:       mcpServers,
@@ -522,6 +547,27 @@ turnLoop:
 
 		// Record Usage Stats
 		GetGlobalStats().RecordUsage(currentPCfg.Provider, currentPCfg.Model, resp.PromptTokens, resp.CompletionTokens, len(resp.ToolCalls), resp.CacheWriteTokens, resp.CacheReadTokens)
+
+		// Truncation observability (ADDED 2026-10-20): StopReason had no reader
+		// anywhere in the tree before this, so a response cut off by the output
+		// cap was indistinguishable from a model that simply stopped early.
+		// That cost us a full diagnosis cycle on AppWorld 4fab96f_3, where a
+		// plan ended mid-tool-name ("venmo__show_sent_payment_", 1355 chars,
+		// ~400 tokens against an 8192 cap) and the only evidence available was
+		// the shape of the fragment. "length" means the cap was hit and the
+		// budget is the culprit; anything else means the model chose to stop and
+		// raising the cap will not help.
+		if resp.StopReason == "length" || resp.StopReason == "max_tokens" {
+			s.logger.Log(EventOutputTruncated, req.TaskID, req.StepID, map[string]any{
+				"provider":          currentPCfg.Provider,
+				"model":             currentPCfg.Model,
+				"stop_reason":       resp.StopReason,
+				"completion_tokens": resp.CompletionTokens,
+				"prompt_tokens":     resp.PromptTokens,
+				"text_chars":        len(resp.Text),
+				"tool_calls":        len(resp.ToolCalls),
+			})
+		}
 
 		// Outer-ring accounting (ADDED 2026-10-12): the system-prompt profile is
 		// captured at Build() time and only covers the system ring. Fold in the
@@ -774,7 +820,7 @@ turnLoop:
 					}),
 					System:    SysPromptBestAnswer,
 					Model:     currentPCfg.Model,
-					MaxTokens: 4096,
+					MaxTokens: spawnOutputBudget(req),
 				}, nil)
 				if nerr == nil && noToolResp.Text != "" {
 					degradedOutput := schemas.ParseOutput(noToolResp.Text, role.BaseCapability)
@@ -849,9 +895,9 @@ turnLoop:
 						})
 					} else {
 						s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
-							"error":            "output_stagnation: identical tool results repeated after hint",
+							"error":             "output_stagnation: identical tool results repeated after hint",
 							"consecutive_count": consecutiveRepeatCount,
-							"root_cause":       "model_stuck",
+							"root_cause":        "model_stuck",
 						})
 						return s.partialStagnationOutput(role.BaseCapability,
 							fmt.Sprintf("output_stagnation: identical tool results repeated %d consecutive times after intervention hint", consecutiveRepeatCount),
@@ -913,18 +959,27 @@ turnLoop:
 		}
 
 		// Priority 4: Re-route tools for the next turn based on updated context
-		// (Progressive Disclosure)
-		bindings = s.toolRouter.Route(ctx, RouteRequest{
-			Task:               req.Task + " " + resp.Text,
-			Bindings:           initialBindings,
-			Turn:               turn + 1,
-			ProgressiveMode:    progressiveEnabled,
-			PredecessorSkillID: req.PredecessorSkillID,
-		})
+		// (Progressive Disclosure).
+		// P1 fix (2026-10-20): Only re-route on the first turn (turn == 0).
+		// Re-routing every turn changes the tool block → prompt cache miss
+		// every turn. For turns > 0, keep existing bindings and grow via
+		// sticky union only (append-only surface). Progressive discovery
+		// on later turns is handled by the decision gate's refine_and_retry.
+		if turn == 0 {
+			bindings = s.toolRouter.Route(ctx, RouteRequest{
+				Task:               req.Task + " " + resp.Text,
+				Bindings:           initialBindings,
+				Turn:               turn + 1,
+				ProgressiveMode:    progressiveEnabled,
+				PredecessorSkillID: req.PredecessorSkillID,
+				MaxTokenBudget:     s.toolSchemaBudget(),
+				TaskID:             req.TaskID,
+			})
+		}
 
 		// R2: Sticky union — re-route may drop tools the model was actively
 		// using. Add them back so multi-turn workflows don't break.
-		bindings = s.stickyUnionBindings(bindings, calledTools)
+		bindings = s.stickyUnionBindings(bindings, initialBindings, calledTools)
 
 		vdaPrompt := ""
 		if needsVerification {

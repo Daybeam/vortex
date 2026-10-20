@@ -77,7 +77,7 @@ type Spawner struct {
 	sanitizer                *gateway.SanitizerProxy
 	// ClearSanitizer clears the sanitizer vault for a completed task (P2).
 	// Nil-safe: when nil or sanitizer is nil, call is a no-op.
-	ClearSanitizer           func(taskID string)
+	ClearSanitizer func(taskID string)
 
 	// signalCollector and policyDecider decouple data collection from policy
 	// computation in calculateMaxTurns. See core/policy_signals.go and
@@ -159,6 +159,28 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 	}
 	if reg.System.SanitizerEnabled {
 		spawner.sanitizer = gateway.NewSanitizerProxy()
+	}
+
+	// Lazy discovery hook (2026-10-20): when LazyDiscovery is enabled,
+	// Route calls this hook instead of expecting pre-populated AvailableTools.
+	// The hook delegates to discoverStdioMCP via the MCP manager's per-ID lock.
+	if reg.System.LazyDiscovery {
+		spawner.toolRouter.SetLazyDiscoveryHook(func(ctx context.Context, mcpID, taskID string) error {
+			if spawner.mcpMgr == nil {
+				return nil
+			}
+			spawner.registry.Mu.RLock()
+			mcp := spawner.registry.MCPs[mcpID]
+			spawner.registry.Mu.RUnlock()
+			if mcp == nil || mcp.Command == "" {
+				return nil // remote MCPs handled elsewhere
+			}
+			dLock := spawner.mcpMgr.discoveryLock(mcpID)
+			dLock.Lock()
+			defer dLock.Unlock()
+			spawner.discoverStdioMCP(ctx, mcp, taskID)
+			return nil
+		})
 	}
 
 	// ClearSanitizer clears the sanitizer vault for a completed task.

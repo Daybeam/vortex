@@ -72,6 +72,18 @@ func composeIdentity(ownerID, sessionID string) string {
 	return ownerID
 }
 
+// EffectiveTier resolves the caller's auth tier for permission checks.
+// Context is authoritative; app.Tier is the process-level fallback.
+func EffectiveTier(ctx context.Context, app *App) string {
+	if v, ok := ctx.Value(AuthTierKey).(string); ok {
+		return v
+	}
+	if app != nil {
+		return app.Tier
+	}
+	return ""
+}
+
 // CheckTaskOwnership returns true if the caller may access a task with the
 // given owner. Admin tier always passes. Empty task owner always passes
 // (backward compat with single-operator deployments). Otherwise the caller's

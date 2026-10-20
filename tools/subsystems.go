@@ -54,6 +54,10 @@ var tier1AllowedActions = map[string]bool{
 	"config.list_models":    true,
 	"config.query_groups":   true,
 	"config.dispatch_group": true,
+	// discovery.discover is safe for Tier1 because scope="self" (the default)
+	// only returns the caller's own role's tools. scope="pool" requires admin.
+	"discovery.discover":    true,
+	"discovery.findskills":  true,
 	"exp.get_brief":         true,
 	"exp.get_summary":       true,
 	"admin.list_tasks":      true,
@@ -125,7 +129,10 @@ func (r *SubsystemRegistry) Invoke(ctx context.Context, app *App, subsystem, act
 	}
 
 	// Runtime tier check: Tier1 callers can only invoke whitelisted actions.
-	if !isActionAllowed(subsystem, action, app.Tier) {
+	// Read the tier from the context (authoritative) so stdio callers, which
+	// loggedHandler marks as TierAdmin in ctx while leaving app.Tier empty,
+	// are not silently demoted to the Tier1 allowlist.
+	if !isActionAllowed(subsystem, action, EffectiveTier(ctx, app)) {
 		return nil, fmt.Errorf("permission denied: action %q in subsystem %q requires Tier2 (Admin) privileges", action, subsystem)
 	}
 
@@ -212,6 +219,7 @@ func (r *SubsystemRegistry) Invoke(ctx context.Context, app *App, subsystem, act
 // RegisterSubsystems populates the registry with all migrated tools.
 func RegisterSubsystems(app *App) {
 	registerConfigSubsystem(app)
+	registerDiscoverySubsystem(app)
 	registerExperienceSubsystem(app)
 	registerScheduleSubsystem(app)
 	registerAdminSubsystem(app)

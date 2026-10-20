@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -112,6 +113,107 @@ func containsStr(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// unknownToolFeedback reports a call whose name the target MCP does not serve,
+// with near-miss suggestions. Returns "" when the call should be forwarded.
+//
+// Tier 3 of ResolveToolMCP deliberately routes a name it does not recognise to
+// a healthy binding: for a tool that is merely *undeclared* but real, that is
+// the right answer. For a tool that does not exist, it is the wrong answer — the
+// call is forwarded, the server replies "Unknown tool", and the model receives
+// an empty body with no way to tell a phantom from a transient failure.
+//
+// Measured 2026-10-19 (AppWorld 4fab96f_3, run u): the role instruction lists
+// all nine apps it *can* operate ("supervisor, spotify, venmo, amazon, todoist,
+// gmail, phone, simple_note, splitwise"), while that run's MCP binding exposed
+// only supervisor+venmo. The agent called splitwise__login, gmail__login and
+// simple_note__login — five calls, all empty responses. The AppWorld call log
+// records them as ok=false chars=0, which is what a nonexistent tool looks like
+// from the outside.
+//
+// Guarded on a populated catalog: an empty AvailableTools means discovery has
+// not run (cold start), and every name would look unknown.
+func (s *Spawner) unknownToolFeedback(toolName, mcpID string, mcp *config.MCPDef) string {
+	if mcpID == "" || mcp == nil || len(mcp.AvailableTools) == 0 {
+		return ""
+	}
+	if containsStr(mcp.AvailableTools, toolName) {
+		return ""
+	}
+	// A filter may legitimately hide tools that discovery did report; a name
+	// accepted by the filter but missing from the cached list is a cache gap,
+	// not a phantom. Forward those.
+	if mcp.ToolFilter != nil && mcp.ToolFilter.Test(toolName) {
+		return ""
+	}
+
+	near := nearMissTools(toolName, mcp.AvailableTools, 3)
+	var hint string
+	if len(near) > 0 {
+		hint = " The closest tools this session does have are: " + strings.Join(near, ", ") + ". Use one of them if it does what you need."
+	} else {
+		hint = " Use only tools from the list you were given."
+	}
+	return fmt.Sprintf(
+		"[%s] No such tool in this session: the %q server exposes %d tools and none is named %q.%s "+
+			"Calling it again cannot succeed.",
+		toolName, mcpID, len(mcp.AvailableTools), toolName, hint)
+}
+
+// nearMissTools ranks catalog entries by shared namespace (the "app__" prefix)
+// then by shared verb tokens, and returns up to limit names.
+func nearMissTools(want string, catalog []string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	wantNS, wantVerb := splitToolName(want)
+	type scored struct {
+		name  string
+		score int
+	}
+	var hits []scored
+	for _, cand := range catalog {
+		if cand == want {
+			continue
+		}
+		ns, verb := splitToolName(cand)
+		score := 0
+		if wantNS != "" && ns == wantNS {
+			score += 2
+		}
+		if wantVerb != "" && verb != "" {
+			for _, tok := range strings.Split(wantVerb, "_") {
+				if len(tok) >= 3 && strings.Contains(verb, tok) {
+					score++
+				}
+			}
+		}
+		if score > 0 {
+			hits = append(hits, scored{cand, score})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].score != hits[j].score {
+			return hits[i].score > hits[j].score
+		}
+		return hits[i].name < hits[j].name
+	})
+	out := make([]string, 0, limit)
+	for _, h := range hits {
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, h.name)
+	}
+	return out
+}
+
+func splitToolName(name string) (namespace, verb string) {
+	if i := strings.LastIndex(name, "__"); i >= 0 {
+		return name[:i], name[i+2:]
+	}
+	return "", name
 }
 
 // discoverStdioMCP runs tools/list discovery for a single stdio MCP if not
@@ -244,12 +346,70 @@ func (s *Spawner) ensureMCPDiscovery(ctx context.Context, hub *ContextHub, taskI
 	}
 }
 
+// ensureMCPDiscoveryForRole is the ContextHub-free form, resolved against the
+// registry. Called by RequestPlanning before the planner renders its tool
+// catalog: planning happens before any step exists, so without this the planner
+// sees AvailableTools == nil for every MCP and can only either emit an empty
+// catalog (rejected by ParsePlanDAG as "tool catalog unavailable") or invent
+// tool names.
+//
+// The planner is supposed to be the one component that sees every capability,
+// so its catalog must not depend on a step having run first. Discovery is
+// cached per MCPDef and idempotent, so the first step pays nothing extra.
+//
+// Returns the number of MCPs whose discovery succeeded, for logging.
+func (s *Spawner) ensureMCPDiscoveryForRole(ctx context.Context, roleID, taskID string) int {
+	if s == nil || s.registry == nil || s.mcpMgr == nil {
+		return 0
+	}
+
+	s.registry.Mu.RLock()
+	var ids []string
+	if r, ok := s.registry.Roles[roleID]; ok && r != nil {
+		for _, b := range r.BoundMCPBindings {
+			if b.MCPID != "" {
+				ids = append(ids, b.MCPID)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		// The planner role may legitimately bind nothing; then it is planning
+		// for a role whose MCPs we do not know. Fall back to every stdio MCP,
+		// which is what plannerToolCatalog does for the same case.
+		for id, m := range s.registry.MCPs {
+			if m != nil && m.Command != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	s.registry.Mu.RUnlock()
+
+	discovered := 0
+	for _, id := range ids {
+		s.registry.Mu.RLock()
+		mcp := s.registry.MCPs[id]
+		s.registry.Mu.RUnlock()
+		if mcp == nil || mcp.Command == "" {
+			continue
+		}
+		dLock := s.mcpMgr.discoveryLock(mcp.ID)
+		dLock.Lock()
+		ok := s.discoverStdioMCP(ctx, mcp, taskID)
+		dLock.Unlock()
+		if ok {
+			discovered++
+		}
+	}
+	return discovered
+}
+
 func (s *Spawner) buildMCPServers(
 	ctx context.Context,
 	hub *ContextHub,
 	taskID string,
 	bindings []config.MCPBinding,
 	providerName string,
+	roleID string,
 ) []providers.MCPServerDef {
 	var servers []providers.MCPServerDef
 
@@ -257,14 +417,23 @@ func (s *Spawner) buildMCPServers(
 	// virtual MCP server. Default: injected first (backward compat). Set
 	// VORTEX_CORE_TOOLS_ORDER=last to inject after domain MCPs so small
 	// models see domain tools first instead of biasing toward sandbox tools.
-	coreServer := providers.MCPServerDef{
-		Name:  "_core",
-		URL:   "core://internal",
-		Tools: CoreToolDefinitions(),
-	}
+	//
+	// ADDED 2026-10-19: the surface is now role-scoped. A role declaring
+	// core_tools: [] (task_planner) gets no core server at all, so its prompt
+	// cannot tempt it into executing the task itself. Enforcement is mirrored
+	// at dispatch — see coreToolPolicy.
+	coreDefs := s.coreToolPolicyFor(roleID).filter(CoreToolDefinitions())
 	coreLast := s.registry.System.FeatureFlags.CoreToolsOrderLast
-	if !coreLast {
-		servers = append(servers, coreServer)
+	var coreServer *providers.MCPServerDef
+	if len(coreDefs) > 0 {
+		coreServer = &providers.MCPServerDef{
+			Name:  "_core",
+			URL:   "core://internal",
+			Tools: coreDefs,
+		}
+		if !coreLast {
+			servers = append(servers, *coreServer)
+		}
 	}
 
 	for _, b := range bindings {
@@ -375,8 +544,8 @@ func (s *Spawner) buildMCPServers(
 		dLock.Unlock() // audit H8: release per-MCP discovery lock
 	}
 
-	if coreLast {
-		servers = append(servers, coreServer)
+	if coreLast && coreServer != nil {
+		servers = append(servers, *coreServer)
 	}
 	return servers
 }
