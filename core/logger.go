@@ -65,6 +65,7 @@ const (
 	EventDebateCritiqueReceived  EventType = "debate_critique_received" // Cross-family debate (ADDED 2026-09-14)
 	EventDebateConcluded         EventType = "debate_concluded"         // Cross-family debate (ADDED 2026-09-14)
 	EventHTTPRequest             EventType = "http_request"             // HTTP observability (ADDED 2026-10-03)
+	EventOutputTruncated         EventType = "output_truncated"         // Response cut off by output cap (ADDED 2026-10-20)
 )
 
 type LogEvent struct {

@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/daybeam/vortex/config"
@@ -119,6 +120,26 @@ func (e *PromptBudgetEnforcer) EstimateBlocksTokens(blocks []schemas.ContentBloc
 	total := 0
 	for i := range blocks {
 		total += e.EstimateTokens(blocks[i].Text)
+	}
+	return total
+}
+
+// EstimateImageTokens returns a rough token cost for image attachments.
+// Heuristic: VLMs process images as tiles (~32×32 px each, ~1.5 tokens/tile).
+// Without decoding dimensions, we approximate from file size:
+// ~750 bytes of raw image data ≈ 1 token (conservative, matches OpenAI
+// gpt-4o behavior for typical PNG/JPEG screenshots). Returns 0 if files
+// are inaccessible. See docs/plan/VLM_IMAGE_CONTEXT_OPTIMIZATION_DESIGN.md.
+func (e *PromptBudgetEnforcer) EstimateImageTokens(attachments []schemas.Attachment) int {
+	total := 0
+	for _, att := range attachments {
+		if info, err := os.Stat(att.Path); err == nil {
+			tokens := int(info.Size() / 750)
+			if tokens == 0 {
+				tokens = 1
+			}
+			total += tokens
+		}
 	}
 	return total
 }

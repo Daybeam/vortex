@@ -341,3 +341,58 @@ func TestAdaptiveOutputResult_EmptySource_UsesCLIPath(t *testing.T) {
 		t.Errorf("Empty source should not use MCP path")
 	}
 }
+
+// TestDumpToWorkspaceTmp_AdvertisedPathExists is a regression test for the
+// silent WriteFile failure bug (2026-10-20):
+//
+// dumpToWorkspaceTmp used to return fullPath even when os.WriteFile failed,
+// so adaptiveOutputResultMCP/CLI would tell the model "Full content saved to:
+// <path>" for a file that did not exist. The model then wasted a turn trying
+// to read_file a non-existent path. The fix: dumpToWorkspaceTmp returns "" on
+// WriteFile failure, and callers produce an honest "dump unavailable" message.
+//
+// Invariant: if the output mentions "saved to:" or "persisted to:", the
+// advertised path must point to a file that actually exists on disk.
+func TestDumpToWorkspaceTmp_AdvertisedPathExists(t *testing.T) {
+	// MCP path: >8KB triggers dump.
+	mcpData := bytes.Repeat([]byte("x"), 16*1024)
+	mcpResult := string(adaptiveOutputResultMCP(mcpData, "test_cmd"))
+	verifyAdvertisedPathsExist(t, mcpResult, "adaptiveOutputResultMCP")
+
+	// CLI path: >128KB or >2000 lines triggers dump.
+	cliLines := make([]string, 2500)
+	for i := range cliLines {
+		cliLines[i] = strings.Repeat("y", 80)
+	}
+	cliData := []byte(strings.Join(cliLines, "\n"))
+	cliResult := string(adaptiveOutputResultCLI(cliData, "test_cmd"))
+	verifyAdvertisedPathsExist(t, cliResult, "adaptiveOutputResultCLI")
+}
+
+// verifyAdvertisedPathsExist scans output for "saved to: <path>" or
+// "persisted to: <path>" and asserts each path exists on disk. It also
+// accepts "dump unavailable" as an honest alternative.
+func verifyAdvertisedPathsExist(t *testing.T, output, label string) {
+	t.Helper()
+	for _, marker := range []string{"saved to: ", "persisted to: "} {
+		idx := strings.Index(output, marker)
+		if idx < 0 {
+			continue
+		}
+		pathStart := idx + len(marker)
+		rest := output[pathStart:]
+		pathEnd := strings.IndexByte(rest, '\n')
+		if pathEnd < 0 {
+			pathEnd = len(rest)
+		}
+		path := strings.TrimSpace(rest[:pathEnd])
+		// Strip the trailing "]" if present (format: "saved to: <path]\n...").
+		path = strings.TrimRight(path, "]")
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("%s: output advertises path %q but file does not exist: %v", label, path, err)
+		}
+	}
+}

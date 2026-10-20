@@ -2,11 +2,36 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"gopkg.in/yaml.v3"
 )
+
+// parseStructured decodes a tool payload whose encoding the router chooses. When
+// a payload exceeds the budget it is re-encoded as YAML (same structure, smaller
+// syntax); below the budget it stays JSON. These tests care that the DATA
+// survives either way, not which syntax carried it.
+func parseStructured(t *testing.T, s string) map[string]any {
+	t.Helper()
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(s), &obj); err == nil {
+		return obj
+	}
+	if err := yaml.Unmarshal([]byte(s), &obj); err != nil {
+		t.Fatalf("result is neither JSON nor YAML: %v\nhead: %.200s", err, s)
+	}
+	return obj
+}
+
+// scalarEq compares a decoded scalar by its textual form, because JSON decodes
+// numbers as float64 while YAML decodes integers as int -- an encoding detail
+// these tests should not be coupled to.
+func scalarEq(v any, want string) bool {
+	return fmt.Sprint(v) == want
+}
 
 // ── NewOutputProcessor constructor tests ───────────────────────────────────
 
@@ -136,7 +161,7 @@ func TestGetMaxToolResultChars_DynamicFromProvider(t *testing.T) {
 		DefaultProvider: "test",
 		Providers: map[string]*config.ProviderConfig{
 			"test": {
-				Model:           "test-model",
+				Model:            "test-model",
 				MaxContextWindow: 128000,
 			},
 		},
@@ -153,7 +178,7 @@ func TestGetMaxToolResultChars_DynamicFromProvider_32K(t *testing.T) {
 		DefaultProvider: "test",
 		Providers: map[string]*config.ProviderConfig{
 			"test": {
-				Model:           "test-model",
+				Model:            "test-model",
 				MaxContextWindow: 32000,
 			},
 		},
@@ -196,7 +221,7 @@ func TestGetMaxToolResultChars_ExplicitOverridesDynamic(t *testing.T) {
 		DefaultProvider: "test",
 		Providers: map[string]*config.ProviderConfig{
 			"test": {
-				Model:           "test-model",
+				Model:            "test-model",
 				MaxContextWindow: 128000,
 			},
 		},
@@ -256,16 +281,13 @@ func TestTruncateJSON_ValidJSON_PreservesStructure(t *testing.T) {
 	p := NewOutputProcessor(500) // small budget to force truncation
 	result := p.truncate(input)
 
-	// Result must be valid JSON (parseable).
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(result), &obj); err != nil {
-		t.Errorf("truncated result must be valid JSON, got parse error: %v\nResult: %s", err, result[:min(200, len(result))])
-	}
+	// Result must remain parseable, whatever encoding the router chose.
+	obj := parseStructured(t, result)
 	// Structure must be preserved: name and count fields still present.
 	if obj["name"] != "test" {
 		t.Errorf("name field should be preserved, got %v", obj["name"])
 	}
-	if obj["count"] != float64(42) {
+	if !scalarEq(obj["count"], "42") {
 		t.Errorf("count field should be preserved, got %v", obj["count"])
 	}
 }
@@ -276,10 +298,7 @@ func TestTruncateJSON_LargeStringField_Truncated(t *testing.T) {
 	p := NewOutputProcessor(500)
 	result := p.truncate(input)
 
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(result), &obj); err != nil {
-		t.Fatalf("result must be valid JSON: %v", err)
-	}
+	obj := parseStructured(t, result)
 	text, ok := obj["text"].(string)
 	if !ok {
 		t.Fatalf("text field should be a string")
@@ -298,10 +317,7 @@ func TestTruncateJSON_NestedJSON_PreservesStructure(t *testing.T) {
 	p := NewOutputProcessor(500)
 	result := p.truncate(input)
 
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(result), &obj); err != nil {
-		t.Fatalf("nested JSON result must be valid: %v", err)
-	}
+	obj := parseStructured(t, result)
 	if obj["status"] != "ok" {
 		t.Errorf("top-level status should be preserved")
 	}
@@ -309,8 +325,8 @@ func TestTruncateJSON_NestedJSON_PreservesStructure(t *testing.T) {
 	if !ok {
 		t.Fatalf("level1 should be a map")
 	}
-	if level1["count"] != float64(5) {
-		t.Errorf("nested count should be preserved")
+	if !scalarEq(level1["count"], "5") {
+		t.Errorf("nested count should be preserved, got %v", level1["count"])
 	}
 }
 
@@ -320,10 +336,7 @@ func TestTruncateJSON_ArrayOfObjects_PreservesStructure(t *testing.T) {
 	p := NewOutputProcessor(500)
 	result := p.truncate(input)
 
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(result), &obj); err != nil {
-		t.Fatalf("array JSON result must be valid: %v", err)
-	}
+	obj := parseStructured(t, result)
 	results, ok := obj["results"].([]any)
 	if !ok {
 		t.Fatalf("results should be an array")

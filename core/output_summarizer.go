@@ -256,9 +256,9 @@ func summarizeLog(data []byte) string {
 		for _, kw := range logPriority {
 			if strings.Contains(upper, kw) {
 				levelCounts[kw]++
-			if (kw == "ERROR" || kw == "FATAL") && len(errorLines) < 10 {
-				errorLines = append(errorLines, truncateLineRuneSafe(strings.TrimSpace(line), maxRunesPerLine))
-			}
+				if (kw == "ERROR" || kw == "FATAL") && len(errorLines) < 10 {
+					errorLines = append(errorLines, truncateLineRuneSafe(strings.TrimSpace(line), maxRunesPerLine))
+				}
 				break
 			}
 		}
