@@ -190,7 +190,13 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 	// could never exceed 1. Compute a canonical signature of the step
 	// sequence (see stepSequenceKey) and merge into an existing pattern with
 	// the same signature instead of always inserting a fresh one.
-	key := stepSequenceKey(steps)
+	//
+	// FIX (2026-10-19): that signature used to be built from the role triple
+	// only, which is constant across any workload that funnels every task
+	// through the same roles -- so unrelated tasks merged into one pattern.
+	// stepSequenceKey now requires the tool-call sequence as well; see its
+	// doc comment.
+	key := stepSequenceKey(records)
 	if key != "" {
 		// audit M-6: use sequenceKeyIndex for O(1) lookup instead of O(N) scan.
 		// Rebuild if nil (test setups that bypass NewExperienceStore).
@@ -261,33 +267,74 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 	es.patternTokensCache = nil
 }
 
-// stepSequenceKey builds a canonical, order-preserving signature of a step
-// sequence for exact-composition matching (role_id + capability + sorted
-// skills per step, steps joined in original order). This is deliberately
-// stricter than the BM25/text-similarity matching QuerySimilarPatterns uses
-// for retrieval -- the JIT-composition-suggestion use case (see
-// QueryJITCandidates) cares about "is this the literal same fixed tool
-// composition", not "is this a similar-sounding task", so a cheap exact-key
-// comparison is both correct and much faster than the BM25 scan. Returns ""
-// for an empty step list, which upsertTaskPattern treats as "never merge"
-// (matching the pre-fix behavior for that edge case).
-func stepSequenceKey(steps []map[string]any) string {
-	if len(steps) == 0 {
+// stepSequenceKey builds a canonical, order-preserving signature of what a
+// run actually DID, for exact-composition matching.
+//
+// The signature is derived from the role triple (role_id + capability +
+// sorted skills) PLUS the concrete tool-call sequence recorded in each
+// step's Trace. The tool sequence is the load-bearing part. Without it the
+// key describes the org chart rather than the work: any orchestrator that
+// routes every task through the same agent/auditor pair yields an identical
+// role triple for every task, so all of them collapse onto one pattern and
+// its SampleCount is inflated by runs that shared nothing but their
+// reporting line. That is not a hypothetical -- it made a single pattern
+// accumulate 8 unrelated tasks and then get injected into all of them as
+// "this composition has been executed repeatedly before".
+//
+// Tool names are deduplicated preserving first-occurrence order, so
+// A,B,A,C and A,B,C both sign as "A>B>C". Calling a tool extra times is a
+// variation in how the same composition was carried out, not a different
+// composition.
+//
+// Returns "" when there is no evidence of an actual composition: no steps,
+// or no recorded tool calls anywhere. upsertTaskPattern treats "" as "never
+// merge", which is the safe default -- merging without evidence is exactly
+// the failure mode this function exists to prevent. This is deliberately
+// stricter than the BM25 text matching QuerySimilarPatterns uses for
+// retrieval: QueryJITCandidates cares about "is this the literal same fixed
+// tool composition", not "is this a similar-sounding task".
+func stepSequenceKey(records []StepRecord) string {
+	if len(records) == 0 {
 		return ""
 	}
-	parts := make([]string, len(steps))
-	for i, s := range steps {
-		roleID, _ := s["role_id"].(string)
-		capability, _ := s["capability"].(string)
+	parts := make([]string, len(records))
+	sawToolEvidence := false
+	for i, r := range records {
 		var skillsStr string
-		if sk, ok := s["skills"].([]string); ok && len(sk) > 0 {
-			sorted := append([]string(nil), sk...)
+		if len(r.Skills) > 0 {
+			sorted := append([]string(nil), r.Skills...)
 			sort.Strings(sorted)
 			skillsStr = strings.Join(sorted, ",")
 		}
-		parts[i] = roleID + "|" + capability + "|" + skillsStr
+		toolsStr := dedupToolNamesInOrder(r.Trace)
+		if toolsStr != "" {
+			sawToolEvidence = true
+		}
+		parts[i] = r.RoleID + "|" + r.Capability + "|" + skillsStr + "|" + toolsStr
+	}
+	if !sawToolEvidence {
+		return ""
 	}
 	return strings.Join(parts, ">>")
+}
+
+// dedupToolNamesInOrder joins the distinct tool names of a trace with ">",
+// keeping the order of first occurrence. Empty names are skipped so a
+// partially-populated trace still yields a usable signature.
+func dedupToolNamesInOrder(trace []ToolInteraction) string {
+	if len(trace) == 0 {
+		return ""
+	}
+	seen := make(map[string]bool, len(trace))
+	names := make([]string, 0, len(trace))
+	for _, t := range trace {
+		if t.ToolName == "" || seen[t.ToolName] {
+			continue
+		}
+		seen[t.ToolName] = true
+		names = append(names, t.ToolName)
+	}
+	return strings.Join(names, ">")
 }
 
 func (es *ExperienceStore) updateRoleProfile(rec *StepRecord) {

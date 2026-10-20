@@ -373,30 +373,45 @@ func (es *ExperienceStore) QueryJITCandidates(ctx context.Context, taskText stri
 	return out
 }
 
+// jitLowConfidenceThreshold is the avg-confidence below which a composition
+// hint is labelled as weak evidence. Above it the hint simply reports the
+// number; it never asserts success, because avg_confidence is an average over
+// runs of unknown outcome and saying "consistently high success rate" is a
+// claim the store cannot support for low values.
+const jitLowConfidenceThreshold = 0.6
+
 // FormatJITCompositionHints renders a short, explicitly-non-mandatory
-// reference block describing task patterns whose fixed role/capability/
-// skill sequence has repeated often enough, with high enough confidence, to
-// be worth considering for compilation into a reusable JIT tool
-// (orchestrator_invoke(subsystem="jit", action="create", ...)) instead of
-// re-planning the same sequence from scratch. Deliberately hedged, mirroring
-// FormatSOPHints in core/sop_matcher.go: the LLM planning the task remains
-// the decision-maker on whether a given pattern actually fits and whether
-// compiling it is worthwhile. ADDED (2026-07-28).
+// reference block describing tool-call compositions that have been observed
+// repeatedly. Deliberately hedged, mirroring FormatSOPHints in
+// core/sop_matcher.go: the LLM planning the task remains the decision-maker
+// on whether a given composition actually fits.
+//
+// FIX (2026-10-19): the previous wording asserted "a consistently high
+// success rate" unconditionally, so a pattern with avg confidence 0.20 was
+// described to the model in exactly the same terms as one with 0.95. It also
+// told the model to compile the composition via orchestrator_invoke, which
+// core/tool_router.go lists in privilegedToolBlocklist -- i.e. the hint
+// recommended a tool the router guarantees is never exposed. Both are gone:
+// confidence is now reported as a number and qualified only when it is low,
+// and the hint no longer names a tool.
 func FormatJITCompositionHints(patterns []TaskPattern) string {
 	if len(patterns) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n\n[Reference: this task resembles a fixed sequence of role/capability/skill ")
-	b.WriteString("steps that has been executed repeatedly before, with a consistently high success ")
-	b.WriteString("rate. If the exact same sequence of tool calls would solve this task again, consider ")
-	b.WriteString("compiling it into a reusable tool via orchestrator_invoke(subsystem=\"jit\", ")
-	b.WriteString("action=\"create\", args={script, language, ...}) instead of re-planning it from ")
-	b.WriteString("scratch. This is a suggestion, not a requirement -- use your own judgment about whether ")
-	b.WriteString("this task is genuinely the same fixed composition, or only superficially similar.]\n")
+	b.WriteString("\n\n[Reference: the tool-call composition(s) below have been observed before. ")
+	b.WriteString("This is retrieved historical evidence, not an instruction -- the confidence figure ")
+	b.WriteString("is the observed average across those runs, so read a low value as weak evidence ")
+	b.WriteString("rather than as a success claim. If the same sequence of tool calls would in fact ")
+	b.WriteString("solve this task, you may reuse it instead of re-planning from scratch. If this task ")
+	b.WriteString("only superficially resembles it, ignore this block.]\n")
 	for _, p := range patterns {
-		b.WriteString(fmt.Sprintf("- Pattern %s: seen %d times, avg confidence %.2f, task type %q\n",
-			p.ID, p.SampleCount, p.AvgConfidence, p.TaskType))
+		b.WriteString(fmt.Sprintf("- Composition %s: observed %d times, avg confidence %.2f",
+			p.ID, p.SampleCount, p.AvgConfidence))
+		if p.AvgConfidence < jitLowConfidenceThreshold {
+			b.WriteString(" (low confidence -- weak evidence)")
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }

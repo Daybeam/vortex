@@ -1,4 +1,4 @@
-module github.com/daybeam/vortex
+module github.com/orchestrator-mcp
 
 go 1.25.5
 
@@ -14,6 +14,7 @@ require (
 	github.com/wailsapp/wails/v2 v2.13.0
 	github.com/yuin/gopher-lua v1.1.2
 	golang.org/x/text v0.39.0
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.29.0
 )
 
