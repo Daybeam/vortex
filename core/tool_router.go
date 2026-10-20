@@ -15,6 +15,19 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
+// defaultToolSchemaBudgetTokens is the fallback ceiling on the total size of the
+// tool schemas the router is willing to expose in one step, used when the
+// deployment leaves RouteRequest.MaxTokenBudget at 0.
+//
+// It is a context-economy budget, not a tool count: the point of the router is
+// to keep tool schemas from crowding out the actual work, and what crowds the
+// context window is bytes of schema, not number of entries. The value is a
+// small fraction of a modern context window (a few percent) so that a large
+// tool surface -- hundreds of schemas -- stays affordable after routing, and it
+// scales automatically with schema size: verbose schemas yield fewer tools,
+// terse ones yield more, for the same cost.
+const defaultToolSchemaBudgetTokens = 8000
+
 // ToolRouter decides which tools should be exposed to the subagent based on the task description.
 type ToolRouter struct {
 	Registry     *config.Registry
@@ -27,6 +40,12 @@ type ToolRouter struct {
 
 	systemOneProvider *providers.SystemOneProvider
 	systemOneModel    string
+
+	// lazyDiscoveryHook (ADDED 2026-10-20): called by Route when
+	// LazyDiscovery is enabled and an MCP's AvailableTools is empty.
+	// The hook triggers tools/list discovery for that MCP.
+	// Set by Spawner during initialization; nil when LazyDiscovery is off.
+	lazyDiscoveryHook func(ctx context.Context, mcpID, taskID string) error
 }
 
 func NewToolRouter(reg *config.Registry, caskg *CaSKGManager) *ToolRouter {
@@ -41,6 +60,13 @@ func NewToolRouter(reg *config.Registry, caskg *CaSKGManager) *ToolRouter {
 // SetEmbedClient wires the embedding client for semantic tool routing.
 func (r *ToolRouter) SetEmbedClient(c EmbeddingClient) {
 	r.EmbedClient = c
+}
+
+// SetLazyDiscoveryHook wires the lazy discovery callback.
+// When set, Route will call it for any MCP with empty AvailableTools
+// instead of expecting pre-populated discovery.
+func (r *ToolRouter) SetLazyDiscoveryHook(fn func(ctx context.Context, mcpID, taskID string) error) {
+	r.lazyDiscoveryHook = fn
 }
 
 // RefreshToolEmbeddings builds or updates BM25 + embedding caches for all
@@ -198,6 +224,7 @@ func (r *ToolRouter) scoreWithSystemOne(ctx context.Context, task string, tools 
 	defer cancel()
 	resp, err := r.systemOneProvider.Complete(ctx, req)
 	if err != nil {
+		slog.Warn("tool_router: System One reranker failed, returning nil rank (graceful degradation)", "err", err)
 		return nil
 	}
 	rank := make(map[string]float64)
@@ -232,6 +259,7 @@ type RouteRequest struct {
 	ProgressiveMode    bool
 	MaxTokenBudget     int    // max token budget for tool schemas (0 = disabled)
 	PredecessorSkillID string // Added for CaSKG causal boost
+	TaskID             string // Added for lazy discovery hook (2026-10-20)
 }
 
 // privilegedToolBlocklist contains tools that must never be exposed to
@@ -254,12 +282,35 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 	taskLower := strings.ToLower(req.Task)
 	var routed []config.MCPBinding
 
+	// Per-step total budget: the token ceiling applies across ALL bindings
+	// in this routing call, not per-binding. Without this, N MCPs each get
+	// their own 8000-token budget, so the real ceiling is N*8000 — which
+	// defeats the purpose of context economy.
+	totalBudget := req.MaxTokenBudget
+	if totalBudget <= 0 {
+		totalBudget = defaultToolSchemaBudgetTokens
+	}
+	var totalUsedBudget int
+
 	for _, b := range req.Bindings {
 		mcpDef := r.Registry.GetMCP(b.MCPID)
 		if mcpDef == nil {
 			// JIT §5.1: stale jit_ IDs (expired/evicted) are filtered here
 			// before prompt assembly, preventing ghost-tool exposure.
 			continue
+		}
+
+		// Lazy discovery (2026-10-20): when the hook is set and
+		// AvailableTools is empty, trigger tools/list discovery on
+		// first access. This eliminates the need for eager
+		// ensureMCPDiscovery in spawner_prepare.go.
+		if r.lazyDiscoveryHook != nil && len(mcpDef.AvailableTools) == 0 && mcpDef.Command != "" {
+			_ = r.lazyDiscoveryHook(ctx, mcpDef.ID, req.TaskID)
+			// Re-fetch after discovery may have populated AvailableTools.
+			mcpDef = r.Registry.GetMCP(b.MCPID)
+			if mcpDef == nil {
+				continue
+			}
 		}
 
 		wasRestricted := b.IsRestricted()
@@ -287,6 +338,21 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 		r.mu.RUnlock()
 		if corpus != nil {
 			bm25Rank = corpus.Score(req.Task)
+			// R1: BM25 scores the entire corpus, not just available tools.
+			// Filter to the available set so unauthorized tools never
+			// enter the RRF merge. Score returns a fresh map, so deleting
+			// is safe.
+			if len(bm25Rank) > 0 {
+				avail := make(map[string]bool, len(available))
+				for _, t := range available {
+					avail[t] = true
+				}
+				for id := range bm25Rank {
+					if !avail[id] {
+						delete(bm25Rank, id)
+					}
+				}
+			}
 		}
 
 		// 2. Dense Channel: Embedding
@@ -341,69 +407,106 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 				for id, score := range merged {
 					sorted = append(sorted, toolScore{id: id, score: score})
 				}
-			// Deterministic sort: primary by score descending, secondary by id
-			// ascending. The secondary key guarantees stable output order when
-			// multiple tools share the same score, preventing non-deterministic
-			// tool selection across runs (which invalidates prompt-cache prefixes
-			// and makes regression tests flaky).
-			sort.Slice(sorted, func(i, j int) bool {
-				if sorted[i].score != sorted[j].score {
-					return sorted[i].score > sorted[j].score
-				}
-				return sorted[i].id < sorted[j].id
-			})
+				// Deterministic sort: primary by score descending, secondary by id
+				// ascending. The secondary key guarantees stable output order when
+				// multiple tools share the same score, preventing non-deterministic
+				// tool selection across runs (which invalidates prompt-cache prefixes
+				// and makes regression tests flaky).
+				sort.Slice(sorted, func(i, j int) bool {
+					if sorted[i].score != sorted[j].score {
+						return sorted[i].score > sorted[j].score
+					}
+					return sorted[i].id < sorted[j].id
+				})
 
-			// Threshold/Limit for filtered tools with token budget.
-			limit := 5
-			if len(sorted) < 5 {
-				limit = len(sorted)
-			}
-			var usedBudget int
-			for i := 0; i < limit; i++ {
-				selected := sorted[i].id
-				// Check token budget
-				tokens := r.estimateToolTokens(selected, mcpDef)
-				if req.MaxTokenBudget > 0 && usedBudget+tokens > req.MaxTokenBudget && i > 0 {
-					break
+				// Selection cap. The router's job is context economy, so the cap is
+				// expressed in the unit that actually costs context -- tokens --
+				// rather than an arbitrary tool count. A count says nothing about
+				// affordability: 5 tools with large schemas can cost more than 40
+				// with small ones.
+				//
+				// The budget is per-step total (shared across all bindings in this
+				// Route call), tracked via totalUsedBudget outside the loop. Each
+				// binding draws from the remaining budget.
+				remaining := totalBudget - totalUsedBudget
+				var usedBudget int
+				for i := 0; i < len(sorted); i++ {
+					selected := sorted[i].id
+					tokens := r.estimateToolTokens(selected, mcpDef)
+					// The very first tool of the entire routing call is always
+					// admitted so a single oversized schema cannot produce an
+					// empty tool surface. Once any tool has been selected (in
+					// this binding or a previous one), the budget is enforced.
+					//
+					// continue (not break): an oversized tool should not terminate
+					// the selection — a later, smaller tool may still fit. break
+					// wastes budget capacity on ordering artifacts.
+					if (len(filtered) > 0 || totalUsedBudget > 0) && usedBudget+tokens > remaining {
+						continue
+					}
+					usedBudget += tokens
+					filtered = append(filtered, selected)
 				}
-				usedBudget += tokens
-				filtered = append(filtered, selected)
-			}
+				totalUsedBudget += usedBudget
 			}
 		} else {
 			// No hybrid (BM25/embedding) signal available -- keep the legacy,
-			// uncapped, deterministic behavior: every string-matched tool passes
-			// through, in available's original order.
+			// deterministic behavior: every string-matched tool passes through,
+			// in available's original order, subject to the per-step budget.
+			remaining := totalBudget - totalUsedBudget
+			var usedBudget int
 			for _, tool := range available {
 				if explicitlyRelevant[tool] {
+					tokens := r.estimateToolTokens(tool, mcpDef)
+					if (len(filtered) > 0 || totalUsedBudget > 0) && usedBudget+tokens > remaining {
+						continue
+					}
+					usedBudget += tokens
 					filtered = append(filtered, tool)
 				}
 			}
+			totalUsedBudget += usedBudget
 		}
 
 		isFallback := false
 		if len(filtered) == 0 {
 			isFallback = true
+			var candidates []string
 			if !wasRestricted {
-				filtered = available
+				candidates = available
 			} else if len(available) <= 5 {
-				filtered = available
+				candidates = available
 			} else {
 				// Large restricted list with no relevance match: fall back to exploration
 				for _, tool := range available {
 					tLower := strings.ToLower(tool)
 					if isDiscoveryTool(tLower) {
-						filtered = append(filtered, tool)
+						candidates = append(candidates, tool)
 					}
 				}
-				if len(filtered) == 0 && len(available) > 0 {
+				if len(candidates) == 0 && len(available) > 0 {
 					limit := 3
 					if len(available) < 3 {
 						limit = len(available)
 					}
-					filtered = available[:limit]
+					candidates = available[:limit]
 				}
 			}
+			// Apply per-step budget to fallback selection. The fallback is a
+			// safety net for relevance failure, not a budget bypass: if the
+			// per-step budget is already exhausted by prior bindings, don't
+			// add tools here.
+			remaining := totalBudget - totalUsedBudget
+			var usedBudget int
+			for _, tool := range candidates {
+				tokens := r.estimateToolTokens(tool, mcpDef)
+				if (len(filtered) > 0 || totalUsedBudget > 0) && usedBudget+tokens > remaining {
+					continue
+				}
+				usedBudget += tokens
+				filtered = append(filtered, tool)
+			}
+			totalUsedBudget += usedBudget
 		}
 
 		// Priority 4: Progressive Disclosure (Discovery First)
@@ -453,6 +556,8 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 		//     unrestricted case only — see note there).
 		//  2. always_include must NOT resurrect privileged tools that the
 		//     blocklist just removed.
+		//  3. always_include must NOT manufacture tools the MCP does not have
+		//     (see the `known` comment below).
 		if len(b.AlwaysInclude) > 0 {
 			inScope := make(map[string]bool)
 			if wasRestricted {
@@ -460,11 +565,31 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 					inScope[t] = true
 				}
 			}
+			// Catalog membership. A name in always_include is a claim that the tool
+			// exists; appending it unchecked produces a phantom: the tool shows up in
+			// the model's surface, the model calls it, and every call comes back
+			// empty, because the MCP server never had it.
+			//
+			// Measured 2026-10-19 (AppWorld 4fab96f_3, run u): the role's
+			// always_include named phone__get_current_date_and_time while
+			// APPWORLD_MCP_APPS loaded only supervisor+venmo. The routed surface had
+			// 60 names, one of which was the phantom. The agent called it 5 times,
+			// got an empty body each time, never learned the current date, and so
+			// could never evaluate "not approved or denied for 50 or more days".
+			//
+			// Guarded on a non-empty catalog: an empty AvailableTools means discovery
+			// has not populated it yet (cold start, see ensureMCPDiscovery). Dropping
+			// every entry then would remove the safety net precisely when it is
+			// needed.
+			known := make(map[string]bool, len(mcpDef.AvailableTools))
+			for _, t := range mcpDef.AvailableTools {
+				known[t] = true
+			}
 			seen := make(map[string]bool, len(filtered))
 			for _, t := range filtered {
 				seen[t] = true
 			}
-			var skipped []string
+			var skipped, unknown []string
 			for _, t := range b.AlwaysInclude {
 				if seen[t] {
 					continue
@@ -477,6 +602,10 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 					skipped = append(skipped, t)
 					continue
 				}
+				if len(known) > 0 && !known[t] {
+					unknown = append(unknown, t)
+					continue
+				}
 				filtered = append(filtered, t)
 			}
 			if len(skipped) > 0 {
@@ -487,6 +616,17 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 					"restricted", wasRestricted,
 					"skipped", strings.Join(skipped, ","),
 					"reason", "privileged_blocklist_or_outside_allowlist")
+			}
+			if len(unknown) > 0 {
+				// A separate reason because the fix is different: the config asks for
+				// a tool this server does not serve. Either the app whitelist is
+				// narrower than the role assumes, or the tool name is misspelled.
+				// Exposing the name anyway only teaches the model to call a hole.
+				slog.Warn("always_include entry names a tool the MCP does not serve",
+					"mcp", b.MCPID,
+					"unknown", strings.Join(unknown, ","),
+					"catalog_size", len(known),
+					"reason", "not_in_discovered_catalog")
 			}
 		}
 
@@ -603,7 +743,12 @@ type SearchResult struct {
 
 // SearchTools searches all registered MCP tools by keyword with pagination.
 // Returns tools whose Name or Description contains the keyword (case-insensitive).
-func (r *ToolRouter) SearchTools(ctx context.Context, keyword, mcpID string, page, pageSize int) (*SearchResult, error) {
+// SearchTools searches tool definitions by keyword. When roleID is non-empty,
+// the search is scoped to that role's bound MCPs only (D3 fix, 2026-10-20:
+// prevents privilege escalation — a role must not discover tools from MCPs it
+// is not bound to). When roleID is empty, searches all MCPs (admin/debug use).
+// When mcpID is non-empty, further narrows to a single MCP within the scope.
+func (r *ToolRouter) SearchTools(ctx context.Context, keyword, mcpID, roleID string, page, pageSize int) (*SearchResult, error) {
 	if pageSize <= 0 {
 		pageSize = 10
 	}
@@ -617,7 +762,23 @@ func (r *ToolRouter) SearchTools(ctx context.Context, keyword, mcpID string, pag
 	r.Registry.Mu.RLock()
 	defer r.Registry.Mu.RUnlock()
 
-	for _, mcp := range r.Registry.MCPs {
+	// D3 fix: scope to role's bound MCPs when roleID is provided.
+	scopeMCPs := r.Registry.MCPs
+	if roleID != "" {
+		role, ok := r.Registry.Roles[roleID]
+		if !ok || role == nil || len(role.BoundMCPBindings) == 0 {
+			// Role not found or has no bindings → empty result.
+			return &SearchResult{Tools: nil}, nil
+		}
+		scopeMCPs = make(map[string]*config.MCPDef, len(role.BoundMCPBindings))
+		for _, b := range role.BoundMCPBindings {
+			if mcp, ok := r.Registry.MCPs[b.MCPID]; ok {
+				scopeMCPs[b.MCPID] = mcp
+			}
+		}
+	}
+
+	for _, mcp := range scopeMCPs {
 		if mcpID != "" && mcp.ID != mcpID {
 			continue
 		}

@@ -11,11 +11,11 @@ import (
 
 // BM25Corpus is a reusable BM25 corpus, read-only after construction.
 type BM25Corpus struct {
-	k1        float64                     // BM25 parameter
-	b         float64                     // BM25 parameter
-	avgDL     float64                     // Average document length
-	docLen    map[string]int              // docID -> doc length (token count)
-	docFreq   map[string]map[string]int   // term -> (docID -> count)
+	k1        float64                   // BM25 parameter
+	b         float64                   // BM25 parameter
+	avgDL     float64                   // Average document length
+	docLen    map[string]int            // docID -> doc length (token count)
+	docFreq   map[string]map[string]int // term -> (docID -> count)
 	totalDocs int
 }
 
@@ -107,9 +107,9 @@ func RRFMergeCapped(maxPerSource int, rankings ...map[string]float64) map[string
 			items = append(items, Scored{ID: id, Score: score})
 		}
 		// Deterministic sort: primary by score descending, secondary by ID
-		// ascending. The secondary key guarantees stable rank assignment when
-		// multiple items share the same score, preventing non-deterministic
-		// RRF score assignment across runs.
+		// ascending. The secondary key only makes the OUTPUT order stable for
+		// display/serialization; tied items receive the same fusion credit
+		// below, so their relative order cannot influence the fused score.
 		sort.Slice(items, func(i, j int) bool {
 			if items[i].Score != items[j].Score {
 				return items[i].Score > items[j].Score
@@ -118,13 +118,41 @@ func RRFMergeCapped(maxPerSource int, rankings ...map[string]float64) map[string
 		})
 
 		// Pre-fusion cap: truncate to top maxPerSource items per source.
+		// If the cap falls in the middle of a tie group, extend to include
+		// the entire group — truncating inside a tie group gives
+		// alphabetically-earlier items credit while later ones get nothing,
+		// fabricating an ordering the channel never expressed.
 		if maxPerSource > 0 && len(items) > maxPerSource {
-			items = items[:maxPerSource]
+			cap := maxPerSource
+			for cap < len(items) && items[cap].Score == items[cap-1].Score {
+				cap++
+			}
+			items = items[:cap]
 		}
 
-		for rank, item := range items {
-			rrfScore := 1.0 / (k + float64(rank))
-			merged[item.ID] += rrfScore
+		// Tied items share one rank credit (the average of the positions they
+		// occupy). RRF is rank-based, so handing position 0,1,2,... to items
+		// that all scored identically fabricates an ordering the channel never
+		// expressed: the "ranking" degenerates into whatever the tie-break key
+		// happens to be, and that fabricated order then carries the same weight
+		// as a channel with real discriminating power.
+		//
+		// This is the textbook RRF behaviour for ties. It matters most when a
+		// lexical matcher fires flat over a whole family of identifiers (one
+		// query token matching a shared prefix/suffix): the family ends up with
+		// one identical contribution, which cancels out when comparing members
+		// of that family and lets a channel that actually discriminates decide
+		// the order between them.
+		for i := 0; i < len(items); {
+			j := i
+			for j+1 < len(items) && items[j+1].Score == items[i].Score {
+				j++
+			}
+			rrfScore := 1.0 / (k + (float64(i)+float64(j))/2)
+			for t := i; t <= j; t++ {
+				merged[items[t].ID] += rrfScore
+			}
+			i = j + 1
 		}
 	}
 	return merged
