@@ -789,8 +789,10 @@ func (m *fallbackLoopProvider) StreamComplete(ctx context.Context, req schemas.C
 func (m *fallbackLoopProvider) Embed(ctx context.Context, text string) ([]float32, error) {
 	return nil, nil
 }
-func (m *fallbackLoopProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
-func (m *fallbackLoopProvider) Name() string                                              { return "fallbackmock" }
+func (m *fallbackLoopProvider) CountTokens(ctx context.Context, text string) (int, error) {
+	return 0, nil
+}
+func (m *fallbackLoopProvider) Name() string { return "fallbackmock" }
 
 func TestChatHarness_FallbackWindowedLoop_WhenSieveNil(t *testing.T) {
 	outBase := t.TempDir()

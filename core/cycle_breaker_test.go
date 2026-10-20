@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/schemas"
@@ -244,9 +245,27 @@ func TestTryBacktrack_FuseDecisionOptions(t *testing.T) {
 		}
 		return false
 	}
-	for _, expected := range []string{"abort", "accept_degraded", "provide_context"} {
+	// P5 fix (2026-10-20): options changed from [abort, accept_degraded,
+	// provide_context] to [abort, refine_and_retry]. The old options had no
+	// handlers in scheduler_status.go, causing Interactive/Delegate mode to
+	// hang. See CUSTOMER_V010_AUDIT_2026-10-20.md §P5.
+	for _, expected := range []string{"abort", "refine_and_retry"} {
 		if !hasOption(expected) {
 			t.Fatalf("expected decision to offer %q, options: %v", expected, dec.Options)
 		}
+	}
+	// Verify no unhandled options are offered.
+	for _, unexpected := range []string{"accept_degraded", "provide_context"} {
+		if hasOption(unexpected) {
+			t.Fatalf("decision should NOT offer unhandled %q, options: %v", unexpected, dec.Options)
+		}
+	}
+	// Verify feedback context is set for refine_and_retry guidance.
+	feedback, ok := dec.Context["feedback"].(string)
+	if !ok || feedback == "" {
+		t.Fatalf("expected non-empty feedback context, got: %v", dec.Context["feedback"])
+	}
+	if !strings.Contains(feedback, "x") {
+		t.Fatalf("expected feedback to contain missing context %q, got: %s", "x", feedback)
 	}
 }

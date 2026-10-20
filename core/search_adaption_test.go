@@ -108,6 +108,95 @@ func TestSearchWithOptions_TemporalFilter(t *testing.T) {
 	}
 }
 
+// --- Phase 2b: Status Filtering (Self-Healing §1) ---
+
+func TestFilterActiveItems_KeepsAllWhenNoStatus(t *testing.T) {
+	items := []MemoryItem{
+		{NodeID: "a", Timestamp: time.Now()},
+		{NodeID: "b", Timestamp: time.Now()},
+		{NodeID: "c", Timestamp: time.Now()},
+	}
+	result := filterActiveItems(items)
+	if len(result) != 3 {
+		t.Fatalf("no status: expected 3 items, got %d", len(result))
+	}
+}
+
+func TestFilterActiveItems_FiltersSuperseded(t *testing.T) {
+	items := []MemoryItem{
+		{NodeID: "active1", Timestamp: time.Now()},
+		{NodeID: "superseded1", Timestamp: time.Now(), Status: "superseded", SupersededBy: "active1"},
+		{NodeID: "active2", Timestamp: time.Now(), Status: "active"},
+	}
+	result := filterActiveItems(items)
+	if len(result) != 2 {
+		t.Fatalf("superseded: expected 2 items, got %d", len(result))
+	}
+	got := make(map[string]bool)
+	for _, r := range result {
+		got[r.NodeID] = true
+	}
+	if !got["active1"] || !got["active2"] {
+		t.Fatalf("expected [active1, active2], got %v", got)
+	}
+	if got["superseded1"] {
+		t.Fatal("superseded1 should be filtered out")
+	}
+}
+
+func TestFilterActiveItems_FiltersStale(t *testing.T) {
+	items := []MemoryItem{
+		{NodeID: "fresh", Timestamp: time.Now()},
+		{NodeID: "stale1", Timestamp: time.Now(), Status: "stale"},
+	}
+	result := filterActiveItems(items)
+	if len(result) != 1 {
+		t.Fatalf("stale: expected 1 item, got %d", len(result))
+	}
+	if result[0].NodeID != "fresh" {
+		t.Fatalf("expected [fresh], got [%s]", result[0].NodeID)
+	}
+}
+
+func TestFilterActiveItems_KeepsActive(t *testing.T) {
+	items := []MemoryItem{
+		{NodeID: "a", Timestamp: time.Now(), Status: "active"},
+		{NodeID: "b", Timestamp: time.Now(), Status: "active"},
+	}
+	result := filterActiveItems(items)
+	if len(result) != 2 {
+		t.Fatalf("active: expected 2 items, got %d", len(result))
+	}
+}
+
+func TestSearchWithOptions_StatusFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+	archive := NewContextArchive(filepath.Join(tmpDir, "context.jsonl"))
+
+	items := []MemoryItem{
+		{NodeID: "current", TaskID: "t1", Intent: "api contract", Summary: "v2 endpoint", Timestamp: time.Now(), Status: "active"},
+		{NodeID: "outdated", TaskID: "t1", Intent: "api contract", Summary: "v1 endpoint", Timestamp: time.Now(), Status: "superseded", SupersededBy: "current"},
+	}
+	for _, item := range items {
+		if err := archive.Append(item); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	archive.BuildIndex()
+
+	results := archive.SearchWithOptions("api contract", nil, 10, "", "", QueryOptions{})
+	nodeIDs := make(map[string]bool)
+	for _, r := range results {
+		nodeIDs[r.NodeID] = true
+	}
+	if !nodeIDs["current"] {
+		t.Error("current (active) item should be present")
+	}
+	if nodeIDs["outdated"] {
+		t.Error("outdated (superseded) item should be filtered out")
+	}
+}
+
 // --- Phase 3: Fact-Level Memory Graph ---
 
 func TestAddItemEdge_CausalLink(t *testing.T) {

@@ -318,19 +318,19 @@ func TestRetryClearsDeltaBacktrackState(t *testing.T) {
 
 	// Set up a graph with a step in delta-backtrack mode and a pending decision.
 	upstream := &schemas.Step{
-		ID:                     "s1",
-		Status:                 schemas.StepPending,
-		PreviousOutputSummary:  "stale previous output that should be cleared",
+		ID:                      "s1",
+		Status:                  schemas.StepPending,
+		PreviousOutputSummary:   "stale previous output that should be cleared",
 		AdditionalPromptContext: "stale cycle-breaker feedback",
-		Metadata:               &schemas.Metadata{DeltaBacktrack: true},
+		Metadata:                &schemas.Metadata{DeltaBacktrack: true},
 	}
 	downstream := &schemas.Step{
-		ID:                     "s2",
-		DependsOn:              []string{"s1"},
-		Status:                 schemas.StepFailed,
-		PreviousOutputSummary:  "stale downstream previous",
+		ID:                      "s2",
+		DependsOn:               []string{"s1"},
+		Status:                  schemas.StepFailed,
+		PreviousOutputSummary:   "stale downstream previous",
 		AdditionalPromptContext: "stale downstream feedback",
-		Metadata:               &schemas.Metadata{DeltaBacktrack: true},
+		Metadata:                &schemas.Metadata{DeltaBacktrack: true},
 	}
 	graph := &schemas.TaskGraph{
 		TaskID: "task-retry-delta",
@@ -389,11 +389,11 @@ func TestRefineAndRetryClearsPreviousOutputSummary(t *testing.T) {
 	// Step was in delta-backtrack mode; user chooses "refine_and_retry"
 	// with their own feedback.
 	step := &schemas.Step{
-		ID:                     "s1",
-		Status:                 schemas.StepFailed,
-		PreviousOutputSummary:  "stale previous output",
+		ID:                      "s1",
+		Status:                  schemas.StepFailed,
+		PreviousOutputSummary:   "stale previous output",
 		AdditionalPromptContext: "stale cycle-breaker feedback",
-		Metadata:               &schemas.Metadata{DeltaBacktrack: true},
+		Metadata:                &schemas.Metadata{DeltaBacktrack: true},
 	}
 	graph := &schemas.TaskGraph{
 		TaskID: "task-refine-delta",

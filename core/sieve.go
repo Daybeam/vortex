@@ -47,6 +47,13 @@ type Sieve struct {
 	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.2.
 	interceptStats        map[string]*interceptStat // taskID → stats
 	consecutiveCleanTasks int                       // tasks with 0 intercepts since last threshold change
+
+	// resultSeen counts identical (step, tool, content) sightings. See
+	// ObserveResult. Keyed separately from resultContentHistory because that
+	// one is a per-task list of hashes with no tool or step dimension — it can
+	// say "this exact payload appeared 4 times" but not "for which tool", and
+	// the steer has to name the tool to be actionable.
+	resultSeen map[string]int
 }
 
 // interceptStat tracks per-task interception statistics for adaptive
@@ -84,6 +91,7 @@ func NewSieve(maxKeep int) *Sieve {
 		toolHistory:             make(map[string][]string),
 		toolResultCache:         make(map[string]map[string]string),
 		resultContentHistory:    make(map[string][]string),
+		resultSeen:              make(map[string]int),
 		compressor:              codeintel.NewCompressor(100),
 		ProtectedPrefixes: []string{
 			"$artifact",  // ArtifactContract / provenance metadata

@@ -113,7 +113,32 @@ func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, a
 		return nil, fmt.Errorf("role %q not found", roleID)
 	}
 
-	if len(additionalMCPs) > 0 && !role.AllowDynamicMCPs {
+	// An MCP the role ALREADY binds is not a dynamic addition.
+	//
+	// The planner names an mcp_id on each step only to say "this step uses
+	// appworld" — which is already the role's own surface. Counting that as a
+	// dynamic mount made every planner-produced step fail instantly with
+	// `role "appworld_agent" does not allow dynamic MCPs` (observed 2026-10-19,
+	// three steps dead in 1.6ms each, zero provider calls).
+	//
+	// Worse, it made a real fix unreachable: config.Registry.ResolveToolBindings
+	// was taught on 2026-10-18 to let an extra binding NARROW a role-bound MCP
+	// (see its "Extra bindings may NARROW" comment, which cites exactly this
+	// role and this flag). That code never ran, because this guard returned
+	// first. Only a genuinely new MCP should require the permission.
+	boundMCP := make(map[string]bool, len(role.BoundMCPBindings))
+	for _, b := range role.BoundMCPBindings {
+		if b.MCPID != "" {
+			boundMCP[b.MCPID] = true
+		}
+	}
+	dynamicCount := 0
+	for _, mcpID := range additionalMCPs {
+		if !boundMCP[mcpID] {
+			dynamicCount++
+		}
+	}
+	if dynamicCount > 0 && !role.AllowDynamicMCPs {
 		return nil, fmt.Errorf("role %q does not allow dynamic MCPs", roleID)
 	}
 

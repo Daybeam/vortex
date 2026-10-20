@@ -40,11 +40,11 @@ func NewBudgetGate(cfg config.BudgetGateConfig, scheduler *DirectedEngine) *Budg
 		return nil
 	}
 	return &BudgetGate{
-		cfg:         cfg,
-		scheduler:   scheduler,
-		usage:       make(map[string]int64),
-		roleUsage:   make(map[string]int64),
-		suspended:   make(map[string]bool),
+		cfg:       cfg,
+		scheduler: scheduler,
+		usage:     make(map[string]int64),
+		roleUsage: make(map[string]int64),
+		suspended: make(map[string]bool),
 	}
 }
 

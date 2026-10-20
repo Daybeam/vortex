@@ -35,7 +35,7 @@ func TestDecisionFailure_NoUnconditionalEscalateModel(t *testing.T) {
 	})
 
 	if len(graph.PendingDecisions) == 0 {
-		t.Skip("no pending decision generated — test setup may need adjustment")
+		t.Fatal("test setup failed: expected at least 1 pending decision, got 0 — handleOutput behavior may have changed")
 	}
 
 	options := graph.PendingDecisions[0].Options
@@ -59,5 +59,51 @@ func TestDecisionFailure_NoUnconditionalEscalateModel(t *testing.T) {
 	}
 	if !hasSkip || !hasAbort || !hasRetry {
 		t.Errorf("base options skip/abort/retry should always be present, got: %v", options)
+	}
+}
+
+// TestStatusFailed_HighConfidence_GetsRetry is the regression test for the
+// fix where status="failed" + confidence >= threshold was routed to
+// handleDefaultFailure → maybeBlock with ["skip", "abort"] (NO retry).
+// Before the fix (2026-10-20), recoverable failures labeled "failed" by the
+// model were silently dropped with no retry option. Now StatusFailed routes
+// through handleStepFailure which offers ["skip", "retry", "refine_and_retry", "abort"].
+//
+// Bug: project_orchestrator_failed_status_no_retry.md
+func TestStatusFailed_HighConfidence_GetsRetry(t *testing.T) {
+	engine := newTestEngineForHandleOutput(t, nil)
+
+	graph := &schemas.TaskGraph{
+		TaskID:           "task_failed_high_conf_test",
+		Status:           schemas.GraphRunning,
+		Steps:            map[string]*schemas.Step{},
+		PendingDecisions: []*schemas.Decision{},
+	}
+	step := &schemas.Step{ID: "s1", Status: schemas.StepPending, RoleID: "role_x"}
+	graph.Steps[step.ID] = step
+
+	// StatusFailed + confidence 0.9 (above 0.7 threshold).
+	// Before fix: fell to default → handleDefaultFailure → ["skip", "abort"].
+	// After fix: routes to handleStepFailure → ["skip", "retry", "refine_and_retry", "abort"].
+	engine.handleOutput(graph, step, &SpawnResult{
+		Output: schemas.SubagentOutput{
+			Status:     schemas.StatusFailed,
+			Confidence: 0.9,
+		},
+	})
+
+	if len(graph.PendingDecisions) == 0 {
+		t.Fatal("expected a pending decision for StatusFailed + high confidence")
+	}
+
+	options := graph.PendingDecisions[0].Options
+	hasRetry := false
+	for _, o := range options {
+		if o == "retry" {
+			hasRetry = true
+		}
+	}
+	if !hasRetry {
+		t.Errorf("StatusFailed + high confidence must offer retry option, got: %v", options)
 	}
 }
