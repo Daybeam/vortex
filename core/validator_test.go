@@ -33,7 +33,7 @@ func TestResolveFinalMCPs(t *testing.T) {
 	allowlists := map[string][]string{
 		"mcp_fs": {"read_file"},
 	}
-	bindings, err := ResolveFinalMCPs(hub, "role_dev", additional, allowlists)
+	bindings, err := ResolveFinalMCPs(hub, "role_dev", additional, allowlists, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,14 +55,14 @@ func TestResolveFinalMCPs(t *testing.T) {
 		t.Error("mcp_fs not found in bindings")
 	}
 
-	// Test 2: Dynamic MCPs not allowed
-	_, err = ResolveFinalMCPs(hub, "role_strict", additional, nil)
+	// Test 2: Dynamic MCPs blocked for non-admin callers (tier check, not role flag)
+	_, err = ResolveFinalMCPs(hub, "role_strict", additional, nil, false)
 	if err == nil {
-		t.Error("expected error for dynamic MCPs on strict role, got nil")
+		t.Error("expected error for non-admin caller mounting dynamic MCPs, got nil")
 	}
 
 	// Test 3: Unknown MCP
-	_, err = ResolveFinalMCPs(hub, "role_dev", []string{"unknown"}, nil)
+	_, err = ResolveFinalMCPs(hub, "role_dev", []string{"unknown"}, nil, true)
 	if err == nil {
 		t.Error("expected error for unknown MCP, got nil")
 	}

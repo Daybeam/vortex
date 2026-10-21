@@ -37,7 +37,7 @@ func newResolveHub() *ContextHub {
 func TestResolveFinalMCPs_BoundMCPIsNotDynamic(t *testing.T) {
 	hub := newResolveHub()
 
-	got, err := ResolveFinalMCPs(hub, "appworld_agent", []string{"appworld"}, nil)
+	got, err := ResolveFinalMCPs(hub, "appworld_agent", []string{"appworld"}, nil, true)
 	if err != nil {
 		t.Fatalf("naming an already-bound MCP must not count as a dynamic mount, got error: %v", err)
 	}
@@ -47,12 +47,24 @@ func TestResolveFinalMCPs_BoundMCPIsNotDynamic(t *testing.T) {
 }
 
 // TestResolveFinalMCPs_GenuinelyNewMCPStillNeedsPermission keeps the guard
-// meaningful: the fix must not become "any MCP may be mounted".
+// meaningful: non-admin callers must not mount dynamic MCPs.
+// Admin callers CAN mount on any role (per security audit: tier check, not role flag).
 func TestResolveFinalMCPs_GenuinelyNewMCPStillNeedsPermission(t *testing.T) {
 	hub := newResolveHub()
 
-	if _, err := ResolveFinalMCPs(hub, "appworld_agent", []string{"other"}, nil); err == nil {
-		t.Fatal("mounting an MCP the role does not bind must still require allow_dynamic_mcps")
+	// Non-admin: must be rejected
+	if _, err := ResolveFinalMCPs(hub, "appworld_agent", []string{"other"}, nil, false); err == nil {
+		t.Fatal("non-admin caller must not mount dynamic MCPs")
+	}
+
+	// Admin: must be allowed even on roles with AllowDynamicMCPs=false
+	got, err := ResolveFinalMCPs(hub, "appworld_agent", []string{"other"}, nil, true)
+	if err != nil {
+		t.Fatalf("admin caller must be able to mount dynamic MCPs on any role, got: %v", err)
+	}
+	// appworld_agent binds "appworld" + additional "other" = 2 bindings
+	if len(got) != 2 {
+		t.Fatalf("expected 2 bindings (appworld + other), got %d: %+v", len(got), got)
 	}
 }
 
@@ -66,7 +78,7 @@ func TestResolveFinalMCPs_PlannerAllowlistNarrowsBoundMCP(t *testing.T) {
 
 	got, err := ResolveFinalMCPs(hub, "appworld_agent",
 		[]string{"appworld"},
-		map[string][]string{"appworld": {"venmo__login", "venmo__remind_payment_request"}})
+		map[string][]string{"appworld": {"venmo__login", "venmo__remind_payment_request"}}, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,5 +87,55 @@ func TestResolveFinalMCPs_PlannerAllowlistNarrowsBoundMCP(t *testing.T) {
 	}
 	if len(got[0].AllowedTools) != 2 {
 		t.Fatalf("planner allowlist was dropped; want 2 tools, got %+v", got[0].AllowedTools)
+	}
+}
+
+// TestResolveFinalMCPs_NonAdminRejectsDynamicMCP is the security regression for
+// issue 3 (2026-10-21): even with AllowDynamicMCPs=true (like sop_generator),
+// a non-admin submitter must NOT be able to mount dynamic MCPs.
+// Attack path: public caller → orchestrator_submit_task with role_id="sop_generator"
+// + additional_mcps=["high_risk_mcp"] → ResolveFinalMCPs must reject.
+func TestResolveFinalMCPs_NonAdminRejectsDynamicMCP(t *testing.T) {
+	reg := &config.Registry{
+		Roles: map[string]*config.Role{
+			"sop_generator": {
+				ID:               "sop_generator",
+				AllowDynamicMCPs: true, // the vulnerable flag
+			},
+		},
+		MCPs: map[string]*config.MCPDef{
+			"high_risk_mcp": {ID: "high_risk_mcp"},
+		},
+	}
+	hub := NewContextHub(reg, nil, nil)
+
+	_, err := ResolveFinalMCPs(hub, "sop_generator", []string{"high_risk_mcp"}, nil, false)
+	if err == nil {
+		t.Fatal("SECURITY: non-admin submitter must NOT mount dynamic MCPs even with AllowDynamicMCPs=true")
+	}
+}
+
+// TestResolveFinalMCPs_AdminCanMountDynamicMCP verifies the fix doesn't
+// break the legitimate admin path: admin + AllowDynamicMCPs=true → allowed.
+func TestResolveFinalMCPs_AdminCanMountDynamicMCP(t *testing.T) {
+	reg := &config.Registry{
+		Roles: map[string]*config.Role{
+			"sop_generator": {
+				ID:               "sop_generator",
+				AllowDynamicMCPs: true,
+			},
+		},
+		MCPs: map[string]*config.MCPDef{
+			"needed_mcp": {ID: "needed_mcp"},
+		},
+	}
+	hub := NewContextHub(reg, nil, nil)
+
+	got, err := ResolveFinalMCPs(hub, "sop_generator", []string{"needed_mcp"}, nil, true)
+	if err != nil {
+		t.Fatalf("admin + AllowDynamicMCPs=true must allow dynamic mount, got: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(got))
 	}
 }

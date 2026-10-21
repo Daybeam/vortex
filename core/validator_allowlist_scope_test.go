@@ -50,7 +50,7 @@ func TestResolveFinalMCPs_BoundMCPIgnoresPerStepAllowlist(t *testing.T) {
 		"appworld": {"venmo__login", "venmo__show_sent_payment_requests"},
 	}
 
-	bindings, err := ResolveFinalMCPs(hub, "appworld_agent", nil, stepAllowlist)
+	bindings, err := ResolveFinalMCPs(hub, "appworld_agent", nil, stepAllowlist, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
