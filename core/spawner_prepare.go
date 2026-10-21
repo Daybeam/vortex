@@ -103,7 +103,7 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 		}
 
 		var err error
-		bindings, err = ResolveFinalMCPs(req.Hub, req.RoleID, req.AdditionalMCPs, req.AdditionalToolAllowlists)
+		bindings, err = ResolveFinalMCPs(req.Hub, req.RoleID, req.AdditionalMCPs, req.AdditionalToolAllowlists, effectiveSubmitterIsAdmin(req.Hub))
 		if err != nil {
 			return nil, s.failedOutput(role.BaseCapability, err.Error()), nil
 		}

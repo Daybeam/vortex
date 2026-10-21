@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,6 +275,7 @@ func (s *DirectedEngine) getOrReloadGraphLocked(taskID string) *schemas.TaskGrap
 	}
 	var g schemas.TaskGraph
 	if err := json.Unmarshal(data, &g); err != nil {
+		slog.Warn("scheduler_status: corrupt manifest, returning nil graph", "taskID", taskID, "err", err)
 		return nil
 	}
 	s.graphs[taskID] = &g

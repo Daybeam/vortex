@@ -19,7 +19,10 @@ func TestParseScope(t *testing.T) {
 	}{
 		{"self", "self", "my_role", false, "self", "my_role", false},
 		{"empty defaults to self", "", "my_role", false, "self", "my_role", false},
-		{"role with ID", "role:target", "caller", false, "role", "target", false},
+		// SECURITY FIX (2026-10-21): role:<id> requires admin or self-inspection
+		{"role denied for non-admin non-self", "role:target", "caller", false, "", "", true},
+		{"role self-inspection allowed", "role:my_role", "my_role", false, "role", "my_role", false},
+		{"role allowed for admin", "role:target", "caller", true, "role", "target", false},
 		{"role empty ID", "role:", "caller", false, "", "", true},
 		{"pool allowed", "pool", "", true, "pool", "", false},
 		{"pool denied at parse", "pool", "", false, "pool", "", false}, // ParseScope doesn't enforce; enforceScope does
@@ -247,6 +250,57 @@ func TestDiscoverImpl_MCPs(t *testing.T) {
 	})
 }
 
+// TestDiscoverMCPs_RedactsConnectionInfoForNonAdmin is the regression for
+// security-audit issue 8 (2026-10-21): MCPSummary used to always return the
+// MCP's URL/Command, leaking connection internals (endpoints, launch commands)
+// to any caller, including public tier. Non-admin (self/role scope) must get
+// redacted summaries; only admin (pool scope) sees URL/Command.
+func TestDiscoverMCPs_RedactsConnectionInfoForNonAdmin(t *testing.T) {
+	reg := &config.Registry{
+		Roles: map[string]*config.Role{
+			"role_a": {
+				ID:               "role_a",
+				BoundMCPBindings: []config.MCPBinding{{MCPID: "mcp1"}},
+			},
+		},
+		MCPs: map[string]*config.MCPDef{
+			"mcp1": {
+				ID:      "mcp1",
+				URL:     "https://secret.internal/mcp",
+				Command: "node /opt/secret/server.js",
+				Trusted: true,
+			},
+		},
+		DynamicMCPs: map[string]*config.MCPDef{},
+	}
+
+	t.Run("non-admin self scope is redacted", func(t *testing.T) {
+		result, err := DiscoverImpl(reg, DiscoveryScope{Mode: "self", RoleID: "role_a"}, "mcps", "", 1, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.MCPs) != 1 {
+			t.Fatalf("expected 1 MCP, got %d", len(result.MCPs))
+		}
+		if result.MCPs[0].URL != "" || result.MCPs[0].Command != "" {
+			t.Fatalf("non-admin leak: url=%q command=%q", result.MCPs[0].URL, result.MCPs[0].Command)
+		}
+	})
+
+	t.Run("admin pool scope keeps connection info", func(t *testing.T) {
+		result, err := DiscoverImpl(reg, DiscoveryScope{Mode: "pool", AllowPool: true}, "mcps", "", 1, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.MCPs) != 1 {
+			t.Fatalf("expected 1 MCP, got %d", len(result.MCPs))
+		}
+		if result.MCPs[0].URL == "" || result.MCPs[0].Command == "" {
+			t.Fatalf("admin should see connection info, got url=%q command=%q", result.MCPs[0].URL, result.MCPs[0].Command)
+		}
+	})
+}
+
 func TestDiscoverImpl_Pagination(t *testing.T) {
 	reg := &config.Registry{
 		Roles: map[string]*config.Role{
@@ -414,4 +468,52 @@ func TestFindSkillsImpl(t *testing.T) {
 			t.Fatalf("expected 0 skills, got %d", len(result.Skills))
 		}
 	})
+}
+
+// TestDiscoverTools_AllowedToolsNarrowing is the regression for issue 6
+// (2026-10-21): discoverTools previously returned ALL FullToolDefinitions
+// for each MCP, ignoring AllowedTools narrowing. Now it respects the role's
+// AllowedTools filter.
+func TestDiscoverTools_AllowedToolsNarrowing(t *testing.T) {
+	reg := &config.Registry{
+		Roles: map[string]*config.Role{
+			"narrowed_role": {
+				ID: "narrowed_role",
+				BoundMCPBindings: []config.MCPBinding{
+					{
+						MCPID:        "mcp_tools",
+						AllowedTools: []string{"tool_a", "tool_b"}, // narrowed — tool_c excluded
+					},
+				},
+			},
+		},
+		MCPs: map[string]*config.MCPDef{
+			"mcp_tools": {
+				ID: "mcp_tools",
+				FullToolDefinitions: []schemas.ToolDefinition{
+					{Name: "tool_a", Description: "Tool A"},
+					{Name: "tool_b", Description: "Tool B"},
+					{Name: "tool_c", Description: "Tool C (should be filtered out)"},
+				},
+			},
+		},
+		DynamicMCPs: map[string]*config.MCPDef{},
+	}
+
+	scope := DiscoveryScope{Mode: "self", RoleID: "narrowed_role"}
+	result, err := DiscoverImpl(reg, scope, "tools", "", 1, 20)
+	if err != nil {
+		t.Fatalf("DiscoverImpl failed: %v", err)
+	}
+
+	if result.Total != 2 {
+		t.Fatalf("SECURITY: expected 2 tools (tool_a + tool_b), got %d — AllowedTools narrowing not applied", result.Total)
+	}
+
+	// Verify tool_c is NOT in the results
+	for _, tool := range result.Tools {
+		if tool.Name == "tool_c" {
+			t.Error("SECURITY: tool_c should be filtered out by AllowedTools narrowing")
+		}
+	}
 }

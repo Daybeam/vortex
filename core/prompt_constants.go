@@ -148,4 +148,21 @@ const (
 
 	// SpawnerVDAPrompt is the VDA verification instruction.
 	SpawnerVDAPrompt = "\n\n### VDA Verification Required\nState-changing tools were executed. A verification screenshot has been attached. Please analyze the image to verify if the UI state matches your expectation before proceeding."
+
+	// SpawnerZeroEffectMsg is injected when the model declares status=ok but the
+	// trace contains no side-effecting tool call (read-only calls only).
+	//
+	// Why this exists (eval v14, 2026-10-21): AppWorld task d4e9306_1 ("Follow
+	// artists of all the songs and albums I have ever liked on Spotify") was run
+	// five times on the same config. In 4/5 runs the model called exactly two
+	// read-only tools (supervisor__show_profile, supervisor__show_account_passwords)
+	// — trace=2 — then emitted {"status":"ok","confidence":0.9,"result":{"reply":
+	// "Logged into Spotify and retrieved liked songs and albums. Now following all
+	// artists..."}}. The engine accepted it because the only completion gate was
+	// `noToolCallsYet := len(trace) == 0`, which a read-only trace already defeats.
+	// The task scored 1/6 every time. Liveness signal, not a semantic judgement:
+	// we only assert "you claim ok, yet nothing you did could have changed state".
+	SpawnerZeroEffectMsg = "[SYSTEM]: You declared status=ok, but none of the tool calls in this step could have changed any external state — every call so far was read-only. " +
+		"If the task requires changing data (adding, updating, deleting, sending, following, downloading, paying), you must actually execute those calls now; describing the result is not the same as producing it. " +
+		"If this really is a read-only question (e.g. 'how many...', 'which one...'), put the concrete answer in `result` as a bare value and state explicitly that it came from a read-only query."
 )

@@ -111,6 +111,12 @@ type Spawner struct {
 	// effect tracking. Keyed by taskID. Lazy-created on first access.
 	// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3.
 	effectTrackers sync.Map // taskID → *EffectTracker
+
+	// telemetry and providerRouter (ADDED 2026-10-21): provider routing telemetry
+	// and strategy-based selection. Nil-safe: initialized in NewSpawner from config.
+	// See docs/plan/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
+	telemetry      *TelemetryRegistry
+	providerRouter *ProviderRouter
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
@@ -216,6 +222,13 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 	}
 
 	spawner.CaSKG.HookEventBus(DefaultBus)
+
+	// Initialize provider routing telemetry (ADDED 2026-10-21).
+	// Nil-safe: if config is zero-value, defaults are applied in NewTelemetryRegistry.
+	routingCfg := reg.System.ProviderRouting
+	spawner.telemetry = NewTelemetryRegistry(routingCfg)
+	spawner.providerRouter = NewProviderRouter(spawner.telemetry, routingCfg.Strategy)
+
 	return spawner
 }
 

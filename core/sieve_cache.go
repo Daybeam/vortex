@@ -90,7 +90,7 @@ func (s *Sieve) CheckResultRepetition(taskID, result string) bool {
 }
 
 func toolCallHash(toolName string, args map[string]any) string {
-	argData, _ := json.Marshal(args)
+	argData, _ := json.Marshal(canonicalToolArgs(args))
 	return fmt.Sprintf("%s:%s", toolName, string(argData))
 }
 

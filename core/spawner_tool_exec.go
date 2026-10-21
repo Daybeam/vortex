@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,11 @@ type toolExecState struct {
 	trace             []store.ToolInteraction
 	toolCallCount     map[string]int
 	toolFailCount     map[string]int
+	// resultStreak counts, per canonical args key, how many consecutive calls
+	// returned byte-identical output. This — not the raw call count — is what
+	// the reason-blind hard cap blocks on. See noteToolResult.
+	resultStreak   map[string]int
+	resultLastHash map[string]uint64
 	needsVerification bool
 	turnAttachments   []schemas.Attachment
 	statesVisited     []string
@@ -131,6 +137,34 @@ func (s *Spawner) steerRepeatedResult(taskID, stepID, tool, md string) string {
 	return md
 }
 
+// noteToolResult records the outcome of a completed call so the reason-blind
+// hard cap can count "same call, same answer" instead of just "same call".
+//
+// Identical arguments are not by themselves evidence of a loop. `venmo__login`
+// is called with the same username and password every time its access token
+// expires (AppWorld expires them every 10–30 minutes at random), and each call
+// returns a *different* token — a legitimate retry. Counting arguments alone
+// blocked exactly that: in trial 2 of passk_20261021_074251 the model reasoned
+// "refresh the access token, previous calls failed with authorization errors"
+// and the args counter had already reached 4. The third element of the tuple —
+// the observation — is what distinguishes a loop from a retry, which is also
+// how OpenHands (action↔observation pairs) and Gemini CLI (identical content
+// chunks) draw the line.
+func noteToolResult(state *toolExecState, callKey, md string) {
+	if state == nil || md == "" || callKey == "" {
+		return
+	}
+	h := fnv.New64a()
+	h.Write([]byte(md))
+	sum := h.Sum64()
+	if state.resultLastHash[callKey] == sum {
+		state.resultStreak[callKey]++
+		return
+	}
+	state.resultLastHash[callKey] = sum
+	state.resultStreak[callKey] = 1
+}
+
 // prependSticky prepends a "Persistent Context" block to the conversation
 // blocks if stickyContext is non-empty. This keeps auth/login results near
 // the top of the context window instead of buried at position N/51.
@@ -188,36 +222,6 @@ func (s *Spawner) processToolCalls(
 			}
 		}
 
-		// §5 self-polling deadlock fix: if the subagent's LLM calls
-		// get_task_status or wait_task on its OWN task, return a descriptive
-		// error instead of executing. The model polling its own task can
-		// never see "completed" (the task can't finish while the model is
-		// busy polling), causing MAX_TURNS_EXHAUSTED. The spawner has
-		// req.TaskID (the executing task) and call.Arguments["task_id"]
-		// (the queried task) — direct comparison, no ctx propagation needed.
-		if call.Name == "orchestrator_get_task_status" || call.Name == "orchestrator_wait_task" {
-			if queriedID, ok := call.Arguments["task_id"].(string); ok && queriedID == req.TaskID {
-				observability.GetGlobalMetrics().Inc("orchestrator.self_poll.blocked", 1)
-				s.logger.Log("EventSelfPollBlocked", req.TaskID, req.StepID, map[string]any{
-					"tool": call.Name,
-				})
-				selfPollMsg := fmt.Sprintf(
-					"[%s] You are currently executing task %s. Querying its status cannot make "+
-						"progress — the task completes when you finish your work, not when you "+
-						"check on it. Use your available tools to do the actual work instead.",
-					call.Name, req.TaskID)
-				interaction := store.ToolInteraction{
-					ToolName:  call.Name,
-					Arguments: call.Arguments,
-					Result:    selfPollMsg,
-				}
-				state.trace = append(state.trace, interaction)
-				env := s.processor.Wrap(call.Name, selfPollMsg, "error", "orchestrator", "")
-				state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
-				continue
-			}
-		}
-
 		// A1 (Effect Boundary Defense): per-turn idempotency check.
 		// If this exact tool call (same name + same args) has already
 		// been executed in this turn, skip it. This prevents duplicate
@@ -241,6 +245,42 @@ func (s *Spawner) processToolCalls(
 		// make the same call (parallel searches, phased gathering).
 		callKey := toolCallKey(call.Name, call.Arguments)
 		callCount := state.toolCallCount[callKey]
+
+		// #11b: reason-blind hard ceiling. The reflection gate below is
+		// guidance — it asks the model to explain itself before repeating,
+		// which works often enough to keep. But guidance must not be able to
+		// delete the gate: once a model learns the `_reason` key it passes
+		// unconditionally, forever, and that is what happened on 4fab96f_3
+		// (24 identical reads in one step, no check fired). This branch looks
+		// at the observed answer instead, which the model cannot rephrase.
+		// See docs/54 §5.18 and §5.20.
+		// Counted on (canonical args, result) — not on args alone. Identical
+		// arguments with a changing answer is a retry (token refresh, re-read
+		// after a write); identical arguments with an identical answer is the
+		// degenerate case worth stopping.
+		if hardCap := s.dedupHardCap(); state.resultStreak[callKey] >= hardCap {
+			observability.GetGlobalMetrics().Inc("orchestrator.dedup.hard_cap", 1)
+			s.logger.Log("EventDedupHardCap", req.TaskID, req.StepID, map[string]any{
+				"tool":         call.Name,
+				"call_n":       callCount + 1,
+				"same_result":  state.resultStreak[callKey],
+				"hard_cap":     hardCap,
+				"args_hash":    callKey,
+			})
+			state.toolResults = append(state.toolResults, fmt.Sprintf(
+				"[%s] Blocked: this exact call — same tool, same arguments — has now run %d times "+
+					"in this step and returned the same data every time. A `_reason` does not lift "+
+					"this limit; re-asking cannot produce new information.\n"+
+					"Do one of these instead:\n"+
+					"  1. Change the query. A different filter, id, or page index that will actually "+
+					"return different rows — not a rephrasing of the same request.\n"+
+					"  2. Act on what you already have. The data is in the results above; take the "+
+					"next step the task requires.\n"+
+					"  3. If the call keeps failing, stop calling it and report the failure.",
+				call.Name, callCount+1))
+			continue
+		}
+
 		if callCount >= 2 {
 			reason, hasReason := call.Arguments["_reason"].(string)
 			if !hasReason || reason == "" {
@@ -300,6 +340,7 @@ func (s *Spawner) processToolCalls(
 			env := s.processor.Wrap(call.Name, res, status, "orchestrator", "")
 			md := env.ToMarkdown(call.Name)
 			if status != "error" {
+				noteToolResult(state, callKey, md)
 				md = s.steerRepeatedResult(req.TaskID, req.StepID, call.Name, md)
 			}
 			state.toolResults = append(state.toolResults, md)
@@ -462,6 +503,7 @@ func (s *Spawner) processToolCalls(
 			if cachedMD, ok := s.domainReadCache.Get(mcpID, call.Name, call.Arguments); ok {
 				log.Printf("[spawner] read_cache HIT task=%s step=%s tool=%s mcp=%s", req.TaskID, req.StepID, call.Name, mcpID)
 				observability.GetGlobalMetrics().Inc("orchestrator.read_cache.hit", 1)
+				noteToolResult(state, callKey, cachedMD)
 				cachedMD = s.steerRepeatedResult(req.TaskID, req.StepID, call.Name, cachedMD)
 				interaction.Result = cachedMD
 				state.trace = append(state.trace, interaction)
@@ -577,6 +619,7 @@ func (s *Spawner) processToolCalls(
 					if len(md) > s.processor.MaxBodyChars {
 						md = string(AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
+					noteToolResult(state, callKey, md)
 					md = s.steerRepeatedResult(req.TaskID, req.StepID, call.Name, md)
 					state.toolResults = append(state.toolResults, md)
 					if isStickyResult(call.Name) {
@@ -633,6 +676,7 @@ func (s *Spawner) processToolCalls(
 					if len(md) > s.processor.MaxBodyChars {
 						md = string(AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
+					noteToolResult(state, callKey, md)
 					md = s.steerRepeatedResult(req.TaskID, req.StepID, call.Name, md)
 					state.toolResults = append(state.toolResults, md)
 					if isStickyResult(call.Name) {

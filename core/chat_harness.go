@@ -800,7 +800,9 @@ func toolCallSignature(calls []schemas.ToolCall) string {
 	for _, c := range calls {
 		b.WriteString(c.Name)
 		b.WriteByte('|')
-		data, _ := json.Marshal(c.Arguments)
+		// Control args (`_reason`) are stripped from the payload, so they must
+		// not distinguish two otherwise identical calls here either.
+		data, _ := json.Marshal(canonicalToolArgs(c.Arguments))
 		b.Write(data)
 		b.WriteByte(';')
 	}

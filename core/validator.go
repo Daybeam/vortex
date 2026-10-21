@@ -1,11 +1,17 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/daybeam/vortex/config"
 )
+
+// ErrMountApprovalRequired signals that a dynamic MCP mount is gated behind
+// human approval for a non-admin submitter (MCP mount_policy: "approval").
+// Wiring this to a human_approval_required decision is tracked as gap G2.
+var ErrMountApprovalRequired = errors.New("dynamic MCP mount requires human approval")
 
 // ValidationResult carries the outcome of a skill/mcp combination check.
 type ValidationResult struct {
@@ -107,7 +113,12 @@ func ResolveFinalSkills(hub *ContextHub, roleID string, additionalSkills []strin
 }
 
 // ResolveFinalMCPs merges a role's bound MCP bindings with dynamic additions.
-func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, additionalToolAllowlists map[string][]string) ([]config.MCPBinding, error) {
+// submitterIsAdmin controls whether dynamic MCP mounting is permitted at all —
+// the primary check is in tools_task.go (entry point), this is defense-in-depth.
+// SECURITY FIX (2026-10-21): previously, only role.AllowDynamicMCPs was checked,
+// which let public callers use roles like sop_generator (AllowDynamicMCPs=true)
+// to mount arbitrary MCPs via additional_mcps.
+func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, additionalToolAllowlists map[string][]string, submitterIsAdmin bool) ([]config.MCPBinding, error) {
 	role := hub.GetRole(roleID)
 	if role == nil {
 		return nil, fmt.Errorf("role %q not found", roleID)
@@ -132,14 +143,34 @@ func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, a
 			boundMCP[b.MCPID] = true
 		}
 	}
-	dynamicCount := 0
+	// Any additional MCP that is NOT already bound to the role is a dynamic
+	// mount and must pass the submitter × mount-policy gate.
+	//
+	// SECURITY FIX (2026-10-21): the gate is now driven by the MCP's
+	// MountPolicy (open / approval / admin_only), not by the role flag
+	// AllowDynamicMCPs. An ALREADY-BOUND MCP is not a dynamic addition and is
+	// always allowed — a public caller must not be blocked from re-specifying
+	// its role's own MCP (fixes the G1/G11 side effect, R4).
 	for _, mcpID := range additionalMCPs {
-		if !boundMCP[mcpID] {
-			dynamicCount++
+		if boundMCP[mcpID] {
+			continue
 		}
-	}
-	if dynamicCount > 0 && !role.AllowDynamicMCPs {
-		return nil, fmt.Errorf("role %q does not allow dynamic MCPs", roleID)
+		policy := config.MountPolicyAdminOnly
+		if def := hub.GetMCP(mcpID); def != nil {
+			policy = def.EffectiveMountPolicy()
+		}
+		switch policy {
+		case config.MountPolicyOpen:
+			// open: any submitter tier may mount dynamically.
+		case config.MountPolicyApproval:
+			if !submitterIsAdmin {
+				return nil, fmt.Errorf("%w: MCP %q (role %q)", ErrMountApprovalRequired, mcpID, roleID)
+			}
+		default: // admin_only (empty/unknown)
+			if !submitterIsAdmin {
+				return nil, fmt.Errorf("dynamic MCP mounting requires admin tier (role %q, mcp %q)", roleID, mcpID)
+			}
+		}
 	}
 
 	// Validate that all additional MCPs are known
@@ -182,20 +213,20 @@ func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, a
 					intersected = append(intersected, t)
 				}
 			}
-		if len(intersected) > 0 {
-			allowed = intersected
-		} else {
-			// Intersection empty: fall back to full access.
-			// T7 observability: warn so operators can detect silent
-			// over-permissioning (planner specified tools, none exist).
-			slog.Warn("tool allowlist intersection empty — falling back to full access",
-				"mcp_id", mcpID,
-				"role", roleID,
-				"planned_tools", allowed,
-				"discovered_count", len(mcpDef.AvailableTools),
-			)
-			allowed = []string{}
-		}
+			if len(intersected) > 0 {
+				allowed = intersected
+			} else {
+				// Intersection empty: fall back to full access.
+				// T7 observability: warn so operators can detect silent
+				// over-permissioning (planner specified tools, none exist).
+				slog.Warn("tool allowlist intersection empty — falling back to full access",
+					"mcp_id", mcpID,
+					"role", roleID,
+					"planned_tools", allowed,
+					"discovered_count", len(mcpDef.AvailableTools),
+				)
+				allowed = []string{}
+			}
 		}
 		extraBindings = append(extraBindings, config.MCPBinding{
 			MCPID:        mcpID,

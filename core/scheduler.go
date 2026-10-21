@@ -473,15 +473,26 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 	outDir := filepath.Join(s.outputBase, graph.TaskID)
 	artifacts := s.buildArtifactsLocked(graph)
 	graph.Artifacts = artifacts
-	manifestData, _ := json.MarshalIndent(graph, "", "  ")
+	manifestData, mErr := json.MarshalIndent(graph, "", "  ")
+	if mErr != nil {
+		log.Printf("WARN: persistGraph: failed to marshal manifest for task %s: %v", graph.TaskID, mErr)
+	}
 	var artifactsData []byte
 	if len(artifacts) > 0 {
-		artifactsData, _ = json.MarshalIndent(artifacts, "", "  ")
+		var aErr error
+		artifactsData, aErr = json.MarshalIndent(artifacts, "", "  ")
+		if aErr != nil {
+			log.Printf("WARN: persistGraph: failed to marshal artifacts for task %s: %v", graph.TaskID, aErr)
+		}
 	}
 	var statusData []byte
 	var statusStr string
 	if s.TaskRegistry != nil {
-		statusData, _ = json.Marshal(graph.ToStatusDict())
+		var sErr error
+		statusData, sErr = json.Marshal(graph.ToStatusDict())
+		if sErr != nil {
+			log.Printf("WARN: persistGraph: failed to marshal task state for %s: %v", graph.TaskID, sErr)
+		}
 		statusStr = string(graph.Status)
 	}
 	s.Mu.Unlock()

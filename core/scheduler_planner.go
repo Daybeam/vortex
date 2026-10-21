@@ -457,6 +457,23 @@ func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSec
 	sb.WriteString("  agent sees only that text plus its own tool list.\n")
 	sb.WriteString("- Do NOT emit a verification/audit step. Verification is handled by\n")
 	sb.WriteString("  the engine, not by the plan.\n")
+	// 🔴 2026-10-21 (docs/54 §5.25): two rules were added here and then REMOVED.
+	// They read "describe the GOAL, not a call sequence" and "do NOT name a page
+	// size". They did fix the filter-scope loss — one trial went 3/8 -> 7/8 —
+	// but they also changed HOW MANY STEPS the planner emits:
+	//
+	//   08:13-08:56 (no rules): steps = 1, 1, 1, 1, 1
+	//   08:59-09:20 (rules):    steps = 2, 1, 2, 2, 2
+	//
+	// A planner that splits a two-call task stops taking the smart-routing
+	// fast-path, so the engine starts paying orchestration overhead for a task
+	// that does not need it. Step count decides whether orchestration happens
+	// at all; it is far more load-bearing than task wording.
+	//
+	// The same loss is covered without touching step count by the fix in
+	// scheduler_submit.go: when a plan is a single step, the caller's task is
+	// used verbatim, so a filtered request is never rewritten into a pipeline.
+	// Do not reintroduce wording rules here without re-measuring step count.
 
 	if timeoutSecs <= 0 {
 		timeoutSecs = 90
@@ -674,10 +691,21 @@ func (s *DirectedEngine) plannerMaxSteps() int {
 // "venmo__", and the plan was rejected for an unknown tool after two LLM round
 // trips. Nothing about that failure was the model's fault.
 //
-// §5.6 fix (2026-10-20): 8192 is sufficient for ≤100 tools but truncates at
-// 453 (AppWorld full tool surface). Scale linearly beyond 100 tools: each
-// additional tool adds ~32 tokens of allowed_tools listing overhead in the
-// plan JSON. Capped at 32768 to avoid over-allocating.
+// §5.6 fix (2026-10-20): measured at 453 tools (AppWorld full surface) on
+// 4fab96f_3, a successful planner call used 8,063 completion tokens against the
+// 8,192 cap — 98.4%, a 129-token margin. It did NOT overrun: ran with
+// output_truncated absent and stop_reason != "length". So 8192 does not
+// truncate at 453 tools, but it is "just barely enough" rather than
+// comfortable, and whether a given plan fits depends on how long the model
+// chooses to write (the same task's first attempt used only 1,655 and stopped
+// early; the second used 8,063). A budget that is one shape-change away from
+// failure is a latent bug even while every observation passes.
+//
+// Hence: hold 8192 up to 100 tools (that regime was measured working at 60
+// tools), then scale so the margin grows with the tool surface instead of
+// staying at 1.6%. ~32 tokens per extra tool is a heuristic for the
+// allowed_tools listing overhead, not a measurement; revisit if
+// output_truncated ever fires below the cap.
 func (s *DirectedEngine) plannerMaxOutputTokens(numTools int) int {
 	if s.registry == nil {
 		return 8192
