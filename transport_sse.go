@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -58,6 +59,10 @@ func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 	mux.Handle("/message", sse.MessageHandler())
 	mux.Handle("/mcp", streamServer)
 
+	if !isLoopbackAddr(addr) {
+		log.Printf("[vortex] WARNING: serving SSE/HTTP on %s without authentication — anyone who can reach this port can drive the orchestrator. Bind to a loopback address before exposing it.", addr)
+	}
+
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -93,4 +98,16 @@ func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("[orchestrator] server shutdown error: %v", err)
 	}
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -35,6 +35,7 @@ func main() {
 	execTool := flag.String("exec", "", "one-off tool execution (e.g., orchestrator_discover)")
 	execArgs := flag.String("args", "{}", "JSON arguments for the tool")
 	execFile := flag.String("file", "", "JSON file containing arguments for the tool")
+	configFlag := flag.String("c", "", "path to config file (overrides VORTEX_CONFIG env var and defaults)")
 	flag.Parse()
 
 	// ── Resolve paths ──────────────────────────────────────────────────────
@@ -45,7 +46,9 @@ func main() {
 	}
 
 	configPath := filepath.Join(root, "config.json")
-	if envConfig := os.Getenv("VORTEX_CONFIG"); envConfig != "" {
+	if *configFlag != "" {
+		configPath = *configFlag
+	} else if envConfig := os.Getenv("VORTEX_CONFIG"); envConfig != "" {
 		configPath = envConfig
 	} else {
 		osConfig := filepath.Join(root, "config_"+runtime.GOOS+".json")

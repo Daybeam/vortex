@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daybeam/vortex/core"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/daybeam/vortex/core"
 )
 
 // Promoter watches invoke traffic and hot-promotes frequently-used subsystem
@@ -110,10 +110,7 @@ func (p *Promoter) Record(subsystem, action string, act Action) {
 		p.mu.Unlock()
 
 		// Runtime tier enforcement
-		effectiveTier := p.app.Tier
-		if v, ok := ctx.Value(AuthTierKey).(string); ok && v != "" {
-			effectiveTier = v
-		}
+		effectiveTier := EffectiveTier(ctx, p.app)
 		if effectiveTier == TierPublic && !isActionAllowed(subsystem, action, effectiveTier) {
 			return mcp.NewToolResultError(fmt.Sprintf(
 				"permission denied: volatile promoted action %q in subsystem %q requires Tier2 (Admin) privileges",

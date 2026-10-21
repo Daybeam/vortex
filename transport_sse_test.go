@@ -51,3 +51,27 @@ func TestServeSSE_NoOsExitOnBindError(t *testing.T) {
 		t.Fatal("serveSSE did not return within 5s — likely stuck or called os.Exit")
 	}
 }
+
+// TestIsLoopbackAddr pins the P4.1 guard (docs/plan/CORE_BOUNDARY_DEBT_AND_SAAS_GAP_REMEDIATION.md):
+// the unauthenticated-bind warning must fire for wildcard/external binds and
+// stay silent for loopback binds. A regression here would silently expose the
+// raw transport (false "loopback") or spam local dev (false "non-loopback").
+func TestIsLoopbackAddr(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8000", true},
+		{"localhost:8000", true},
+		{"[::1]:8000", true},
+		{"0.0.0.0:8000", false},
+		{"[::]:8000", false},
+		{"192.168.1.10:8000", false},
+		{"8000", false}, // bare port — no host, i.e. wildcard
+	}
+	for _, c := range cases {
+		if got := isLoopbackAddr(c.addr); got != c.want {
+			t.Errorf("isLoopbackAddr(%q) = %v, want %v", c.addr, got, c.want)
+		}
+	}
+}

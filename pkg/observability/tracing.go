@@ -74,6 +74,39 @@ func Redact(text string) string {
 	return text
 }
 
+// sensitiveKeySuffixes are the key shapes that hold an actual credential.
+// Matching is on the WHOLE key, not a substring, because substring matching on
+// "token" also caught counting fields: prompt_tokens/completion_tokens were
+// masked to "****", which silently destroyed the token accounting this engine
+// logs on every provider call. A metric named *_tokens is a number, never a
+// secret.
+//
+// Keep this list about credentials. If a future field genuinely carries a
+// secret, add its exact name here rather than loosening the match.
+var sensitiveKeys = map[string]bool{
+	"key":           true,
+	"apikey":        true,
+	"api_key":       true,
+	"access_key":    true,
+	"secret":        true,
+	"secret_key":    true,
+	"client_secret": true,
+	"password":      true,
+	"passwd":        true,
+	"authorization": true,
+	"token":         true,
+	"access_token":  true,
+	"refresh_token": true,
+	"auth_token":    true,
+	"bearer":        true,
+	"credential":    true,
+}
+
+// isSensitiveKey reports whether a detail-map key holds a credential value.
+func isSensitiveKey(k string) bool {
+	return sensitiveKeys[strings.ToLower(k)]
+}
+
 // RedactMap recursively redacts sensitive values in a map.
 func RedactMap(m map[string]any) map[string]any {
 	if m == nil {
@@ -81,10 +114,7 @@ func RedactMap(m map[string]any) map[string]any {
 	}
 	out := make(map[string]any)
 	for k, v := range m {
-		kLower := strings.ToLower(k)
-		if strings.Contains(kLower, "key") || strings.Contains(kLower, "password") ||
-			strings.Contains(kLower, "auth") || strings.Contains(kLower, "token") ||
-			strings.Contains(kLower, "secret") {
+		if isSensitiveKey(k) {
 			if s, ok := v.(string); ok && len(s) > 4 {
 				out[k] = s[:4] + "****"
 			} else {

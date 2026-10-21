@@ -52,11 +52,15 @@ func registerDiscoverySubsystem(app *App) {
 			page := intArg(args, "page", 1)
 			pageSize := intArg(args, "page_size", 20)
 
-			// Determine caller's role ID and admin status.
-			// The _role_id and _is_admin fields are injected by the invoke
-			// dispatcher when available (from the task context).
-			callerRoleID := strArg(args, "_role_id")
-			isAdmin := args["_is_admin"] == true || EffectiveTier(ctx, app) == TierAdmin
+			// Determine caller's admin status from the context (authoritative).
+			// SECURITY FIX (2026-10-21): _role_id and _is_admin were previously
+			// read from args, which are caller-controlled. The invoke dispatcher
+			// now strips _-prefixed keys, but we also harden here: identity/tier
+			// come ONLY from ctx. callerRoleID is empty because the invoke
+			// dispatcher does not inject task-level role context into subsystem
+			// calls (if needed in the future, inject via ctx.Value, never args).
+			callerRoleID := ""
+			isAdmin := EffectiveTier(ctx, app) == TierAdmin
 
 			// Parse scope string into DiscoveryScope.
 			scope, err := core.ParseScope(scopeStr, callerRoleID, isAdmin)
@@ -64,16 +68,15 @@ func registerDiscoverySubsystem(app *App) {
 				return nil, err
 			}
 
-			// For scope="self" without a caller role ID, fall back to
-			// listing all roles (the caller is likely the main agent
-			// which doesn't have a specific role binding).
+			// For scope="self" without a caller role ID, return empty rather
+			// than escalating. SECURITY FIX (2026-10-21): previously, when
+			// type=roles, this silently upgraded to pool scope (AllowPool: true),
+			// contradicting the "scope = security boundary" principle and the
+			// audit L-20-2 fix preventing public enumeration of all roles.
+			// If the main agent needs to list roles, use explicit scope=pool
+			// with admin tier, not a silent escalation from self.
 			if scope.Mode == "self" && scope.RoleID == "" {
-				if dtype == "roles" {
-					scope = core.DiscoveryScope{Mode: "pool", AllowPool: true}
-				} else {
-					// No role context → return empty rather than escalating.
-					return &core.DiscoveryResult{Total: 0}, nil
-				}
+				return &core.DiscoveryResult{Total: 0}, nil
 			}
 
 			result, err := core.DiscoverImpl(app.Registry, scope, dtype, query, page, pageSize)
