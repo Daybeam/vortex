@@ -133,7 +133,7 @@ func TestValidateRoleToolBindings_SkipWhenNoToolsDeclared(t *testing.T) {
 func TestValidateRoleToolBindings_RulesAlsoScanned(t *testing.T) {
 	roles := map[string]*Role{
 		"r1": {
-			ID:   "r1",
+			ID:    "r1",
 			Rules: "Always call `validate_input_data` before processing.",
 			BoundMCPBindings: []MCPBinding{
 				{MCPID: "mcp1", AllowedTools: []string{}},

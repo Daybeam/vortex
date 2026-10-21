@@ -10,11 +10,11 @@ import (
 // exist in any MCP's AvailableTools. The loader logs each warning at startup.
 // This is a pure validation — zero behavior change, no runtime effect.
 type ToolBindingWarning struct {
-	RoleID    string
-	MCPID     string
-	Tool      string
-	Category  string // "binding_mcp_missing", "binding_tool_missing", "instruction_ghost"
-	Detail    string
+	RoleID   string
+	MCPID    string
+	Tool     string
+	Category string // "binding_mcp_missing", "binding_tool_missing", "instruction_ghost"
+	Detail   string
 }
 
 func (w ToolBindingWarning) String() string {

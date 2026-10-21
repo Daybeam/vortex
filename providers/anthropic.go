@@ -158,6 +158,7 @@ func (p *AnthropicProvider) StreamComplete(ctx context.Context, req CompleteRequ
 	var currentToolCall *ToolCall
 	var currentInput strings.Builder
 	var cacheWrite, cacheRead int
+	var promptTokens, completionTokens int
 
 	reader := bufio.NewReader(resp.Body)
 	for {
@@ -230,11 +231,45 @@ func (p *AnthropicProvider) StreamComplete(ctx context.Context, req CompleteRequ
 				}
 			}
 			if usage, ok := event["usage"].(map[string]any); ok {
+				// input/output tokens arrive on the same message_delta event as
+				// the cache counters. Before 2026-10-20 only the cache fields
+				// were read, so a streaming call reported cache_read > prompt
+				// (prompt was 0) — a self-contradicting record that made the
+				// cost sentinel and outer-ring accounting meaningless.
+				//
+				// Anthropic reports input_tokens on message_start and
+				// output_tokens on message_delta; only overwrite when present so
+				// a delta frame carrying just one of them does not zero the other.
+				if pt, ok := usage["input_tokens"].(float64); ok {
+					promptTokens = int(pt)
+				}
+				if ct, ok := usage["output_tokens"].(float64); ok {
+					completionTokens = int(ct)
+				}
 				if cw, ok := usage["cache_creation_input_tokens"].(float64); ok {
 					cacheWrite = int(cw)
 				}
 				if cr, ok := usage["cache_read_input_tokens"].(float64); ok {
 					cacheRead = int(cr)
+				}
+			}
+		case "message_start":
+			// Anthropic's message_start carries the input-token count and the
+			// cache counters; message_delta later carries output_tokens.
+			if msg, ok := event["message"].(map[string]any); ok {
+				if usage, ok := msg["usage"].(map[string]any); ok {
+					if pt, ok := usage["input_tokens"].(float64); ok {
+						promptTokens = int(pt)
+					}
+					if ct, ok := usage["output_tokens"].(float64); ok {
+						completionTokens = int(ct)
+					}
+					if cw, ok := usage["cache_creation_input_tokens"].(float64); ok {
+						cacheWrite = int(cw)
+					}
+					if cr, ok := usage["cache_read_input_tokens"].(float64); ok {
+						cacheRead = int(cr)
+					}
 				}
 			}
 		}
@@ -244,6 +279,8 @@ func (p *AnthropicProvider) StreamComplete(ctx context.Context, req CompleteRequ
 		Text:             fullText.String(),
 		ToolCalls:        toolCalls,
 		StopReason:       stopReason,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
 		CacheWriteTokens: cacheWrite,
 		CacheReadTokens:  cacheRead,
 	}, nil

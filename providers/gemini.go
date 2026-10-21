@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/pkg/safelimits"
 )
@@ -27,6 +28,65 @@ type GeminiProvider struct {
 }
 
 func (p *GeminiProvider) Name() string { return p.name }
+
+// ListModels calls the Gemini GET /v1beta/models endpoint.
+// Implements interfaces.ModelLister.
+func (p *GeminiProvider) ListModels(ctx context.Context) ([]interfaces.ModelInfo, error) {
+	baseURL := p.cfg.BaseURL
+	if baseURL == "" {
+		baseURL = "https://generativelanguage.googleapis.com"
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	url := baseURL + "/v1beta/models?key=" + p.cfg.APIKey
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build gemini models request: %w", err)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("gemini models request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("gemini models endpoint returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Models []struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"displayName"`
+			Description string `json:"description"`
+			InputToken  int64  `json:"inputTokenLimit"`
+			OutputToken int64  `json:"outputTokenLimit"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode gemini models response: %w", err)
+	}
+
+	models := make([]interfaces.ModelInfo, 0, len(result.Models))
+	for _, m := range result.Models {
+		id := strings.TrimPrefix(m.Name, "models/")
+		if id == "" {
+			continue
+		}
+		mi := interfaces.ModelInfo{
+			ID:            id,
+			Name:          m.DisplayName,
+			ContextWindow: int(m.InputToken),
+			MaxOutput:     int(m.OutputToken),
+		}
+		if mi.Name == "" {
+			mi.Name = id
+		}
+		models = append(models, mi)
+	}
+	return models, nil
+}
 
 // buildGeminiBody constructs the request body shared by Complete and StreamComplete.
 func (p *GeminiProvider) buildGeminiBody(req CompleteRequest) map[string]any {
@@ -155,6 +215,16 @@ func (p *GeminiProvider) StreamComplete(ctx context.Context, req CompleteRequest
 
 	var fullText strings.Builder
 	var toolCalls []ToolCall
+	// Usage and finish_reason are TOP-LEVEL on a Gemini stream chunk, not inside
+	// candidates — so they are readable even on the final frame, which carries
+	// no parts. Before 2026-10-20 the streaming path ignored both entirely and
+	// returned only Text+ToolCalls, making token accounting silently zero on
+	// every streaming Gemini call (the same defect fixed in openai.go §5.7).
+	var (
+		streamPromptTokens     int
+		streamCompletionTokens int
+		streamFinishReason     string
+	)
 
 	scanner := bufio.NewScanner(httpResp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -179,13 +249,37 @@ func (p *GeminiProvider) StreamComplete(ctx context.Context, req CompleteRequest
 						} `json:"functionCall"`
 					} `json:"parts"`
 				} `json:"content"`
+				FinishReason string `json:"finishReason"`
 			} `json:"candidates"`
+			UsageMetadata struct {
+				PromptTokenCount     int `json:"promptTokenCount"`
+				CandidatesTokenCount int `json:"candidatesTokenCount"`
+				// ThoughtsTokenCount is thinking-model reasoning. It counts
+				// against maxOutputTokens but is NOT included in
+				// candidatesTokenCount, so reporting only the latter understates
+				// how much of the response budget the model actually consumed.
+				ThoughtsTokenCount int `json:"thoughtsTokenCount"`
+				TotalTokenCount    int `json:"totalTokenCount"`
+			} `json:"usageMetadata"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
 		}
+		// Read usage before the empty-candidates continue: Gemini sends the
+		// cumulative usage totals on the last frame.
+		//
+		// completion = candidates + thoughts. This mirrors the OpenAI channel,
+		// where completion_tokens already includes reasoning_tokens, so a
+		// caller comparing the two providers sees the same quantity.
+		if chunk.UsageMetadata.PromptTokenCount > 0 || chunk.UsageMetadata.CandidatesTokenCount > 0 || chunk.UsageMetadata.ThoughtsTokenCount > 0 {
+			streamPromptTokens = chunk.UsageMetadata.PromptTokenCount
+			streamCompletionTokens = chunk.UsageMetadata.CandidatesTokenCount + chunk.UsageMetadata.ThoughtsTokenCount
+		}
 		if len(chunk.Candidates) == 0 {
 			continue
+		}
+		if fr := chunk.Candidates[0].FinishReason; fr != "" {
+			streamFinishReason = fr
 		}
 
 		for _, part := range chunk.Candidates[0].Content.Parts {
@@ -208,7 +302,13 @@ func (p *GeminiProvider) StreamComplete(ctx context.Context, req CompleteRequest
 	}
 	if err := scanner.Err(); err != nil {
 		if fullText.Len() > 0 || len(toolCalls) > 0 {
-			return &ProviderResponse{Text: fullText.String(), ToolCalls: toolCalls}, nil
+			return &ProviderResponse{
+				Text:             fullText.String(),
+				ToolCalls:        toolCalls,
+				StopReason:       streamFinishReason,
+				PromptTokens:     streamPromptTokens,
+				CompletionTokens: streamCompletionTokens,
+			}, nil
 		}
 		return nil, &ProviderError{Msg: "stream read error: " + err.Error()}
 	}
@@ -218,7 +318,13 @@ func (p *GeminiProvider) StreamComplete(ctx context.Context, req CompleteRequest
 		return p.Complete(ctx, req)
 	}
 
-	return &ProviderResponse{Text: text, ToolCalls: toolCalls}, nil
+	return &ProviderResponse{
+		Text:             text,
+		ToolCalls:        toolCalls,
+		StopReason:       streamFinishReason,
+		PromptTokens:     streamPromptTokens,
+		CompletionTokens: streamCompletionTokens,
+	}, nil
 }
 
 func (p *GeminiProvider) Complete(ctx context.Context, req CompleteRequest) (*ProviderResponse, error) {
@@ -266,7 +372,10 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 		UsageMetadata struct {
 			PromptTokenCount     int `json:"promptTokenCount"`
 			CandidatesTokenCount int `json:"candidatesTokenCount"`
-			TotalTokenCount      int `json:"totalTokenCount"`
+			// See StreamComplete: reasoning counts against the output budget but
+			// is reported separately from candidates.
+			ThoughtsTokenCount int `json:"thoughtsTokenCount"`
+			TotalTokenCount    int `json:"totalTokenCount"`
 		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal(respBody, &resp); err != nil {
@@ -295,7 +404,7 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 		Text:             text.String(),
 		ToolCalls:        toolCalls,
 		PromptTokens:     resp.UsageMetadata.PromptTokenCount,
-		CompletionTokens: resp.UsageMetadata.CandidatesTokenCount,
+		CompletionTokens: resp.UsageMetadata.CandidatesTokenCount + resp.UsageMetadata.ThoughtsTokenCount,
 	}, nil
 }
 
