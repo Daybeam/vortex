@@ -147,7 +147,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 	}
 	// Egress redaction (I5): strip secrets before result enters LLM context.
 	// Output bounding: adaptive truncation for oversized tool results.
-	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4.2.
+	// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4.2.
 	res = RedactEgress(res)
 	// Skip second truncation for execute_code — its output is already gated
 	// inside executeCode() via AdaptiveOutputResult (8KB threshold). Double

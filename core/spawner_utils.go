@@ -881,9 +881,9 @@ func (s *Spawner) validateCapabilities(ctx context.Context, req *SpawnRequest, r
 	// falling back to dynamic expansion.
 	//
 	// TODO: (1) sort found skills by learned affinity (QuerySkillRecommendations),
-	// (2) also search experience library, not just reg.Skills,
-	// (3) skill mounting is capability granting — should go through the same
-	//     tier-check policy as tool granting (issue 3 fix pattern).
+	// (2) also search experience library, not just reg.Skills.
+	// (3) RESOLVED 2026-10-22 (D3): skill granting is now gated by
+	//     Skill.MountPolicy × submitter tier in ResolveFinalSkills.
 	if role.Generatable && s.tryFindSkillsForMissing(ctx, req, missing) {
 		return nil
 	}

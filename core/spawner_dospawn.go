@@ -440,7 +440,7 @@ turnLoop:
 			cancel()
 
 			// Record provider telemetry (ADDED 2026-10-21).
-			// See docs/plan/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
+			// See docs/completed/2026-10-21/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
 			if s.providerRouter != nil {
 				s.providerRouter.RecordResult(pCfg.Model, time.Since(providerStart), err)
 			}

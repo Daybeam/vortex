@@ -40,16 +40,16 @@ func dedupAttachments(existing, incoming []schemas.Attachment) []schemas.Attachm
 // toolExecState holds the mutable state shared between the tool execution
 // loop in doSpawn and the extracted processToolCalls method.
 type toolExecState struct {
-	toolResults       []string
-	stickyResults     []string // auth/login results kept near top of context (AppWorld eval: prevent burial at pos 5/51)
-	trace             []store.ToolInteraction
-	toolCallCount     map[string]int
-	toolFailCount     map[string]int
+	toolResults   []string
+	stickyResults []string // auth/login results kept near top of context (AppWorld eval: prevent burial at pos 5/51)
+	trace         []store.ToolInteraction
+	toolCallCount map[string]int
+	toolFailCount map[string]int
 	// resultStreak counts, per canonical args key, how many consecutive calls
 	// returned byte-identical output. This — not the raw call count — is what
 	// the reason-blind hard cap blocks on. See noteToolResult.
-	resultStreak   map[string]int
-	resultLastHash map[string]uint64
+	resultStreak      map[string]int
+	resultLastHash    map[string]uint64
 	needsVerification bool
 	turnAttachments   []schemas.Attachment
 	statesVisited     []string
@@ -261,11 +261,11 @@ func (s *Spawner) processToolCalls(
 		if hardCap := s.dedupHardCap(); state.resultStreak[callKey] >= hardCap {
 			observability.GetGlobalMetrics().Inc("orchestrator.dedup.hard_cap", 1)
 			s.logger.Log("EventDedupHardCap", req.TaskID, req.StepID, map[string]any{
-				"tool":         call.Name,
-				"call_n":       callCount + 1,
-				"same_result":  state.resultStreak[callKey],
-				"hard_cap":     hardCap,
-				"args_hash":    callKey,
+				"tool":        call.Name,
+				"call_n":      callCount + 1,
+				"same_result": state.resultStreak[callKey],
+				"hard_cap":    hardCap,
+				"args_hash":   callKey,
 			})
 			state.toolResults = append(state.toolResults, fmt.Sprintf(
 				"[%s] Blocked: this exact call — same tool, same arguments — has now run %d times "+
@@ -613,9 +613,9 @@ func (s *Spawner) processToolCalls(
 					if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
 						s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
 					}
-					// Egress redaction (I5): strip secrets before result enters LLM context.
+					// Egress redaction (I5) + L1 injection marking (input_normalization.go).
 					// Output bounding: adaptive truncation for oversized results.
-					md = RedactEgress(md)
+					md = redactAndMarkUntrusted(md)
 					if len(md) > s.processor.MaxBodyChars {
 						md = string(AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
@@ -671,8 +671,8 @@ func (s *Spawner) processToolCalls(
 					if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
 						s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
 					}
-					// Egress redaction (I5): strip secrets before result enters LLM context.
-					md = RedactEgress(md)
+					// Egress redaction (I5) + L1 injection marking (mirrors the local branch).
+					md = redactAndMarkUntrusted(md)
 					if len(md) > s.processor.MaxBodyChars {
 						md = string(AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}

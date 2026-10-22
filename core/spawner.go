@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/pkg/gateway"
 	"github.com/daybeam/vortex/pkg/registry"
 	"github.com/daybeam/vortex/providers"
@@ -55,7 +56,7 @@ type Spawner struct {
 	processor         *OutputProcessor
 	toolRouter        *ToolRouter
 	skillRouter       *SkillRouter
-	verifierRegistry  map[string]Verifier
+	verifierRegistry  map[string]verify.Verifier
 	constraintAdapter *ConstraintAdapter
 	sieve             *Sieve
 	contextManager    *ContextManager
@@ -114,7 +115,7 @@ type Spawner struct {
 
 	// telemetry and providerRouter (ADDED 2026-10-21): provider routing telemetry
 	// and strategy-based selection. Nil-safe: initialized in NewSpawner from config.
-	// See docs/plan/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
+	// See docs/completed/2026-10-21/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
 	telemetry      *TelemetryRegistry
 	providerRouter *ProviderRouter
 }
@@ -142,7 +143,7 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		logger:           logger,
 		ResourceLoader:   loader,
 		mcpMgr:           NewMCPConnectionManager(reg, logger),
-		verifierRegistry: make(map[string]Verifier),
+		verifierRegistry: make(map[string]verify.Verifier),
 		interceptors:     interceptors,
 		contextProviders: []ContextProvider{
 			&TimeProvider{},
