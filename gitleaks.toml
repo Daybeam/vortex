@@ -19,4 +19,5 @@ paths = [
   '''core/scheduler_surgery_t5_test\.go''',
   '''store/fmc_batch_scrub_test\.go''',
   '''core/sanitizer_scrub_test\.go''',
+  '''core/input_normalization_test\.go''',
 ]

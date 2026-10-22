@@ -55,7 +55,7 @@ func ApplySandbox(pid int, c SandboxConstraints) (cleanup func(), err error) {
 	// disabling here degrades gracefully to "no resource limits".
 	// Migrated to atomic.Bool (client.feature_flags) for hot-reload support.
 	if cgroupSandboxDisabled.Load() {
-		return func() {}, fmt.Errorf("jit-sandbox: disabled via ORCH_DISABLE_CGROUP_SANDBOX")
+		return func() {}, fmt.Errorf("jit-sandbox: disabled via VORTEX_DISABLE_CGROUP_SANDBOX")
 	}
 	if cgroupRoot == "" {
 		return func() {}, fmt.Errorf("jit-sandbox: cgroups v2 mount not found")
