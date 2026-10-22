@@ -41,7 +41,7 @@ func TestServeSSE_NoOsExitOnBindError(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		serveSSE(mcpServer, rootCancel) // should return, not os.Exit
+		serveSSE(mcpServer, rootCancel) // should return, not os.Exit (nil db → none mode)
 	}()
 
 	select {
@@ -73,5 +73,43 @@ func TestIsLoopbackAddr(t *testing.T) {
 		if got := isLoopbackAddr(c.addr); got != c.want {
 			t.Errorf("isLoopbackAddr(%q) = %v, want %v", c.addr, got, c.want)
 		}
+	}
+}
+
+// TestServeSSE_HonorsVortexHost is the regression test for the VORTEX_HOST
+// bind bug (docs/plan/CORE_BOUNDARY_DEBT_AND_SAAS_GAP_REMEDIATION.md §P4.1
+// evidence, "adjacent bug"): serveSSE read VORTEX_HOST for baseURL logic but
+// hardcoded the bind to "0.0.0.0:"+port — a user setting VORTEX_HOST=127.0.0.1
+// to restrict exposure was still listening on every interface. With the fix,
+// the bind uses the host: occupying 127.0.0.1:port and setting
+// VORTEX_HOST=127.0.0.1 makes ListenAndServe fail, so serveSSE returns
+// gracefully via the C4 path. With the bug, 0.0.0.0:port binds fine on
+// Windows (distinct from 127.0.0.1:port) and serveSSE blocks on the signal
+// wait — the 5s timeout fails the test.
+func TestServeSSE_HonorsVortexHost(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to occupy loopback port: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	t.Setenv("VORTEX_HOST", "127.0.0.1")
+	t.Setenv("VORTEX_PORT", strconv.Itoa(port))
+
+	mcpServer := server.NewMCPServer("test", "1.0.0")
+	_, rootCancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveSSE(mcpServer, rootCancel)
+	}()
+
+	select {
+	case <-done:
+		// Success: bind on 127.0.0.1 failed → the host was honored.
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveSSE bound 0.0.0.0 despite VORTEX_HOST=127.0.0.1 — host ignored (bind-bug regression)")
 	}
 }

@@ -27,7 +27,10 @@ import (
 func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 	host := getenv("VORTEX_HOST", "0.0.0.0")
 	port := getenv("VORTEX_PORT", "8000")
-	addr := "0.0.0.0:" + port
+	// Bind to the configured host, not a hardcoded wildcard — a user setting
+	// VORTEX_HOST to a loopback address to restrict exposure must actually be
+	// bound to it. Default (unset) behavior is unchanged (0.0.0.0).
+	addr := net.JoinHostPort(host, port)
 
 	// BaseURL is resolved from VORTEX_BASE_URL (set by the caller) so
 	// that tunnel / reverse-proxy URLs work, falling back to localhost.
