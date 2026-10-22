@@ -5,6 +5,15 @@ vortex_web
 *.dll
 *.so
 *.dylib
+*.tar.gz
+*.zip
+
+# Backup directories and temporary files
+*_backup_*/
+project_backup_*/
+*.pyc
+__pycache__/
+*.docx
 
 # Go
 vendor/
