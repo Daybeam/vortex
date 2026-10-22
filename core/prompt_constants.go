@@ -165,4 +165,34 @@ const (
 	SpawnerZeroEffectMsg = "[SYSTEM]: You declared status=ok, but none of the tool calls in this step could have changed any external state — every call so far was read-only. " +
 		"If the task requires changing data (adding, updating, deleting, sending, following, downloading, paying), you must actually execute those calls now; describing the result is not the same as producing it. " +
 		"If this really is a read-only question (e.g. 'how many...', 'which one...'), put the concrete answer in `result` as a bare value and state explicitly that it came from a read-only query."
+
+	// SpawnerZeroEffectParseFailMsg is the parse-failure variant of the
+	// zero-effect nudge (A2, eval FINDINGS.md §A2, 2026-10-22). The gate
+	// originally required StatusOK, so a model whose output ParseOutput
+	// degraded to partial (conf 0.3 fallback) was never nudged even when its
+	// trace was entirely read-only — the v20 collapse: correct plans written
+	// inside unparseable text, zero corrective signal from any gate. `partial`
+	// here is the engine's own degradation artifact, not the model declaring
+	// completion, so parseFailed turns are treated like completion claims.
+	// The wording names BOTH problems (invalid format AND read-only trace):
+	// reusing the ok-variant would falsely assert "you declared status=ok"
+	// about an output the engine could not read.
+	SpawnerZeroEffectParseFailMsg = "[SYSTEM]: Your last output could not be parsed as the required JSON structure, so the step is not complete. In addition, every tool call so far has been read-only — nothing has changed external state yet. " +
+		"If the task requires changing data (adding, updating, deleting, sending, following, downloading, paying), issue the actual tool call now using the native JSON tool-call structure — do not describe it in prose or pseudo-tags. " +
+		"If this really is a read-only question, re-send your final answer as valid JSON with the concrete value in `result`."
+
+	// SpawnerMidAbandonMsg is injected by the mid-abandonment gate (A5, eval
+	// FINDINGS.md §A5, 2026-10-22): the model started working (read-only calls
+	// in the trace), then emitted a PARSEABLE partial and stopped while turns
+	// remain. This is the small-model failure mode all three completion gates
+	// were blind to: noToolCallsYet is already false (work started), the
+	// zero-effect gate wants ok/parseFailed (this is a clean partial), and the
+	// parseable partial is accepted as-is right after the gates.
+	//
+	// The wording leaves a legitimate exit open on purpose: a model that is
+	// genuinely blocked (missing information) is told to finalize and SAY what
+	// is missing instead of being forced into a loop — the nudge is one-shot.
+	SpawnerMidAbandonMsg = "[SYSTEM]: You reported this step as incomplete while turns remain, and nothing you have called so far could have changed external state — every call was read-only. " +
+		"If the task requires changing data (adding, updating, deleting, sending, following, downloading, paying), continue now and issue those calls. " +
+		"If you genuinely cannot proceed, finalize now and state exactly what is missing in `missing_context` — do not simply stop."
 )

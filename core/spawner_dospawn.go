@@ -122,6 +122,9 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// If the model answers "this was a read-only question", that is a legitimate
 	// answer and the second pass goes through.
 	zeroEffectNudged := false
+	// A5 (eval FINDINGS.md §A5): mid-abandonment nudge — one-shot, like the
+	// zero-effect nudge above it.
+	midAbandonNudged := false
 	// B2 (eval §3.2): Output hash dedup for execute_code loop detection.
 	// C3 fix (2026-10-18): Consecutive-only tracking. The previous cumulative
 	// map (resultHashCounts) produced false positives for legitimate polling
@@ -814,7 +817,16 @@ turnLoop:
 			// results at the exit gate and trigger auto-refine. This preserves
 			// the model's ability to reason between tool calls, which is
 			// essential for multi-step DAGs.
-			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) && !s.registry.System.FeatureFlags.DisableForceTool {
+			// A7 (eval FINDINGS.md §A7, 2026-10-22): DisableForceTool is NOT
+			// consulted here. It disables the provider-side output constraint
+			// (turn-0 "must call a tool" grammar, :323); this gate is the
+			// prompt-side reminder for a model that is spinning without doing
+			// anything. "Give the model freedom from the forced-tool constraint"
+			// and "remind a motionless model to act" are different mechanisms —
+			// turning off the former must not silence the latter. (Not triggered
+			// in the v20 configs — the flag was absent — but the coupling would
+			// bite the first deployment that sets it.)
+			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) {
 				if s.registry.System.FeatureFlags.EvalObs {
 					fmt.Fprintf(os.Stderr, "[EVAL-OBS] NUDGE triggered turn=%d noTool=%v lowConf=%v parse=%v\n",
 						turn+1, noToolCallsYet, selfReportedLowConfidence, parseFailed)
@@ -853,8 +865,19 @@ turnLoop:
 			// this condition, so the injected text asks the model to *classify*
 			// its own step rather than asserting it did nothing. Re-firing would
 			// turn a genuine "this was a query" answer into a loop.
+			//
+			// A2 (eval FINDINGS.md §A2, 2026-10-22): the gate also fires when
+			// parseFailed — ParseOutput degraded the output to partial (conf
+			// 0.3), which is the engine's own artifact, not the model declaring
+			// completion. Requiring StatusOK left the v20 format collapse with
+			// zero corrective signal (ZERO-EFFECT NUDGE fired 0 times in 8
+			// tasks): A1's guard catches the KNOWN pseudo-tags before parsing,
+			// this arm catches whatever malformed shapes the future invents
+			// after ParseOutput degrades them. parse-failure turns get their own
+			// message variant — the ok-variant would assert "you declared
+			// status=ok" about text the engine could not read.
 			if s.registry.System.FeatureFlags.ZeroEffectNudge && !zeroEffectNudged && !noToolCallsYet &&
-				output.Status == schemas.StatusOK && turn < maxTurns-1 {
+				(output.Status == schemas.StatusOK || parseFailed) && turn < maxTurns-1 {
 				hasEffect := false
 				seenTools := make([]string, 0, len(trace))
 				for _, t := range trace {
@@ -866,21 +889,26 @@ turnLoop:
 				if !hasEffect {
 					zeroEffectNudged = true
 					s.logger.Log("EventZeroEffectNudged", req.TaskID, req.StepID, map[string]any{
-						"turn":        turn + 1,
-						"trace_len":   len(trace),
-						"trace_tools": seenTools,
-						"confidence":  output.Confidence,
+						"turn":         turn + 1,
+						"trace_len":    len(trace),
+						"trace_tools":  seenTools,
+						"confidence":   output.Confidence,
+						"parse_failed": parseFailed,
 					})
 					observability.GetGlobalMetrics().Inc("orchestrator.zero_effect.nudged", 1)
 					if s.registry.System.FeatureFlags.EvalObs {
-						fmt.Fprintf(os.Stderr, "[EVAL-OBS] ZERO-EFFECT NUDGE turn=%d trace=%d conf=%.2f tools=%v\n",
-							turn+1, len(trace), output.Confidence, seenTools)
+						fmt.Fprintf(os.Stderr, "[EVAL-OBS] ZERO-EFFECT NUDGE turn=%d trace=%d conf=%.2f parse=%v tools=%v\n",
+							turn+1, len(trace), output.Confidence, parseFailed, seenTools)
 					}
 					for i := range userBlocks {
 						userBlocks[i].CacheControl = ""
 					}
 					userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
-					userBlocks = append(userBlocks, schemas.ContentBlock{Text: SpawnerZeroEffectMsg, CacheControl: "ephemeral"})
+					msg := SpawnerZeroEffectMsg
+					if parseFailed {
+						msg = SpawnerZeroEffectParseFailMsg
+					}
+					userBlocks = append(userBlocks, schemas.ContentBlock{Text: msg, CacheControl: "ephemeral"})
 					continue
 				}
 			}
@@ -891,6 +919,51 @@ turnLoop:
 					output.Confidence = 0.4
 				}
 				output.Warnings = append(output.Warnings, "orchestrator: model reported status=ok but no tool calls were recorded; downgraded to partial")
+			}
+
+			// ── Mid-abandonment gate (A5, eval FINDINGS.md §A5, 2026-10-22) ──
+			// The highest-frequency small-model failure mode: the model starts
+			// working (read-only calls land in the trace), hits friction (a
+			// 422, an empty page), then emits a PARSEABLE partial and stops
+			// while turns remain. All three earlier gates are blind to it:
+			// noToolCallsYet is false (work started), the zero-effect gate
+			// wants ok/parseFailed (this is a clean partial), and without this
+			// gate the partial is accepted as-is right below.
+			//
+			// Deliberately one-shot and opt-in (mid_abandon_nudge), like the
+			// zero-effect gate. `!parseFailed` keeps the message honest — a
+			// parse-collapsed turn gets the zero-effect parse-fail variant
+			// instead (A2), not "you reported this step as incomplete", which
+			// would assert the engine read an output it did not. StatusFailed
+			// is excluded on purpose: parseable failures already route through
+			// the in-loop failure/retry machinery. The message leaves a
+			// legitimate exit open — a genuinely blocked model is told to
+			// finalize with missing_context, not forced into a loop.
+			if s.registry.System.FeatureFlags.MidAbandonNudge && !midAbandonNudged && !noToolCallsYet &&
+				output.Status == schemas.StatusPartial && !parseFailed && turn < maxTurns-1 &&
+				!traceHasEffect(trace) {
+				midAbandonNudged = true
+				seenTools := make([]string, 0, len(trace))
+				for _, t := range trace {
+					seenTools = append(seenTools, t.ToolName)
+				}
+				s.logger.Log("EventMidAbandonNudged", req.TaskID, req.StepID, map[string]any{
+					"turn":        turn + 1,
+					"trace_len":   len(trace),
+					"trace_tools": seenTools,
+					"confidence":  output.Confidence,
+				})
+				observability.GetGlobalMetrics().Inc("orchestrator.mid_abandon.nudged", 1)
+				if s.registry.System.FeatureFlags.EvalObs {
+					fmt.Fprintf(os.Stderr, "[EVAL-OBS] MID-ABANDON NUDGE turn=%d trace=%d conf=%.2f tools=%v\n",
+						turn+1, len(trace), output.Confidence, seenTools)
+				}
+				for i := range userBlocks {
+					userBlocks[i].CacheControl = ""
+				}
+				userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
+				userBlocks = append(userBlocks, schemas.ContentBlock{Text: SpawnerMidAbandonMsg, CacheControl: "ephemeral"})
+				continue
 			}
 
 			// ── Priority 5: Update Decision Outcome (Final) ──────────────────
@@ -1027,6 +1100,15 @@ turnLoop:
 							"consecutive_count": consecutiveRepeatCount,
 							"root_cause":        "model_stuck",
 						})
+						// A8 (eval FINDINGS.md §A8, 2026-10-22): the hint stage logs
+						// EventOutputStagnationHinted, but the kill itself was invisible
+						// to EVAL-OBS greps — after the hint, whether a task died and how
+						// it ended could not be answered from the eval logs. EventStepFailed
+						// above is always emitted; this only adds the eval channel.
+						if s.registry.System.FeatureFlags.EvalObs {
+							fmt.Fprintf(os.Stderr, "[EVAL-OBS] STAGNATION KILL task=%s step=%s turn=%d trace=%d repeats=%d\n",
+								req.TaskID, req.StepID, turn+1, len(trace), consecutiveRepeatCount)
+						}
 						return s.partialStagnationOutput(role.BaseCapability,
 							fmt.Sprintf("output_stagnation: identical tool results repeated %d consecutive times after intervention hint", consecutiveRepeatCount),
 							trace), nil

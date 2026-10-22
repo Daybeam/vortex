@@ -30,6 +30,19 @@ func TestBuild_CoreToolSectionFollowsRoleCoreTools(t *testing.T) {
 		}
 	})
 
+	t.Run("wildcard means unrestricted", func(t *testing.T) {
+		got := collectPrompt(t, pa, &config.Role{
+			ID:             "executor",
+			BaseCapability: "do things",
+			CoreTools:      []string{"*"},
+		})
+		for _, want := range []string{"**write_file**", "**read_file**", "**execute_code**", "Use execute_code for computation"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("wildcard role lost %q; [\"*\"] must equal the nil default", want)
+			}
+		}
+	})
+
 	t.Run("file tools only omits the code sandbox", func(t *testing.T) {
 		got := collectPrompt(t, pa, &config.Role{
 			ID:             "appworld_agent",

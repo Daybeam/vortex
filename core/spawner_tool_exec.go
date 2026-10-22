@@ -410,13 +410,27 @@ func (s *Spawner) processToolCalls(
 				// So: keep the nudge in the tool result, record the intent,
 				// and let the call proceed. Guidance preserved, veto removed.
 				// Set system.require_write_reason=true to restore hard blocking (that path emits EventWriteAuthBlocked).
+				//
+				// A3 (eval FINDINGS.md §A3, 2026-10-22): the R4 comment promised
+				// "keep the nudge in the tool result", but the append lived only in
+				// the hard-block branch — with require_write_reason=false the nudge
+				// went to state.trace (never model-visible) and the model saw only
+				// the bare result; v20 logged 15 EventWriteAuthNudged firing into
+				// the void. The advisory nudge is now appended to toolResults ahead
+				// of the real result (the execution paths below append theirs after).
+				// The "do NOT repeat" wording is load-bearing: the call has already
+				// been dispatched, and a small model that reads the warning as a
+				// complaint would otherwise re-issue the same write (double
+				// cancel_/update_). The early trace append also moved into the
+				// hard-block branch: it double-booked the advisory path (one call,
+				// two trace entries) and recorded the advisory text on the
+				// hard-block path, where the model actually saw AUTHORIZATION REQUIRED.
 				nudge := fmt.Sprintf(
-					"[%s] This call changes external state. Before you rely on it, note: "+
-						"what is the current state, and is this write necessary? "+
-						"Proceeding without a `_reason`.",
+					"[%s] This call changes external state. Before you rely on the result below, note: "+
+						"what is the current state, and is this write necessary? The call is being "+
+						"executed without a `_reason`; once the result below arrives, do NOT repeat "+
+						"this call — only reflect on whether further writes are needed.",
 					call.Name)
-				interaction.Result = nudge
-				state.trace = append(state.trace, interaction)
 				if s.registry != nil && s.registry.System.RequireWriteReason {
 					observability.GetGlobalMetrics().Inc("orchestrator.auth.write_blocked", 1)
 					s.logger.Log("EventWriteAuthBlocked", req.TaskID, req.StepID, map[string]any{
@@ -430,10 +444,14 @@ func (s *Spawner) processToolCalls(
 							"  {\"reservation_id\": \"<the id>\", \"_reason\": \"<why this write is correct>\"}",
 						call.Name)
 					interaction.Result = nudge
+					state.trace = append(state.trace, interaction)
 					env := s.processor.Wrap(call.Name, nudge, "error", "orchestrator", reason)
 					state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
 					continue
 				}
+				interaction.Result = nudge
+				env := s.processor.Wrap(call.Name, nudge, "ok", "orchestrator", reason)
+				state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
 				s.logger.Log("EventWriteAuthNudged", req.TaskID, req.StepID, map[string]any{
 					"tool": call.Name,
 					"mcp":  mcpID,
