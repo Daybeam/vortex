@@ -1,4 +1,4 @@
-package core
+package verify
 
 import (
 	"context"
@@ -124,10 +124,12 @@ func (v *CommandPassVerifier) Verify(ctx context.Context, workdir string, criter
 	return true, "", nil
 }
 
-// runDeterministicChecks executes all structured deterministic checks for a step.
+// RunDeterministicChecks executes all structured deterministic checks for a step.
 // Returns (passed, failureMessage, failureType). If all pass, returns (true, "", "").
 // workdir is the base directory for relative path resolution (typically s.outputBase).
-func runDeterministicChecks(ctx context.Context, workdir string, checks []schemas.DeterministicCheck) (bool, string, string) {
+// Exported at package extraction (core → core/verify, P2.4, 2026-10-22); sole production
+// caller is core's scheduler_decision_audit.go (Case 2.5 gate).
+func RunDeterministicChecks(ctx context.Context, workdir string, checks []schemas.DeterministicCheck) (bool, string, string) {
 	for _, check := range checks {
 		verifier, ok := deterministicVerifiers[check.Type]
 		if !ok {

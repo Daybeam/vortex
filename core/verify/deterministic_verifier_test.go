@@ -1,4 +1,4 @@
-package core
+package verify
 
 import (
 	"context"
@@ -98,7 +98,7 @@ func TestRunDeterministicChecks_AllPass(t *testing.T) {
 	checks := []schemas.DeterministicCheck{
 		{Type: "file_exists", Params: map[string]any{"path": "result.json"}},
 	}
-	passed, msg, failType := runDeterministicChecks(context.Background(), dir, checks)
+	passed, msg, failType := RunDeterministicChecks(context.Background(), dir, checks)
 	if !passed {
 		t.Errorf("expected all checks to pass, got msg=%q failType=%q", msg, failType)
 	}
@@ -110,7 +110,7 @@ func TestRunDeterministicChecks_FirstFailsShortCircuits(t *testing.T) {
 		{Type: "file_exists", Params: map[string]any{"path": "missing.txt"}},
 		{Type: "file_exists", Params: map[string]any{"path": "also_missing.txt"}},
 	}
-	passed, msg, failType := runDeterministicChecks(context.Background(), dir, checks)
+	passed, msg, failType := RunDeterministicChecks(context.Background(), dir, checks)
 	if passed {
 		t.Error("expected fail")
 	}
@@ -126,14 +126,14 @@ func TestRunDeterministicChecks_UnknownTypeSkipped(t *testing.T) {
 	checks := []schemas.DeterministicCheck{
 		{Type: "unknown_verifier", Params: map[string]any{}},
 	}
-	passed, _, _ := runDeterministicChecks(context.Background(), t.TempDir(), checks)
+	passed, _, _ := RunDeterministicChecks(context.Background(), t.TempDir(), checks)
 	if !passed {
 		t.Error("unknown verifier types should be skipped, not fail")
 	}
 }
 
 func TestRunDeterministicChecks_EmptyListPasses(t *testing.T) {
-	passed, _, _ := runDeterministicChecks(context.Background(), t.TempDir(), nil)
+	passed, _, _ := RunDeterministicChecks(context.Background(), t.TempDir(), nil)
 	if !passed {
 		t.Error("empty check list should pass")
 	}
