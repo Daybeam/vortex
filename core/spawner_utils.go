@@ -880,10 +880,9 @@ func (s *Spawner) validateCapabilities(ctx context.Context, req *SpawnRequest, r
 	// AllowDynamicSkills=true → early return). Moved BEFORE the early return so
 	// falling back to dynamic expansion.
 	//
-	// TODO: (1) sort found skills by learned affinity (QuerySkillRecommendations),
-	// (2) also search experience library, not just reg.Skills.
-	// (3) RESOLVED 2026-10-22 (D3): skill granting is now gated by
-	//     Skill.MountPolicy × submitter tier in ResolveFinalSkills.
+	// TODO: none — (1)+(2) RESOLVED 2026-10-22 (affinity sort + experience-library
+	// search via store.QuerySkillRecommendations, spawner_capability_resolve.go);
+	// (3) RESOLVED 2026-10-22 (D3: Skill.MountPolicy × submitter tier gate).
 	if role.Generatable && s.tryFindSkillsForMissing(ctx, req, missing) {
 		return nil
 	}

@@ -796,9 +796,9 @@ turnLoop:
 			}
 
 			// FIX (2026-09-07): Malformatted Tool Call Guard.
-			// When the model outputs pseudo-XML like <anim:call> instead of real JSON tool calls,
+			// When the model outputs pseudo-XML (<anim:call>, <tool_code>) instead of real JSON tool calls,
 			// intercept it and inject a stern correction prompt so it doesn't get trapped.
-			if strings.Contains(cleanText, "<anim:call") || strings.Contains(cleanText, "<tool_call") {
+			if hasMalformedToolCallTag(cleanText) {
 				msg := SpawnerInvalidToolFormatMsg
 				for i := range userBlocks {
 					userBlocks[i].CacheControl = ""
