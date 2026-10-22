@@ -137,29 +137,29 @@ const (
 
 // App holds all dependencies injected into tool handlers.
 type App struct {
-	Registry        *config.Registry
-	Scheduler       *core.DirectedEngine
-	TaskStore       store.ITaskStore
-	ExpStore        store.IExperienceStore
-	Schedule        *core.ScheduleManager
-	SStore          *store.ScheduleStore
-	JIT             *core.JITManager
-	Logger          *core.Logger
-	CodeIntel       *ci.Handler
-	Navigator       *core.CapabilityNavigator
-	ConfigPath      string
-	Tier            string
-	ResourceLoader  *core.ResourceLoader
-	IntentRouter    *core.IntentRouter
-	EmbedClient     core.EmbeddingClient
-	MemoryBankStore *store.MemoryBankStore
-	Archive         *core.ContextArchive
-	Promoter        *Promoter // Optional usage-driven hot-promoter for invoke actions
-	SOPManager      *core.SOPManager
-	BudgetGate      *core.BudgetGate
-	PendingSkillGC  *core.PendingSkillGC
-	CostTracker     *core.CostTracker
-	DB              *sql.DB
+	Registry          *config.Registry
+	Scheduler         *core.DirectedEngine
+	TaskStore         store.ITaskStore
+	ExpStore          store.IExperienceStore
+	Schedule          *core.ScheduleManager
+	SStore            *store.ScheduleStore
+	JIT               *core.JITManager
+	Logger            *core.Logger
+	CodeIntel         *ci.Handler
+	Navigator         *core.CapabilityNavigator
+	ConfigPath        string
+	Tier              string
+	ResourceLoader    *core.ResourceLoader
+	IntentRouter      *core.IntentRouter
+	EmbedClient       core.EmbeddingClient
+	MemoryBankStore   *store.MemoryBankStore
+	Archive           *core.ContextArchive
+	Promoter          *Promoter // Optional usage-driven hot-promoter for invoke actions
+	SOPManager        *core.SOPManager
+	BudgetGate        *core.BudgetGate
+	PendingSkillGC    *core.PendingSkillGC
+	CostTracker       *core.CostTracker
+	DB                *sql.DB
 	editionSubsystems []EditionSubsystem
 	archiveStop       chan struct{} // stops the TTL pruning goroutine (audit: was goroutine leak)
 }

@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/daybeam/vortex/config"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/daybeam/vortex/config"
 )
 
 // This file is a permanent regression guard for tools.go's documented history

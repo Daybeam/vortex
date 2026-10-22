@@ -81,7 +81,7 @@ func TestPromoteSkill_ActionSuccess(t *testing.T) {
 	app.Navigator = core.NewCapabilityNavigator(app.Registry)
 
 	// Invoke the real action handler
-	result, err := 	registry.Invoke(context.Background(), app, "admin", "promote_skill", map[string]any{
+	result, err := registry.Invoke(context.Background(), app, "admin", "promote_skill", map[string]any{
 		"skill_id": skillID,
 	})
 	if err != nil {

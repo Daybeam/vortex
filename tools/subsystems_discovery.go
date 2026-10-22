@@ -27,7 +27,7 @@ func registerDiscoverySubsystem(app *App) {
 	}
 
 	s.Actions["discover"] = Action{
-		Name:        "discover",
+		Name: "discover",
 		Description: "Discover available tools, roles, or MCPs within a scope. " +
 			"scope='self' discovers your own role's tools (default, safe for Tier1). " +
 			"scope='role:<id>' discovers another role's tools (planner use). " +
@@ -88,7 +88,7 @@ func registerDiscoverySubsystem(app *App) {
 	}
 
 	s.Actions["findskills"] = Action{
-		Name:        "findskills",
+		Name: "findskills",
 		Description: "Find existing skills that can supplement a role's capabilities. " +
 			"Searches the skill registry by capability, name, description, or provides tags. " +
 			"Use when a role lacks required capabilities — findskills is the fast tier-1 path " +

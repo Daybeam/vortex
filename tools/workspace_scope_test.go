@@ -77,17 +77,17 @@ func TestIsWithinAllowed(t *testing.T) {
 	allowed := []string{"/tmp/sessions", "/var/data"}
 
 	tests := []struct {
-		path    string
-		want    bool
+		path string
+		want bool
 	}{
-		{"/tmp/sessions", true},           // exact match
-		{"/tmp/sessions/tenant-a", true},  // nested
+		{"/tmp/sessions", true},              // exact match
+		{"/tmp/sessions/tenant-a", true},     // nested
 		{"/tmp/sessions/tenant-a/sub", true}, // deeply nested
-		{"/var/data", true},               // exact match
-		{"/var/data/file.txt", true},      // nested
-		{"/etc/passwd", false},            // outside
-		{"/tmp/session", false},           // prefix but not separator (would be /tmp/sessions)
-		{"/tmp/sessions2", false},         // sibling, not nested
+		{"/var/data", true},                  // exact match
+		{"/var/data/file.txt", true},         // nested
+		{"/etc/passwd", false},               // outside
+		{"/tmp/session", false},              // prefix but not separator (would be /tmp/sessions)
+		{"/tmp/sessions2", false},            // sibling, not nested
 	}
 
 	for _, tt := range tests {
