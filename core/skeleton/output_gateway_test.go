@@ -1,4 +1,4 @@
-package core
+package skeleton
 
 import (
 	"bytes"
