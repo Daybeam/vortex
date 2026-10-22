@@ -145,8 +145,8 @@ func registerCommandList(s *server.MCPServer, app *App) {
 			if err := os.MkdirAll(wsDir, 0755); err != nil { // regression for audit LOGIC-3: was ignoring error
 				return errResult(fmt.Sprintf("sandbox setup failed: cannot create workspace %s: %v", wsDir, err))
 			}
-			activeSandboxRuns.Store(wsDir, true)      // audit LOGIC-7: prevent cleaner from deleting while in use
-			defer activeSandboxRuns.Delete(wsDir)     // audit LOGIC-7: release when command finishes
+			activeSandboxRuns.Store(wsDir, true)  // audit LOGIC-7: prevent cleaner from deleting while in use
+			defer activeSandboxRuns.Delete(wsDir) // audit LOGIC-7: release when command finishes
 			cwd = wsDir
 			exec.Sandboxed = true
 		}

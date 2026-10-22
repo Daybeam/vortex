@@ -15,9 +15,9 @@ func TestPlanCoverageGap_DetectsPreparationOnlyPlan(t *testing.T) {
 	userTask := "Send a reminder for each of my sent Venmo payment requests that is still pending after 50 days."
 
 	prep := []schemas.StepInput{{
-		ID:      "identify",
-		RoleID:  "appworld_agent",
-		Task:    "Identify roommates via supervisor__show_addresses, then login to Venmo and save pending requests to venmo_data.json.",
+		ID:        "identify",
+		RoleID:    "appworld_agent",
+		Task:      "Identify roommates via supervisor__show_addresses, then login to Venmo and save pending requests to venmo_data.json.",
 		DependsOn: []string{},
 		AdditionalToolAllowlists: map[string][]string{"appworld": {
 			"venmo__show_sent_payment_requests", "supervisor__show_profile", "venmo__show_profile",

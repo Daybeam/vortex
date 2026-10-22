@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daybeam/vortex/core/stream"
+	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -76,7 +78,7 @@ func TestE2E_FullTaskExecutionFlowPipeline(t *testing.T) {
 	// Stage 3: Streaming Token Generation & Reasoning Isolation
 	// ------------------------------------------------------------------------
 	t.Log("Stage 3: Streaming LLM chunks with StreamChunkDetector & Reasoning Isolation")
-	detector := NewStreamChunkDetector()
+	detector := stream.NewStreamChunkDetector()
 
 	type StreamChunk struct {
 		Content   string
@@ -144,7 +146,7 @@ func TestE2E_FullTaskExecutionFlowPipeline(t *testing.T) {
 	// ------------------------------------------------------------------------
 	t.Log("Stage 5: Dual-Track Verification Short Circuit on Missing File")
 	outputFile := filepath.Join(tempDir, "service_bin")
-	verifier := &FileExistsVerifier{}
+	verifier := &verify.FileExistsVerifier{}
 
 	criteria := map[string]any{
 		"path": outputFile,

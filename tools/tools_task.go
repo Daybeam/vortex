@@ -112,7 +112,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 
 		// Tier-Gated Workspace Scope (ADDED 2026-10-13):
 		// Public tier callers cannot escalate via workspace_root.
-		// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.3.
+		// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.3.
 		var workspacePolicy *WorkspacePolicy
 		if wp := app.Registry.GetWorkspacePolicy(CallerOwnerID(ctx)); wp != nil {
 			workspacePolicy = &WorkspacePolicy{

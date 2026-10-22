@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -196,12 +197,12 @@ func TestReplayScheduler_GrayscaleArchivesFailedCandidate(t *testing.T) {
 
 type failingVerifier struct{}
 
-func (f *failingVerifier) Sense(ctx context.Context, mcpID, toolName string, executor ToolExecutor) (VerificationState, error) {
+func (f *failingVerifier) Sense(ctx context.Context, mcpID, toolName string, executor verify.ToolExecutor) (verify.VerificationState, error) {
 	return nil, nil
 }
-func (f *failingVerifier) Verify(ctx context.Context, mcpID, toolName string, before VerificationState, result any, executor ToolExecutor) (bool, error) {
+func (f *failingVerifier) Verify(ctx context.Context, mcpID, toolName string, before verify.VerificationState, result any, executor verify.ToolExecutor) (bool, error) {
 	return false, nil
 }
-func (f *failingVerifier) Recover(ctx context.Context, mcpID, toolName string, args map[string]any, err error, executor ToolExecutor) (any, error) {
+func (f *failingVerifier) Recover(ctx context.Context, mcpID, toolName string, args map[string]any, err error, executor verify.ToolExecutor) (any, error) {
 	return nil, nil
 }
