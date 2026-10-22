@@ -1,0 +1,42 @@
+# Vortex
+
+> A task orchestration engine for complex, multi-step agentic workflows: DAG scheduling, multi-provider model routing, experience-driven self-correction, and MCP tools (stdio + raw SSE).
+
+Vortex is a headless MCP server and Go library. It schedules DAG task graphs,
+routes work across model providers (OpenAI, Anthropic, Gemini, Ollama, DeepSeek),
+persists experience for failure-mode correction, and exposes 12 orchestration
+tools for MCP-compatible clients (Claude Desktop, IDEs, custom agents).
+
+## Docs
+
+- [README](README.md): overview, quick start, MCP client setup.
+- [Configuration reference](docs/CONFIGURATION.md): every `config.json` field, provider/skill/role/MCP schemas, feature flags, env vars.
+- [Architecture flows](docs/ARCHITECTURE_FLOWS.md): entry chains and operation pathways across packages.
+- [AGENTS.md](AGENTS.md): guidance for AI coding agents working in this repository.
+- [CHANGELOG](CHANGELOG.md): release history.
+- [SECURITY](SECURITY.md): vulnerability reporting policy and sandbox honesty notes.
+- [CONTRIBUTING](CONTRIBUTING.md): contribution guidelines.
+- [config.example.json](config.example.json): annotated example configuration.
+- [.env.example](.env.example): all supported environment variables.
+
+## Build and test
+
+```bash
+go build ./...
+go test ./...
+```
+
+Requires Go 1.26+. Copy `config.example.json` to `config.json` and reference API
+keys via `api_key_env` (never inline). Run as `./vortex` for stdio (default) or
+`VORTEX_TRANSPORT=sse ./vortex` for the raw SSE transport on :8000.
+
+## Repository layout
+
+- `core/` — engine: scheduler, DAG execution, reflection, spawner, tool router, verifiers
+- `providers/` — model providers (OpenAI, Anthropic, Gemini, Ollama, DeepSeek)
+- `config/` — registry, loader, settings types
+- `store/` — SQLite persistence, experience graph, memory bank
+- `schemas/` — shared task/DAG types
+- `tools/` — the 12 `orchestrator_*` MCP tool registrations
+- `pkg/interfaces/` — the extension seam (implement these to embed Vortex)
+- `skills/` — example skills (code review, test generation)

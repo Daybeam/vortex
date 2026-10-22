@@ -29,6 +29,20 @@ Initial open-source release of Vortex, a headless MCP orchestration engine.
 - `SetMemoryBankStore` wiring for automatic profile extraction
 - ScriptProvider with environment variable allowlist and `fs.read` bridge
 - `CancelTask` cascade test coverage
+- Task planner: pre-step planner spawn producing a multi-step DAG (`enable_planner_first`), with plan-coverage gap detection and executor envelope unwrapping
+- SanitizingProvider for bidirectional PII tokenization on the provider path (`sanitizer_enabled`)
+- Immutable asset gate with SHA-256 verification (`allow_external_assets`)
+- Configurable risk-tier classification (`critical_risk_keywords`, `moderate_risk_keywords`)
+- Sticky union routing and deterministic tool routing with `always_include` MCP bindings
+- Budget gate: automatic task suspension on token budget exhaustion (`budget_gate`)
+- Cost tracker and tamper-evident audit logger (SHA-256 hash chain)
+- Mount approval gate for MCPs and skills (`mount_policy`: open/approval/admin_only) with submitter-tier propagation
+- MCP/tool toggle: strictly-subtractive `disabled` and `disabled_tools` operator switches
+- Lazy MCP discovery (turn-0, role-scoped) and skill manifest drift check
+- Provider telemetry: usage accounting (tokens, stop_reason) and provider routing statistics
+- Input normalization for prompt hardening (HTML comment extraction, CSS hidden-text detection)
+- `EffectiveTier` resolver for consistent tier-based permission checks
+- `-c` config file flag; non-loopback SSE bind warning
 
 ### Fixed
 - Data races in scheduler, event bus, JIT session, and MCP handshake (mutex protection, goroutine leak cleanup)

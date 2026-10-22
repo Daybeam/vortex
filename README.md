@@ -29,6 +29,16 @@ persists experience for self-correction, and exposes tools for external control.
 - **Risk tier classification** — configurable keyword-based risk tiering for task classification (`critical_risk_keywords`, `moderate_risk_keywords`)
 - **Sticky union routing** — tools called in prior turns survive re-route, preventing mid-task capability loss
 - **Deterministic tool routing** — deterministic tool ordering with always-include bindings for stable MCP tool selection
+- **Budget gate** — auto-suspends tasks when per-task or per-role token usage exceeds a configured threshold (`budget_gate`)
+- **Cost tracker** — per-LLM-call token spend persisted to SQLite for spend analysis
+- **Audit logger** — tamper-evident SHA-256 hash chain for decision records
+- **Mount approval gate** — per-MCP/skill mount policy (`open` / `approval` / `admin_only`) with submitter-tier propagation; approval-gated MCPs surface as blocked decisions
+- **MCP/tool toggle** — operator-controlled strictly-subtractive switches: disable an entire MCP or individual tools (`disabled`, `disabled_tools`)
+- **Input normalization** — prompt hardening: HTML comment extraction, CSS hidden-text detection, and ordering constraints before submission
+- **Planner DAG execution** — planner-produced multi-step DAGs execute directly, with plan-coverage gap detection and envelope unwrapping
+- **Lazy MCP discovery** — discovery deferred to turn-0 with role-scoped tool search
+- **Skill manifest drift check** — detects divergence between loaded skills and `skills_dir` on startup
+- **Provider telemetry** — usage accounting (tokens, stop_reason) and provider routing statistics
 
 **Interfaces:**
 - **MCP** (stdio + raw SSE) — 12 core orchestration tools for MCP-compatible clients (Claude Desktop, IDEs, etc.):
