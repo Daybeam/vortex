@@ -218,7 +218,7 @@ func TestDiscoverImpl_MCPs(t *testing.T) {
 	reg := &config.Registry{
 		Roles: map[string]*config.Role{
 			"role_a": {
-				ID: "role_a",
+				ID:               "role_a",
 				BoundMCPBindings: []config.MCPBinding{{MCPID: "mcp1"}},
 			},
 		},
@@ -305,7 +305,7 @@ func TestDiscoverImpl_Pagination(t *testing.T) {
 	reg := &config.Registry{
 		Roles: map[string]*config.Role{
 			"role_a": {
-				ID: "role_a",
+				ID:               "role_a",
 				BoundMCPBindings: []config.MCPBinding{{MCPID: "mcp1"}},
 			},
 		},

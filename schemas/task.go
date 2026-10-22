@@ -581,14 +581,19 @@ type TaskGraph struct {
 	TraceID string           `json:"trace_id,omitempty"`
 	Steps   map[string]*Step `json:"steps"`
 	Status  GraphStatus      `json:"status"`
-	// SubmitterIsAdmin is the authoritative mount-gate source (core.mount_gate.go); persisted so fork/reload retain the tier.
-	SubmitterIsAdmin  bool               `json:"submitter_is_admin,omitempty"`
-	PendingDecisions  []*Decision        `json:"pending_decisions"`
-	OutputFiles       []OutputFile       `json:"output_files"`
-	Artifacts         []ArtifactContract `json:"artifacts,omitempty"`
-	OverallConfidence *float64           `json:"overall_confidence,omitempty"`
-	CreatedAt         time.Time          `json:"created_at"`
-	CompletedAt       *time.Time         `json:"completed_at,omitempty"`
+	// SubmitterIsAdmin is the authoritative mount-gate source: read via
+	// core/mount_gate.go's effectiveSubmitterIsAdmin, enforced in
+	// core/validator.go's ResolveFinalMCPs. Persisted so fork/reload retain the tier.
+	SubmitterIsAdmin bool `json:"submitter_is_admin,omitempty"`
+	// ApprovedMCPMounts: MCP ids a human approved (G2); persisted across reload.
+	ApprovedMCPMounts   map[string]bool    `json:"approved_mcp_mounts,omitempty"`
+	ApprovedSkillMounts map[string]bool    `json:"approved_skill_mounts,omitempty"` // skill ids a human approved (D3, 2026-10-22); persisted
+	PendingDecisions    []*Decision        `json:"pending_decisions"`
+	OutputFiles         []OutputFile       `json:"output_files"`
+	Artifacts           []ArtifactContract `json:"artifacts,omitempty"`
+	OverallConfidence   *float64           `json:"overall_confidence,omitempty"`
+	CreatedAt           time.Time          `json:"created_at"`
+	CompletedAt         *time.Time         `json:"completed_at,omitempty"`
 
 	// Tree-based context management
 	ContextTree   map[string]*ContextNode `json:"context_tree,omitempty"`

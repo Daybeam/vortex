@@ -38,9 +38,9 @@ type DiscoveryScope struct {
 
 // DiscoveryResult is the return type of DiscoverImpl.
 type DiscoveryResult struct {
-	Tools []schemas.ToolDefinition  `json:"tools,omitempty"`
-	Roles []DiscoveryRoleSummary    `json:"roles,omitempty"`
-	MCPs  []MCPSummary              `json:"mcps,omitempty"`
+	Tools []schemas.ToolDefinition `json:"tools,omitempty"`
+	Roles []DiscoveryRoleSummary   `json:"roles,omitempty"`
+	MCPs  []MCPSummary             `json:"mcps,omitempty"`
 	Total int                      `json:"total"`
 }
 
@@ -451,12 +451,12 @@ type FindSkillsResult struct {
 
 // SkillMatch is a single skill match with relevance indicator.
 type SkillMatch struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Capability  string `json:"capability"`
-	Description string `json:"description"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Capability  string   `json:"capability"`
+	Description string   `json:"description"`
 	Provides    []string `json:"provides,omitempty"`
-	MatchReason string  `json:"match_reason"` // "capability" | "provides" | "name" | "description"
+	MatchReason string   `json:"match_reason"` // "capability" | "provides" | "name" | "description"
 }
 
 // FindSkillsImpl searches the skill registry for skills that can supplement

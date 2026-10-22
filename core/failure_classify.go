@@ -60,6 +60,10 @@ const (
 	// FailureClassCapabilityRequired: subagent needs a tool/skill not mounted.
 	FailureClassCapabilityRequired FailureClass = "capability_required"
 
+	// FailureClassApprovalRequired: a mount-policy `approval` MCP needs human
+	// sign-off before a non-admin may use it (G2, 2026-10-22).
+	FailureClassApprovalRequired FailureClass = "approval_required"
+
 	// FailureClassGenerativeUncertainty: low confidence output on exploratory task.
 	FailureClassGenerativeUncertainty FailureClass = "generative_uncertainty"
 
