@@ -324,6 +324,14 @@ func (a *ContextArchive) BuildIndex() {
 }
 
 // filterItemsByTask returns only items matching the given taskID.
+//
+// GUARD (P3.2, 2026-10-22): task_scope is TASK-level isolation, NOT tenant
+// isolation. It answers "which task may recall this memory", never "which
+// tenant owns this data" — the codebase has no tenant_id anywhere (verified:
+// 0 occurrences; store/ is one process-level SQLite; engine graphs are keyed
+// by task only). Do NOT treat this filter as evidence of multi-tenancy. The
+// SaaS boundary (per-tenant process isolation + gateway routing) is designed
+// in docs/architecture/SAAS_BOUNDARY_DESIGN.md and deliberately NOT built.
 func filterItemsByTask(items []MemoryItem, taskScope string) []MemoryItem {
 	out := make([]MemoryItem, 0, len(items))
 	for _, it := range items {
