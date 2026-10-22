@@ -80,11 +80,20 @@ func TestExporter_Sync(t *testing.T) {
 }
 
 type mockTaskStore struct{}
-func (m *mockTaskStore) Set(ctx context.Context, taskID, stepID string, result *store.StepResult) error { return nil }
-func (m *mockTaskStore) Get(ctx context.Context, taskID, stepID string) (*store.StepResult, error) { return nil, nil }
+
+func (m *mockTaskStore) Set(ctx context.Context, taskID, stepID string, result *store.StepResult) error {
+	return nil
+}
+func (m *mockTaskStore) Get(ctx context.Context, taskID, stepID string) (*store.StepResult, error) {
+	return nil, nil
+}
 func (m *mockTaskStore) GetBatch(ctx context.Context, taskID string, stepIDs []string) (map[string]*store.StepResult, error) {
 	return make(map[string]*store.StepResult), nil
 }
-func (m *mockTaskStore) GetByRef(ctx context.Context, ref string) (*store.StepResult, error) { return nil, nil }
+func (m *mockTaskStore) GetByRef(ctx context.Context, ref string) (*store.StepResult, error) {
+	return nil, nil
+}
 func (m *mockTaskStore) ClearTask(ctx context.Context, taskID string) (int, error) { return 0, nil }
-func (m *mockTaskStore) Claim(ctx context.Context, taskID, stepID string) (bool, error) { return true, nil }
+func (m *mockTaskStore) Claim(ctx context.Context, taskID, stepID string) (bool, error) {
+	return true, nil
+}

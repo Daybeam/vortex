@@ -123,7 +123,7 @@ func AllTools() []ToolDef {
 			InputSchema: schema(nil),
 		},
 		{
-			Name: "begin_session",
+			Name:        "begin_session",
 			Description: "[Edit SOP Step 1] Start an atomic editing session. All writes will be staged in memory. Returns session_id. **Do NOT write to disk directly; always use the session flow.**",
 			InputSchema: schema(nil),
 		},
@@ -172,7 +172,6 @@ func AllTools() []ToolDef {
 func intProp(desc string) string {
 	return fmt.Sprintf(`{"type":"integer","description":%q}`, desc)
 }
-
 
 // Dispatch routes a tool call to the appropriate handler.
 func (h *Handler) Dispatch(name string, args map[string]interface{}) ToolResult {
@@ -258,94 +257,130 @@ func (h *Handler) indexProject(rootDir string) ToolResult {
 }
 
 func (h *Handler) findSymbol(name string) ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	syms := h.analyzer.FindSymbol(name)
 	return okResult(map[string]interface{}{"found": len(syms), "symbols": nilSafe(syms)})
 }
 
 func (h *Handler) findReferences(name, file string) ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	refs := h.analyzer.FindReferences(name, file)
 	return okResult(map[string]interface{}{"symbol": name, "count": len(refs), "references": nilSafe(refs)})
 }
 
 func (h *Handler) getCallers(funcName string) ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	callers := h.analyzer.GetCallers(funcName)
 	return okResult(map[string]interface{}{"function": funcName, "caller_count": len(callers), "callers": nilSafe(callers)})
 }
 
 func (h *Handler) getCallees(funcName, file string) ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	callees := h.analyzer.GetCallees(funcName, file)
 	return okResult(map[string]interface{}{"function": funcName, "callee_count": len(callees), "callees": nilSafe(callees)})
 }
 
 func (h *Handler) getImplementors(ifaceName string) ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	impls := h.analyzer.GetImplementors(ifaceName)
 	return okResult(map[string]interface{}{"interface": ifaceName, "count": len(impls), "implementors": nilSafe(impls)})
 }
 
 func (h *Handler) symbolView(name, file string) ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	view, err := h.analyzer.SymbolView(name, file)
-	if err != nil { return failf("%v", err) }
+	if err != nil {
+		return failf("%v", err)
+	}
 	return okResult(view)
 }
 
 func (h *Handler) impactAnalysis(symbolName, file string) ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	result, err := h.analyzer.ImpactAnalysis(symbolName, file)
-	if err != nil { return failf("%v", err) }
+	if err != nil {
+		return failf("%v", err)
+	}
 	return okResult(result)
 }
 
 func (h *Handler) listSymbols(filter string) ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	syms := h.analyzer.ListSymbols(filter)
 	return okResult(map[string]interface{}{"count": len(syms), "symbols": nilSafe(syms)})
 }
 
 func (h *Handler) getDiagnostics() ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	diags := h.analyzer.GetDiagnostics()
 	return okResult(map[string]interface{}{"error_count": len(diags), "diagnostics": nilSafe(diags)})
 }
 
 func (h *Handler) readFile(file string) ToolResult {
 	data, err := readFileBytesImpl(file)
-	if err != nil { return failf("read failed: %v", err) }
+	if err != nil {
+		return failf("read failed: %v", err)
+	}
 	content := string(data)
 	return okResult(map[string]interface{}{
-		"file": file,
-		"lines": strings.Count(content, "\n") + 1,
+		"file":    file,
+		"lines":   strings.Count(content, "\n") + 1,
 		"content": content,
 	})
 }
 
 func (h *Handler) searchCode(query string, caseSensitive bool) ToolResult {
-	if h.analyzer == nil { return fail("not indexed") }
+	if h.analyzer == nil {
+		return fail("not indexed")
+	}
 	matches := h.analyzer.SearchCode(query, caseSensitive)
 	return okResult(map[string]interface{}{"query": query, "count": len(matches), "matches": nilSafe(matches)})
 }
 
 func (h *Handler) beginSession() ToolResult {
-	if h.overlay == nil { return fail("not indexed") }
+	if h.overlay == nil {
+		return fail("not indexed")
+	}
 	id := h.overlay.Begin()
 	return okResult(map[string]string{"session_id": id, "status": "open"})
 }
 
 func (h *Handler) sessionWrite(sessionID, file, content string) ToolResult {
-	if h.overlay == nil { return fail("not indexed") }
-	if err := h.overlay.WriteFile(sessionID, file, content); err != nil { return failf("stage failed: %v", err) }
+	if h.overlay == nil {
+		return fail("not indexed")
+	}
+	if err := h.overlay.WriteFile(sessionID, file, content); err != nil {
+		return failf("stage failed: %v", err)
+	}
 	return okResult(map[string]string{"session_id": sessionID, "file": file, "status": "staged"})
 }
 
 func (h *Handler) sessionValidate(sessionID string) ToolResult {
-	if h.overlay == nil { return fail("not indexed") }
+	if h.overlay == nil {
+		return fail("not indexed")
+	}
 	diags, err := h.overlay.Validate(sessionID)
-	if err != nil { return failf("validation error: %v", err) }
+	if err != nil {
+		return failf("validation error: %v", err)
+	}
 	return okResult(map[string]interface{}{"session_id": sessionID, "error_count": len(diags), "diagnostics": nilSafe(diags)})
 }
 
@@ -371,15 +406,23 @@ func (h *Handler) sessionCommit(sessionID string) ToolResult {
 }
 
 func (h *Handler) sessionRollback(sessionID string) ToolResult {
-	if h.overlay == nil { return fail("not indexed") }
-	if err := h.overlay.Rollback(sessionID); err != nil { return failf("rollback failed: %v", err) }
+	if h.overlay == nil {
+		return fail("not indexed")
+	}
+	if err := h.overlay.Rollback(sessionID); err != nil {
+		return failf("rollback failed: %v", err)
+	}
 	return okResult(map[string]string{"session_id": sessionID, "status": "rolled_back"})
 }
 
 func (h *Handler) sessionStatus(sessionID string) ToolResult {
-	if h.overlay == nil { return fail("not indexed") }
+	if h.overlay == nil {
+		return fail("not indexed")
+	}
 	sess, err := h.overlay.GetSession(sessionID)
-	if err != nil { return failf("%v", err) }
+	if err != nil {
+		return failf("%v", err)
+	}
 	return okResult(sess)
 }
 
@@ -388,6 +431,8 @@ func readFileBytesImpl(file string) ([]byte, error) {
 }
 
 func nilSafe[S ~[]E, E any](s S) S {
-	if s == nil { return S{} }
+	if s == nil {
+		return S{}
+	}
 	return s
 }

@@ -43,7 +43,8 @@ func init() {
 // Memory:    written to memory.max (hard limit — OOM killer on breach).
 // CPU:       a watchdog goroutine sends SIGKILL after MaxCPUSeconds.
 // KillOnClose: when cleanup() is called, the cgroup directory is removed,
-//   which terminates any remaining processes — mirroring Windows Job Object.
+//
+//	which terminates any remaining processes — mirroring Windows Job Object.
 func ApplySandbox(pid int, c SandboxConstraints) (cleanup func(), err error) {
 	// FIX (2026-10-12, Kaggle SIGTERM root cause): creating a cgroup subtree
 	// (mkdir under /sys/fs/cgroup + moving pids via cgroup.procs) inside a
@@ -54,7 +55,7 @@ func ApplySandbox(pid int, c SandboxConstraints) (cleanup func(), err error) {
 	// disabling here degrades gracefully to "no resource limits".
 	// Migrated to atomic.Bool (client.feature_flags) for hot-reload support.
 	if cgroupSandboxDisabled.Load() {
-		return func() {}, fmt.Errorf("jit-sandbox: disabled via VORTEX_DISABLE_CGROUP_SANDBOX")
+		return func() {}, fmt.Errorf("jit-sandbox: disabled via ORCH_DISABLE_CGROUP_SANDBOX")
 	}
 	if cgroupRoot == "" {
 		return func() {}, fmt.Errorf("jit-sandbox: cgroups v2 mount not found")

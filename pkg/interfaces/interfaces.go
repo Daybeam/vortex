@@ -2,8 +2,8 @@ package interfaces
 
 import (
 	"context"
-	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/pkg/types"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // Provider is the interface all AI backends must satisfy.
