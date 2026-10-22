@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/daybeam/vortex/core/skeleton"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -155,7 +156,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 	// model intentionally chose to produce instead of multiple read_file calls.
 	// See docs/plan/MODEL_DRIVEN_ARCHIVE_RETRIEVAL_DESIGN.md §3.3.0.
 	if call.Name != "execute_code" && len(res) > 2000 {
-		res = string(AdaptiveOutputResult([]byte(res), call.Name, "orchestrator"))
+		res = string(skeleton.AdaptiveOutputResult([]byte(res), call.Name, "orchestrator"))
 	}
 	interaction := store.ToolInteraction{
 		ToolName:  call.Name,

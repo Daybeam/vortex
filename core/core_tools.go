@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/client"
+	"github.com/daybeam/vortex/core/skeleton"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -197,7 +198,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		}
 		mode, _ := args["mode"].(string)
 		if mode == "summary" {
-			return FileSkeleton(data, filepath.Base(path)), nil
+			return skeleton.FileSkeleton(data, filepath.Base(path)), nil
 		}
 		// Line-range reading: extract specific lines for batch-reading large files.
 		startLine, _ := args["start_line"].(float64)
@@ -218,7 +219,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 			selected := strings.Join(lines[s-1:e], "\n")
 			return fmt.Sprintf("[Lines %d-%d of %d]\n%s", s, e, len(lines), selected), nil
 		}
-		gated := AdaptiveOutputResult(data, path, "orchestrator")
+		gated := skeleton.AdaptiveOutputResult(data, path, "orchestrator")
 		return string(gated), nil
 
 	case "execute_code":
@@ -342,16 +343,16 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 		// Output bounding: guard against oversized stdout/stderr hitting LLM context.
 		// Mirrors SummarizeOutput in tools_command.go — AdaptiveOutputResult applies
 		// Head+Tail truncation + Error Keyword Extraction + workspace dump for large outputs.
-		gatedStdout := string(AdaptiveOutputResult([]byte(stdout.String()), "execute_code", "orchestrator"))
-		gatedStderr := string(AdaptiveOutputResult([]byte(stderr.String()), "execute_code", "orchestrator"))
+		gatedStdout := string(skeleton.AdaptiveOutputResult([]byte(stdout.String()), "execute_code", "orchestrator"))
+		gatedStderr := string(skeleton.AdaptiveOutputResult([]byte(stderr.String()), "execute_code", "orchestrator"))
 		return map[string]any{
 			"stdout": gatedStdout,
 			"stderr": gatedStderr,
 		}, nil
 	}
 	return map[string]any{
-		"stdout":    string(AdaptiveOutputResult([]byte(stdout.String()), "execute_code", "orchestrator")),
-		"stderr":    string(AdaptiveOutputResult([]byte(stderr.String()), "execute_code", "orchestrator")),
+		"stdout":    string(skeleton.AdaptiveOutputResult([]byte(stdout.String()), "execute_code", "orchestrator")),
+		"stderr":    string(skeleton.AdaptiveOutputResult([]byte(stderr.String()), "execute_code", "orchestrator")),
 		"exit_code": cmd.ProcessState.ExitCode(),
 		"error":     errToString(err),
 	}, nil

@@ -11,6 +11,7 @@ import (
 
 	"github.com/daybeam/vortex/client"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/skeleton"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -388,11 +389,6 @@ func (s *Spawner) processToolCalls(
 					"reason": writeReason,
 				})
 			} else {
-				observability.GetGlobalMetrics().Inc("orchestrator.auth.write_blocked", 1)
-				s.logger.Log("EventWriteAuthBlocked", req.TaskID, req.StepID, map[string]any{
-					"tool": call.Name,
-					"mcp":  mcpID,
-				})
 				// 2026-10-04 (eval §8.51.4-§8.51.7, four prompt rounds measured):
 				//
 				// R1 prose + fragmentary example — model complied 18 times, all
@@ -413,7 +409,7 @@ func (s *Spawner) processToolCalls(
 				// (airline task 7: Write Actions 0/3 across all four arms).
 				// So: keep the nudge in the tool result, record the intent,
 				// and let the call proceed. Guidance preserved, veto removed.
-				// Set system.require_write_reason=true to restore hard blocking.
+				// Set system.require_write_reason=true to restore hard blocking (that path emits EventWriteAuthBlocked).
 				nudge := fmt.Sprintf(
 					"[%s] This call changes external state. Before you rely on it, note: "+
 						"what is the current state, and is this write necessary? "+
@@ -422,6 +418,11 @@ func (s *Spawner) processToolCalls(
 				interaction.Result = nudge
 				state.trace = append(state.trace, interaction)
 				if s.registry != nil && s.registry.System.RequireWriteReason {
+					observability.GetGlobalMetrics().Inc("orchestrator.auth.write_blocked", 1)
+					s.logger.Log("EventWriteAuthBlocked", req.TaskID, req.StepID, map[string]any{
+						"tool": call.Name,
+						"mcp":  mcpID,
+					})
 					nudge = fmt.Sprintf(
 						"[%s] AUTHORIZATION REQUIRED — this call changes external state.\n"+
 							"Add a top-level key named \"_reason\" whose value is one short sentence.\n"+
@@ -617,7 +618,7 @@ func (s *Spawner) processToolCalls(
 					// Output bounding: adaptive truncation for oversized results.
 					md = redactAndMarkUntrusted(md)
 					if len(md) > s.processor.MaxBodyChars {
-						md = string(AdaptiveOutputResult([]byte(md), call.Name, env.Source))
+						md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
 					noteToolResult(state, callKey, md)
 					md = s.steerRepeatedResult(req.TaskID, req.StepID, call.Name, md)
@@ -674,7 +675,7 @@ func (s *Spawner) processToolCalls(
 					// Egress redaction (I5) + L1 injection marking (mirrors the local branch).
 					md = redactAndMarkUntrusted(md)
 					if len(md) > s.processor.MaxBodyChars {
-						md = string(AdaptiveOutputResult([]byte(md), call.Name, env.Source))
+						md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
 					noteToolResult(state, callKey, md)
 					md = s.steerRepeatedResult(req.TaskID, req.StepID, call.Name, md)

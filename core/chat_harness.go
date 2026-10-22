@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/skeleton"
 	"github.com/daybeam/vortex/core/stream"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -832,47 +833,6 @@ func sanitizeToolName(name string) string {
 	return b.String()
 }
 
-// detectAndSkeletonize inspects raw content and applies the best skeletonizer.
-// Detection is heuristic (prefix check), not perfect — it's an optimization,
-// not a security boundary. All underlying functions already exist in
-// file_skeleton.go and output_summarizer.go.
-func detectAndSkeletonize(data []byte, toolName string) string {
-	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" {
-		return "[empty]"
-	}
-	lower := strings.ToLower(trimmed)
-
-	// HTML/SVG: starts with < (covers <html>, <!DOCTYPE>, <svg>, etc.)
-	if strings.HasPrefix(lower, "<") {
-		return tagSkeleton(data)
-	}
-
-	// JSON: starts with { or [
-	if trimmed[0] == '{' || trimmed[0] == '[' {
-		if json.Valid(data) {
-			return jsonSkeleton(data)
-		}
-	}
-
-	// Code: if toolName is write_file/execute_code/read_file, apply code skeleton
-	switch toolName {
-	case "write_file", "execute_code", "read_file":
-		if skel := codeSkeleton(data, goSymbols); len(skel) > 50 {
-			return skel
-		}
-		if skel := codeSkeleton(data, jsSymbols); len(skel) > 50 {
-			return skel
-		}
-		if skel := codeSkeleton(data, pySymbols); len(skel) > 50 {
-			return skel
-		}
-	}
-
-	// Fallback: head/tail + middle sampling
-	return SummarizeOutput(data, toolName)
-}
-
 // externalizeArtifact writes a large tool result to a file and returns a
 // skeleton + path reference for in-context use. The full content remains
 // accessible via read_file and is indexed in the ContextArchive for
@@ -892,11 +852,11 @@ func (h *ChatHarness) externalizeArtifact(result, toolName, taskID string) strin
 	}
 	absPath, _ := filepath.Abs(fullPath)
 
-	skeleton := detectAndSkeletonize([]byte(result), toolName)
+	skel := skeleton.DetectAndSkeletonize([]byte(result), toolName)
 
 	// Index in ContextArchive for search_archive recall.
 	if h.Archive != nil {
-		summary := skeleton
+		summary := skel
 		if len(summary) > 500 {
 			summary = summary[:500] + "\n... (skeleton truncated, see file)"
 		}
@@ -912,6 +872,6 @@ func (h *ChatHarness) externalizeArtifact(result, toolName, taskID string) strin
 
 	return fmt.Sprintf(
 		"[Artifact externalized: %d KB. Skeleton below. Full content at: %s]\n%s\n[Use read_file to access full content.]",
-		len(result)/1024, absPath, skeleton,
+		len(result)/1024, absPath, skel,
 	)
 }

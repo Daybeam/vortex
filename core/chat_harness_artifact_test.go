@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/skeleton"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,11 +37,11 @@ func TestSanitizeToolName(t *testing.T) {
 // SummarizeOutput, which doesn't produce "[Tag Skeleton:" header → test fails.
 func TestDetectAndSkeletonize_HTML(t *testing.T) {
 	html := []byte(`<html><head><title>Test</title></head><body><div class="main">Hello</div></body></html>`)
-	result := detectAndSkeletonize(html, "write_file")
+	result := skeleton.DetectAndSkeletonize(html, "write_file")
 	// tagSkeleton produces a "[Tag Skeleton: ...]" header — distinct from
 	// SummarizeOutput which produces head/tail without this prefix.
 	if !strings.Contains(result, "[Tag Skeleton:") {
-		t.Errorf("detectAndSkeletonize(HTML) = %q, missing \"[Tag Skeleton:\" header (not routed to tagSkeleton)", result)
+		t.Errorf("skeleton.DetectAndSkeletonize(HTML) = %q, missing \"[Tag Skeleton:\" header (not routed to tagSkeleton)", result)
 	}
 }
 
@@ -48,9 +49,9 @@ func TestDetectAndSkeletonize_HTML(t *testing.T) {
 // tagSkeleton (SVG starts with <svg, which is caught by the `<` prefix check).
 func TestDetectAndSkeletonize_SVG(t *testing.T) {
 	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect x="10" y="10" width="80" height="80"/></svg>`)
-	result := detectAndSkeletonize(svg, "write_file")
+	result := skeleton.DetectAndSkeletonize(svg, "write_file")
 	if !strings.Contains(result, "[Tag Skeleton:") {
-		t.Errorf("detectAndSkeletonize(SVG) = %q, missing \"[Tag Skeleton:\" header", result)
+		t.Errorf("skeleton.DetectAndSkeletonize(SVG) = %q, missing \"[Tag Skeleton:\" header", result)
 	}
 }
 
@@ -60,10 +61,10 @@ func TestDetectAndSkeletonize_SVG(t *testing.T) {
 // test fails because output lacks "[JSON Skeleton:" header.
 func TestDetectAndSkeletonize_JSON(t *testing.T) {
 	jsonData := []byte(`{"name":"test","value":42,"items":["a","b","c"]}`)
-	result := detectAndSkeletonize(jsonData, "read_file")
+	result := skeleton.DetectAndSkeletonize(jsonData, "read_file")
 	// jsonSkeleton produces a "[JSON Skeleton: ...]" header.
 	if !strings.Contains(result, "[JSON Skeleton:") {
-		t.Errorf("detectAndSkeletonize(JSON) = %q, missing \"[JSON Skeleton:\" header (not routed to jsonSkeleton)", result)
+		t.Errorf("skeleton.DetectAndSkeletonize(JSON) = %q, missing \"[JSON Skeleton:\" header (not routed to jsonSkeleton)", result)
 	}
 }
 
@@ -71,14 +72,14 @@ func TestDetectAndSkeletonize_JSON(t *testing.T) {
 // Mutation target: removing the empty check → test fails (panics on trimmed[0]
 // or returns different output).
 func TestDetectAndSkeletonize_Empty(t *testing.T) {
-	result := detectAndSkeletonize([]byte(""), "write_file")
+	result := skeleton.DetectAndSkeletonize([]byte(""), "write_file")
 	if result != "[empty]" {
-		t.Errorf("detectAndSkeletonize(empty) = %q, want \"[empty]\"", result)
+		t.Errorf("skeleton.DetectAndSkeletonize(empty) = %q, want \"[empty]\"", result)
 	}
 	// Whitespace-only should also be empty.
-	result = detectAndSkeletonize([]byte("   \n\t  "), "write_file")
+	result = skeleton.DetectAndSkeletonize([]byte("   \n\t  "), "write_file")
 	if result != "[empty]" {
-		t.Errorf("detectAndSkeletonize(whitespace) = %q, want \"[empty]\"", result)
+		t.Errorf("skeleton.DetectAndSkeletonize(whitespace) = %q, want \"[empty]\"", result)
 	}
 }
 
@@ -89,12 +90,12 @@ func TestDetectAndSkeletonize_Empty(t *testing.T) {
 func TestDetectAndSkeletonize_Fallback(t *testing.T) {
 	// Plain text that doesn't start with < or { or [
 	data := []byte("This is plain text content that is not HTML or JSON.\nLine 2.\nLine 3.")
-	result := detectAndSkeletonize(data, "unknown_tool")
+	result := skeleton.DetectAndSkeletonize(data, "unknown_tool")
 	if result == "" {
-		t.Error("detectAndSkeletonize(plaintext) = empty, want non-empty fallback")
+		t.Error("skeleton.DetectAndSkeletonize(plaintext) = empty, want non-empty fallback")
 	}
 	if result == "[empty]" {
-		t.Error("detectAndSkeletonize(plaintext) = \"[empty]\", want fallback content")
+		t.Error("skeleton.DetectAndSkeletonize(plaintext) = \"[empty]\", want fallback content")
 	}
 }
 

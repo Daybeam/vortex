@@ -16,6 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/skeleton"
 )
 
 // ── Sandbox run-command workspace cleanup ────────────────────────────────
@@ -159,8 +160,8 @@ func registerCommandList(s *server.MCPServer, app *App) {
 				if err != nil {
 					return errResult(err.Error())
 				}
-				gatedStdout := []byte(core.SummarizeOutput(res.Stdout, cmdName))
-				gatedStderr := []byte(core.SummarizeOutput(res.Stderr, cmdName))
+				gatedStdout := []byte(skeleton.SummarizeOutput(res.Stdout, cmdName))
+				gatedStderr := []byte(skeleton.SummarizeOutput(res.Stderr, cmdName))
 				return jsonOK(map[string]any{
 					"status":    res.Status,
 					"stdout":    string(gatedStdout),
@@ -177,8 +178,8 @@ func registerCommandList(s *server.MCPServer, app *App) {
 		}
 
 		// Apply SummarizeOutput to guard against oversized output hitting the LLM context
-		gatedStdout := []byte(core.SummarizeOutput(res.Stdout, cmdName))
-		gatedStderr := []byte(core.SummarizeOutput(res.Stderr, cmdName))
+		gatedStdout := []byte(skeleton.SummarizeOutput(res.Stdout, cmdName))
+		gatedStderr := []byte(skeleton.SummarizeOutput(res.Stderr, cmdName))
 
 		resp := map[string]any{
 			"status":    res.Status,
