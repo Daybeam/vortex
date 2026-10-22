@@ -47,10 +47,13 @@ func (p coreToolPolicy) filter(defs []schemas.ToolDefinition) []schemas.ToolDefi
 
 // coreToolPolicyFor resolves the policy for roleID.
 //
-// Semantics of Role.CoreTools:
-//   - nil (field absent)  -> unrestricted; every existing config keeps working
-//   - non-nil, length 0   -> no core tools at all
+// Semantics of Role.CoreTools (A6 assessed 2026-10-22; default-on REINSTATED
+// by product decision the same day — see coreToolPolicyFromRole):
+//   - nil (field absent)  -> unrestricted (the default; core tools are part
+//     of the engine's operating mechanism)
+//   - non-nil, length 0   -> no core tools at all (task_planner's case)
 //   - non-nil, length > 0 -> exactly those names
+//   - contains "*"        -> unrestricted (explicit, self-documenting form)
 //
 // Names outside CoreToolNames are ignored rather than trusted: a typo in config
 // must not be able to widen the surface.
@@ -83,10 +86,22 @@ func coreToolPolicyForRole(reg *config.Registry, roleID string) coreToolPolicy {
 // but refused at dispatch (or vice versa) is a lie either way.
 func coreToolPolicyFromRole(r *config.Role) coreToolPolicy {
 	if r == nil || r.CoreTools == nil {
+		// A6 (eval FINDINGS.md §A6) assessed 2026-10-22: the same-day flip to
+		// "absent = none" was REVERSED by product decision — core tools are
+		// part of the engine's operating mechanism, not an optional extra:
+		// step hand-offs flow through the shared output directory
+		// (write_file/read_file, see prompt_assembler's SHARED-output
+		// instruction), and verification methods name read_file. A role that
+		// says nothing keeps the default surface; narrowing stays opt-in per
+		// role (task_planner declares []).
 		return coreToolPolicy{}
 	}
 	allowed := make(map[string]bool, len(r.CoreTools))
 	for _, n := range r.CoreTools {
+		if n == "*" {
+			// Explicit "all of them" — same result as nil, self-documenting.
+			return coreToolPolicy{}
+		}
 		if CoreToolNames[n] {
 			allowed[n] = true
 		}

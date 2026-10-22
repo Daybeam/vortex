@@ -44,6 +44,12 @@ type AuditResult struct {
 	ActionTaken      string
 	ReserveTokens    int // reply reserve subtracted from maxCtx (0 if skipped)
 	EffectiveMaxCtx  int // maxCtx - ReserveTokens (the effective input capacity)
+	// MCSchemaTokens is the estimated token cost of the request's MCPServers
+	// tool schemas (A10, eval FINDINGS.md §A10). Providers serialize these
+	// definitions into the tools parameter of every call, so they are real
+	// context; they are counted into OriginalTokens and treated as
+	// uncompressible load, but reported separately for observability.
+	MCSchemaTokens int
 }
 
 // ContextManager handles the quantification and reduction of prompt tokens.
@@ -103,7 +109,18 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 	if err != nil {
 		return nil, err
 	}
-	totalTokens := protectedTokens + volatileTokens
+	// 1c. Quantify MCP tool schemas (A10, eval FINDINGS.md §A10, 2026-10-22):
+	// countZone only concatenates block text, so the tool schemas the provider
+	// serializes into every call were invisible to the audit — AppWorld
+	// exposes 49 tools per task (453 in full mode), all real tokens. This
+	// made the budget judgment optimistic and was one reason n_ctx overflow
+	// was never flagged in advance. Schemas are as uncompressible as the
+	// Protected Zone (Squeeze only touches blocks), so the decision math below
+	// carries them on the uncompressible side. Local estimate — see
+	// countMCPServers.
+	mcpSchemaTokens := cm.countMCPServers(req)
+	totalTokens := protectedTokens + volatileTokens + mcpSchemaTokens
+	uncompressibleTokens := protectedTokens + mcpSchemaTokens
 
 	// 2. Resolve limits from config
 	var pCfg *config.ProviderConfig
@@ -117,14 +134,14 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 	cm.registry.Mu.RUnlock()
 
 	if pCfg == nil {
-		return &AuditResult{Decision: LevelNone, OriginalTokens: totalTokens}, nil
+		return &AuditResult{Decision: LevelNone, OriginalTokens: totalTokens, MCSchemaTokens: mcpSchemaTokens}, nil
 	}
 
 	maxCtx := pCfg.MaxContextWindow
 	effCtx := pCfg.EffectiveContextWindow
 	tokenLimit := pCfg.TokenLimit
 	if maxCtx <= 0 {
-		return &AuditResult{Decision: LevelNone, OriginalTokens: totalTokens, ActionTaken: "NO_LIMIT_CONFIGURED"}, nil
+		return &AuditResult{Decision: LevelNone, OriginalTokens: totalTokens, ActionTaken: "NO_LIMIT_CONFIGURED", MCSchemaTokens: mcpSchemaTokens}, nil
 	}
 
 	// 2.1 Reserve: subtract reply reserve from the context window to get the
@@ -148,13 +165,14 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 	// 2.5 Anti-Cliff uncompressible-floor check: if Protected Zone alone
 	// occupies more than 75% of maxCtx, NO compression tier can help — must
 	// Fork. Squeeze cannot touch protected content.
-	if maxCtx > 0 && float64(protectedTokens)/float64(maxCtx) > 0.75 {
+	if maxCtx > 0 && float64(uncompressibleTokens)/float64(maxCtx) > 0.75 {
 		return &AuditResult{
 			Decision:        LevelCritical,
 			OriginalTokens:  totalTokens,
 			ActionTaken:     "PROTECTED_ZONE_OVERRUN_FORK",
 			ReserveTokens:   reserveTokens,
 			EffectiveMaxCtx: effectiveMaxCtx,
+			MCSchemaTokens:  mcpSchemaTokens,
 		}, nil
 	}
 
@@ -163,28 +181,28 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 	// 3. Decision Logic — all comparisons use effectiveMaxCtx (maxCtx minus
 	// reserve) so compression triggers before the model loses reply space.
 	if totalTokens > tokenLimit {
-		return &AuditResult{Decision: LevelCritical, OriginalTokens: totalTokens, ActionTaken: "HARD_LIMIT_BREACH_FORK", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
+		return &AuditResult{Decision: LevelCritical, OriginalTokens: totalTokens, MCSchemaTokens: mcpSchemaTokens, ActionTaken: "HARD_LIMIT_BREACH_FORK", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
 	}
 	if totalTokens > effectiveMaxCtx {
-		return &AuditResult{Decision: LevelCritical, OriginalTokens: totalTokens, ActionTaken: "FORCE_FORK", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
+		return &AuditResult{Decision: LevelCritical, OriginalTokens: totalTokens, MCSchemaTokens: mcpSchemaTokens, ActionTaken: "FORCE_FORK", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
 	}
 
-	// Anti-Cliff: compressible headroom is (effCtx - protectedTokens - reserve).
+	// Anti-Cliff: compressible headroom is (effCtx - uncompressibleTokens - reserve).
 	// This prevents long tool logs from stealing the rules layer's budget AND
 	// ensures the reserve is respected in the soft threshold as well.
-	compressibleBudget := effCtx - protectedTokens - reserveTokens
+	compressibleBudget := effCtx - uncompressibleTokens - reserveTokens
 	if compressibleBudget < 0 {
 		compressibleBudget = 0
 	}
 
 	if volatileTokens > compressibleBudget {
-		return &AuditResult{Decision: LevelAggressive, OriginalTokens: totalTokens, ActionTaken: "SEMANTIC_PRUNING", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
+		return &AuditResult{Decision: LevelAggressive, OriginalTokens: totalTokens, MCSchemaTokens: mcpSchemaTokens, ActionTaken: "SEMANTIC_PRUNING", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
 	}
 	if volatileTokens > (compressibleBudget / 2) {
-		return &AuditResult{Decision: LevelLight, OriginalTokens: totalTokens, ActionTaken: "STRUCTURAL_DEDUP", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
+		return &AuditResult{Decision: LevelLight, OriginalTokens: totalTokens, MCSchemaTokens: mcpSchemaTokens, ActionTaken: "STRUCTURAL_DEDUP", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
 	}
 
-	return &AuditResult{Decision: LevelNone, OriginalTokens: totalTokens, ActionTaken: "PASS", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
+	return &AuditResult{Decision: LevelNone, OriginalTokens: totalTokens, MCSchemaTokens: mcpSchemaTokens, ActionTaken: "PASS", ReserveTokens: reserveTokens, EffectiveMaxCtx: effectiveMaxCtx}, nil
 }
 
 // zoneKind discriminates which zone the counter should tally.
@@ -742,4 +760,46 @@ func applyCodeCompress(text string) string {
 	}
 
 	return strings.Join(result, "\n")
+}
+
+// countMCPServers estimates the token cost of the MCP tool schemas the
+// request carries (A10, eval FINDINGS.md §A10, 2026-10-22). Estimation
+// convention: each ToolDefinition is JSON-marshalled — the same fields
+// providers serialize into the tools parameter (name, description,
+// input_schema, metadata). AllowedTools/URL are excluded: they are routing
+// metadata the provider does not send to the model.
+//
+// Counted with the LOCAL providers.EstimateTokens, deliberately NOT
+// provider.CountTokens: Anthropic's CountTokens is a real remote
+// /v1/messages/count_tokens round-trip, and Audit runs every turn — a remote
+// schema recount per audit would add a network call (and failure mode) to
+// the hot path for budget math that only needs an estimate. EstimateTokens'
+// own doc names tool schemas as an intended use. The zone counters above DO
+// use the provider tokenizer (compression decisions worth exact counts);
+// schemas are structural overhead where the estimate is sufficient.
+//
+// Exposure note: this counts ONLY the servers the router actually attached
+// (req.MCPServers) — AllowedTools filters, Route's MaxTokenBudget, and the
+// sticky-union selection decide what is attached. This function changes no
+// presentation decision; it makes the cost of whatever WAS attached visible
+// to the budget math.
+func (cm *ContextManager) countMCPServers(req *schemas.CompleteRequest) int {
+	if len(req.MCPServers) == 0 {
+		return 0
+	}
+	var sb strings.Builder
+	for _, s := range req.MCPServers {
+		for _, def := range s.Tools {
+			b, err := json.Marshal(def)
+			if err != nil {
+				continue // one unmarshalable definition must not sink the audit
+			}
+			sb.Write(b)
+			sb.WriteByte('\n')
+		}
+	}
+	if sb.Len() == 0 {
+		return 0
+	}
+	return providers.EstimateTokens(sb.String())
 }

@@ -279,6 +279,23 @@ func ParseOutput(raw, capability string) SubagentOutput {
 	}
 
 	// 4. Final Fallback: The output is fundamentally not JSON
+	//
+	// A9 disposition (eval FINDINGS.md §A9, 2026-10-22 — deliberate, do not
+	// "fix" without new evidence): a prose answer IS often the real answer, but
+	// this fallback keeps StatusPartial + Confidence 0.3 on purpose:
+	//   - the output contract is JSON with status/confidence/result; prose is
+	//     a contract violation, and treating it as a confident answer would let
+	//     hallucinated text ride the ok-path with no corrective machinery;
+	//   - the low-confidence routing is what ENGAGES the guards: the 0.3 partial
+	//     feeds parseFailed, which the A1 malformed-tag guard, the A2 zero-
+	//     effect parse-fail gate, and the spin breaker all key on. Raising the
+	//     confidence here would silently disarm that ladder;
+	//   - no information is lost — the full text survives in result.raw, so a
+	//     genuinely-correct prose answer still reaches downstream steps and the
+	//     verifier.
+	// If a future eval shows tasks failing BECAUSE a correct prose final answer
+	// was confidence-suppressed, revisit with a measured threshold — not a
+	// blanket raise.
 	snippet := trimmed
 	if len(snippet) > 2000 {
 		snippet = snippet[:2000]
