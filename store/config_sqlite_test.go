@@ -102,11 +102,11 @@ func TestSaveRoleUpdateExisting(t *testing.T) {
 
 	// Update with new provider/model
 	role2 := &config.Role{
-		ID:             "researcher",
-		Name:           "Updated Researcher",
-		BaseCapability: "analyze",
-		Provider:       "deepseek-v4-flash",
-		Model:          "deepseek-v4-flash",
+		ID:               "researcher",
+		Name:             "Updated Researcher",
+		BaseCapability:   "analyze",
+		Provider:         "deepseek-v4-flash",
+		Model:            "deepseek-v4-flash",
 		AllowDynamicMCPs: true,
 	}
 	if err := repo.SaveRoleAndPersistFile(role2, rolePath); err != nil {
@@ -403,27 +403,27 @@ func TestSaveRoleWithComplexFields(t *testing.T) {
 	rolePath := filepath.Join(tmpDir, "complex.json")
 
 	role := &config.Role{
-		ID:                  "complex_role",
-		Name:                "Complex Role",
-		BaseCapability:      "analyze",
-		Provider:            "sensenova",
-		Model:               "sensenova-6.7-flash-lite",
-		BoundSkills:         []string{"skill_a", "skill_b", "skill_c"},
+		ID:             "complex_role",
+		Name:           "Complex Role",
+		BaseCapability: "analyze",
+		Provider:       "sensenova",
+		Model:          "sensenova-6.7-flash-lite",
+		BoundSkills:    []string{"skill_a", "skill_b", "skill_c"},
 		BoundMCPBindings: []config.MCPBinding{
 			{MCPID: "invest-research-lite", AllowedTools: []string{"get_quote", "get_financials"}},
 			{MCPID: "lsmcp", AllowedTools: []string{}},
 		},
 		AllowDynamicSkills:  true,
-		AllowDynamicMCPs:     true,
+		AllowDynamicMCPs:    true,
 		MaxAdditionalSkills: 5,
 		Fallbacks: []config.RoleFallback{
 			{Provider: "sensenova-flash-lite", Model: "sensenova-6.8-flash-lite"},
 			{Provider: "deepseek-v4-flash", Model: "deepseek-v4-flash"},
 		},
 		DisableFallback: false,
-		Purpose:          "Market research and analysis",
-		BestFor:          "Stock analysis, financial research",
-		Metadata:         map[string]string{"team": "research", "priority": "high"},
+		Purpose:         "Market research and analysis",
+		BestFor:         "Stock analysis, financial research",
+		Metadata:        map[string]string{"team": "research", "priority": "high"},
 	}
 
 	err := repo.SaveRoleAndPersistFile(role, rolePath)

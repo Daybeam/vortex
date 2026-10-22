@@ -72,4 +72,3 @@ func loadRolesFromDisk(rolesDir string) (map[string]*config.Role, error) {
 
 	return roles, nil
 }
-

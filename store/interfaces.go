@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
-	"github.com/daybeam/vortex/schemas"
 	pkg_interfaces "github.com/daybeam/vortex/pkg/interfaces"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // ITaskBackend defines the low-level persistence operations.
@@ -216,4 +216,3 @@ type ChatSessionRow struct {
 	ActiveLeafID string    `json:"active_leaf_id,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
-

@@ -49,12 +49,12 @@ func (b *SQLiteExperienceBackend) Load(ctx context.Context) (map[string]any, err
 				log.Printf("WARN: experience_backend: skip corrupted task_patterns row: %v", err)
 				continue
 			}
-		p.LastSeen = lastSeen
-		p.Embedding = bytesToFloat32(emb)
-		if err := json.Unmarshal([]byte(rawJSON), &p); err != nil {
-			log.Printf("WARN: experience_backend: corrupted raw_json for task_pattern %s: %v", p.ID, err)
-		}
-		patterns[p.ID] = p
+			p.LastSeen = lastSeen
+			p.Embedding = bytesToFloat32(emb)
+			if err := json.Unmarshal([]byte(rawJSON), &p); err != nil {
+				log.Printf("WARN: experience_backend: corrupted raw_json for task_pattern %s: %v", p.ID, err)
+			}
+			patterns[p.ID] = p
 		}
 	}
 	data["task_patterns"] = patterns
@@ -73,12 +73,12 @@ func (b *SQLiteExperienceBackend) Load(ctx context.Context) (map[string]any, err
 				log.Printf("WARN: experience_backend: skip corrupted role_profiles row: %v", err)
 				continue
 			}
-		var rp RoleProfile
-		if err := json.Unmarshal([]byte(raw), &rp); err != nil {
-			log.Printf("WARN: experience_backend: corrupted raw_json for role_profile: %v", err)
-			continue
-		}
-		profiles[rp.RoleID] = &rp
+			var rp RoleProfile
+			if err := json.Unmarshal([]byte(raw), &rp); err != nil {
+				log.Printf("WARN: experience_backend: corrupted raw_json for role_profile: %v", err)
+				continue
+			}
+			profiles[rp.RoleID] = &rp
 		}
 	}
 	data["role_profiles"] = profiles
@@ -195,12 +195,12 @@ func (b *SQLiteExperienceBackend) Load(ctx context.Context) (map[string]any, err
 			var lastUpdated time.Time
 			if err := rows.Scan(&sp.StateHash, &sp.ToolID, &sp.TotalRuns, &sp.SuccessCount, &sp.Potential, &lastUpdated); err != nil {
 				log.Printf("WARN: experience_backend: skip corrupted state_potentials row: %v", err)
-			continue
+				continue
+			}
+			sp.LastUpdated = lastUpdated
+			statePotentials[sp.StateHash] = &sp
 		}
-		sp.LastUpdated = lastUpdated
-		statePotentials[sp.StateHash] = &sp
 	}
-}
 	data["state_potentials"] = statePotentials
 
 	return data, nil

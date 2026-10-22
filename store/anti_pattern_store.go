@@ -16,19 +16,19 @@ import (
 // to subagents as a protected, zero-compression warning block. ADDED
 // (2026-08-27) as part of the ExperienceStore precedent injection pipeline.
 type AntiPatternPrecedent struct {
-	ID               string      `json:"id"`
-	AntiPattern      string      `json:"anti_pattern"`
-	CorrectPattern   string      `json:"correct_pattern"`
-	TriggerCondition string      `json:"trigger_condition"`
-	Symptom          string      `json:"symptom"`
-	Category         string      `json:"category"`
-	Confidence       float64     `json:"confidence"`
-	Tags             []string    `json:"tags,omitempty"`
-	SourceText       string      `json:"source_text,omitempty"`
-	Embedding        []float32   `json:"embedding,omitempty"`
-	EmbeddingModel   string      `json:"embedding_model,omitempty"`
-	LastSeen         time.Time   `json:"last_seen"`
-	CreatedAt        time.Time   `json:"created_at"`
+	ID               string    `json:"id"`
+	AntiPattern      string    `json:"anti_pattern"`
+	CorrectPattern   string    `json:"correct_pattern"`
+	TriggerCondition string    `json:"trigger_condition"`
+	Symptom          string    `json:"symptom"`
+	Category         string    `json:"category"`
+	Confidence       float64   `json:"confidence"`
+	Tags             []string  `json:"tags,omitempty"`
+	SourceText       string    `json:"source_text,omitempty"`
+	Embedding        []float32 `json:"embedding,omitempty"`
+	EmbeddingModel   string    `json:"embedding_model,omitempty"`
+	LastSeen         time.Time `json:"last_seen"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // embedderResolver lazily resolves the current IEmbeddingClient from the

@@ -51,10 +51,10 @@ Output MUST be valid JSON: {"failure_mode": "...", "critique": "..."}`, node.Sou
 
 		// 2. Call weak LLM
 		resp, err := provider.Complete(ctx, schemas.CompleteRequest{
-					Model: modelID,
-					System: "",
-					User: prompt,
-				})
+			Model:  modelID,
+			System: "",
+			User:   prompt,
+		})
 		if err != nil {
 			log.Printf("[FMC] Failed to classify node %s: %v", node.NodeID, err)
 			continue
