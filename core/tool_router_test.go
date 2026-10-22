@@ -78,7 +78,7 @@ func TestSearchTools_RoleScoped(t *testing.T) {
 		},
 		Roles: map[string]*config.Role{
 			"role_with_mcp1": {
-				ID: "role_with_mcp1",
+				ID:               "role_with_mcp1",
 				BoundMCPBindings: []config.MCPBinding{{MCPID: "mcp1"}},
 			},
 			"role_no_bindings": {

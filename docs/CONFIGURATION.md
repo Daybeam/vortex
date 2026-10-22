@@ -69,6 +69,7 @@ Skills are reusable capability units that can be bound to roles. Define them inl
 | `implementations` | map | Per-family implementations (see below). |
 | `execution_mode` | string | `"embedded"` (default) or `"directory"`. |
 | `skill_dir` | string | Directory path for directory-based skills. |
+| `mount_policy` | string | `"open"` | Skill grant gating by submitter tier: `"open"` (default — skills are prompt-level), `"approval"`, `"admin_only"`. |
 
 ### SkillImplementation
 
@@ -188,6 +189,21 @@ External MCP servers provide additional tools. Define in `mcps`.
 | `auth_header_prefix` | string | Auth header prefix (e.g. `"Bearer"`). |
 | `api_key_env` | string | Env var holding the API key. |
 | `platform_overrides` | map | Per-OS command/args/dir/env overrides. |
+| `mount_policy` | string | `"admin_only"` | Who may dynamically mount this MCP: `"open"` (any tier), `"approval"` (non-admin requires human sign-off — surfaces as a blocked decision), `"admin_only"` (default). |
+| `disabled` | bool | false | Operator kill switch — remove the whole MCP from the model's tool surface. Strictly subtractive: grants nothing, bypasses nothing. |
+| `disabled_tools` | string[] | `[]` | Per-MCP tool deny list — individual tools removed from the surface and refused at dispatch. |
+
+**Example (mount policy + tool deny list):**
+
+```json
+{
+  "id": "filesystem",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+  "mount_policy": "approval",
+  "disabled_tools": ["delete_file"]
+}
+```
 
 **Example (local stdio):**
 
@@ -255,6 +271,21 @@ External MCP servers provide additional tools. Define in `mcps`.
 | `enable_planner_first` | bool | false | Enable tier-1(b) planning — a `task_planner` spawn before any step exists, whose DAG replaces the caller's single step. |
 | `planner_timeout_secs` | int | 90 | Timeout for the planner spawn. `0` = 90s default. |
 | `planner_max_steps` | int | 12 | Maximum steps in the produced DAG. `0` = parser default. |
+| `lazy_discovery` | bool | false | Defer MCP tool discovery to turn-0 with role-scoped tool search instead of eager startup discovery. |
+| `reject_simple_tasks` | bool | false | Hard-reject single-step trivial tasks submitted to the default local provider (anti-waste guard). Default false = pass-through. |
+| `budget_gate` | BudgetGateConfig | — | Automatic task suspension on token budget exhaustion (see below). |
+
+### BudgetGateConfig
+
+Configures automatic task suspension when token usage exceeds a threshold. When `enabled` is false (the default), no budget checking occurs.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | false | Master switch for the budget gate. |
+| `per_task_tokens` | int64 | 0 | Per-task cumulative token limit. `0` = no per-task limit. |
+| `per_role_tokens` | int64 | 0 | Per-role cumulative token limit. `0` = no per-role limit. |
+| `auto_resume` | bool | false | Reserved for future use. |
+| `window_minutes` | int | 0 | `0` = lifetime cumulative. |
 
 ### PluginConfig
 

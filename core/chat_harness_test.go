@@ -828,3 +828,67 @@ func TestChatHarness_FallbackWindowedLoop_WhenSieveNil(t *testing.T) {
 		t.Error("expected loop_guard event with 'windowed fallback' when Sieve is nil")
 	}
 }
+
+// genericErrorProvider always fails StreamComplete with a non-context,
+// non-repetitive error — exercising the generic provider-error branch.
+type genericErrorProvider struct{ calls int }
+
+func (p *genericErrorProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+	return p.StreamComplete(ctx, req, func(string) error { return nil })
+}
+func (p *genericErrorProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
+	p.calls++
+	return nil, fmt.Errorf("upstream provider unreachable")
+}
+func (p *genericErrorProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	return nil, nil
+}
+func (p *genericErrorProvider) CountTokens(ctx context.Context, text string) (int, error) {
+	return 0, nil
+}
+func (p *genericErrorProvider) Name() string { return "generic-error" }
+
+// TestChatHarness_ProviderError_Generic_SurfacesAndReturns covers the generic
+// provider-error branch in chat_harness.go — the fall-through reached when the
+// error is neither ErrRepetitiveOutput (steer+retry) nor a context-limit
+// overflow (truncate+retry). A plain provider failure must emit an "error"
+// event AND return that error to the caller, rather than being swallowed by a
+// recovery path or looping until MaxTurns.
+//
+// Non-redundant: the two cancellation tests exercise the ctx.Err() path, and
+// TestChatHarness_Tier2_ContextOverflowRecovery exercises the overflow path;
+// none assert the plain provider-error branch.
+func TestChatHarness_ProviderError_Generic_SurfacesAndReturns(t *testing.T) {
+	provider := &genericErrorProvider{}
+	h := &ChatHarness{
+		Provider:   provider,
+		Model:      "mock",
+		OutputBase: t.TempDir(),
+		MaxTurns:   4,
+	}
+
+	var events []ChatEvent
+	_, err := h.Run(context.Background(), "task-provider-err",
+		[]ChatMessage{{Role: "user", Content: "test"}},
+		func(ev ChatEvent) error { events = append(events, ev); return nil })
+
+	if err == nil {
+		t.Fatal("expected Run() to return the provider error, got nil")
+	}
+	if !strings.Contains(err.Error(), "upstream provider unreachable") {
+		t.Fatalf("expected provider error to propagate, got: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("expected exactly 1 provider call before surfacing the error, got %d", provider.calls)
+	}
+
+	var sawErrorEvent bool
+	for _, ev := range events {
+		if ev.Type == "error" && strings.Contains(ev.Data, "upstream provider unreachable") {
+			sawErrorEvent = true
+		}
+	}
+	if !sawErrorEvent {
+		t.Fatal("expected an 'error' event carrying the provider error message")
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -47,10 +48,10 @@ type ReplayScheduler interface {
 
 type replayScheduler struct {
 	replayer            *Replayer
-	verifier            Verifier
+	verifier            verify.Verifier
 	expStore            *store.ExperienceStore
 	db                  *sql.DB
-	executor            ToolExecutor
+	executor            verify.ToolExecutor
 	maxVariants         int
 	grayscale           *GrayscaleController
 	crossFamilyResolver func() string
@@ -60,7 +61,7 @@ type replayScheduler struct {
 // NewReplayScheduler creates a ReplayScheduler from the existing infra.
 // verifier and executor may be nil (Phase 1: verification skipped).
 // Returns the concrete type so callers can access Start.
-func NewReplayScheduler(replayer *Replayer, verifier Verifier, es *store.ExperienceStore, db *sql.DB, executor ToolExecutor) *replayScheduler {
+func NewReplayScheduler(replayer *Replayer, verifier verify.Verifier, es *store.ExperienceStore, db *sql.DB, executor verify.ToolExecutor) *replayScheduler {
 	return &replayScheduler{
 		replayer:    replayer,
 		verifier:    verifier,

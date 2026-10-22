@@ -11,7 +11,7 @@ import (
 
 // ─── Tier-Gated Workspace Scope ───────────────────────────────────────────
 //
-// Design ref: docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md
+// Design ref: docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md
 //
 // Defends against the Stochastic Deputy Problem (arXiv:2609.14780): when
 // tool parameters (workspace_root) are LLM-sampled, indirect prompt injection

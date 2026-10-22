@@ -358,7 +358,7 @@ func (c *MCPClient) Initialize(ctx context.Context, protocolVersion string) erro
 	initReq := map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "vortex", "version": "1.0.0"},
+		"clientInfo":      map[string]any{"name": "orchestrator-mcp-go", "version": "1.0.0"},
 	}
 
 	_, err := c.SendRequest(ctx, "initialize", initReq)
@@ -414,7 +414,12 @@ func (c *MCPClient) Close() {
 		if c.cmd.Process != nil {
 			_ = KillProcessTreeByPID(c.cmd.Process.Pid)
 		}
-		_ = c.cmd.Wait()
+		// Wait reaps the force-killed process. The error is logged rather than
+		// silently discarded: after a normal kill it is the expected termination
+		// signal, but it also surfaces a process that had already crashed.
+		if werr := c.cmd.Wait(); werr != nil {
+			log.Printf("[mcp-client] subprocess reaped on close: %v", werr)
+		}
 		if c.sandboxCleanup != nil {
 			c.sandboxCleanup()
 		}

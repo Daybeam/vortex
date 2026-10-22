@@ -221,10 +221,12 @@ func (f *RemoteSignalField) SensingGlobal(limit int, agentLoad float64) []string
 
 	resp, err := f.Hub.HTTPClient.Do(req)
 	if err != nil {
+		log.Printf("[warn] remote_hub: HTTP request failed: %v", err)
 		return nil
 	}
 	defer resp.Body.Close() // audit M16: close body on all paths (was skipped on non-OK status)
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[warn] remote_hub: non-OK status %d from hub", resp.StatusCode)
 		return nil
 	}
 

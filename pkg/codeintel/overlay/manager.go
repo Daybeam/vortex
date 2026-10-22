@@ -73,7 +73,7 @@ type Manager struct {
 	mu          sync.Mutex
 	sessions    map[string]*t.EditSession
 	analyzer    Validator
-	snapshotDir string   // root for crash-recovery snapshot dirs
+	snapshotDir string // root for crash-recovery snapshot dirs
 	fileLock    *fileLock
 }
 

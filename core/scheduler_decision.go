@@ -43,7 +43,7 @@ func (s *DirectedEngine) handleOutput(
 	case output.Status == schemas.StatusDelegationRequired:
 		s.handleDelegationRequired(graph, step, output)
 
-	case output.Status == schemas.StatusCapabilityRequired || output.Status == schemas.StatusPartial || output.Status == schemas.StatusFailed || conf < s.registry.System.ConfidenceThreshold:
+	case output.Status == schemas.StatusCapabilityRequired || output.Status == schemas.StatusApprovalRequired || output.Status == schemas.StatusPartial || output.Status == schemas.StatusFailed || conf < s.registry.System.ConfidenceThreshold:
 		// StatusFailed added (2026-10-20): previously, status="failed" with
 		// high confidence fell through to default → handleDefaultFailure →
 		// maybeBlock with ["skip", "abort"] — NO retry. Recoverable failures

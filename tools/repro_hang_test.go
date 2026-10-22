@@ -32,14 +32,14 @@ func TestReproHang(t *testing.T) {
 	// Add some patterns to make it work a bit
 	for i := 0; i < 100; i++ {
 		// Internal upsert bypasses lock for test setup if we are careful,
-        // but let's just use a direct tool-like call if possible.
-        // Actually ExperienceStore is exported.
+		// but let's just use a direct tool-like call if possible.
+		// Actually ExperienceStore is exported.
 		es.Mu.Lock()
 		es.TaskPatterns[fmt.Sprintf("p%d", i)] = store.TaskPattern{
-			ID:         fmt.Sprintf("p%d", i),
-			SourceText: "test hang reproduction",
-			TaskType:   "test+capability",
-			SampleCount: 10,
+			ID:            fmt.Sprintf("p%d", i),
+			SourceText:    "test hang reproduction",
+			TaskType:      "test+capability",
+			SampleCount:   10,
 			AvgConfidence: 0.9,
 		}
 		es.Mu.Unlock()

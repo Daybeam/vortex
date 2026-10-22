@@ -149,11 +149,21 @@ func TestRecordTaskCompletion_PopulatesDecisionOutcomes(t *testing.T) {
 	if err := es.RecordTaskCompletion(context.Background(), "task_1", nil, 0.95, decisions, true, false); err != nil {
 		t.Fatalf("RecordTaskCompletion: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond) // Give background persistence time to finish
-	if len(es.DecisionOutcomes) != 1 {
-		t.Fatalf("expected 1 recorded decision outcome, got %d", len(es.DecisionOutcomes))
+	// DecisionOutcomes is appended synchronously under es.Mu before
+	// RecordTaskCompletion returns. Drain the background persist goroutine
+	// (deterministic wait, replaces a flaky time.Sleep) then read under the
+	// lock so the assertion cannot race the persister.
+	es.WaitAsyncSaves()
+	es.Mu.RLock()
+	gotCount := len(es.DecisionOutcomes)
+	var got *DecisionOutcome
+	if gotCount == 1 {
+		got = es.DecisionOutcomes[0]
 	}
-	got := es.DecisionOutcomes[0]
+	es.Mu.RUnlock()
+	if gotCount != 1 {
+		t.Fatalf("expected 1 recorded decision outcome, got %d", gotCount)
+	}
 	if got.Choice != "retry" || got.RoleID != "role_a" || !got.Resolved {
 		t.Fatalf("unexpected recorded outcome: %+v", got)
 	}

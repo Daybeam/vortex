@@ -38,9 +38,9 @@ type DiscoveryScope struct {
 
 // DiscoveryResult is the return type of DiscoverImpl.
 type DiscoveryResult struct {
-	Tools []schemas.ToolDefinition  `json:"tools,omitempty"`
-	Roles []DiscoveryRoleSummary    `json:"roles,omitempty"`
-	MCPs  []MCPSummary              `json:"mcps,omitempty"`
+	Tools []schemas.ToolDefinition `json:"tools,omitempty"`
+	Roles []DiscoveryRoleSummary   `json:"roles,omitempty"`
+	MCPs  []MCPSummary             `json:"mcps,omitempty"`
 	Total int                      `json:"total"`
 }
 
@@ -181,12 +181,37 @@ func discoverTools(reg *config.Registry, scope DiscoveryScope, queryLower string
 		idSet[id] = true
 	}
 
+	// SECURITY FIX (2026-10-21, issue 6): Build AllowedTools filter from the
+	// role's BoundMCPBindings. Previously, discoverTools returned ALL
+	// FullToolDefinitions for each MCP, ignoring AllowedTools narrowing.
+	// Discovery should be a view of the step's authorization set, not raw
+	// bindings. For pool scope (admin), no narrowing is applied.
+	allowedToolsByMCP := make(map[string]map[string]bool)
+	if scope.Mode == "self" || scope.Mode == "role" {
+		if role, ok := reg.Roles[scope.RoleID]; ok && role != nil {
+			for _, b := range role.BoundMCPBindings {
+				if b.MCPID != "" && len(b.AllowedTools) > 0 {
+					toolSet := make(map[string]bool, len(b.AllowedTools))
+					for _, t := range b.AllowedTools {
+						toolSet[t] = true
+					}
+					allowedToolsByMCP[b.MCPID] = toolSet
+				}
+			}
+		}
+	}
+
 	var matched []schemas.ToolDefinition
 	for id, mcp := range reg.MCPs {
 		if !idSet[id] {
 			continue
 		}
+		allowedTools := allowedToolsByMCP[id]
 		for _, tool := range mcp.FullToolDefinitions {
+			// Apply AllowedTools narrowing if configured for this MCP
+			if allowedTools != nil && !allowedTools[tool.Name] {
+				continue
+			}
 			if queryLower == "" ||
 				strings.Contains(strings.ToLower(tool.Name), queryLower) ||
 				strings.Contains(strings.ToLower(tool.Description), queryLower) {
@@ -199,7 +224,11 @@ func discoverTools(reg *config.Registry, scope DiscoveryScope, queryLower string
 		if !idSet[id] {
 			continue
 		}
+		allowedTools := allowedToolsByMCP[id]
 		for _, tool := range mcp.FullToolDefinitions {
+			if allowedTools != nil && !allowedTools[tool.Name] {
+				continue
+			}
 			if queryLower == "" ||
 				strings.Contains(strings.ToLower(tool.Name), queryLower) ||
 				strings.Contains(strings.ToLower(tool.Description), queryLower) {
@@ -302,17 +331,21 @@ func discoverMCPs(reg *config.Registry, scope DiscoveryScope, queryLower string,
 	}
 
 	var matched []MCPSummary
+	// SECURITY FIX (2026-10-21, issue 8): URL/Command are MCP connection
+	// internals. Only admins (pool scope) see them; non-admin discovery stays
+	// redacted so a public caller cannot read arbitrary MCP endpoints/commands.
+	includeConn := scope.AllowPool
 	for id, mcp := range reg.MCPs {
 		if !idSet[id] {
 			continue
 		}
 		if queryLower == "" || strings.Contains(strings.ToLower(id), queryLower) {
-			matched = append(matched, MCPSummary{
-				ID:      id,
-				URL:     mcp.URL,
-				Command: mcp.Command,
-				Trusted: mcp.Trusted,
-			})
+			summary := MCPSummary{ID: id, Trusted: mcp.Trusted}
+			if includeConn {
+				summary.URL = mcp.URL
+				summary.Command = mcp.Command
+			}
+			matched = append(matched, summary)
 		}
 	}
 	for id, mcp := range reg.DynamicMCPs {
@@ -320,14 +353,17 @@ func discoverMCPs(reg *config.Registry, scope DiscoveryScope, queryLower string,
 			continue
 		}
 		if queryLower == "" || strings.Contains(strings.ToLower(id), queryLower) {
-			matched = append(matched, MCPSummary{
+			summary := MCPSummary{
 				ID:        id,
-				URL:       mcp.URL,
-				Command:   mcp.Command,
 				Trusted:   mcp.Trusted,
 				Dynamic:   true,
 				ExpiresAt: mcp.ExpiresAt.Format(time.RFC3339),
-			})
+			}
+			if includeConn {
+				summary.URL = mcp.URL
+				summary.Command = mcp.Command
+			}
+			matched = append(matched, summary)
 		}
 	}
 
@@ -388,6 +424,13 @@ func ParseScope(scopeStr, callerRoleID string, allowPool bool) (DiscoveryScope, 
 		if roleID == "" {
 			return DiscoveryScope{}, fmt.Errorf("scope 'role:' requires a role ID")
 		}
+		// SECURITY FIX (2026-10-21): role:<id> scope exposes another role's
+		// MCP bindings and tool schemas. Restrict to admin callers (allowPool)
+		// or self-inspection (callerRoleID == roleID). Previously, any caller
+		// could pass scope=role:any_id and see that role's bindings.
+		if !allowPool && roleID != callerRoleID {
+			return DiscoveryScope{}, fmt.Errorf("scope 'role:%s' requires admin privileges", roleID)
+		}
 		return DiscoveryScope{Mode: "role", RoleID: roleID, AllowPool: allowPool}, nil
 
 	case scopeStr == "pool":
@@ -408,12 +451,12 @@ type FindSkillsResult struct {
 
 // SkillMatch is a single skill match with relevance indicator.
 type SkillMatch struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Capability  string `json:"capability"`
-	Description string `json:"description"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Capability  string   `json:"capability"`
+	Description string   `json:"description"`
 	Provides    []string `json:"provides,omitempty"`
-	MatchReason string  `json:"match_reason"` // "capability" | "provides" | "name" | "description"
+	MatchReason string   `json:"match_reason"` // "capability" | "provides" | "name" | "description"
 }
 
 // FindSkillsImpl searches the skill registry for skills that can supplement

@@ -10,10 +10,10 @@ import (
 )
 
 type mockProvider struct {
-	lastReq      schemas.CompleteRequest
+	lastReq       schemas.CompleteRequest
 	lastEmbedText string
-	resp         *schemas.ProviderResponse
-	callCount    int
+	resp          *schemas.ProviderResponse
+	callCount     int
 }
 
 func (m *mockProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {

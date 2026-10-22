@@ -24,19 +24,9 @@ func (s *Spawner) collectDelegationToolDefs(hub *ContextHub, bindings []config.M
 		if mcp == nil {
 			continue
 		}
-		if b.IsRestricted() {
-			allowed := make(map[string]bool)
-			for _, t := range b.AllowedTools {
-				allowed[t] = true
-			}
-			for _, td := range mcp.FullToolDefinitions {
-				if allowed[td.Name] {
-					defs = append(defs, td)
-				}
-			}
-		} else {
-			defs = append(defs, mcp.FullToolDefinitions...)
-		}
+		// visibleTools applies both the binding allow-list and the operator
+		// toggle (levels A+B); it returns nothing for a disabled MCP.
+		defs = append(defs, visibleTools(mcp, b)...)
 	}
 
 	return defs

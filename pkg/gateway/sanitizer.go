@@ -14,19 +14,19 @@ var tokenPattern = regexp.MustCompile(`\[REDACTED_\d+\]`)
 // secretRegexes are the patterns reused from core/scrubber.go.
 // Matched values are replaced with deterministic session-scoped tokens.
 var secretRegexes = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{20,})`),      // OpenAI/Anthropic style
+	regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{20,})`),    // OpenAI/Anthropic style
 	regexp.MustCompile(`(?i)(AIza[a-zA-Z0-9_\-]{35})`), // Google style
 	// Unified with egress_redaction.go defaultEgressPatterns (gap-1 fix, 2026-10-18).
 	// These 6 patterns were previously only applied to tool results (RedactEgress)
 	// but NOT to prompt egress (SanitizingProvider). A third-party relay model sees
 	// unmasked prompts — AWS keys, JWTs, emails, etc. in system prompts / memory
 	// bank leaked. Now masked bidirectionally like the other secrets.
-	regexp.MustCompile(`(AKIA[0-9A-Z]{16})`),                                              // AWS access key
+	regexp.MustCompile(`(AKIA[0-9A-Z]{16})`),                                                         // AWS access key
 	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), // PEM private key
-	regexp.MustCompile(`(Bearer\s+[A-Za-z0-9._\-]{20,})`),                                 // Bearer token
-	regexp.MustCompile(`(eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,})`), // JWT
-	regexp.MustCompile(`([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})`),               // email
-	regexp.MustCompile(`(1[3-9]\d{9})`),                                                   // CN phone
+	regexp.MustCompile(`(Bearer\s+[A-Za-z0-9._\-]{20,})`),                                            // Bearer token
+	regexp.MustCompile(`(eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,})`),            // JWT
+	regexp.MustCompile(`([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})`),                           // email
+	regexp.MustCompile(`(1[3-9]\d{9})`),                                                              // CN phone
 	// key=value generic catch-all stays last (after specific patterns).
 	regexp.MustCompile(`(?i)(api_key|apikey|password|secret|token|credential)["']?\s*[:=]\s*["']?([a-zA-Z0-9_\-\.]{8,})["']?`),
 }
@@ -43,8 +43,8 @@ type sessionVault struct {
 // tool calls get tokens restored to real values before local execution.
 // Each TaskID gets an isolated, ephemeral vault that auto-expires on Clear.
 type SanitizerProxy struct {
-	mu       sync.RWMutex
-	vaults   map[string]*sessionVault // taskID → vault
+	mu     sync.RWMutex
+	vaults map[string]*sessionVault // taskID → vault
 }
 
 // NewSanitizerProxy creates a ready-to-use SanitizerProxy.

@@ -18,10 +18,10 @@ import (
 type ModelTier string
 
 const (
-	ModelTierLight     ModelTier = "light"     // < ~8B params / local
-	ModelTierStandard  ModelTier = "standard"  // 8B-70B / mid-tier
-	ModelTierFlagship  ModelTier = "flagship"  // 70B+ / frontier
-	ModelTierUnknown   ModelTier = "unknown"   // unrecognized — caller falls back
+	ModelTierLight    ModelTier = "light"    // < ~8B params / local
+	ModelTierStandard ModelTier = "standard" // 8B-70B / mid-tier
+	ModelTierFlagship ModelTier = "flagship" // 70B+ / frontier
+	ModelTierUnknown  ModelTier = "unknown"  // unrecognized — caller falls back
 )
 
 const (
@@ -200,9 +200,9 @@ func (p *ProviderConfig) GetReserveTokens() int {
 // logs it as a Warning but does not reject the config — the runtime
 // PromptBudgetEnforcer handles structural compression.
 type RoleInstructionWarning struct {
-	RoleID    string
-	Length    int
-	Cap       int
+	RoleID     string
+	Length     int
+	Cap        int
 	Suggestion string
 }
 

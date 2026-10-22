@@ -15,6 +15,33 @@ type Provider interface {
 	Name() string
 }
 
+// ModelLister is an optional interface that providers can implement to list
+// their available models from the upstream API (e.g., OpenAI-compatible /v1/models).
+// Providers that don't support model listing simply don't implement it.
+//
+// The frontend calls the corresponding API endpoint to proactively refresh the
+// model list and lets users check/uncheck which models to show and use directly.
+// This is a runtime discovery mechanism — model lists change frequently (within
+// a month) and must NOT be hardcoded in Go. The data comes from the provider's
+// live endpoint at call time.
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]ModelInfo, error)
+}
+
+// ModelInfo describes one available model from a provider's upstream API.
+// Fields beyond ID/Name are optional — not all providers report them.
+type ModelInfo struct {
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	ContextWindow   int            `json:"context_window,omitempty"`
+	MaxOutput       int            `json:"max_output,omitempty"`
+	SupportsTools   bool           `json:"supports_tools,omitempty"`
+	SupportsVision  bool           `json:"supports_vision,omitempty"`
+	InputPricePerM  float64        `json:"input_price_per_m,omitempty"`
+	OutputPricePerM float64        `json:"output_price_per_m,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+}
+
 // SignalFieldInterface defines the contract for interaction with the SignalField.
 type SignalFieldInterface interface {
 	Sensing(layer types.SignalLayer, limit int) []string
@@ -27,6 +54,7 @@ type SignalFieldInterface interface {
 type TaskHubInterface interface {
 	GetSignalField() SignalFieldInterface
 	ClaimTask(taskID string) bool
+	ReleaseTask(taskID string)
 	ExecuteTask(ctx context.Context, taskID string) (*schemas.SubagentOutput, error)
 	GetNotifyChan() chan struct{}
 

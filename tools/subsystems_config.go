@@ -205,6 +205,9 @@ func registerConfigSubsystem(app *App) {
 			"steps":       "[]object - array of SOP steps",
 		},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			if EffectiveTier(ctx, app) == TierPublic {
+				return nil, fmt.Errorf("permission denied: public tier cannot modify global workspace assets (update_sop)")
+			}
 			data, err := json.Marshal(args)
 			if err != nil {
 				return nil, fmt.Errorf("update_sop: failed to serialize args: %w", err)
@@ -274,67 +277,9 @@ func registerConfigSubsystem(app *App) {
 			"trusted": "boolean",
 		},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
-			id := strArg(args, "id")
-			url := strArg(args, "url")
-			if id == "" || url == "" {
-				return nil, fmt.Errorf("missing id or url")
+			if EffectiveTier(ctx, app) == TierPublic {
+				return nil, fmt.Errorf("permission denied: public tier cannot modify global workspace assets (register_role)")
 			}
-			data, _ := json.Marshal(args)
-			ops := []config.PatchOp{
-				{Op: config.OpAdd, Path: "/mcps/" + id, Value: json.RawMessage(data)},
-			}
-			actor := strArg(args, "_actor")
-			if actor == "" {
-				actor = "admin"
-			}
-			taskID := strArg(args, "_task_id")
-			return map[string]any{"ok": true}, app.Registry.CommitOps(ops, actor, taskID)
-		},
-	}
-
-	s.Actions["list_mcps"] = Action{
-		Name:        "list_mcps",
-		Description: "Deprecated: use discover(scope=pool, type=mcps) instead. List all registered MCP servers and their current status.",
-		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
-			// Phase 4 redirect (2026-10-20): delegates to DiscoverImpl — the
-			// single backend for all discovery. Same output format, same data
-			// source. See docs/plan/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md §10 Phase 4.
-			result, err := core.DiscoverImpl(app.Registry, core.DiscoveryScope{Mode: "pool", AllowPool: true}, "mcps", "", 1, 1000)
-			if err != nil {
-				return nil, err
-			}
-			var legacy []map[string]any
-			for _, m := range result.MCPs {
-				entry := map[string]any{
-					"id":      m.ID,
-					"url":     m.URL,
-					"trusted": m.Trusted,
-				}
-				if m.Dynamic {
-					entry["type"] = "dynamic"
-					if m.ExpiresAt != "" {
-						entry["expires_at"] = m.ExpiresAt
-					}
-				} else {
-					entry["type"] = "static"
-				}
-				legacy = append(legacy, entry)
-			}
-			return legacy, nil
-		},
-	}
-
-	s.Actions["register_role"] = Action{
-		Name:        "register_role",
-		Description: "Register or update a role. Persists to config.json.",
-		Parameters: map[string]any{
-			"id":              "string (required) - unique role identifier",
-			"name":            "string (required)",
-			"base_capability": "string (required) - e.g. 'code', 'analysis'",
-			"provider":        "string (optional) - override default provider name",
-			"bound_skills":    "[]string (optional)",
-		},
-		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			id := strArg(args, "id")
 			if id == "" {
 				return nil, fmt.Errorf("register_role: 'id' is required and must not be empty")
@@ -412,6 +357,9 @@ func registerConfigSubsystem(app *App) {
 			"description": "string",
 		},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			if EffectiveTier(ctx, app) == TierPublic {
+				return nil, fmt.Errorf("permission denied: public tier cannot modify global workspace assets (register_skill)")
+			}
 			data, err := json.Marshal(args)
 			if err != nil {
 				return nil, fmt.Errorf("register_skill: failed to serialize args: %w", err)
@@ -586,7 +534,7 @@ func registerConfigSubsystem(app *App) {
 				}
 			}
 			dispatcher := core.NewGroupDispatcher(app.Scheduler, app.Registry)
-			taskID, err := dispatcher.DispatchGroup(groupID, task, ctxRefs, nil, nil, nil, "")
+			taskID, err := dispatcher.DispatchGroup(groupID, task, ctxRefs, nil, nil, nil, "", EffectiveTier(ctx, app) == TierAdmin)
 			if err != nil {
 				return nil, err
 			}

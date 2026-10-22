@@ -15,17 +15,62 @@ import (
 	"github.com/daybeam/vortex/store"
 )
 
-// defaultSpawnOutputTokens is the response cap every spawn used to hard-code.
-// It is generous for a step that answers in prose and far too small for one
-// that must emit a long structured document (a plan, a schema, a table).
-const defaultSpawnOutputTokens = 4096
+// defaultSpawnOutputTokens is the response cap for a spawn that does not ask
+// for its own. It covers everything the model emits, and on a thinking model
+// that includes reasoning tokens, which never reach response text.
+//
+// 8192, not the original 4096. Measured 2026-10-20 (gemini-3-flash-preview via
+// an OpenAI-compatible gateway): three responses hit the cap at 4068/4069/3932
+// completion tokens where the last emitted zero characters and zero tool calls
+// — the whole budget was reasoning. The old value was sized for prose answers,
+// which is the wrong unit once reasoning shares the same budget.
+//
+// Also used by the single-shot generation calls in this package that emit a
+// structured document (role generation, reflection's Lua script), because they
+// are subject to exactly the same failure: reasoning consumes the budget before
+// the document starts. Keep one constant rather than three literals that drift.
+const defaultSpawnOutputTokens = 8192
 
-// spawnOutputBudget resolves the response token cap for one spawn. A caller
-// that knows its answer is long (the task planner, whose 6-step JSON plan
-// overflows a prose-sized cap) sets SpawnRequest.MaxOutputTokens.
-func spawnOutputBudget(req *SpawnRequest) int {
+// defaultDedupHardCap is the reason-blind ceiling for identical calls inside
+// one step, used when system.dedup_hard_cap is unset.
+//
+// Chosen at 5 because #11 already blocks the 3rd repeat for a model that does
+// not explain itself; the cap only has to catch the model that *does*. Two
+// extra calls is enough slack for a genuine retry (data refresh, transient
+// error) without giving a looping model a budget worth burning.
+const defaultDedupHardCap = 5
+
+// dedupHardCap resolves the ceiling for one spawn, mirroring spawnOutputBudget:
+// deployment setting first, built-in default second.
+func (s *Spawner) dedupHardCap() int {
+	if s != nil && s.registry != nil {
+		s.registry.Mu.RLock()
+		configured := s.registry.System.DedupHardCap
+		s.registry.Mu.RUnlock()
+		if configured > 0 {
+			return configured
+		}
+	}
+	return defaultDedupHardCap
+}
+
+// spawnOutputBudget resolves the response token cap for one spawn.
+//
+// Precedence: an explicit per-spawn request, then the deployment setting, then
+// the built-in default. The middle step exists because the right cap depends on
+// the model, not on this code: a thinking model needs room for reasoning that a
+// prose-tuned constant cannot anticipate.
+func (s *Spawner) spawnOutputBudget(req *SpawnRequest) int {
 	if req != nil && req.MaxOutputTokens > 0 {
 		return req.MaxOutputTokens
+	}
+	if s != nil && s.registry != nil {
+		s.registry.Mu.RLock()
+		configured := s.registry.System.DefaultSpawnOutputTokens
+		s.registry.Mu.RUnlock()
+		if configured > 0 {
+			return configured
+		}
 	}
 	return defaultSpawnOutputTokens
 }
@@ -65,7 +110,21 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// (e.g., parallel searches gathering information). Task-level scope would
 	// block normal cross-step work.
 	toolCallCount := make(map[string]int) // callKey → count (resets per step)
+	// #11b: per-step streak of byte-identical answers for the same canonical
+	// arguments. The hard cap blocks on this, not on the raw call count, so a
+	// legitimate retry whose answer changes (token refresh) is never counted.
+	resultStreak := make(map[string]int)
+	resultLastHash := make(map[string]uint64)
 	sieveGuardianHits := 0
+	// Zero-effect completion gate (ADDED 2026-10-21, eval v14). Fires at most
+	// once per step: the point is to make the model notice that nothing it did
+	// could have produced the state it is claiming, not to fight it in a loop.
+	// If the model answers "this was a read-only question", that is a legitimate
+	// answer and the second pass goes through.
+	zeroEffectNudged := false
+	// A5 (eval FINDINGS.md §A5): mid-abandonment nudge — one-shot, like the
+	// zero-effect nudge above it.
+	midAbandonNudged := false
 	// B2 (eval §3.2): Output hash dedup for execute_code loop detection.
 	// C3 fix (2026-10-18): Consecutive-only tracking. The previous cumulative
 	// map (resultHashCounts) produced false positives for legitimate polling
@@ -349,13 +408,14 @@ turnLoop:
 				}
 			}
 
+			providerStart := time.Now()
 			resp, err = provider.StreamComplete(ctxWithTimeout, providers.CompleteRequest{
 				SystemBlocks:     systemBlocks,
 				UserBlocks:       prependSticky(userBlocks, stickyContext),
 				System:           flattenContentBlocks(systemBlocks),
 				User:             flattenContentBlocks(userBlocks),
 				Model:            pCfg.Model,
-				MaxTokens:        spawnOutputBudget(req),
+				MaxTokens:        s.spawnOutputBudget(req),
 				Temperature:      temp,
 				FrequencyPenalty: freqPen,
 				MCPServers:       mcpServers,
@@ -381,6 +441,12 @@ turnLoop:
 				return nil
 			})
 			cancel()
+
+			// Record provider telemetry (ADDED 2026-10-21).
+			// See docs/completed/2026-10-21/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
+			if s.providerRouter != nil {
+				s.providerRouter.RecordResult(pCfg.Model, time.Since(providerStart), err)
+			}
 
 			if err != nil && strings.Contains(err.Error(), "DELEGATION_REQUIRED") {
 				// Defect 1 fix: include tool definitions in delegation return
@@ -427,7 +493,7 @@ turnLoop:
 						System:           flattenContentBlocks(systemBlocks),
 						User:             flattenContentBlocks(userBlocks),
 						Model:            pCfg.Model,
-						MaxTokens:        spawnOutputBudget(req),
+						MaxTokens:        s.spawnOutputBudget(req),
 						Temperature:      temp,
 						FrequencyPenalty: freqPen,
 						MCPServers:       mcpServers,
@@ -558,7 +624,7 @@ turnLoop:
 		// budget is the culprit; anything else means the model chose to stop and
 		// raising the cap will not help.
 		if resp.StopReason == "length" || resp.StopReason == "max_tokens" {
-			s.logger.Log(EventOutputTruncated, req.TaskID, req.StepID, map[string]any{
+			detail := map[string]any{
 				"provider":          currentPCfg.Provider,
 				"model":             currentPCfg.Model,
 				"stop_reason":       resp.StopReason,
@@ -566,7 +632,21 @@ turnLoop:
 				"prompt_tokens":     resp.PromptTokens,
 				"text_chars":        len(resp.Text),
 				"tool_calls":        len(resp.ToolCalls),
-			})
+				"max_tokens":        s.spawnOutputBudget(req),
+			}
+			// Distinguish the two very different ways this cap gets hit.
+			//
+			// A long answer spends its budget on text or tool arguments: raising
+			// the cap buys more output structure. Reasoning spends it on tokens
+			// that never reach Text at all, so a cap tuned for prose leaves the
+			// answer with nothing — and the symptom is not "truncated answer" but
+			// "model produced nothing and re-called the same tool". Flagging the
+			// empty-visible case makes that diagnosable from the event alone.
+			if len(resp.Text) == 0 && len(resp.ToolCalls) == 0 && resp.CompletionTokens > 0 {
+				detail["visible_output_empty"] = true
+				detail["likely_reasoning_dominated"] = true
+			}
+			s.logger.Log(EventOutputTruncated, req.TaskID, req.StepID, detail)
 		}
 
 		// Outer-ring accounting (ADDED 2026-10-12): the system-prompt profile is
@@ -719,9 +799,9 @@ turnLoop:
 			}
 
 			// FIX (2026-09-07): Malformatted Tool Call Guard.
-			// When the model outputs pseudo-XML like <anim:call> instead of real JSON tool calls,
+			// When the model outputs pseudo-XML (<anim:call>, <tool_code>) instead of real JSON tool calls,
 			// intercept it and inject a stern correction prompt so it doesn't get trapped.
-			if strings.Contains(cleanText, "<anim:call") || strings.Contains(cleanText, "<tool_call") {
+			if hasMalformedToolCallTag(cleanText) {
 				msg := SpawnerInvalidToolFormatMsg
 				for i := range userBlocks {
 					userBlocks[i].CacheControl = ""
@@ -737,7 +817,16 @@ turnLoop:
 			// results at the exit gate and trigger auto-refine. This preserves
 			// the model's ability to reason between tool calls, which is
 			// essential for multi-step DAGs.
-			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) && !s.registry.System.FeatureFlags.DisableForceTool {
+			// A7 (eval FINDINGS.md §A7, 2026-10-22): DisableForceTool is NOT
+			// consulted here. It disables the provider-side output constraint
+			// (turn-0 "must call a tool" grammar, :323); this gate is the
+			// prompt-side reminder for a model that is spinning without doing
+			// anything. "Give the model freedom from the forced-tool constraint"
+			// and "remind a motionless model to act" are different mechanisms —
+			// turning off the former must not silence the latter. (Not triggered
+			// in the v20 configs — the flag was absent — but the coupling would
+			// bite the first deployment that sets it.)
+			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) {
 				if s.registry.System.FeatureFlags.EvalObs {
 					fmt.Fprintf(os.Stderr, "[EVAL-OBS] NUDGE triggered turn=%d noTool=%v lowConf=%v parse=%v\n",
 						turn+1, noToolCallsYet, selfReportedLowConfidence, parseFailed)
@@ -761,12 +850,120 @@ turnLoop:
 				continue
 			}
 
+			// ── Zero-effect completion gate (ADDED 2026-10-21, eval v14) ──────
+			// `noToolCallsYet` only asks "did the model call anything at all".
+			// A single read-only call (show_profile, get_balance, search_*) is
+			// enough to defeat it, after which the model may declare status=ok at
+			// 0.90 confidence and the step is accepted with no state change.
+			//
+			// AppWorld evidence: task d4e9306_1 ran five times on one config; in
+			// 4/5 the trace held exactly [supervisor__show_profile,
+			// supervisor__show_account_passwords] and the model still wrote "Now
+			// following all artists..." — scored 1/6 each time.
+			//
+			// Deliberately one-shot and opt-in. Read-only tasks legitimately hit
+			// this condition, so the injected text asks the model to *classify*
+			// its own step rather than asserting it did nothing. Re-firing would
+			// turn a genuine "this was a query" answer into a loop.
+			//
+			// A2 (eval FINDINGS.md §A2, 2026-10-22): the gate also fires when
+			// parseFailed — ParseOutput degraded the output to partial (conf
+			// 0.3), which is the engine's own artifact, not the model declaring
+			// completion. Requiring StatusOK left the v20 format collapse with
+			// zero corrective signal (ZERO-EFFECT NUDGE fired 0 times in 8
+			// tasks): A1's guard catches the KNOWN pseudo-tags before parsing,
+			// this arm catches whatever malformed shapes the future invents
+			// after ParseOutput degrades them. parse-failure turns get their own
+			// message variant — the ok-variant would assert "you declared
+			// status=ok" about text the engine could not read.
+			if s.registry.System.FeatureFlags.ZeroEffectNudge && !zeroEffectNudged && !noToolCallsYet &&
+				(output.Status == schemas.StatusOK || parseFailed) && turn < maxTurns-1 {
+				hasEffect := false
+				seenTools := make([]string, 0, len(trace))
+				for _, t := range trace {
+					seenTools = append(seenTools, t.ToolName)
+					if !IsReadOnlyToolName(t.ToolName) {
+						hasEffect = true
+					}
+				}
+				if !hasEffect {
+					zeroEffectNudged = true
+					s.logger.Log("EventZeroEffectNudged", req.TaskID, req.StepID, map[string]any{
+						"turn":         turn + 1,
+						"trace_len":    len(trace),
+						"trace_tools":  seenTools,
+						"confidence":   output.Confidence,
+						"parse_failed": parseFailed,
+					})
+					observability.GetGlobalMetrics().Inc("orchestrator.zero_effect.nudged", 1)
+					if s.registry.System.FeatureFlags.EvalObs {
+						fmt.Fprintf(os.Stderr, "[EVAL-OBS] ZERO-EFFECT NUDGE turn=%d trace=%d conf=%.2f parse=%v tools=%v\n",
+							turn+1, len(trace), output.Confidence, parseFailed, seenTools)
+					}
+					for i := range userBlocks {
+						userBlocks[i].CacheControl = ""
+					}
+					userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
+					msg := SpawnerZeroEffectMsg
+					if parseFailed {
+						msg = SpawnerZeroEffectParseFailMsg
+					}
+					userBlocks = append(userBlocks, schemas.ContentBlock{Text: msg, CacheControl: "ephemeral"})
+					continue
+				}
+			}
+
 			if noToolCallsYet && output.Status == schemas.StatusOK {
 				output.Status = schemas.StatusPartial
 				if output.Confidence > 0.4 {
 					output.Confidence = 0.4
 				}
 				output.Warnings = append(output.Warnings, "orchestrator: model reported status=ok but no tool calls were recorded; downgraded to partial")
+			}
+
+			// ── Mid-abandonment gate (A5, eval FINDINGS.md §A5, 2026-10-22) ──
+			// The highest-frequency small-model failure mode: the model starts
+			// working (read-only calls land in the trace), hits friction (a
+			// 422, an empty page), then emits a PARSEABLE partial and stops
+			// while turns remain. All three earlier gates are blind to it:
+			// noToolCallsYet is false (work started), the zero-effect gate
+			// wants ok/parseFailed (this is a clean partial), and without this
+			// gate the partial is accepted as-is right below.
+			//
+			// Deliberately one-shot and opt-in (mid_abandon_nudge), like the
+			// zero-effect gate. `!parseFailed` keeps the message honest — a
+			// parse-collapsed turn gets the zero-effect parse-fail variant
+			// instead (A2), not "you reported this step as incomplete", which
+			// would assert the engine read an output it did not. StatusFailed
+			// is excluded on purpose: parseable failures already route through
+			// the in-loop failure/retry machinery. The message leaves a
+			// legitimate exit open — a genuinely blocked model is told to
+			// finalize with missing_context, not forced into a loop.
+			if s.registry.System.FeatureFlags.MidAbandonNudge && !midAbandonNudged && !noToolCallsYet &&
+				output.Status == schemas.StatusPartial && !parseFailed && turn < maxTurns-1 &&
+				!traceHasEffect(trace) {
+				midAbandonNudged = true
+				seenTools := make([]string, 0, len(trace))
+				for _, t := range trace {
+					seenTools = append(seenTools, t.ToolName)
+				}
+				s.logger.Log("EventMidAbandonNudged", req.TaskID, req.StepID, map[string]any{
+					"turn":        turn + 1,
+					"trace_len":   len(trace),
+					"trace_tools": seenTools,
+					"confidence":  output.Confidence,
+				})
+				observability.GetGlobalMetrics().Inc("orchestrator.mid_abandon.nudged", 1)
+				if s.registry.System.FeatureFlags.EvalObs {
+					fmt.Fprintf(os.Stderr, "[EVAL-OBS] MID-ABANDON NUDGE turn=%d trace=%d conf=%.2f tools=%v\n",
+						turn+1, len(trace), output.Confidence, seenTools)
+				}
+				for i := range userBlocks {
+					userBlocks[i].CacheControl = ""
+				}
+				userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
+				userBlocks = append(userBlocks, schemas.ContentBlock{Text: SpawnerMidAbandonMsg, CacheControl: "ephemeral"})
+				continue
 			}
 
 			// ── Priority 5: Update Decision Outcome (Final) ──────────────────
@@ -820,7 +1017,7 @@ turnLoop:
 					}),
 					System:    SysPromptBestAnswer,
 					Model:     currentPCfg.Model,
-					MaxTokens: spawnOutputBudget(req),
+					MaxTokens: s.spawnOutputBudget(req),
 				}, nil)
 				if nerr == nil && noToolResp.Text != "" {
 					degradedOutput := schemas.ParseOutput(noToolResp.Text, role.BaseCapability)
@@ -848,6 +1045,8 @@ turnLoop:
 			trace:             trace,
 			toolCallCount:     toolCallCount,
 			toolFailCount:     toolFailCount,
+			resultStreak:      resultStreak,
+			resultLastHash:    resultLastHash,
 			needsVerification: needsVerification,
 			turnAttachments:   turnAttachments,
 			statesVisited:     statesVisited,
@@ -858,6 +1057,8 @@ turnLoop:
 		trace = tcState.trace
 		toolCallCount = tcState.toolCallCount
 		toolFailCount = tcState.toolFailCount
+		resultStreak = tcState.resultStreak
+		resultLastHash = tcState.resultLastHash
 		needsVerification = tcState.needsVerification
 		turnAttachments = tcState.turnAttachments
 		statesVisited = tcState.statesVisited
@@ -899,6 +1100,15 @@ turnLoop:
 							"consecutive_count": consecutiveRepeatCount,
 							"root_cause":        "model_stuck",
 						})
+						// A8 (eval FINDINGS.md §A8, 2026-10-22): the hint stage logs
+						// EventOutputStagnationHinted, but the kill itself was invisible
+						// to EVAL-OBS greps — after the hint, whether a task died and how
+						// it ended could not be answered from the eval logs. EventStepFailed
+						// above is always emitted; this only adds the eval channel.
+						if s.registry.System.FeatureFlags.EvalObs {
+							fmt.Fprintf(os.Stderr, "[EVAL-OBS] STAGNATION KILL task=%s step=%s turn=%d trace=%d repeats=%d\n",
+								req.TaskID, req.StepID, turn+1, len(trace), consecutiveRepeatCount)
+						}
 						return s.partialStagnationOutput(role.BaseCapability,
 							fmt.Sprintf("output_stagnation: identical tool results repeated %d consecutive times after intervention hint", consecutiveRepeatCount),
 							trace), nil

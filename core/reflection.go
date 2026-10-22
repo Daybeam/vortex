@@ -612,10 +612,14 @@ Output ONLY the unified Lua code. No markdown, no explanation.`
 	user = ScrubSecrets(user)
 
 	resp, err := provider.Complete(ctx, providers.CompleteRequest{
-		System:    system,
-		User:      user,
-		Model:     providerCfg.Model,
-		MaxTokens: 4096,
+		System: system,
+		User:   user,
+		Model:  providerCfg.Model,
+		// The reflection emits a Lua provider script, which is a structured
+		// document rather than prose. Same reasoning as role generation: the cap
+		// is shared with the model's reasoning tokens, so a prose-sized literal
+		// truncates the script mid-statement.
+		MaxTokens: defaultSpawnOutputTokens,
 		Secrets:   re.registry.Secrets,
 	})
 	if err != nil || resp.Text == "" {

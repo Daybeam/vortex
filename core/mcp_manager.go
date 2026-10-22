@@ -16,6 +16,7 @@ import (
 
 	"github.com/daybeam/vortex/client"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/sandbox"
 	"github.com/daybeam/vortex/pkg/safelimits"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -548,7 +549,7 @@ func (m *MCPConnectionManager) ensureMCPClient(ctx context.Context, mcp *config.
 			if workDir == "" && len(args) > 0 {
 				workDir = filepath.Dir(args[len(args)-1])
 			}
-			if bp, ba := BuildBwrapArgs(cmd, args, workDir); bp != "" {
+			if bp, ba := sandbox.BuildBwrapArgs(cmd, args, workDir); bp != "" {
 				cmd = bp
 				args = ba
 			}

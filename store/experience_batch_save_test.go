@@ -127,10 +127,12 @@ func TestC14_PersistSkippedWhenInFlight(t *testing.T) {
 		t.Fatalf("RecordTaskCompletion failed: %v", err)
 	}
 
-	// Since persistInFlight was true, no persist goroutine should have been
-	// spawned. The persist file should NOT exist (it was skipped).
+	// Since persistInFlight was true, RecordTaskCompletion's CompareAndSwap
+	// fails and no persist goroutine is spawned. Drain the save WaitGroup
+	// (deterministic: nothing was added, so this returns immediately) instead
+	// of sleeping. The persist file should NOT exist (it was skipped).
+	es.WaitAsyncSaves()
 	persistFile := filepath.Join(dir, "task_patterns.json")
-	time.Sleep(100 * time.Millisecond) // give any goroutine time to run
 	if _, err := os.Stat(persistFile); err == nil {
 		t.Error("persist file should not exist — debounce should have skipped the persist")
 	}

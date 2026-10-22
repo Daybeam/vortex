@@ -113,12 +113,12 @@ func TestRRFFuse_AllEqualScores(t *testing.T) {
 // ── Mock Reranker ──────────────────────────────────────────────────────────
 
 type mockReranker struct {
-	scores     []float64
-	err        error
-	called     bool
-	querySeen  string
-	docsSeen   []string
-	callCount  int
+	scores    []float64
+	err       error
+	called    bool
+	querySeen string
+	docsSeen  []string
+	callCount int
 }
 
 func (m *mockReranker) Rerank(ctx context.Context, query string, documents []string) ([]float64, error) {
@@ -136,7 +136,7 @@ func (m *mockReranker) Rerank(ctx context.Context, query string, documents []str
 
 func TestRetrieveRelevantExperience_NoReranker_CoarseOrderPreserved(t *testing.T) {
 	es := &ExperienceStore{
-		Nodes:          make(map[string]*ExperienceNode),
+		Nodes:            make(map[string]*ExperienceNode),
 		AntiPatternStore: NewAntiPatternStore(nil, nil),
 	}
 
@@ -277,12 +277,12 @@ func TestRetrieveRelevantExperience_SingleResult_NoReranking(t *testing.T) {
 
 	// Only one node — reranking a single element is pointless.
 	es.Nodes["a"] = &ExperienceNode{
-		NodeID:     "a",
-		Capability: "coding",
-		Outcome:    "failure",
+		NodeID:      "a",
+		Capability:  "coding",
+		Outcome:     "failure",
 		FailureMode: "timeout_exceeded",
-		Embedding:  []float32{1.0, 0.0, 0.0},
-		SourceText: "node A",
+		Embedding:   []float32{1.0, 0.0, 0.0},
+		SourceText:  "node A",
 	}
 	es.rebuildNodeIndexLocked()
 

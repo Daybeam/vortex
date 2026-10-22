@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,6 +275,7 @@ func (s *DirectedEngine) getOrReloadGraphLocked(taskID string) *schemas.TaskGrap
 	}
 	var g schemas.TaskGraph
 	if err := json.Unmarshal(data, &g); err != nil {
+		slog.Warn("scheduler_status: corrupt manifest, returning nil graph", "taskID", taskID, "err", err)
 		return nil
 	}
 	s.graphs[taskID] = &g
@@ -430,6 +432,55 @@ func (s *DirectedEngine) GetSignalState() map[string]map[string]float64 {
 // ─── Decision ─────────────────────────────────────────────────────────────
 
 // ─── Decision ─────────────────────────────────────────────────────────────
+
+// applyApproveChoice handles SubmitDecision "approve" (G2, 2026-10-22; skills
+// added D3). A mount-policy approval records the approved MCPs/skills on the
+// graph (so the next ResolveFinalMCPs/ResolveFinalSkills allows them) and
+// re-queues the step — it was blocked at prepare and never ran. A plain
+// post-completion checkpoint just advances the already-run step. Extracted to
+// keep SubmitDecisionWithPayload under ratchet.
+func (s *DirectedEngine) applyApproveChoice(graph *schemas.TaskGraph, step *schemas.Step, dec *schemas.Decision) {
+	mounts := decisionApprovalMounts(dec)
+	skills := decisionApprovalIDs(dec, "approval_required_skills")
+	if len(mounts) > 0 || len(skills) > 0 {
+		graph.ApproveMCPMounts(mounts)
+		graph.ApproveSkillMounts(skills)
+		step.Status = schemas.StepPending
+		step.RetryCount = 0
+		step.LastError = ""
+		return
+	}
+	step.Status = schemas.StepOK
+}
+
+// decisionApprovalMounts extracts the MCP ids named by a
+// human_approval_required mount decision (G2).
+func decisionApprovalMounts(dec *schemas.Decision) []string {
+	return decisionApprovalIDs(dec, "approval_required_mounts")
+}
+
+// decisionApprovalIDs extracts string ids from a decision context key (G2 for
+// MCPs; skills D3, 2026-10-22). The context value is []string in-process and
+// []any after a JSON reload, so both shapes are handled.
+func decisionApprovalIDs(dec *schemas.Decision, key string) []string {
+	if dec == nil || dec.Context == nil {
+		return nil
+	}
+	switch v := dec.Context[key].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
 
 func (s *DirectedEngine) SubmitDecision(taskID, decisionID, choice string) error {
 	return s.SubmitDecisionWithPayload(taskID, decisionID, choice, "")
@@ -643,7 +694,7 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 				}
 			}
 		case "approve":
-			step.Status = schemas.StepOK
+			s.applyApproveChoice(graph, step, dec)
 		case "reject":
 			step.Status = schemas.StepFailed
 			step.LastError = "human_rejected"

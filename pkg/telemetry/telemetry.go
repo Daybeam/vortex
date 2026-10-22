@@ -16,16 +16,16 @@ import (
 
 // Exporter handles synchronizing experience data to a remote endpoint.
 type Exporter struct {
-	config  config.TelemetryConfig
-	exp     store.IExperienceStore
-	client  *http.Client
+	config config.TelemetryConfig
+	exp    store.IExperienceStore
+	client *http.Client
 }
 
 func NewExporter(cfg config.TelemetryConfig, exp store.IExperienceStore) *Exporter {
 	return &Exporter{
 		config: cfg,
 		exp:    exp,
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}},
 	}
 }
 

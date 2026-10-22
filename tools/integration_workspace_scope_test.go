@@ -12,7 +12,7 @@ import (
 
 // ─── Integration Test: Tier-Gated Workspace Scope — Public Tier Injection ───
 //
-// Design ref: docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §8
+// Design ref: docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §8
 // "Integration test: Public tier LLM injects workspace_root → rejected"
 //
 // This test verifies the entry-layer defense (I1 + I2): when a Public tier
@@ -25,10 +25,10 @@ type mockClientSession struct {
 	sessionID string
 }
 
-func (m *mockClientSession) Initialize()                          {}
-func (m *mockClientSession) Initialized() bool                    { return true }
+func (m *mockClientSession) Initialize()                                         {}
+func (m *mockClientSession) Initialized() bool                                   { return true }
 func (m *mockClientSession) NotificationChannel() chan<- mcp.JSONRPCNotification { return nil }
-func (m *mockClientSession) SessionID() string                    { return m.sessionID }
+func (m *mockClientSession) SessionID() string                                   { return m.sessionID }
 
 // TestIntegration_PublicTier_WorkspaceRootInjection_Rejected verifies that
 // a Public tier caller cannot escalate via workspace_root. The LLM may be

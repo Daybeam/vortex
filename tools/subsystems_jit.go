@@ -31,7 +31,7 @@ func registerJitSubsystem(app *App) {
 			ttl := intArg(args, "ttl", app.Registry.System.DefaultJITTTL)
 
 			sandboxed := true
-			if app.Tier == "public" {
+			if EffectiveTier(ctx, app) == TierPublic {
 				sandboxed = true
 			} else if val, ok := args["sandboxed"].(bool); ok {
 				sandboxed = val

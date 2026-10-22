@@ -54,7 +54,9 @@ func NewRegistry(configPath string) (*Registry, error) {
 		if err := r.wal.ReplaySince(r, r.walCheckpoint); err != nil {
 			log.Printf("[Registry] WAL Replay failed (%v). Quarantining...", err)
 			badPath := walPath + ".bad"
-			_ = os.Rename(walPath, badPath)
+			if rerr := os.Rename(walPath, badPath); rerr != nil {
+				log.Printf("WARN: config: failed to quarantine bad WAL %s: %v", walPath, rerr)
+			}
 			r.wal = NewWAL(walPath)
 		} else {
 			r.compactor = NewCompactor(r)
@@ -93,13 +95,13 @@ func (r *Registry) loadWithFallbackLocked() error {
 	if _, bakErr := os.Stat(bakPath); os.IsNotExist(bakErr) {
 		info, _ := os.Stat(r.configPath)
 		if info != nil && info.Size() > 0 {
-		if data, readErr := os.ReadFile(r.configPath); readErr == nil {
-			// audit NEW-MED-3: log backup write failure — previously silently
-			// discarded, making config corruption unrecoverable with no indication.
-			if err := os.WriteFile(bakPath, data, 0644); err != nil {
-				log.Printf("WARN: config: failed to write backup file %s: %v", bakPath, err)
+			if data, readErr := os.ReadFile(r.configPath); readErr == nil {
+				// audit NEW-MED-3: log backup write failure — previously silently
+				// discarded, making config corruption unrecoverable with no indication.
+				if err := os.WriteFile(bakPath, data, 0644); err != nil {
+					log.Printf("WARN: config: failed to write backup file %s: %v", bakPath, err)
+				}
 			}
-		}
 		}
 	}
 
@@ -118,7 +120,9 @@ func (r *Registry) loadWithFallbackLocked() error {
 	}
 
 	badPath := r.configPath + ".bad"
-	_ = os.Rename(r.configPath, badPath)
+	if rerr := os.Rename(r.configPath, badPath); rerr != nil {
+		log.Printf("WARN: config: failed to quarantine corrupt config %s: %v", r.configPath, rerr)
+	}
 
 	if _, err := os.Stat(bakPath); err == nil {
 		if restoreErr := os.Rename(bakPath, r.configPath); restoreErr == nil {
@@ -210,10 +214,11 @@ func (r *Registry) loadLocked() error {
 	}
 
 	// Asset gate: verify external assets against manifest.lock if present.
-	// Fail-soft: log warning on tampering, do not refuse startup.
+	// Fail-loud (2026-10-21): refuse startup on tampering instead of logging a warning.
+	// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §2 Tier 3.
 	if AllowExternalAssets() {
 		if err := VerifyAssetManifest(r.configPath); err != nil {
-			log.Printf("WARNING: asset integrity check failed: %v", err)
+			return fmt.Errorf("fatal: asset integrity verification failed: %w", err)
 		}
 	}
 
@@ -310,10 +315,27 @@ func (r *Registry) loadLocked() error {
 	for i := range cfg.Skills {
 		s := cfg.Skills[i]
 		s.InitFilter()
+		// Detect skill version drift (boundary audit 2026-09-15):
+		// if this skill was already loaded from workspace/skills/ with
+		// different implementations, log a warning. Config wins (preserving
+		// existing last-writer-wins behavior), but the warning makes the
+		// conflict visible so the operator can reconcile.
+		if existing, ok := r.Skills[s.ID]; ok && existing != nil {
+			if !reflect.DeepEqual(existing.Implementations, s.Implementations) {
+				log.Printf("[warn] skill %q version drift: workspace/skills/ and config.json provide different implementations; config.json wins", s.ID)
+			}
+		}
 		r.Skills[s.ID] = &s
 		keepSkills[s.ID] = true
 	}
 	pruneStale(r.Skills, keepSkills)
+
+	// Skill version drift detection (2026-10-20): compare loaded skills
+	// against the manifest from the previous load. Logs warnings for any
+	// skill whose content hash changed or was removed. Writes the current
+	// manifest so the next load can detect drift against this baseline.
+	// See docs/plan/RESIDUAL_ISSUES_FIX.md §3.
+	CheckSkillDrift(r, skillsDir)
 
 	// SOPs
 	keepSOPs := make(map[string]bool)
@@ -726,6 +748,18 @@ func (r *Registry) applySystemDefaults() {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			ff.FSOnlyStreakLimit = n
 		}
+	}
+	// ZeroEffectNudge: env var accepts both truthy and deliberately-false
+	// values so a config.json deployment can be overridden back off for a
+	// single run without editing the file (ADDED 2026-10-21).
+	if v := os.Getenv("VORTEX_ZERO_EFFECT_NUDGE"); v != "" {
+		ff.ZeroEffectNudge = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+	}
+	// MidAbandonNudge (A5, eval FINDINGS.md §A5): same override semantics as
+	// ZeroEffectNudge — truthy/deliberately-false via env for single-run
+	// toggling without editing config.json.
+	if v := os.Getenv("VORTEX_MID_ABANDON_NUDGE"); v != "" {
+		ff.MidAbandonNudge = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 	}
 }
 

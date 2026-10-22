@@ -11,7 +11,7 @@ import (
 
 // ─── Egress Redaction (I5: egress minimization) ───────────────────────────────────
 //
-// Design ref: docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4
+// Design ref: docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4
 //
 // Tool results (stdout, file content, API responses) flow back into the
 // LLM's context window. If they contain secrets (API keys, PII) or other

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/pkg/safelimits"
 	lua "github.com/yuin/gopher-lua"
 )
@@ -150,6 +151,99 @@ func (sp *ScriptProvider) Complete(ctx context.Context, req CompleteRequest) (*P
 	}
 
 	return resp, nil
+}
+
+// ListModels calls the Lua provider.discover() function if the script defines one.
+// This implements the optional interfaces.ModelLister interface.
+// If the script does not define a discover function, returns an error.
+func (sp *ScriptProvider) ListModels(ctx context.Context) ([]interfaces.ModelInfo, error) {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+
+	prov := sp.vm.GetGlobal("provider")
+	provTbl, ok := prov.(*lua.LTable)
+	if !ok {
+		return nil, fmt.Errorf("script does not define a 'provider' table")
+	}
+	discoverFn := provTbl.RawGetString("discover")
+	if discoverFn.Type() != lua.LTFunction {
+		return nil, fmt.Errorf("provider.discover is not defined — this script does not support model listing")
+	}
+
+	// Call: models, err = provider.discover()
+	if err := sp.vm.CallByParam(lua.P{
+		Fn:      discoverFn,
+		NRet:    2,
+		Protect: true,
+	}); err != nil {
+		return nil, fmt.Errorf("lua error in discover: %w", err)
+	}
+
+	errVal := sp.vm.Get(-1)
+	modelsVal := sp.vm.Get(-2)
+	sp.vm.Pop(2)
+
+	// Non-nil error from Lua: return it (the Lua side may still return a fallback table,
+	// but the error signals "this is a fallback, not live data" — the caller decides).
+	var luaErr string
+	if errVal != lua.LNil {
+		if errStr, ok := errVal.(lua.LString); ok {
+			luaErr = string(errStr)
+		}
+	}
+
+	modelsTbl, ok := modelsVal.(*lua.LTable)
+	if !ok {
+		return nil, fmt.Errorf("provider.discover must return a table as first value, got %s", modelsVal.Type())
+	}
+
+	var result []interfaces.ModelInfo
+	modelsTbl.ForEach(func(_ lua.LValue, v lua.LValue) {
+		entry, ok := v.(*lua.LTable)
+		if !ok {
+			return
+		}
+		mi := interfaces.ModelInfo{}
+		if id, ok := entry.RawGetString("id").(lua.LString); ok {
+			mi.ID = string(id)
+		}
+		if name, ok := entry.RawGetString("name").(lua.LString); ok {
+			mi.Name = string(name)
+		}
+		if ctx, ok := entry.RawGetString("ctx").(lua.LNumber); ok {
+			mi.ContextWindow = int(ctx)
+		}
+		if out, ok := entry.RawGetString("out").(lua.LNumber); ok {
+			mi.MaxOutput = int(out)
+		}
+		// mult (credit multiplier) and tags go into Metadata — provider-specific, not standardized
+		meta := map[string]any{}
+		if mult := entry.RawGetString("mult"); mult != lua.LNil {
+			if n, ok := mult.(lua.LNumber); ok {
+				meta["credit_multiplier"] = float64(n)
+			}
+		}
+		if tags, ok := entry.RawGetString("tags").(lua.LString); ok && string(tags) != "" {
+			meta["tags"] = string(tags)
+		}
+		if len(meta) > 0 {
+			mi.Metadata = meta
+		}
+		if mi.ID != "" {
+			result = append(result, mi)
+		}
+	})
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("discover returned 0 models%s", func() string {
+			if luaErr != "" {
+				return ": " + luaErr
+			}
+			return ""
+		}())
+	}
+
+	return result, nil
 }
 
 // StreamComplete is a fallback that delegates to Complete for ScriptProvider.

@@ -1,13 +1,15 @@
-package core
+package skeleton
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 )
 
 func TestGatewayIntegrationWithExecutor(t *testing.T) {
-	exec := NewControlledExecutor()
+	// Originally used core's NewControlledExecutor; replaced with plain
+	// os/exec at the P2.5 extraction so the package stays self-contained.
 	pyScript := `
 import sys
 for i in range(500):
@@ -16,13 +18,13 @@ for i in range(500):
     else:
         print(f'Line normal {i} ' + 'A' * 40)
 `
-	res, err := exec.Run(context.Background(), "python3", []string{"-c", pyScript}, "", nil)
+	stdout, err := exec.CommandContext(context.Background(), "python3", "-c", pyScript).Output()
 	if err != nil {
 		t.Skipf("python3 not available or failed: %v", err)
 		return
 	}
 
-	gated := AdaptiveOutputResult(res.Stdout, "python3", "")
+	gated := AdaptiveOutputResult(stdout, "python3", "")
 	gatedStr := string(gated)
 
 	if !strings.Contains(gatedStr, "TRUNCATED") && !strings.Contains(gatedStr, "GATEWAY") {

@@ -1,4 +1,4 @@
-package core
+package verify
 
 import (
 	"context"
@@ -12,7 +12,7 @@ func TestCodeEntityVerifier_ExistingEntities(t *testing.T) {
 	v := &CodeEntityVerifier{}
 	criteria := map[string]any{
 		"entities":   []any{"Spawner", "DirectedEngine", "Sieve"},
-		"search_dir": "../core",
+		"search_dir": "..", // core package dir (was "../core" before the core/verify extraction)
 	}
 	passed, msg, err := v.Verify(context.Background(), "", criteria)
 	if err != nil {
@@ -27,7 +27,7 @@ func TestCodeEntityVerifier_MissingEntity(t *testing.T) {
 	v := &CodeEntityVerifier{}
 	criteria := map[string]any{
 		"entities":   []any{"Spawner", "NonExistentFunctionXYZ123"},
-		"search_dir": "../core",
+		"search_dir": "..", // core package dir (was "../core" before the core/verify extraction)
 	}
 	passed, msg, err := v.Verify(context.Background(), "", criteria)
 	if err != nil {
@@ -73,7 +73,8 @@ func TestCodeEntityVerifier_NoSearchDir(t *testing.T) {
 
 func TestCodeEntityVerifier_UsesWorkdir(t *testing.T) {
 	v := &CodeEntityVerifier{}
-	passed, _, err := v.Verify(context.Background(), "../core", map[string]any{
+	// ".." = the core package dir (was "../core" before the core/verify extraction).
+	passed, _, err := v.Verify(context.Background(), "..", map[string]any{
 		"entities": []any{"Spawner"},
 	})
 	if err != nil {

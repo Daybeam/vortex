@@ -38,7 +38,7 @@ func TestResolveFinalMCPs_T7Intersection_FiltersInventedTools(t *testing.T) {
 		"appworld": {"venmo__login", "venmo__list_payments", "venmo__FAKE_TOOL", "invented__nope"},
 	}
 
-	bindings, err := ResolveFinalMCPs(hub, "agent", []string{"appworld"}, allowlists)
+	bindings, err := ResolveFinalMCPs(hub, "agent", []string{"appworld"}, allowlists, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestResolveFinalMCPs_T7Intersection_EmptyIntersectionFallsBackToFull(t *tes
 		"appworld": {"fake_tool_1", "fake_tool_2"},
 	}
 
-	bindings, err := ResolveFinalMCPs(hub, "agent", []string{"appworld"}, allowlists)
+	bindings, err := ResolveFinalMCPs(hub, "agent", []string{"appworld"}, allowlists, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestResolveFinalMCPs_T7Intersection_NoAvailableToolsSkipsIntersection(t *te
 		"appworld": {"venmo__login", "venmo__list_payments"},
 	}
 
-	bindings, err := ResolveFinalMCPs(hub, "agent", []string{"appworld"}, allowlists)
+	bindings, err := ResolveFinalMCPs(hub, "agent", []string{"appworld"}, allowlists, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestResolveFinalMCPs_T7Intersection_AllToolsMatchIsNoOp(t *testing.T) {
 		"appworld": {"tool_a", "tool_b"},
 	}
 
-	bindings, err := ResolveFinalMCPs(hub, "agent", []string{"appworld"}, allowlists)
+	bindings, err := ResolveFinalMCPs(hub, "agent", []string{"appworld"}, allowlists, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

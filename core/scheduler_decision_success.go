@@ -96,7 +96,13 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 	}
 
 	if s.SignalField != nil {
-		intensity := s.SignalField.BaseIntensity * conf
+		// audit RACE-2: read BaseIntensity under RLock — Deposit() takes the
+		// write lock internally and is not reentrant, so we snapshot the value
+		// first rather than holding the lock across the Deposit call.
+		s.SignalField.Mu.RLock()
+		base := s.SignalField.BaseIntensity
+		s.SignalField.Mu.RUnlock()
+		intensity := base * conf
 		s.SignalField.Deposit(types.LayerCritical, step.ID, intensity)
 
 		// audit L-1.2: collect dependent step IDs under RLock to prevent

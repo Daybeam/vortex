@@ -167,7 +167,7 @@ func TestRoute_AlwaysInclude_DropsToolMissingFromCatalog(t *testing.T) {
 // the cold-start window it exists to cover.
 func TestRoute_AlwaysInclude_KeepsEntriesWhenCatalogIsEmpty(t *testing.T) {
 	registry := &config.Registry{
-		Mu:  sync.RWMutex{},
+		Mu:   sync.RWMutex{},
 		MCPs: map[string]*config.MCPDef{"appworld": {ID: "appworld"}},
 	}
 	router := NewToolRouter(registry, nil)

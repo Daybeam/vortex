@@ -16,6 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/skeleton"
 )
 
 // ── Sandbox run-command workspace cleanup ────────────────────────────────
@@ -92,6 +93,8 @@ func registerCommandList(s *server.MCPServer, app *App) {
 		mcp.WithBoolean("diagnostic_mode", mcp.Description("Enable dual-path verification (direct vs script)")),
 		mcp.WithBoolean("use_script_path", mcp.Description("Force execution via temporary script file (safer for complex quoting)")),
 		mcp.WithBoolean("sandboxed", mcp.Description("When true, runs in an isolated workspace (outputs/sandbox_run/<id>/) with memory/CPU limits (256MB/30s). Default false — shell operations need local environment access. Enable for temporary script writing; workspace is auto-cleaned after 24h.")),
+		mcp.WithInteger("idle_timeout_sec", mcp.Description("Idle timeout in seconds — process is killed after this many seconds of no output. Default 15. Increase for slow builds (npm install, pip install).")),
+		mcp.WithInteger("total_timeout_sec", mcp.Description("Total timeout in seconds — hard kill after this many seconds regardless of output. Default 300. Increase for long builds (go test ./...).")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		cmdName := strArg(req.Params.Arguments, "command")
 		cwd := strArg(req.Params.Arguments, "cwd")
@@ -124,6 +127,14 @@ func registerCommandList(s *server.MCPServer, app *App) {
 		if strArg(req.Params.Arguments, "disable_stdin_monitoring") == "true" {
 			exec.DisableStdinMonitoring = true
 		}
+		// Per-call timeout overrides — default 15s/300s preserved when not specified.
+		// Useful for long builds (go test ./...) or slow-output commands (npm install).
+		if v := intArg(req.Params.Arguments, "idle_timeout_sec", 0); v > 0 {
+			exec.IdleTimeout = time.Duration(v) * time.Second
+		}
+		if v := intArg(req.Params.Arguments, "total_timeout_sec", 0); v > 0 {
+			exec.TotalTimeout = time.Duration(v) * time.Second
+		}
 
 		// Sandbox mode: isolated workspace + resource limits. Off by default
 		// because shell operations depend on the local environment (PATH, tools,
@@ -135,8 +146,8 @@ func registerCommandList(s *server.MCPServer, app *App) {
 			if err := os.MkdirAll(wsDir, 0755); err != nil { // regression for audit LOGIC-3: was ignoring error
 				return errResult(fmt.Sprintf("sandbox setup failed: cannot create workspace %s: %v", wsDir, err))
 			}
-			activeSandboxRuns.Store(wsDir, true)      // audit LOGIC-7: prevent cleaner from deleting while in use
-			defer activeSandboxRuns.Delete(wsDir)     // audit LOGIC-7: release when command finishes
+			activeSandboxRuns.Store(wsDir, true)  // audit LOGIC-7: prevent cleaner from deleting while in use
+			defer activeSandboxRuns.Delete(wsDir) // audit LOGIC-7: release when command finishes
 			cwd = wsDir
 			exec.Sandboxed = true
 		}
@@ -149,8 +160,8 @@ func registerCommandList(s *server.MCPServer, app *App) {
 				if err != nil {
 					return errResult(err.Error())
 				}
-				gatedStdout := []byte(core.SummarizeOutput(res.Stdout, cmdName))
-				gatedStderr := []byte(core.SummarizeOutput(res.Stderr, cmdName))
+				gatedStdout := []byte(skeleton.SummarizeOutput(res.Stdout, cmdName))
+				gatedStderr := []byte(skeleton.SummarizeOutput(res.Stderr, cmdName))
 				return jsonOK(map[string]any{
 					"status":    res.Status,
 					"stdout":    string(gatedStdout),
@@ -167,8 +178,8 @@ func registerCommandList(s *server.MCPServer, app *App) {
 		}
 
 		// Apply SummarizeOutput to guard against oversized output hitting the LLM context
-		gatedStdout := []byte(core.SummarizeOutput(res.Stdout, cmdName))
-		gatedStderr := []byte(core.SummarizeOutput(res.Stderr, cmdName))
+		gatedStdout := []byte(skeleton.SummarizeOutput(res.Stdout, cmdName))
+		gatedStderr := []byte(skeleton.SummarizeOutput(res.Stderr, cmdName))
 
 		resp := map[string]any{
 			"status":    res.Status,

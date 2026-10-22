@@ -20,15 +20,21 @@ func roleWithCoreTools(id string, coreTools []string) *config.Role {
 	return &config.Role{ID: id, Name: id, CoreTools: coreTools}
 }
 
-// TestCoreToolPolicy_NilMeansUnrestricted pins backward compatibility: every
-// config written before this field existed must behave exactly as before.
+// TestCoreToolPolicy_NilMeansUnrestricted pins the RESTORED default (A6,
+// eval FINDINGS.md §A6, 2026-10-22): an absent core_tools field means every
+// core tool. The same-day flip to "absent = none" was reverted by product
+// decision — core tools are part of the engine's operating mechanism (step
+// hand-offs via the shared output directory; verification methods name
+// read_file), so roles that say nothing keep the default surface. Narrowing
+// stays opt-in per role (task_planner declares []); ["*"] is the explicit
+// form of the default (see TestCoreToolPolicy_WildcardMeansUnrestricted).
 func TestCoreToolPolicy_NilMeansUnrestricted(t *testing.T) {
 	reg := newTestRegistry(roleWithCoreTools("executor", nil))
 	s := &Spawner{registry: reg}
 
 	p := s.coreToolPolicyFor("executor")
 	if p.restricted {
-		t.Fatal("nil core_tools must mean unrestricted")
+		t.Fatal("nil core_tools must mean unrestricted (A6 revert: default-on)")
 	}
 	for name := range CoreToolNames {
 		if !p.allows(name) {
@@ -37,6 +43,27 @@ func TestCoreToolPolicy_NilMeansUnrestricted(t *testing.T) {
 	}
 	if got := len(p.filter(CoreToolDefinitions())); got != len(CoreToolDefinitions()) {
 		t.Fatalf("filter dropped tools for an unrestricted role: %d", got)
+	}
+}
+
+// TestCoreToolPolicy_WildcardMeansUnrestricted pins the explicit escape
+// hatch: ["*"] restores the pre-A6 behavior for legacy configs that relied
+// on the unrestricted default.
+func TestCoreToolPolicy_WildcardMeansUnrestricted(t *testing.T) {
+	reg := newTestRegistry(roleWithCoreTools("executor", []string{"*"}))
+	s := &Spawner{registry: reg}
+
+	p := s.coreToolPolicyFor("executor")
+	if p.restricted {
+		t.Fatal("core_tools [\"*\"] must mean unrestricted")
+	}
+	for name := range CoreToolNames {
+		if !p.allows(name) {
+			t.Fatalf("%s must be allowed for a wildcard role", name)
+		}
+	}
+	if got := len(p.filter(CoreToolDefinitions())); got != len(CoreToolDefinitions()) {
+		t.Fatalf("filter dropped tools for a wildcard role: %d", got)
 	}
 }
 
@@ -118,7 +145,7 @@ func TestCoreToolPolicy_UnknownRoleIsUnrestricted(t *testing.T) {
 func TestBuildMCPServers_PlannerGetsNoCoreServer(t *testing.T) {
 	reg := newTestRegistry(
 		roleWithCoreTools("task_planner", []string{}),
-		roleWithCoreTools("executor", nil),
+		roleWithCoreTools("executor", nil), // nil = unrestricted (A6 revert)
 	)
 	s := &Spawner{registry: reg}
 

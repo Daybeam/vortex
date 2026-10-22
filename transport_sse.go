@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,7 +27,10 @@ import (
 func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 	host := getenv("VORTEX_HOST", "0.0.0.0")
 	port := getenv("VORTEX_PORT", "8000")
-	addr := "0.0.0.0:" + port
+	// Bind to the configured host, not a hardcoded wildcard — a user setting
+	// VORTEX_HOST to a loopback address to restrict exposure must actually be
+	// bound to it. Default (unset) behavior is unchanged (0.0.0.0).
+	addr := net.JoinHostPort(host, port)
 
 	// BaseURL is resolved from VORTEX_BASE_URL (set by the caller) so
 	// that tunnel / reverse-proxy URLs work, falling back to localhost.
@@ -57,6 +61,10 @@ func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 	mux.Handle("/sse", sse.SSEHandler())
 	mux.Handle("/message", sse.MessageHandler())
 	mux.Handle("/mcp", streamServer)
+
+	if !isLoopbackAddr(addr) {
+		log.Printf("[vortex] WARNING: serving SSE/HTTP on %s without authentication — anyone who can reach this port can drive the orchestrator. Bind to a loopback address before exposing it.", addr)
+	}
 
 	srv := &http.Server{
 		Addr:         addr,
@@ -93,4 +101,16 @@ func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("[orchestrator] server shutdown error: %v", err)
 	}
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

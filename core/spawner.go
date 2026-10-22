@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/pkg/gateway"
 	"github.com/daybeam/vortex/pkg/registry"
 	"github.com/daybeam/vortex/providers"
@@ -55,7 +56,7 @@ type Spawner struct {
 	processor         *OutputProcessor
 	toolRouter        *ToolRouter
 	skillRouter       *SkillRouter
-	verifierRegistry  map[string]Verifier
+	verifierRegistry  map[string]verify.Verifier
 	constraintAdapter *ConstraintAdapter
 	sieve             *Sieve
 	contextManager    *ContextManager
@@ -111,6 +112,12 @@ type Spawner struct {
 	// effect tracking. Keyed by taskID. Lazy-created on first access.
 	// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3.
 	effectTrackers sync.Map // taskID → *EffectTracker
+
+	// telemetry and providerRouter (ADDED 2026-10-21): provider routing telemetry
+	// and strategy-based selection. Nil-safe: initialized in NewSpawner from config.
+	// See docs/completed/2026-10-21/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
+	telemetry      *TelemetryRegistry
+	providerRouter *ProviderRouter
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
@@ -136,7 +143,7 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		logger:           logger,
 		ResourceLoader:   loader,
 		mcpMgr:           NewMCPConnectionManager(reg, logger),
-		verifierRegistry: make(map[string]Verifier),
+		verifierRegistry: make(map[string]verify.Verifier),
 		interceptors:     interceptors,
 		contextProviders: []ContextProvider{
 			&TimeProvider{},
@@ -216,6 +223,13 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 	}
 
 	spawner.CaSKG.HookEventBus(DefaultBus)
+
+	// Initialize provider routing telemetry (ADDED 2026-10-21).
+	// Nil-safe: if config is zero-value, defaults are applied in NewTelemetryRegistry.
+	routingCfg := reg.System.ProviderRouting
+	spawner.telemetry = NewTelemetryRegistry(routingCfg)
+	spawner.providerRouter = NewProviderRouter(spawner.telemetry, routingCfg.Strategy)
+
 	return spawner
 }
 

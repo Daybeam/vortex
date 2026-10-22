@@ -38,26 +38,6 @@ func parseSessionSkills(v any) []*config.Skill {
 	return skills
 }
 
-func SmartRouteIntent(task string) ([]string, string, string) {
-	lower := strings.ToLower(task)
-	// Browser / Web / Image Generation / Scraping -> ghost-driver
-	if strings.Contains(lower, "browser") || strings.Contains(lower, "image") ||
-		strings.Contains(lower, "generate") || strings.Contains(lower, "scrape") ||
-		strings.Contains(lower, "screenshot") || strings.Contains(lower, "pollinations") {
-		return []string{"ghost-driver"}, "ghost_operator", "Matched browser/automation/image-generation intent"
-	}
-	// Financial / Stock / Earnings -> invest-research-lite
-	if strings.Contains(lower, "stock") || strings.Contains(lower, "earnings") ||
-		strings.Contains(lower, "financial") || strings.Contains(lower, "finnhub") {
-		return []string{"invest-research-lite"}, "data_researcher", "Matched financial/research intent"
-	}
-	// Document / Word / Docx -> docx-mcp
-	if strings.Contains(lower, "docx") || strings.Contains(lower, "word document") {
-		return []string{"docx-mcp"}, "document_specialist", "Matched document/docx intent"
-	}
-	return nil, "", ""
-}
-
 // shouldRouteToFulfill determines if submit_decision routes to FulfillStep
 // (true) or SubmitDecisionWithPayload (false). T1: replan/create_role/
 // rewrite_dag carry structured payload and must go through
@@ -123,8 +103,8 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithNumber("token_budget", mcp.Description("Per-task token budget cap. Overrides the global default. 0 = use system default.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, _ := req.Params.Arguments.(map[string]any)
-			sessionRoles := parseSessionRoles(args["session_roles"])
-			sessionSkills := parseSessionSkills(args["session_skills"])
+		sessionRoles := parseSessionRoles(args["session_roles"])
+		sessionSkills := parseSessionSkills(args["session_skills"])
 		sessionID := strArg(args, "session_id")
 		requestedRoot := strArg(args, "workspace_root")
 		timeoutSecs := intArg(args, "timeout", 0)
@@ -132,7 +112,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 
 		// Tier-Gated Workspace Scope (ADDED 2026-10-13):
 		// Public tier callers cannot escalate via workspace_root.
-		// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.3.
+		// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.3.
 		var workspacePolicy *WorkspacePolicy
 		if wp := app.Registry.GetWorkspacePolicy(CallerOwnerID(ctx)); wp != nil {
 			workspacePolicy = &WorkspacePolicy{
@@ -168,7 +148,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				}
 			}
 			dispatcher := core.NewGroupDispatcher(app.Scheduler, app.Registry)
-			id, err := dispatcher.DispatchGroup(groupID, taskStr, ctxRefs, sessionRoles, sessionSkills, nil, "")
+			id, err := dispatcher.DispatchGroup(groupID, taskStr, ctxRefs, sessionRoles, sessionSkills, nil, "", EffectiveTier(ctx, app) == TierAdmin)
 			if err != nil {
 				return errResult(err.Error())
 			}
@@ -201,6 +181,14 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				extraMCPs = []string{v}
 			}
 		}
+
+		// SECURITY (2026-10-21): the blunt "non-admin ⇒ reject any additional_mcps"
+		// check was REMOVED. The mount decision now lives in
+		// core.ResolveFinalMCPs, which evaluates per-MCP: an MCP already bound to the
+		// role is always allowed (fixing the G1/G11 side effect where public callers
+		// were blocked from re-specifying their own role's MCPs); an unbound MCP is
+		// gated by its MountPolicy (open / approval / admin_only). Delegating keeps a
+		// single source of truth instead of two divergent gates.
 
 		// Intent-Driven Implicit Discover & Submit
 		// When steps is absent but task is provided, the caller gives a
@@ -237,23 +225,11 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				si.AdditionalMCPs = extraMCPs
 			}
 
-			// Smart Intent Routing - Only auto-route when no explicit role_id or MCPs are given.
-			if si.RoleID == "" && len(si.AdditionalMCPs) == 0 {
-				if matchedMCPs, matchedRole, reason := SmartRouteIntent(taskStr); len(matchedMCPs) > 0 {
-					si.AdditionalMCPs = matchedMCPs
-					si.RoleID = matchedRole
-					autoMatched = map[string]any{
-						"triggered":    true,
-						"intent":       taskStr,
-						"bound_mcps":   matchedMCPs,
-						"assigned_role": matchedRole,
-						"reason":       reason,
-					}
-					app.Logger.Log("EventAutoDiscovered", "", "s1", map[string]any{
-						"intent": taskStr, "mcps": matchedMCPs, "role": matchedRole,
-					})
-				}
-			}
+			// Smart Intent Routing REMOVED (2026-10-21, audit R2/D4). The old
+			// substring table auto-mounted vendor MCPs (ghost-driver, docx-mcp,
+			// ...) on words like "generate"/"image", running AFTER the tier gate
+			// and hardcoding supplier names in core. Callers must now name
+			// role_id / additional_mcps explicitly, or let the planner route.
 
 			inputs = []schemas.StepInput{si}
 		} else {
@@ -309,6 +285,16 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		}
 		if !hasValidStep {
 			return errResult("at least one step must contain a non-empty 'task' field. Example: steps:[{\"id\":\"s1\",\"role_id\":\"software_engineer\",\"task\":\"Write tests\"}]")
+		}
+
+		// SECURITY FIX (2026-10-21, issue R1): record the submitter's tier so the
+		// execution-path mount gate (core.ResolveFinalMCPs, via
+		// TaskGraph.SubmitterIsAdmin) can enforce it — planner/replan/surgery
+		// steps inherit it instead of being treated as admin. StepInput's field
+		// is json:"-", so a caller cannot forge admin.
+		submitterIsAdmin := EffectiveTier(ctx, app) == TierAdmin
+		for i := range inputs {
+			inputs[i].SubmitterIsAdmin = submitterIsAdmin
 		}
 
 		// ── Adaptive Verifier Policy (ADDED 2026-09-07) ─────────────────────
@@ -370,10 +356,10 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				auditMCPs, auditAllowlists := core.AuditorAllowedTools(orig.AdditionalMCPs, orig.AdditionalToolAllowlists)
 
 				augmentedInputs = append(augmentedInputs, schemas.StepInput{
-					ID:         auditID,
-					RoleID:     "auditor",
-					DependsOn:  []string{orig.ID},
-					Task:       auditTask,
+					ID:        auditID,
+					RoleID:    "auditor",
+					DependsOn: []string{orig.ID},
+					Task:      auditTask,
 					// U5 (2026-10-18): auditor inherits parent step's MCP
 					// bindings so it can verify against the same data sources.
 					// Universal: an auditor without fact-checking tools is
@@ -484,11 +470,11 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		}
 
 		return jsonOK(map[string]any{
-			"task_id":                id,
-			"complexity_hint":        hint,
-			"step_count":             stepCount,
-			"auto_matched":           autoMatched,
-			"adaptive_verifier":      policyNotifications,
+			"task_id":           id,
+			"complexity_hint":   hint,
+			"step_count":        stepCount,
+			"auto_matched":      autoMatched,
+			"adaptive_verifier": policyNotifications,
 		})
 	})
 
@@ -549,7 +535,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			return mcp.NewToolResultText(app.Navigator.Search(ctx, query)), nil
 		}
 		if sub != "" {
-			doc, err := registry.discoverActions(sub, app.Tier)
+			doc, err := registry.discoverActions(sub, EffectiveTier(ctx, app))
 			if err != nil {
 				return errResult(err.Error())
 			}
@@ -567,11 +553,11 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			mcp.WithNumber("redundancy", mcp.Description("Redundancy threshold for forest mode (default: 0.85)")),
 			mcp.WithString("task_scope", mcp.Required(), mcp.Description("Task ID to limit search scope. Required — cross-task search is not allowed in open-core edition.")),
 		), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// orchestrator_context_search: active when ContextArchive is initialized.
-	// Single-task scope enforced: task_scope is required and must be non-empty.
-	// Cross-task search requires enterprise isolation layer (SessionID/OwnerRole).
-	// See docs/completed/2026-09-13/CONTEXT_ARCHIVE_ACTIVATION_DESIGN.md.
-	if app.Archive == nil {
+			// orchestrator_context_search: active when ContextArchive is initialized.
+			// Single-task scope enforced: task_scope is required and must be non-empty.
+			// Cross-task search requires enterprise isolation layer (SessionID/OwnerRole).
+			// See docs/completed/2026-09-13/CONTEXT_ARCHIVE_ACTIVATION_DESIGN.md.
+			if app.Archive == nil {
 				return errResult("Context archive not initialized")
 			}
 			query := strArg(req.Params.Arguments, "query")
@@ -644,7 +630,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		// T2: replan/create_role are open to public tier BUT public callers
 		// cannot inject payload — replan uses pre-computed planner plan,
 		// create_role uses GenerateRoleObjects.
-		if err := validateTierChoice(app.Tier, choice, output); err != nil {
+		if err := validateTierChoice(EffectiveTier(ctx, app), choice, output); err != nil {
 			return errResult(err.Error())
 		}
 

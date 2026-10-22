@@ -294,9 +294,9 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 
 	for _, b := range req.Bindings {
 		mcpDef := r.Registry.GetMCP(b.MCPID)
-		if mcpDef == nil {
+		if mcpDef == nil || !mcpActive(mcpDef) {
 			// JIT §5.1: stale jit_ IDs (expired/evicted) are filtered here
-			// before prompt assembly, preventing ghost-tool exposure.
+			// before prompt assembly; a disabled MCP (core/mcp_toggle.go) too.
 			continue
 		}
 

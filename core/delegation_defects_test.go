@@ -331,7 +331,7 @@ func TestResolveFinalMCPs_DynamicRegistrationViaCallback(t *testing.T) {
 		return nil
 	}
 
-	bindings, err := ResolveFinalMCPs(hub, "worker", []string{"dynamic-search"}, nil)
+	bindings, err := ResolveFinalMCPs(hub, "worker", []string{"dynamic-search"}, nil, true)
 	if err != nil {
 		t.Fatalf("expected dynamic MCP registration to succeed, got error: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestResolveFinalMCPs_CallbackReturnsNil_StillErrors(t *testing.T) {
 		return nil
 	}
 
-	_, err := ResolveFinalMCPs(hub, "worker", []string{"nonexistent-mcp"}, nil)
+	_, err := ResolveFinalMCPs(hub, "worker", []string{"nonexistent-mcp"}, nil, true)
 	if err == nil {
 		t.Fatal("expected error when callback returns nil for unknown MCP")
 	}
@@ -383,7 +383,7 @@ func TestResolveFinalMCPs_NoCallback_StillErrors(t *testing.T) {
 	}
 	hub := NewContextHub(reg, nil, nil)
 
-	_, err := ResolveFinalMCPs(hub, "worker", []string{"nonexistent-mcp"}, nil)
+	_, err := ResolveFinalMCPs(hub, "worker", []string{"nonexistent-mcp"}, nil, true)
 	if err == nil {
 		t.Fatal("expected error for unknown MCP with no callback")
 	}

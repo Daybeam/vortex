@@ -155,7 +155,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	// Defense-in-depth: even if the tools layer's ResolveWorkspaceRoot
 	// was bypassed (e.g. direct API handler), the scheduler re-checks
 	// that workspaceRoot is within the allowed scope for the owner.
-	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.5.
+	// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.5.
 	if err := s.validateWorkspaceScope(workspaceRoot, ownerID); err != nil {
 		return "", fmt.Errorf("workspace scope violation: %w", err)
 	}
@@ -234,9 +234,33 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			// the terminal steps, otherwise the plan would silently
 			// drop them.
 			inheritCallerSettings(planned, inputs[0])
+			// 🔴 A one-step plan buys nothing structural. It is the same
+			// single step with no dependency, so there is no parallelism and
+			// no context isolation — the two things a plan exists to buy.
+			// Its ONLY delta is replacing the caller's task text, and that
+			// replacement is measurably lossy: rewriting "payment requests
+			// which have not been approved" as "fetch all payment requests,
+			// then filter" moves a query argument into a post-processing
+			// stage, so the executor drops the server-side filter and starts
+			// scanning the unfiltered collection.
+			//
+			// Measured 4fab96f_3 (K=3, temperature 0, docs/54 §5.24): all
+			// three trials were single_step, all three step texts said
+			// "fetch all"; the executor paged 13 unfiltered pages with three
+			// different page_limit values and never read payment_request
+			// 1624 — 2-3/8, while the plain-ReAct arm read 7 filtered pages
+			// and scored 8/8.
+			//
+			// So when the planner returns exactly the shape we already had,
+			// keep the caller's task verbatim. The fast-path below is then
+			// the plain ReAct loop it is supposed to be.
+			if len(planned) == 1 && strings.TrimSpace(inputs[0].Task) != "" {
+				planned[0].Task = inputs[0].Task
+			}
 			s.logger.Log("planner_first_applied", planTaskID, inputs[0].ID, map[string]any{
-				"steps": len(planned),
-				"role":  inputs[0].RoleID,
+				"steps":     len(planned),
+				"role":      inputs[0].RoleID,
+				"task_kept": len(planned) == 1,
 			})
 			inputs = planned
 		}
@@ -309,10 +333,10 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		}
 
 		graph := &schemas.TaskGraph{
-			TaskID:           taskID,
-			TraceID:          traceID,
-			Steps:            map[string]*schemas.Step{stepID: step},
-			Status:           schemas.GraphRunning,
+			TaskID:  taskID,
+			TraceID: traceID,
+			Steps:   map[string]*schemas.Step{stepID: step},
+			Status:  schemas.GraphRunning, SubmitterIsAdmin: inp.SubmitterIsAdmin,
 			PendingDecisions: []*schemas.Decision{},
 			OutputFiles:      []schemas.OutputFile{},
 			CreatedAt:        time.Now(),
@@ -610,10 +634,10 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	s.validateWorkspaceKeyCollisions(steps)
 
 	graph := &schemas.TaskGraph{
-		TaskID:           taskID,
-		TraceID:          traceID,
-		Steps:            steps,
-		Status:           schemas.GraphRunning,
+		TaskID:  taskID,
+		TraceID: traceID,
+		Steps:   steps,
+		Status:  schemas.GraphRunning, SubmitterIsAdmin: anySubmitterIsAdmin(inputs),
 		PendingDecisions: []*schemas.Decision{},
 		OutputFiles:      []schemas.OutputFile{},
 		CreatedAt:        time.Now(),
@@ -820,4 +844,16 @@ func (s *DirectedEngine) validateWorkspaceScope(workspaceRoot, ownerID string) e
 		}
 	}
 	return fmt.Errorf("workspace %s not in allowed roots for owner %s", workspaceRoot, ownerID)
+}
+
+// anySubmitterIsAdmin reports whether any submitted step carries the admin
+// tier. All steps in one submission share the caller's tier, so this records
+// it once on the task graph (see TaskGraph.SubmitterIsAdmin).
+func anySubmitterIsAdmin(inputs []schemas.StepInput) bool {
+	for i := range inputs {
+		if inputs[i].SubmitterIsAdmin {
+			return true
+		}
+	}
+	return false
 }

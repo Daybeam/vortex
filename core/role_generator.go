@@ -319,7 +319,7 @@ Generate the required JSON for this role. If the Cookbook is a complex resource 
 		System:    systemPrompt,
 		User:      userPrompt,
 		Model:     providerCfg.Model,
-		MaxTokens: 4096,
+		MaxTokens: defaultSpawnOutputTokens,
 	})
 
 	if err != nil {
@@ -403,8 +403,9 @@ REPAIRED_OK:
 		BaseCapability:      generated.Capability,
 		BoundSkills:         []string{skillID},
 		BoundMCPBindings:    []config.MCPBinding{},
-		AllowDynamicSkills:  true,
-		AllowDynamicMCPs:    true,
+		AllowDynamicSkills:  false, // SECURITY FIX (2026-10-21): same cleanup as AppendSessionRole
+		AllowDynamicMCPs:    false, // persisted dynamic roles must NOT mount arbitrary MCPs
+		Generatable:         false, // prevent chain generation
 		MaxAdditionalSkills: 5,
 		Metadata:            make(map[string]string),
 	}

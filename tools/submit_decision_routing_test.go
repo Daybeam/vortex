@@ -4,7 +4,9 @@ import "testing"
 
 // T1 regression: replan/create_role with non-empty output must NOT route
 // to FulfillStep. Before the fix, the condition
-//   (choice == "fulfill" || output != "") && choice != "rewrite_dag"
+//
+//	(choice == "fulfill" || output != "") && choice != "rewrite_dag"
+//
 // evaluated true for replan/create_role with output, swallowing the
 // structured payload into FulfillStep instead of reaching
 // scheduler_status.go's replan/create_role cases.
@@ -91,4 +93,3 @@ func TestValidateTierChoice_T2Regression(t *testing.T) {
 		})
 	}
 }
-

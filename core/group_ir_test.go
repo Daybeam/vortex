@@ -44,7 +44,7 @@ func TestDispatchGroup_WithSessionIR(t *testing.T) {
 	}
 
 	// 4. Dispatch with Session IR
-	taskID, err := dispatcher.DispatchGroup(groupID, "Expert Task", nil, []*config.Role{sessionRole}, nil, nil, "")
+	taskID, err := dispatcher.DispatchGroup(groupID, "Expert Task", nil, []*config.Role{sessionRole}, nil, nil, "", true)
 	if err != nil {
 		t.Fatalf("DispatchGroup failed: %v", err)
 	}

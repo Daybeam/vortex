@@ -26,10 +26,10 @@ func TestSanitizingProvider_MasksContentBlocks(t *testing.T) {
 		{Text: "block with " + secret},
 	}
 	req := schemas.CompleteRequest{
-		System:              "system with " + secret,
-		User:                "user with " + secret,
-		SystemBlocks:        blocksWithSecret,
-		UserBlocks:          []schemas.ContentBlock{{Text: "user block " + secret}},
+		System:                "system with " + secret,
+		User:                  "user with " + secret,
+		SystemBlocks:          blocksWithSecret,
+		UserBlocks:            []schemas.ContentBlock{{Text: "user block " + secret}},
 		ProtectedSystemBlocks: []schemas.ContentBlock{{Text: "protected " + secret}},
 		ProtectedUserBlocks:   []schemas.ContentBlock{{Text: "prot user " + secret}},
 		VolatileSystemBlocks:  []schemas.ContentBlock{{Text: "volatile " + secret}},
@@ -105,8 +105,8 @@ func TestSanitizingProvider_NilSanitizerPassThroughAllSurfaces(t *testing.T) {
 	ctx := ContextWithTaskID(context.Background(), "task-p1")
 
 	req := schemas.CompleteRequest{
-		System:              "system " + secret,
-		User:                "user " + secret,
+		System:                "system " + secret,
+		User:                  "user " + secret,
 		ProtectedSystemBlocks: []schemas.ContentBlock{{Text: "block " + secret}},
 		Constraints:           map[string]any{"key": secret},
 	}

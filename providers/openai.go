@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/pkg/safelimits"
 )
@@ -41,6 +42,54 @@ type OpenAIProvider struct {
 }
 
 func (p *OpenAIProvider) Name() string { return p.name }
+
+// ListModels calls the OpenAI-compatible GET /v1/models endpoint.
+// Implements interfaces.ModelLister.
+func (p *OpenAIProvider) ListModels(ctx context.Context) ([]interfaces.ModelInfo, error) {
+	url := getOpenAIEndpoint(p.cfg.BaseURL, "/v1/models")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build models request: %w", err)
+	}
+	if p.cfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("models request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("models endpoint returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode models response: %w", err)
+	}
+
+	models := make([]interfaces.ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		if m.ID == "" {
+			continue
+		}
+		mi := interfaces.ModelInfo{ID: m.ID, Name: m.ID}
+		if m.OwnedBy != "" {
+			mi.Metadata = map[string]any{"owned_by": m.OwnedBy}
+		}
+		models = append(models, mi)
+	}
+	return models, nil
+}
 
 // disableThinking reports whether the request body should carry
 // `chat_template_kwargs: {"enable_thinking": false}`.
@@ -114,6 +163,9 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 		"model":      req.Model,
 		"max_tokens": req.MaxTokens,
 		"stream":     true,
+		"stream_options": map[string]any{
+			"include_usage": true,
+		},
 		"messages": []map[string]any{
 			{"role": "system", "content": req.System},
 			{"role": "user", "content": userContent},
@@ -195,6 +247,10 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 
 	var fullText strings.Builder
 	toolCallMap := make(map[int]*streamingToolCall)
+	var streamPromptTokens, streamCompletionTokens, streamCachedTokens int
+	// finish_reason is only sent on the frame that closes the message. Last
+	// non-empty value wins: some gateways emit "" on intermediate frames.
+	var streamFinishReason string
 
 	// M-8: Use scanner.Bytes() instead of scanner.Text() to avoid a
 	// string allocation + []byte(string) copy per SSE chunk. Bytes()
@@ -229,14 +285,32 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
+			Usage struct {
+				PromptTokens        int `json:"prompt_tokens"`
+				CompletionTokens    int `json:"completion_tokens"`
+				PromptTokensDetails struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+			} `json:"usage"`
 		}
 		if err := json.Unmarshal(payload, &chunk); err != nil {
 			continue
+		}
+		// Extract usage before the choices early-continue: the final
+		// streaming frame (with stream_options.include_usage=true) has
+		// usage but empty choices — without this check it would be skipped.
+		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
+			streamPromptTokens = chunk.Usage.PromptTokens
+			streamCompletionTokens = chunk.Usage.CompletionTokens
+			streamCachedTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}
 
+		if fr := chunk.Choices[0].FinishReason; fr != "" {
+			streamFinishReason = fr
+		}
 		delta := chunk.Choices[0].Delta
 		if delta.Content != "" {
 			fullText.WriteString(delta.Content)
@@ -304,7 +378,14 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 		return p.Complete(ctx, req)
 	}
 
-	return &ProviderResponse{Text: text, ToolCalls: toolCalls}, nil
+	return &ProviderResponse{
+		Text:             text,
+		ToolCalls:        toolCalls,
+		StopReason:       streamFinishReason,
+		PromptTokens:     streamPromptTokens,
+		CompletionTokens: streamCompletionTokens,
+		CacheReadTokens:  streamCachedTokens,
+	}, nil
 }
 
 type streamingToolCall struct {
@@ -401,7 +482,8 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 
 	var resp struct {
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Content   string `json:"content"`
 				ToolCalls []struct {
 					ID       string `json:"id"`
@@ -413,6 +495,13 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 				} `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
+			PromptTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, &ProviderError{Msg: "failed to parse response: " + err.Error()}
@@ -438,8 +527,12 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 	}
 
 	return &ProviderResponse{
-		Text:      msg.Content,
-		ToolCalls: toolCalls,
+		Text:             msg.Content,
+		ToolCalls:        toolCalls,
+		StopReason:       resp.Choices[0].FinishReason,
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		CacheReadTokens:  resp.Usage.PromptTokensDetails.CachedTokens,
 	}, nil
 }
 

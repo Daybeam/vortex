@@ -125,16 +125,16 @@ func (b *FileExperienceBackend) SaveExperienceBatch(ctx context.Context, nodes [
 
 // ExperienceStore manages experience data using a backend.
 type ExperienceStore struct {
-	Mu               sync.RWMutex
-	dir              string
-	backend          IExperienceBackend
-	taskStore        ITaskStore
-	System           *config.SystemSettings
-	TaskPatterns     map[string]TaskPattern
+	Mu           sync.RWMutex
+	dir          string
+	backend      IExperienceBackend
+	taskStore    ITaskStore
+	System       *config.SystemSettings
+	TaskPatterns map[string]TaskPattern
 	// sequenceKeyIndex maps SequenceKey → patternID for O(1) lookup in
 	// upsertTaskPattern and jit_candidate_ops, replacing O(N) full scans
 	// (audit M-6). Not JSON-serialized — rebuilt on load.
-	sequenceKeyIndex  map[string]string
+	sequenceKeyIndex map[string]string
 	RoleProfiles     map[string]*RoleProfile
 	DecisionOutcomes []*DecisionOutcome
 	SkillAffinities  map[string]*SkillAffinity
@@ -143,8 +143,8 @@ type ExperienceStore struct {
 	// smoothing, replacing O(total_affinities) full scan (audit M-5).
 	// Not JSON-serialized — rebuilt on load.
 	skillAffinityBySkill map[string][]string
-	GeneratedSkills  map[string]*GeneratedSkill
-	ArchivedSkills   map[string]*GeneratedSkill
+	GeneratedSkills      map[string]*GeneratedSkill
+	ArchivedSkills       map[string]*GeneratedSkill
 	// RoutingMatrix indices: [RoleID][ModelID][Capability][SkillID]
 	RoutingMatrix      map[string]map[string]map[string]map[string]*RouteWeight
 	EnvironmentIssues  map[string]*EnvironmentIssue
@@ -168,8 +168,8 @@ type ExperienceStore struct {
 	patternTokensCache map[string]map[string]int
 
 	// JIT Promotion Audit (ADDED 2026-09-06)
-	JITCandidates       map[string]*JITCandidate `json:"jit_candidates"`
-	PromotionAuditLogs  []PromotionAuditLog      `json:"promotion_audit_logs"`
+	JITCandidates      map[string]*JITCandidate `json:"jit_candidates"`
+	PromotionAuditLogs []PromotionAuditLog      `json:"promotion_audit_logs"`
 
 	// queryRelevantAntiPatterns is a helper on the store struct that scans
 	// the AntiPatternStore for precedents matching the task intent keywords.
@@ -230,27 +230,27 @@ func NewExperienceStore(dir string, ts ITaskStore, sys *config.SystemSettings, e
 		backend = &FileExperienceBackend{dir: dir}
 	}
 	es := &ExperienceStore{
-		dir:               dir,
-		backend:           backend,
-		taskStore:         ts,
-		System:            sys,
-		TaskPatterns:      make(map[string]TaskPattern),
-		sequenceKeyIndex:  make(map[string]string),
-		RoleProfiles:      make(map[string]*RoleProfile),
-		SkillAffinities:   make(map[string]*SkillAffinity),
+		dir:                  dir,
+		backend:              backend,
+		taskStore:            ts,
+		System:               sys,
+		TaskPatterns:         make(map[string]TaskPattern),
+		sequenceKeyIndex:     make(map[string]string),
+		RoleProfiles:         make(map[string]*RoleProfile),
+		SkillAffinities:      make(map[string]*SkillAffinity),
 		skillAffinityBySkill: make(map[string][]string),
-		GeneratedSkills:   make(map[string]*GeneratedSkill),
-		ArchivedSkills:    make(map[string]*GeneratedSkill),
-		RoutingMatrix:      make(map[string]map[string]map[string]map[string]*RouteWeight),
-		EnvironmentIssues:  make(map[string]*EnvironmentIssue),
-		DecisionPrecedents: make(map[string]*schemas.DecisionNode),
-		AntiPatternStore:   NewAntiPatternStore(nil, apBackend),
-		Nodes:             make(map[string]*ExperienceNode),
-		Edges:             make([]ExperienceEdge, 0),
-		JITCandidates:     make(map[string]*JITCandidate),
-		PromotionAuditLogs: make([]PromotionAuditLog, 0),
-		RoleAffinities:     make(map[string]map[string]float64),
-		StatePotentials:    make(map[string]*StatePotential),
+		GeneratedSkills:      make(map[string]*GeneratedSkill),
+		ArchivedSkills:       make(map[string]*GeneratedSkill),
+		RoutingMatrix:        make(map[string]map[string]map[string]map[string]*RouteWeight),
+		EnvironmentIssues:    make(map[string]*EnvironmentIssue),
+		DecisionPrecedents:   make(map[string]*schemas.DecisionNode),
+		AntiPatternStore:     NewAntiPatternStore(nil, apBackend),
+		Nodes:                make(map[string]*ExperienceNode),
+		Edges:                make([]ExperienceEdge, 0),
+		JITCandidates:        make(map[string]*JITCandidate),
+		PromotionAuditLogs:   make([]PromotionAuditLog, 0),
+		RoleAffinities:       make(map[string]map[string]float64),
+		StatePotentials:      make(map[string]*StatePotential),
 	}
 	es.load()
 	es.loadSeeds()
@@ -397,9 +397,9 @@ func (es *ExperienceStore) applyTemporalDecayLocked() {
 func (es *ExperienceStore) loadSeeds() {
 	path := filepath.Join(es.dir, "seed.json")
 	var seeds struct {
-		Patterns     []TaskPattern           `json:"task_patterns"`
-		Affinities   []*SkillAffinity        `json:"skill_affinities"`
-		AntiPatterns []AntiPatternPrecedent  `json:"anti_patterns"`
+		Patterns     []TaskPattern          `json:"task_patterns"`
+		Affinities   []*SkillAffinity       `json:"skill_affinities"`
+		AntiPatterns []AntiPatternPrecedent `json:"anti_patterns"`
 	}
 	readJSON(path, &seeds)
 
@@ -770,4 +770,3 @@ func (es *ExperienceStore) GetTaskPatternsSnapshot() map[string]TaskPattern {
 	}
 	return snapshot
 }
-

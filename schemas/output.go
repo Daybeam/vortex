@@ -58,6 +58,10 @@ const (
 	StatusFailed             SubagentStatus = "failed"
 	StatusCapabilityRequired SubagentStatus = "capability_required"
 	StatusDelegationRequired SubagentStatus = "delegation_required"
+	// StatusApprovalRequired: the step was blocked at prepare because a
+	// mount-policy `approval` MCP needs human sign-off (G2). The scheduler
+	// turns this into a human_approval_required decision; it is not a failure.
+	StatusApprovalRequired SubagentStatus = "approval_required"
 )
 
 // Attachment represents a binary file output by a subagent (e.g. screenshot).
@@ -77,9 +81,15 @@ type SubagentOutput struct {
 	Assumptions          []string       `json:"assumptions"`
 	Warnings             []string       `json:"warnings"`
 	RequiredCapabilities []string       `json:"required_capabilities"`
-	Capability           string         `json:"capability"`
-	SkillIDs             []string       `json:"skill_ids"`
-	TokenUsed            int            `json:"token_used"`
+	// ApprovalRequiredMounts lists MCPs blocked on human approval (G2). Set
+	// only with Status == StatusApprovalRequired.
+	ApprovalRequiredMounts []string `json:"approval_required_mounts,omitempty"`
+	// ApprovalRequiredSkills lists skills blocked on human approval (D3,
+	// 2026-10-22 — same gate shape as ApprovalRequiredMounts).
+	ApprovalRequiredSkills []string `json:"approval_required_skills,omitempty"`
+	Capability             string   `json:"capability"`
+	SkillIDs               []string `json:"skill_ids"`
+	TokenUsed              int      `json:"token_used"`
 
 	Usage *Usage `json:"usage,omitempty"`
 }
@@ -269,6 +279,23 @@ func ParseOutput(raw, capability string) SubagentOutput {
 	}
 
 	// 4. Final Fallback: The output is fundamentally not JSON
+	//
+	// A9 disposition (eval FINDINGS.md §A9, 2026-10-22 — deliberate, do not
+	// "fix" without new evidence): a prose answer IS often the real answer, but
+	// this fallback keeps StatusPartial + Confidence 0.3 on purpose:
+	//   - the output contract is JSON with status/confidence/result; prose is
+	//     a contract violation, and treating it as a confident answer would let
+	//     hallucinated text ride the ok-path with no corrective machinery;
+	//   - the low-confidence routing is what ENGAGES the guards: the 0.3 partial
+	//     feeds parseFailed, which the A1 malformed-tag guard, the A2 zero-
+	//     effect parse-fail gate, and the spin breaker all key on. Raising the
+	//     confidence here would silently disarm that ladder;
+	//   - no information is lost — the full text survives in result.raw, so a
+	//     genuinely-correct prose answer still reaches downstream steps and the
+	//     verifier.
+	// If a future eval shows tasks failing BECAUSE a correct prose final answer
+	// was confidence-suppressed, revisit with a measured threshold — not a
+	// blanket raise.
 	snippet := trimmed
 	if len(snippet) > 2000 {
 		snippet = snippet[:2000]

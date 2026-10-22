@@ -44,6 +44,29 @@ func CallerOwnerID(ctx context.Context) string {
 	return ""
 }
 
+// EffectiveTier resolves the caller's auth tier for permission checks.
+//
+// The context is authoritative: HTTP transports put the authenticated tier
+// there, and loggedHandler injects TierAdmin for trusted local transports
+// (stdio) that never traverse HTTP auth middleware. app.Tier is only the
+// process-level fallback for code paths that reach a handler without going
+// through loggedHandler (background jobs, direct unit-test calls).
+//
+// Resolving through one helper keeps every permission decision consistent:
+// previously CheckTaskOwnership read the context while isActionAllowed and
+// subsystems_discovery read app.Tier, so a stdio caller was admin for
+// ownership checks yet fell into the Tier1 allowlist for subsystem actions
+// (app.Tier is "" on the stdio apps built in main.go).
+func EffectiveTier(ctx context.Context, app *App) string {
+	if v, ok := ctx.Value(AuthTierKey).(string); ok {
+		return v
+	}
+	if app != nil {
+		return app.Tier
+	}
+	return ""
+}
+
 // CallerIdentity returns the effective caller identity for ownership checks.
 // It composes the per-key OwnerID with the per-connection MCP SessionID
 // (from the SSE/StreamableHTTP transport) to produce a composite identity.
@@ -70,18 +93,6 @@ func composeIdentity(ownerID, sessionID string) string {
 		return sessionID
 	}
 	return ownerID
-}
-
-// EffectiveTier resolves the caller's auth tier for permission checks.
-// Context is authoritative; app.Tier is the process-level fallback.
-func EffectiveTier(ctx context.Context, app *App) string {
-	if v, ok := ctx.Value(AuthTierKey).(string); ok {
-		return v
-	}
-	if app != nil {
-		return app.Tier
-	}
-	return ""
 }
 
 // CheckTaskOwnership returns true if the caller may access a task with the
@@ -126,29 +137,29 @@ const (
 
 // App holds all dependencies injected into tool handlers.
 type App struct {
-	Registry        *config.Registry
-	Scheduler       *core.DirectedEngine
-	TaskStore       store.ITaskStore
-	ExpStore        store.IExperienceStore
-	Schedule        *core.ScheduleManager
-	SStore          *store.ScheduleStore
-	JIT             *core.JITManager
-	Logger          *core.Logger
-	CodeIntel       *ci.Handler
-	Navigator       *core.CapabilityNavigator
-	ConfigPath      string
-	Tier            string
-	ResourceLoader  *core.ResourceLoader
-	IntentRouter    *core.IntentRouter
-	EmbedClient     core.EmbeddingClient
-	MemoryBankStore *store.MemoryBankStore
-	Archive         *core.ContextArchive
-	Promoter        *Promoter // Optional usage-driven hot-promoter for invoke actions
-	SOPManager      *core.SOPManager
-	BudgetGate      *core.BudgetGate
-	PendingSkillGC  *core.PendingSkillGC
-	CostTracker     *core.CostTracker
-	DB              *sql.DB
+	Registry          *config.Registry
+	Scheduler         *core.DirectedEngine
+	TaskStore         store.ITaskStore
+	ExpStore          store.IExperienceStore
+	Schedule          *core.ScheduleManager
+	SStore            *store.ScheduleStore
+	JIT               *core.JITManager
+	Logger            *core.Logger
+	CodeIntel         *ci.Handler
+	Navigator         *core.CapabilityNavigator
+	ConfigPath        string
+	Tier              string
+	ResourceLoader    *core.ResourceLoader
+	IntentRouter      *core.IntentRouter
+	EmbedClient       core.EmbeddingClient
+	MemoryBankStore   *store.MemoryBankStore
+	Archive           *core.ContextArchive
+	Promoter          *Promoter // Optional usage-driven hot-promoter for invoke actions
+	SOPManager        *core.SOPManager
+	BudgetGate        *core.BudgetGate
+	PendingSkillGC    *core.PendingSkillGC
+	CostTracker       *core.CostTracker
+	DB                *sql.DB
 	editionSubsystems []EditionSubsystem
 	archiveStop       chan struct{} // stops the TTL pruning goroutine (audit: was goroutine leak)
 }
@@ -232,10 +243,7 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 		start := time.Now()
 		taskID := strArg(req.Params.Arguments, "task_id")
 
-		effectiveTier := app.Tier
-		if v, ok := ctx.Value(AuthTierKey).(string); ok {
-			effectiveTier = v
-		}
+		effectiveTier := EffectiveTier(ctx, app)
 
 		app.Logger.Log(core.EventToolCall, taskID, "", map[string]any{
 			"tool":  name,

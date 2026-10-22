@@ -43,7 +43,8 @@ func init() {
 // Memory:    written to memory.max (hard limit — OOM killer on breach).
 // CPU:       a watchdog goroutine sends SIGKILL after MaxCPUSeconds.
 // KillOnClose: when cleanup() is called, the cgroup directory is removed,
-//   which terminates any remaining processes — mirroring Windows Job Object.
+//
+//	which terminates any remaining processes — mirroring Windows Job Object.
 func ApplySandbox(pid int, c SandboxConstraints) (cleanup func(), err error) {
 	// FIX (2026-10-12, Kaggle SIGTERM root cause): creating a cgroup subtree
 	// (mkdir under /sys/fs/cgroup + moving pids via cgroup.procs) inside a

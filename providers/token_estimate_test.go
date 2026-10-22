@@ -168,9 +168,9 @@ func TestEstimateTokensExportedWrapper(t *testing.T) {
 		want int
 	}{
 		{"", 0},
-		{"abcdefgh", 2},        // 8 ASCII chars / 4.0
-		{"a", 1},               // non-empty never zero
-		{"hello world", 2},     // 11 chars / 4.0 = 2.75 → 2
+		{"abcdefgh", 2},    // 8 ASCII chars / 4.0
+		{"a", 1},           // non-empty never zero
+		{"hello world", 2}, // 11 chars / 4.0 = 2.75 → 2
 	}
 	for _, c := range cases {
 		if got := EstimateTokens(c.text); got != c.want {

@@ -36,6 +36,43 @@ type spawnPreparation struct {
 //   - prep:   the prepared state (nil if earlyResult or err is non-nil)
 //   - earlyResult: non-nil if delegation mode handled the request (caller returns immediately)
 //   - err:    non-nil if setup failed
+//
+// preDiscoverMCPs eagerly discovers the role's bound MCPs plus the caller's
+// additional MCPs before ResolveFinalMCPs runs, so its T7 intersection sees a
+// populated AvailableTools (a no-op if either is empty). Under LazyDiscovery
+// this is skipped — Route triggers discovery lazily. Extracted from
+// prepareSpawn to keep that function within the size ratchet (G2, 2026-10-22).
+func (s *Spawner) preDiscoverMCPs(ctx context.Context, req *SpawnRequest, role *config.Role) {
+	if s.registry.System.LazyDiscovery {
+		return
+	}
+	var preBindings []config.MCPBinding
+	if role != nil {
+		preBindings = append(preBindings, role.BoundMCPBindings...)
+	}
+	for _, mcpID := range req.AdditionalMCPs {
+		preBindings = append(preBindings, config.MCPBinding{MCPID: mcpID})
+	}
+	s.ensureMCPDiscovery(ctx, req.Hub, req.TaskID, preBindings)
+}
+
+// resolveMCPBindings resolves the final MCP bindings for a spawn. On a hard
+// gate error it returns (nil, nil, err); on an `approval` mount it returns
+// (nil, result, nil) — a short-circuit SpawnResult whose output carries
+// StatusApprovalRequired so the scheduler raises a human_approval_required
+// decision instead of failing the step (G2, 2026-10-22). Otherwise it returns
+// the bindings and a nil SpawnResult.
+func (s *Spawner) resolveMCPBindings(req *SpawnRequest, role *config.Role) ([]config.MCPBinding, *SpawnResult, error) {
+	bindings, err := ResolveFinalMCPs(req.Hub, req.RoleID, req.AdditionalMCPs, req.AdditionalToolAllowlists, effectiveSubmitterIsAdmin(req.Hub))
+	if err == nil {
+		return bindings, nil, nil
+	}
+	if sr := s.approvalResult(role, err); sr != nil {
+		return nil, sr, nil
+	}
+	return nil, s.failedOutput(role.BaseCapability, err.Error()), nil
+}
+
 func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *spawnPreparation, earlyResult *SpawnResult, err error) {
 	// Ensure Hub exists (safety fallback)
 	if req.Hub == nil {
@@ -61,10 +98,14 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 	// Prepare candidates
 	candidateConfigs := s.buildCandidateConfigs(ctx, req, role)
 
-	// Resolve skills
-	finalSkills, err := ResolveFinalSkills(req.Hub, req.RoleID, additionalSkills)
+	// Resolve skills (D3, 2026-10-22: gated by Skill.MountPolicy × submitter
+	// tier; `approval` skills short-circuit like approval MCPs do).
+	finalSkills, earlySkill, err := s.resolveSkills(req, role, additionalSkills)
 	if err != nil {
 		return nil, s.failedOutput(role.BaseCapability, err.Error()), nil
+	}
+	if earlySkill != nil {
+		return nil, earlySkill, nil
 	}
 
 	// Resolve MCP bindings
@@ -81,31 +122,16 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 			return nil, s.failedOutput(role.BaseCapability, fmt.Sprintf("Blocked: manifest routing failed. Missing required capabilities: %v", missing)), nil
 		}
 	} else {
-		// Run MCP discovery before ResolveFinalMCPs so that AvailableTools
-		// is populated when the T7 intersection runs. On a cold start (first
-		// task in a new process), AvailableTools is empty until tools/list
-		// discovery completes. Without this, the T7 intersection in
-		// ResolveFinalMCPs is a no-op (len(AvailableTools) == 0), and
-		// planner-specified tool names that don't actually exist pass through
-		// unverified.
-		//
-		// When LazyDiscovery is enabled, this eager discovery is skipped —
-		// Route will trigger discovery lazily on first access.
-		if !s.registry.System.LazyDiscovery {
-			var preBindings []config.MCPBinding
-			if role != nil {
-				preBindings = append(preBindings, role.BoundMCPBindings...)
-			}
-			for _, mcpID := range req.AdditionalMCPs {
-				preBindings = append(preBindings, config.MCPBinding{MCPID: mcpID})
-			}
-			s.ensureMCPDiscovery(ctx, req.Hub, req.TaskID, preBindings)
-		}
+		s.preDiscoverMCPs(ctx, req, role) // T7 intersection needs AvailableTools populated first
 
 		var err error
-		bindings, err = ResolveFinalMCPs(req.Hub, req.RoleID, req.AdditionalMCPs, req.AdditionalToolAllowlists)
+		var early *SpawnResult
+		bindings, early, err = s.resolveMCPBindings(req, role)
 		if err != nil {
-			return nil, s.failedOutput(role.BaseCapability, err.Error()), nil
+			return nil, nil, err
+		}
+		if early != nil {
+			return nil, early, nil
 		}
 	}
 	initialBindings := bindings // Save full set for progressive re-routing

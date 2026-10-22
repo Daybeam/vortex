@@ -208,3 +208,108 @@ func TestActivateTopSkills_NoSkills_ReturnsEmpty(t *testing.T) {
 		t.Errorf("expected empty string for no skill candidates, got %q", result)
 	}
 }
+
+// ─── L2 body injection + standard fields (AGENTIC_SKILL_EXPLORATION_DESIGN.md G1/G2/G3) ──
+
+// TestActivate_InjectsBodyAndStandardFields verifies that activating a
+// directory-mode skill loads the SKILL.md body into the prompt (agentskills.io
+// progressive disclosure L2) and surfaces compatibility + allowed-tools hints.
+func TestActivate_InjectsBodyAndStandardFields(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "doc-writer")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: doc-writer\ndescription: Writes docs\n---\nWrite the doc carefully."
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	skill := &config.Skill{
+		ID:            "ext_doc_writer",
+		Name:          "doc-writer",
+		Description:   "Writes docs",
+		ExecutionMode: config.ExecutionModeDirectory,
+		SkillDir:      skillDir,
+		Compatibility: "Requires Python 3.14+ and uv",
+		AllowedTools:  []string{"read_file", "write_file"},
+	}
+
+	m := &SkillMounter{}
+	result := m.Activate(skill)
+
+	if !strings.Contains(result, "Write the doc carefully.") {
+		t.Error("result should contain the SKILL.md body (L2 injection)")
+	}
+	if !strings.Contains(result, "Skill Instructions") {
+		t.Error("result should contain the Skill Instructions header")
+	}
+	if !strings.Contains(result, "Compatibility Requirements") {
+		t.Error("result should contain the compatibility warning section")
+	}
+	if !strings.Contains(result, "Requires Python 3.14+ and uv") {
+		t.Error("result should contain the compatibility text")
+	}
+	if !strings.Contains(result, "Pre-approved Tools") {
+		t.Error("result should contain the pre-approved tools section")
+	}
+	if !strings.Contains(result, "read_file write_file") {
+		t.Error("result should list the allowed tools")
+	}
+	// Frontmatter must be stripped from the injected body.
+	if strings.Contains(result, "name: doc-writer") {
+		t.Error("frontmatter leaked into the prompt body")
+	}
+}
+
+// TestActivate_BodyTruncatedAtCap verifies the G1 overflow guard: a body
+// larger than skillBodyPromptCap is truncated with a pointer to the full file.
+func TestActivate_BodyTruncatedAtCap(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "big-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("line-of-instructions\n", 1000) // ~21KB > cap
+	content := "---\nname: big-skill\ndescription: d\n---\n" + body
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	skill := &config.Skill{
+		ID:            "ext_big_skill",
+		Description:   "d",
+		ExecutionMode: config.ExecutionModeDirectory,
+		SkillDir:      skillDir,
+	}
+
+	result := (&SkillMounter{}).Activate(skill)
+	if !strings.Contains(result, "line-of-instructions") {
+		t.Error("truncated body prefix should be present")
+	}
+	if !strings.Contains(result, "truncated") {
+		t.Error("truncation notice should be present")
+	}
+	if got := strings.Count(result, "line-of-instructions"); got >= 1000 {
+		t.Errorf("full body leaked: %d occurrences", got)
+	}
+}
+
+// TestActivate_MissingSkillFile_DegradesToDescription verifies graceful
+// degradation when the SkillDir has no readable SKILL.md.
+func TestActivate_MissingSkillFile_DegradesToDescription(t *testing.T) {
+	skill := &config.Skill{
+		ID:            "ext_gone",
+		Description:   "still here",
+		ExecutionMode: config.ExecutionModeDirectory,
+		SkillDir:      filepath.Join(t.TempDir(), "gone"),
+	}
+
+	result := (&SkillMounter{}).Activate(skill)
+	if !strings.Contains(result, "still here") {
+		t.Error("description should survive SKILL.md read failure")
+	}
+	if strings.Contains(result, "Skill Instructions") {
+		t.Error("no instructions section expected when SKILL.md is unreadable")
+	}
+}

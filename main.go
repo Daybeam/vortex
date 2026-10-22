@@ -35,6 +35,7 @@ func main() {
 	execTool := flag.String("exec", "", "one-off tool execution (e.g., orchestrator_discover)")
 	execArgs := flag.String("args", "{}", "JSON arguments for the tool")
 	execFile := flag.String("file", "", "JSON file containing arguments for the tool")
+	configFlag := flag.String("c", "", "path to config file (overrides VORTEX_CONFIG env var and defaults)")
 	flag.Parse()
 
 	// ── Resolve paths ──────────────────────────────────────────────────────
@@ -45,7 +46,9 @@ func main() {
 	}
 
 	configPath := filepath.Join(root, "config.json")
-	if envConfig := os.Getenv("VORTEX_CONFIG"); envConfig != "" {
+	if *configFlag != "" {
+		configPath = *configFlag
+	} else if envConfig := os.Getenv("VORTEX_CONFIG"); envConfig != "" {
 		configPath = envConfig
 	} else {
 		osConfig := filepath.Join(root, "config_"+runtime.GOOS+".json")
@@ -79,10 +82,7 @@ func main() {
 
 	// Push feature flags to package-level atomics + register hot-reload callback.
 	syncFeatureFlags(reg)
-	reg.OnReload(func() {
-		syncFeatureFlags(reg)
-		core.InvalidateMCPEnvCache()
-	})
+	bootstrapRuntime(reg)
 
 	// Override outputBase from config if specified (LE-2 fix)
 	outputBase = filepath.Join(root, reg.System.OutputDirOrDefault())
@@ -173,6 +173,24 @@ func main() {
 		runExec(reg, logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath, *execTool, argsJSON, s)
 	} else {
 		runHub(reg, logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath, s, rootCtx, rootCancel)
+	}
+}
+
+// bootstrapRuntime registers post-registry startup wiring: the config
+// hot-reload callback and the agentskills.io standard discovery-path import
+// (project-level CWD/.agents/skills/ + user-level ~/.agents/skills/). Imported
+// skills land in PendingSkills staging — discoverable only after promote_skill.
+func bootstrapRuntime(reg *config.Registry) {
+	reg.OnReload(func() {
+		syncFeatureFlags(reg)
+		core.InvalidateMCPEnvCache()
+	})
+
+	if projectDir, err := os.Getwd(); err == nil {
+		userDir, _ := os.UserHomeDir()
+		if n := core.ImportStandardDiscoveryPaths(reg, projectDir, userDir); n > 0 {
+			log.Printf("[skills] imported %d skill(s) from .agents/skills/ discovery paths (pending promotion)", n)
+		}
 	}
 }
 

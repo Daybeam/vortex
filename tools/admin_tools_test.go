@@ -20,6 +20,7 @@ func TestHandleAdminDeployFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tempDir)
+
 	t.Setenv("VORTEX_DEPLOY_ROOT", tempDir)
 
 	logDir := filepath.Join(tempDir, "logs")

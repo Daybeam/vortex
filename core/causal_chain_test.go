@@ -99,7 +99,7 @@ func TestSpawner_CausalChainCapture(t *testing.T) {
 				ID:             "local",
 				Command:        env.GetPythonCmd(),
 				Args:           []string{"--version"},
-				AvailableTools: []string{"read_file"},
+				AvailableTools: []string{"read_file"}, MountPolicy: config.MountPolicyOpen, // #3: non-admin worker needs an open bound MCP
 			},
 		},
 		Roles: []config.Role{

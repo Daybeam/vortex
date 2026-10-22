@@ -68,6 +68,8 @@ const MinResultBytesForDedup = 100
 // The hash includes tool call names + arguments so that different calls
 // producing the same short result (e.g., two tools returning "OK") don't
 // collide — only identical calls + identical results trigger stagnation.
+// Control arguments are excluded (canonicalToolArgs) so a rephrased `_reason`
+// cannot reset the consecutive-repeat counter.
 func computeTurnHash(toolCalls []schemas.ToolCall, toolResults []string) (hash uint64, shouldTrack bool) {
 	joined := strings.Join(toolResults, "\n")
 	if len(joined) < MinResultBytesForDedup {
@@ -87,7 +89,11 @@ func computeTurnHash(toolCalls []schemas.ToolCall, toolResults []string) (hash u
 	h := fnv.New64a()
 	for _, tc := range toolCalls {
 		h.Write([]byte(tc.Name))
-		h.Write([]byte(fmt.Sprintf("%v", tc.Arguments)))
+		b, err := json.Marshal(canonicalToolArgs(tc.Arguments))
+		if err != nil {
+			b = []byte(fmt.Sprintf("%v", tc.Arguments))
+		}
+		h.Write(b)
 		h.Write([]byte{0}) // separator
 	}
 	h.Write([]byte(joined))
@@ -355,10 +361,47 @@ func compressUserBlocks(blocks []schemas.ContentBlock) []schemas.ContentBlock {
 	return compressed
 }
 
+// controlArgPrefix marks engine-level control arguments that steer the model or
+// tag the trace but are stripped before the tool payload is sent (`_reason`,
+// `_decision_id`). They must never influence a loop-detection hash: otherwise
+// the model can mint a fresh key for an otherwise identical call just by
+// rephrasing its `_reason`, which silently defeats A1, #11 and every Sieve
+// check at once. Guidance is not supposed to change the judgement it is
+// attached to.
+const controlArgPrefix = "_"
+
+// canonicalToolArgs returns args with control arguments removed. It never
+// mutates the input: the reflection gate still needs to read `_reason` after
+// the key has been computed. The original map is returned untouched when it
+// holds no control arguments, so the common path allocates nothing.
+func canonicalToolArgs(args map[string]any) map[string]any {
+	hasControl := false
+	for k := range args {
+		if strings.HasPrefix(k, controlArgPrefix) {
+			hasControl = true
+			break
+		}
+	}
+	if !hasControl {
+		return args
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		if strings.HasPrefix(k, controlArgPrefix) {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // toolCallKey computes a deterministic key for a tool call (tool name + args).
 // Used by #11 (eval §8.41) to detect identical repeated calls. Uses FNV-1a
 // hash of the JSON-marshaled args for O(1) map lookup.
+//
+// Control arguments are excluded via canonicalToolArgs — see controlArgPrefix.
 func toolCallKey(toolName string, args map[string]any) string {
+	args = canonicalToolArgs(args)
 	if len(args) == 0 {
 		return toolName + ":"
 	}
@@ -391,6 +434,44 @@ var stateChangingTools = map[string]bool{
 
 func isStateChangingTool(name string) bool {
 	return stateChangingTools[name]
+}
+
+// readOnlyToolPrefixes lists the verbs after which a tool call provably cannot
+// mutate remote state. Deliberately a whitelist rather than the write-verb
+// blacklist used by IsWriteMCPTool: enumerating every write verb is unbounded
+// (AppWorld alone uses download_, remind_, deny_, place_, settle_, record_,
+// unfollow_, unlike_, move_, copy_, reply_, label_ … 100 mutating endpoints, 45
+// of which IsWriteMCPTool misses), whereas the read vocabulary is small and
+// stable. Anything not listed here is assumed to *possibly* have side effects,
+// which is the safe direction for the zero-effect gate below.
+//
+// `download_` is intentionally absent: in AppWorld spotify__download_song is a
+// POST that flips player state, so treating it as read-only would disable the
+// gate on exactly the task (3ab5b8b_1) where the model does perform real work.
+var readOnlyToolPrefixes = []string{
+	"show_", "search_", "get_", "list_", "read_", "view_",
+	"find_", "lookup_", "query_", "count_", "check_", "describe_", "fetch_",
+}
+
+// IsReadOnlyToolName reports whether a tool call, judging by its name alone,
+// provably cannot change external state. Namespaced names are accepted
+// (supervisor__show_profile → show_profile). Core tools are handled by the same
+// rule: read_file is read-only, write_file and execute_code are not.
+//
+// Used by the zero-effect completion gate (spawner_dospawn.go). NOT a
+// replacement for IsWriteMCPTool — that one answers "should I ask for a
+// _reason", a different question with a different failure mode.
+func IsReadOnlyToolName(name string) bool {
+	if name == "" {
+		return false
+	}
+	n := stripNamespace(name)
+	for _, p := range readOnlyToolPrefixes {
+		if strings.HasPrefix(n, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // writeToolPrefixes lists verb prefixes for MCP tools that modify external
@@ -793,9 +874,20 @@ func (s *Spawner) validateCapabilities(ctx context.Context, req *SpawnRequest, r
 	}
 	missingStr := strings.Join(missing, ", ")
 
-	// FIX (2026-08-06): If the role allows dynamic expansion, downgrade the error to a warning.
-	// This allows the agent to attempt the task using existing tools or to generate/find
-	// the required capabilities during execution, avoiding premature blocking.
+	// Phase 2: If the role is Generatable, try findskills first (fast tier-1 path).
+	// SECURITY FIX (2026-10-21): This branch was previously AFTER the AllowDynamic
+	// early return, making it dead code for sop_generator (Generatable=true but
+	// AllowDynamicSkills=true → early return). Moved BEFORE the early return so
+	// falling back to dynamic expansion.
+	//
+	// TODO: none — (1)+(2) RESOLVED 2026-10-22 (affinity sort + experience-library
+	// search via store.QuerySkillRecommendations, spawner_capability_resolve.go);
+	// (3) RESOLVED 2026-10-22 (D3: Skill.MountPolicy × submitter tier gate).
+	if role.Generatable && s.tryFindSkillsForMissing(ctx, req, missing) {
+		return nil
+	}
+
+	// If the role allows dynamic expansion, downgrade the error to a warning.
 	if role.AllowDynamicSkills || role.AllowDynamicMCPs {
 		s.logger.LogCtx(ctx, "EventCapabilityWarning", req.TaskID, req.StepID, map[string]any{
 			"role":    req.RoleID,
@@ -805,37 +897,15 @@ func (s *Spawner) validateCapabilities(ctx context.Context, req *SpawnRequest, r
 		return nil
 	}
 
+	// No dynamic expansion available.
 	s.logger.LogCtx(ctx, EventTaskFailed, req.TaskID, req.StepID, map[string]any{
 		"role":    req.RoleID,
 		"missing": missing,
 		"error":   "Missing required capabilities",
 	})
 	if role.Generatable {
-		// Phase 2 integration (2026-10-20): try findskills before escalation.
-		// Fast tier-1 path: search existing skill registry for skills matching
-		// the missing capabilities. If found, attach to the request and proceed.
-		// If not found, fall through to DYNAMIC_ESCALATION_REQUIRED (tier-2:
-		// RoleGenerator cookbook LLM call via LogInterceptor).
-		// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 2.
-		var foundSkills []string
-		for _, missingCap := range missing {
-			result, _ := FindSkillsImpl(req.Hub.Registry, "", missingCap, "", 1, 10)
-			if result != nil {
-				for _, sk := range result.Skills {
-					foundSkills = append(foundSkills, sk.ID)
-				}
-			}
-		}
-		if len(foundSkills) > 0 {
-			req.AdditionalSkills = append(req.AdditionalSkills, foundSkills...)
-			s.logger.LogCtx(ctx, "EventFindSkillsResolved", req.TaskID, req.StepID, map[string]any{
-				"role":         req.RoleID,
-				"missing":      missing,
-				"found_skills": foundSkills,
-				"source":       "findskills_tier1",
-			})
-			return nil
-		}
+		// findskills was tried (above) but didn't find anything, and the role
+		// doesn't have dynamic expansion — escalate to RoleGenerator.
 		return fmt.Errorf("DYNAMIC_ESCALATION_REQUIRED: missing required capabilities [%s]", missingStr)
 	}
 	return fmt.Errorf("Blocked: role %q requires capabilities [%s] which are not available in the current environment", req.RoleID, missingStr)

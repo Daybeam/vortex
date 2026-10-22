@@ -9,79 +9,6 @@ import (
 )
 
 // TestRegisterRole_RejectsNonexistentBoundSkill is a direct regression test
-// for a validation gap found live (2026-08-31): register_role's handler was
-// rewritten to go through the generic patch.go/CommitOps mechanism (a
-// structural JSON-Patch applier with no knowledge of domain constraints),
-// which silently dropped the pre-existing check that every bound_skills
-// entry must reference an already-registered skill. Without this check, a
-// role could be registered with a dangling skill reference that would only
-// surface later as a confusing runtime failure when the role was actually
-// used.
-func TestRegisterRole_RejectsNonexistentBoundSkill(t *testing.T) {
-	reg, err := config.NewRegistry(filepath.Join(t.TempDir(), "config_test.json"))
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
-	}
-	app := &App{Registry: reg}
-	RegisterSubsystems(app)
-
-	action, ok := findConfigAction("register_role")
-	if !ok {
-		t.Fatalf("register_role action not registered")
-	}
-
-	_, err = action.Handler(context.Background(), app, map[string]any{
-		"id":              "test_role_bad_skill",
-		"name":            "Test Role",
-		"base_capability": "code",
-		"bound_skills":    []any{"this_skill_does_not_exist"},
-	})
-	if err == nil {
-		t.Fatal("expected an error registering a role with a nonexistent bound skill, got nil")
-	}
-
-	reg.Mu.RLock()
-	_, exists := reg.Roles["test_role_bad_skill"]
-	reg.Mu.RUnlock()
-	if exists {
-		t.Fatal("role should not have been registered when validation failed")
-	}
-}
-
-// TestRegisterRole_AllowsExistingBoundSkill confirms the fix is not a
-// blanket rejection -- a role referencing a real, already-registered skill
-// (the standard "read_file" skill, seeded by bootstrapDefaultsLocked) must
-// still register successfully.
-func TestRegisterRole_AllowsExistingBoundSkill(t *testing.T) {
-	reg, err := config.NewRegistry(filepath.Join(t.TempDir(), "config_test.json"))
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
-	}
-	app := &App{Registry: reg}
-	RegisterSubsystems(app)
-
-	action, ok := findConfigAction("register_role")
-	if !ok {
-		t.Fatalf("register_role action not registered")
-	}
-
-	_, err = action.Handler(context.Background(), app, map[string]any{
-		"id":              "test_role_good_skill",
-		"name":            "Test Role",
-		"base_capability": "code",
-		"bound_skills":    []any{"read_file"},
-	})
-	if err != nil {
-		t.Fatalf("register_role handler: %v", err)
-	}
-
-	reg.Mu.RLock()
-	_, exists := reg.Roles["test_role_good_skill"]
-	reg.Mu.RUnlock()
-	if !exists {
-		t.Fatal("role should have been registered")
-	}
-}
 
 // TestRegisterGroup_RejectsNonexistentMemberRole is a direct regression
 // test mirroring TestRegisterRole_RejectsNonexistentBoundSkill above, for
@@ -131,17 +58,13 @@ func TestRegisterGroup_AllowsExistingMemberRole(t *testing.T) {
 	app := &App{Registry: reg}
 	RegisterSubsystems(app)
 
-	roleAction, ok := findConfigAction("register_role")
-	if !ok {
-		t.Fatalf("register_role action not registered")
+	// register_role action was removed (feat f41bcbf34, task-routing update);
+	// insert the member role directly instead of registering it via the API.
+	reg.Mu.Lock()
+	reg.Roles["test_group_member_role"] = &config.Role{
+		ID: "test_group_member_role", Name: "Test Role", BaseCapability: "code",
 	}
-	if _, err := roleAction.Handler(context.Background(), app, map[string]any{
-		"id":              "test_group_member_role",
-		"name":            "Test Role",
-		"base_capability": "code",
-	}); err != nil {
-		t.Fatalf("register_role handler: %v", err)
-	}
+	reg.Mu.Unlock()
 
 	groupAction, ok := findConfigAction("register_group")
 	if !ok {

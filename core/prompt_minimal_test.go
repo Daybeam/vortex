@@ -40,7 +40,8 @@ func TestBuild_MinimalPromptSuppressesFrameworkFraming(t *testing.T) {
 	reg := &config.Registry{Roles: make(map[string]*config.Role)}
 	pa := NewPromptAssembler(nil, nil, reg, nil)
 
-	// Baseline: an ordinary executor still gets both fragments.
+	// Baseline: an ordinary executor still gets both fragments (nil
+	// core_tools = unrestricted, the default).
 	plain := collectPrompt(t, pa, &config.Role{ID: "executor", BaseCapability: "do things"})
 	if !strings.Contains(plain, "**write_file**") {
 		t.Fatal("baseline prompt lost the core-tool blurb; this test would prove nothing")

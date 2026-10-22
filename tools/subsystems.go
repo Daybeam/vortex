@@ -143,6 +143,18 @@ func (r *SubsystemRegistry) Invoke(ctx context.Context, app *App, subsystem, act
 		timeout = time.Duration(t) * time.Millisecond
 	}
 
+	// Security: strip all _-prefixed keys from args before passing to the handler.
+	// These are internal injection points (e.g. _role_id, _is_admin) that must
+	// NEVER be caller-controlled. The invoke dispatcher does not inject them
+	// (verified 2026-10-21), so any _-prefixed key in args is an attack attempt.
+	sanitizedArgs := make(map[string]any, len(args))
+	for k, v := range args {
+		if !strings.HasPrefix(k, "_") {
+			sanitizedArgs[k] = v
+		}
+	}
+	args = sanitizedArgs
+
 	ictx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

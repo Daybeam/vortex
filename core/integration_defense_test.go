@@ -125,7 +125,7 @@ func TestIntegration_A1_Retry_DifferentArgs_BothRecorded(t *testing.T) {
 // code path. When a direct API handler bypasses the tools layer's
 // ResolveWorkspaceRoot, the scheduler re-checks the workspace scope.
 //
-// Design ref: docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.5, §8
+// Design ref: docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.5, §8
 // "Integration test: Public tier LLM injects workspace_root → rejected"
 func TestIntegration_WorkspaceScope_BlockedByValidateWorkspaceScope(t *testing.T) {
 	engine, reg := newDelegationEngine(t)
@@ -202,7 +202,7 @@ func TestIntegration_WorkspaceScope_BlockedByValidateWorkspaceScope(t *testing.T
 // This tests the real Spawner.handleCoreToolCall → HandleCoreTool →
 // RedactEgress code path (spawner_dispatch.go line 119).
 //
-// Design ref: docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4.2, §8
+// Design ref: docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4.2, §8
 // "Integration test: tool result containing another tenant's OwnerID → redacted"
 func TestIntegration_EgressRedaction_SecretsStrippedFromToolResult(t *testing.T) {
 	tmpDir := t.TempDir()

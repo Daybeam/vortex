@@ -67,6 +67,18 @@ All use `VORTEX_` prefix. Key ones: `VORTEX_TRANSPORT` (stdio|sse), `VORTEX_DB_P
 `VORTEX_HOST`, `VORTEX_PORT`. API keys are referenced by name via `api_key_env` — set
 them in `.env` (copy `.env.example`). See `docs/CONFIGURATION.md` for the full list.
 
+## Git & Commit Governance Rules
+
+All developers and AI agents working on Vortex MUST adhere to these commit rules:
+
+1. **Explicit Staging Only**: Never run `git add .` or `git commit -a`. Always stage specific files with `git add <file1> <file2>`.
+2. **Atomic & Scope-Isolated Commits**: Group changes by subsystem/feature. Use Semantic Commit prefixes:
+   - `feat(<scope>): ...` / `fix(<scope>): ...` / `refactor(<scope>): ...`
+   - `docs: ...` (Keep architecture/plan `.md` files separate from code changes unless directly tied to API specs)
+   - `chore(<scope>): ...`
+3. **No Temporary / Generated Artifacts**: Never commit `.pyc`, compiled binaries (`vortex`, `*.exe`, `*.tar.gz`), backup directories (`project_backup_*`), generated `.docx` test files, or IDE local configs.
+4. **Pre-Commit Working Tree Verification**: Run `git status` before committing to verify no stray untracked files are staged or accidentally modified.
+
 ## License
 
 Apache 2.0.

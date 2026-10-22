@@ -136,14 +136,14 @@ Constraints:
 //                    that task_planner does NOT have — different quality
 //                    regime (persistent role defs vs ephemeral DAGs).
 //
-// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 3.
+// See docs/completed/2026-10-21/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 3.
 
 var builtinRoles = []Role{
 	{
-		ID:             "sop_generator",
-		Name:           "SOP Generator",
-		BaseCapability: "plan",
-		Instruction:    sopGeneratorInstruction,
+		ID:                 "sop_generator",
+		Name:               "SOP Generator",
+		BaseCapability:     "plan",
+		Instruction:        sopGeneratorInstruction,
 		AllowDynamicSkills: true,
 		AllowDynamicMCPs:   true,
 		Generatable:        true,
@@ -153,7 +153,7 @@ var builtinRoles = []Role{
 		// AllowDynamicSkills/MCPs=true means it can create dynamic capabilities.
 		// task_planner has all three=false because it only plans — it must NOT create
 		// capabilities (different quality regime: ephemeral DAG vs persistent role defs).
-		// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §2.4.
+		// See docs/completed/2026-10-21/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §2.4.
 	},
 	{
 		ID:             "decision_arbiter",
@@ -165,12 +165,12 @@ var builtinRoles = []Role{
 		MutableByAgent: false, // users can edit the file on disk, but the agent shouldn't rewrite its own decision logic
 	},
 	{
-		ID:             "task_planner",
-		Name:           "Task Planner",
-		BaseCapability: "plan",
-		Instruction:    taskPlannerInstruction,
-		Purpose:        "Plans and modifies the DAG when the main agent (weak model) hits complexity threshold or is blocked.",
-		BestFor:        "Weak-model fallback, complex DAG authoring, task decomposition",
+		ID:                 "task_planner",
+		Name:               "Task Planner",
+		BaseCapability:     "plan",
+		Instruction:        taskPlannerInstruction,
+		Purpose:            "Plans and modifies the DAG when the main agent (weak model) hits complexity threshold or is blocked.",
+		BestFor:            "Weak-model fallback, complex DAG authoring, task decomposition",
 		MutableByAgent:     false, // agent cannot self-modify, same as decision_arbiter
 		AllowDynamicSkills: false, // only plans, does not execute — cannot create skills
 		AllowDynamicMCPs:   false, // only plans, does not execute — cannot mount MCPs
@@ -217,22 +217,22 @@ var builtinSOPs = []schemas.SOP{
 		},
 		Steps: map[string]schemas.SOPStep{
 			"explore": {
-				ID:    "explore",
-				Role:  "sop_generator",
-				Task:  "Explore all available MCP tools and their schemas. List each tool name, its parameters, and what it does.",
+				ID:     "explore",
+				Role:   "sop_generator",
+				Task:   "Explore all available MCP tools and their schemas. List each tool name, its parameters, and what it does.",
 				Skills: []string{"code_search"},
 			},
 			"design": {
-				ID:       "design",
-				Role:     "sop_generator",
-				Task:     "Based on the explored tools, design a workflow DAG for the requested task. Define steps, dependencies, roles, and exit criteria.",
+				ID:        "design",
+				Role:      "sop_generator",
+				Task:      "Based on the explored tools, design a workflow DAG for the requested task. Define steps, dependencies, roles, and exit criteria.",
 				DependsOn: []string{"explore"},
 			},
 			"save": {
-				ID:       "save",
-				Role:     "sop_generator",
-				Task:     "Convert the designed workflow into a valid SOP JSON and submit it via the update_sop tool.",
-				DependsOn: []string{"design"},
+				ID:           "save",
+				Role:         "sop_generator",
+				Task:         "Convert the designed workflow into a valid SOP JSON and submit it via the update_sop tool.",
+				DependsOn:    []string{"design"},
 				ExitCriteria: "SOP saved successfully and validateSOPDAG passes",
 			},
 		},

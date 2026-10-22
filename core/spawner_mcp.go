@@ -46,6 +46,11 @@ func (s *Spawner) ResolveToolMCP(toolName string, bindings []config.MCPBinding, 
 		if mcp == nil {
 			continue
 		}
+		// Operator toggle (levels A+B): a disabled MCP or disabled tool is
+		// never resolvable — a model that names it cannot invoke it.
+		if !toolEnabled(mcp, toolName) {
+			continue
+		}
 		if mcp.ToolFilter != nil && !mcp.ToolFilter.Test(toolName) {
 			continue
 		}
@@ -56,9 +61,13 @@ func (s *Spawner) ResolveToolMCP(toolName string, bindings []config.MCPBinding, 
 
 	// Tier 2: tool declared in a restricted binding's explicit allow-list.
 	for _, b := range bindings {
-		if b.IsRestricted() && containsStr(b.AllowedTools, toolName) {
-			return b.MCPID
+		if !b.IsRestricted() || !containsStr(b.AllowedTools, toolName) {
+			continue
 		}
+		if !toolEnabled(hub.GetMCP(b.MCPID), toolName) {
+			continue
+		}
+		return b.MCPID
 	}
 
 	// Tier 3: name unknown — route to a binding that is actually healthy.
@@ -67,7 +76,9 @@ func (s *Spawner) ResolveToolMCP(toolName string, bindings []config.MCPBinding, 
 	bestScore := -1
 	for _, b := range bindings {
 		mcp := hub.GetMCP(b.MCPID)
-		if mcp == nil {
+		// The fallback must respect the toggle too: a disabled MCP (or a name in
+		// its deny list) is never a valid route, even for an unknown tool name.
+		if !toolEnabled(mcp, toolName) {
 			continue
 		}
 		score := 0
@@ -335,6 +346,10 @@ func (s *Spawner) ensureMCPDiscovery(ctx context.Context, hub *ContextHub, taskI
 		if mcp == nil || mcp.Command == "" {
 			continue // remote MCPs (mcp.URL) handled in buildMCPServers
 		}
+		// Operator toggle (level A): never discover a disabled MCP.
+		if !mcpActive(mcp) {
+			continue
+		}
 		// C1 fix (2026-10-19): don't check FullToolDefinitions here (outside
 		// the lock) — concurrent discovery could be appending to it right now,
 		// causing a data race. The idempotency check inside discoverStdioMCP
@@ -441,6 +456,10 @@ func (s *Spawner) buildMCPServers(
 		if mcp == nil {
 			continue
 		}
+		// Operator toggle (level A): a disabled MCP exposes no server at all.
+		if !mcpActive(mcp) {
+			continue
+		}
 
 		// Per-MCP lock serializes access to FullToolDefinitions so concurrent
 		// buildMCPServers calls for the same MCP don't race on discovery +
@@ -457,18 +476,9 @@ func (s *Spawner) buildMCPServers(
 				continue // No cached tools and no client — truly unusable
 			}
 
-			// Filter tools based on allowed list
-			var tools []schemas.ToolDefinition
-			allowedMap := make(map[string]bool)
-			for _, t := range b.AllowedTools {
-				allowedMap[t] = true
-			}
-
-			for _, t := range mcp.FullToolDefinitions {
-				if !b.IsRestricted() || allowedMap[t.Name] {
-					tools = append(tools, t)
-				}
-			}
+			// Filter tools by the binding allow-list AND the operator toggle (level B);
+			// the shared helper keeps this path in sync with delegation export.
+			tools := visibleTools(mcp, b)
 
 			servers = append(servers, providers.MCPServerDef{
 				Name:         b.MCPID,
@@ -523,16 +533,7 @@ func (s *Spawner) buildMCPServers(
 				mcp.DiscoveryStatus = config.DiscoveryNoURL
 			}
 
-			var tools []schemas.ToolDefinition
-			allowedMap := make(map[string]bool)
-			for _, t := range b.AllowedTools {
-				allowedMap[t] = true
-			}
-			for _, t := range mcp.FullToolDefinitions {
-				if !b.IsRestricted() || allowedMap[t.Name] {
-					tools = append(tools, t)
-				}
-			}
+			tools := visibleTools(mcp, b)
 
 			servers = append(servers, providers.MCPServerDef{
 				Name:         b.MCPID,

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daybeam/vortex/core/cron"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -215,7 +216,13 @@ func (sm *ScheduleManager) submitAndTrack(s *schemas.Schedule, event string) (st
 		"schedule_name": s.Name,
 	})
 
-	// Submit to scheduler
+	// Submit to scheduler. Cron schedules are admin-gated (created via the admin
+	// config subsystem), so their runs carry the admin tier — otherwise dynamic
+	// MCP mounts in scheduled tasks would be fail-closed to non-admin (HIGH-sev
+	// regression from the submitter-tier propagation fix, 2026-10-21).
+	for i := range s.TaskInputs {
+		s.TaskInputs[i].SubmitterIsAdmin = true
+	}
 	taskID, err := sm.scheduler.Submit(s.TaskInputs)
 
 	sm.Mu.Lock()
@@ -378,7 +385,7 @@ func (sm *ScheduleManager) calculateNextRun(s *schemas.Schedule) time.Time {
 		}
 		return time.Now().Add(d)
 	case schemas.ScheduleCron:
-		next, err := sm.parseCron(s.CronExpr, time.Now())
+		next, err := cron.NextRun(s.CronExpr, time.Now())
 		if err != nil {
 			sm.logger.Log("schedule_config_error", "", "", map[string]any{
 				"schedule_id": s.ID,
@@ -389,19 +396,4 @@ func (sm *ScheduleManager) calculateNextRun(s *schemas.Schedule) time.Time {
 		return next
 	}
 	return time.Time{}
-}
-
-func (sm *ScheduleManager) parseCron(expr string, from time.Time) (time.Time, error) {
-	// Full 5-field cron parser (stdlib only, no external dependency).
-	// Supports: *, exact values, ranges (a-b), steps (*/n, a-b/n), lists (a,b,c).
-	// See cron_parser.go for the implementation.
-	sched, err := parseCronSchedule(expr)
-	if err != nil {
-		return time.Time{}, err
-	}
-	next := sched.nextRun(from)
-	if next.IsZero() {
-		return time.Time{}, fmt.Errorf("cron expression %q has no matching time within 366 days", expr)
-	}
-	return next, nil
 }

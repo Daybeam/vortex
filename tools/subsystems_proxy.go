@@ -51,7 +51,7 @@ func registerProxySubsystem(app *App) {
 				return nil, fmt.Errorf("role %q not found", roleID)
 			}
 
-			bindings, err := core.ResolveFinalMCPs(hub, roleID, nil, nil)
+			bindings, err := core.ResolveFinalMCPs(hub, roleID, nil, nil, true) // proxy is admin-only
 			if err != nil {
 				return nil, fmt.Errorf("failed to resolve MCP bindings for role %q: %w", roleID, err)
 			}

@@ -52,6 +52,7 @@ func (es *ExperienceStore) AddPromotionAuditLog(log PromotionAuditLog) {
 // verified controls the confidence value fed into the running average:
 //   - verified=true  → 0.8 (cross-family verified mutation)
 //   - verified=false → 0.5 (unverified/pending mutation)
+//
 // After enough verified cycles, AvgConfidence converges toward 0.8 > 0.7 gate.
 //
 // sourceText is the original task text, used as SourceText for BM25 matching

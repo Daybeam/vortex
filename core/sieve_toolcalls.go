@@ -25,7 +25,11 @@ func (s *Sieve) InspectToolCalls(taskID, stepID string, calls []store.ToolIntera
 	}
 
 	for _, call := range calls {
-		argData, _ := json.Marshal(call.Arguments)
+		// Hash canonical arguments only. Engine control args (`_reason`,
+		// `_decision_id`) are stripped before the payload is sent, so letting
+		// them vary the key would hand the model a free bypass for every check
+		// below — and the model discovers `_reason` from the block message.
+		argData, _ := json.Marshal(canonicalToolArgs(call.Arguments))
 		hash := fmt.Sprintf("%s:%s", call.ToolName, string(argData))
 
 		history := s.toolHistory[histKey]
