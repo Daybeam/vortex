@@ -227,6 +227,14 @@ type Skill struct {
 	// Directory content manifest — path list only, no file contents.
 	Manifest *SkillManifest `json:"manifest,omitempty"`
 
+	// agentskills.io standard frontmatter fields (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md).
+	// Parsed at import; surfaced as prompt hints at activation. Non-functional
+	// for execution — compatibility warns, allowed-tools is advisory only.
+	Compatibility string            `json:"compatibility,omitempty"`
+	AllowedTools  []string          `json:"allowed_tools,omitempty"`
+	License       string            `json:"license,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+
 	// StagedAt records when the skill was placed into PendingSkills (staging).
 	// Used by PendingSkillGC to expire un-promoted external skills after TTL.
 	// Zero value means the skill was not staged (native or already promoted).

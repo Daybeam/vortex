@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -48,7 +49,61 @@ func (m *SkillMounter) Activate(skill *config.Skill) string {
 		sb.WriteString("\nUse relative paths in read_file / terminal to access them.\n")
 	}
 
+	// agentskills.io standard fields (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md G2/G3):
+	// compatibility is surfaced as a warning the agent verifies itself (no
+	// blocking check); allowed-tools is advisory only — actual tool filtering
+	// remains the role-binding allowlist's job.
+	if skill.Compatibility != "" {
+		sb.WriteString("\n\n## Compatibility Requirements (verify before using scripts)\n")
+		sb.WriteString(skill.Compatibility)
+		sb.WriteString("\n")
+	}
+	if len(skill.AllowedTools) > 0 {
+		sb.WriteString("\n\n## Pre-approved Tools\n")
+		sb.WriteString(strings.Join(skill.AllowedTools, " "))
+		sb.WriteString("\n")
+	}
+
+	// L2 body injection (G1): when a directory-mode skill matches the task, load
+	// the SKILL.md instructions into the prompt (progressive disclosure level 2).
+	// Read from disk on demand — bodies are NOT stored in the registry, keeping
+	// L1 metadata cheap. Hard-capped to keep oversized skills from overflowing
+	// the context (regression tests pinned this concern before L2 existed).
+	if skill.ExecutionMode == config.ExecutionModeDirectory && skill.SkillDir != "" {
+		if body := readSkillBody(skill.SkillDir); body != "" {
+			sb.WriteString("\n\n## Skill Instructions (from SKILL.md)\n")
+			sb.WriteString(body)
+			sb.WriteString("\n")
+		}
+	}
+
 	return sb.String()
+}
+
+// skillBodyPromptCap bounds the SKILL.md body injected into a prompt fragment.
+// agentskills.io recommends instructions stay under ~5000 tokens; 4000 chars is
+// a conservative budget that leaves room for the top-N activation multiplicity
+// (ActivateTopSkills mounts up to 3 skills per task).
+const skillBodyPromptCap = 4000
+
+// readSkillBody loads SKILL.md from the skill directory, strips frontmatter
+// (reusing skill_interpreter.go's stripFrontmatter), and truncates to
+// skillBodyPromptCap with a pointer to the full file. Returns "" on any
+// failure or empty body — activation degrades to description-only.
+func readSkillBody(skillDir string) string {
+	data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		return ""
+	}
+	body := strings.TrimSpace(stripFrontmatter(string(data)))
+	if body == "" {
+		return ""
+	}
+	if len(body) > skillBodyPromptCap {
+		body = strings.ToValidUTF8(body[:skillBodyPromptCap], "") +
+			"\n\n[... truncated — read SKILL.md in the skill directory for the remaining instructions ...]"
+	}
+	return body
 }
 
 // ResolvePath joins a relative path with the active skill's directory.

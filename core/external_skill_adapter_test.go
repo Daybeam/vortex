@@ -273,11 +273,13 @@ func TestImportSkillDirectory_LargeSkillFile(t *testing.T) {
 	}
 }
 
-// TestImportSkillDirectory_LargeSkill_PromptFragmentSmall verifies that
-// SkillMounter.Activate produces a small prompt fragment for a large
-// directory-mode skill. The fragment should contain only metadata
-// (name + description + manifest), NOT the full 57KB body.
-func TestImportSkillDirectory_LargeSkill_PromptFragmentSmall(t *testing.T) {
+// TestImportSkillDirectory_LargeSkill_PromptFragmentCapped verifies the L2
+// body injection cap (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md G1):
+// SkillMounter.Activate loads the SKILL.md body for a matched skill
+// (agentskills.io progressive disclosure level 2), but a 57KB body must be
+// truncated to skillBodyPromptCap so it cannot overflow the context — the
+// concern pinned by this test since before L2 existed.
+func TestImportSkillDirectory_LargeSkill_PromptFragmentCapped(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "big_skill")
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
@@ -302,19 +304,25 @@ func TestImportSkillDirectory_LargeSkill_PromptFragmentSmall(t *testing.T) {
 		mounter := &SkillMounter{}
 		fragment := mounter.Activate(skill)
 
-		// The fragment should be small (metadata only).
-		if len(fragment) > 500 {
-			t.Errorf("prompt fragment too large: %d bytes (expected metadata only, <500)", len(fragment))
+		// L2: the instructions ARE loaded (body start present)…
+		if !strings.Contains(fragment, "UNIQUE_MARKER_LINE_CONTENT_HERE") {
+			t.Error("prompt fragment should contain the (truncated) body content — L2 injection")
 		}
-
-		// The fragment must NOT contain the body content.
-		if strings.Contains(fragment, "UNIQUE_MARKER_LINE_CONTENT_HERE") {
-			t.Error("prompt fragment should NOT contain the full body content")
+		// …but bounded: the fragment must stay far below the full 57KB body
+		// (cap + description + section headers + truncation notice overhead).
+		if len(fragment) >= skillBodyPromptCap+2000 {
+			t.Errorf("prompt fragment too large: %d bytes (expected < cap+2KB overhead)", len(fragment))
 		}
-
+		if len(fragment) >= len(body) {
+			t.Errorf("prompt fragment must not contain the full body: %d bytes vs %d", len(fragment), len(body))
+		}
 		// The fragment SHOULD contain the description.
 		if !strings.Contains(fragment, "Large skill test") {
 			t.Error("prompt fragment should contain skill description")
+		}
+		// Truncation must be signposted so the agent knows to read the rest.
+		if !strings.Contains(fragment, "truncated") {
+			t.Error("prompt fragment should contain a truncation notice")
 		}
 		return
 	}
@@ -355,11 +363,13 @@ func TestParseExternalSkillFile_LongLine(t *testing.T) {
 	}
 }
 
-// TestImportSkillDirectory_LargeSkill_BodyInSOPNotInPrompt is an end-to-end
-// test verifying the complete flow: large SKILL.md → import → registry →
-// mount → prompt fragment. The body must be in SOP.Steps[].Task and must
-// NOT appear in the mounter's prompt fragment.
-func TestImportSkillDirectory_LargeSkill_BodyInSOPNotInPrompt(t *testing.T) {
+// TestImportSkillDirectory_LargeSkill_BodyInSOPAndTruncatedInPrompt is an
+// end-to-end test verifying the complete flow: large SKILL.md → import →
+// registry → mount → prompt fragment. The FULL body must be in
+// SOP.Steps[].Task; the prompt fragment receives only the capped prefix
+// (L2 injection, G1) so the context cannot overflow — the concern this test
+// has pinned since before L2 body injection existed.
+func TestImportSkillDirectory_LargeSkill_BodyInSOPAndTruncatedInPrompt(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "e2e_skill")
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
@@ -389,30 +399,38 @@ func TestImportSkillDirectory_LargeSkill_BodyInSOPNotInPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Step 2: Verify body is in SOP.Steps[].Task
+	// Step 2: Verify FULL body is in SOP.Steps[].Task
 	bodyInSOP := false
 	for _, sop := range reg.SOPs {
 		for _, step := range sop.Steps {
-			if strings.Contains(step.Task, sentinel) {
+			if strings.Count(step.Task, sentinel) == 200 {
 				bodyInSOP = true
 			}
 		}
 	}
 	if !bodyInSOP {
-		t.Error("body should be stored in SOP.Steps[].Task")
+		t.Error("full body should be stored in SOP.Steps[].Task")
 	}
 
-	// Step 3: Verify body is NOT in the prompt fragment
-	bodyInPrompt := false
+	// Step 3: Verify the prompt fragment carries only the truncated prefix
+	fragment := ""
 	for _, skill := range reg.PendingSkills {
 		mounter := &SkillMounter{}
-		fragment := mounter.Activate(skill)
-		if strings.Contains(fragment, sentinel) {
-			bodyInPrompt = true
-		}
+		fragment = mounter.Activate(skill)
+		break
 	}
-	if bodyInPrompt {
-		t.Error("body should NOT appear in the prompt fragment (would overflow context)")
+	if fragment == "" {
+		t.Fatal("no skill activated")
+	}
+	got := strings.Count(fragment, sentinel)
+	if got == 0 {
+		t.Error("fragment should contain the truncated body prefix (L2 injection)")
+	}
+	if got >= 200 {
+		t.Errorf("fragment must not contain the full body: %d sentinel occurrences (would overflow context)", got)
+	}
+	if len(fragment) >= skillBodyPromptCap+2000 {
+		t.Errorf("fragment too large: %d bytes (expected < cap+2KB overhead)", len(fragment))
 	}
 }
 
@@ -615,5 +633,192 @@ func TestPromoteSkill_MovesFromPendingToActive(t *testing.T) {
 	idx := NewCapabilityIndex(reg)
 	if !idx.Tags["trading"] {
 		t.Error("promoted skill's capability 'trading' should be in CapabilityIndex tags")
+	}
+}
+
+// ─── agentskills.io standard adaptation (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md) ──
+
+// TestParseExternalSkillFile_StandardFields verifies G2/G3/G6: compatibility,
+// allowed-tools (space-separated), license, and the nested metadata map are
+// parsed from frontmatter.
+func TestParseExternalSkillFile_StandardFields(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "pdf-extraction")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\n" +
+		"name: pdf-extraction\n" +
+		"description: Extracts tables from PDF files\n" +
+		"license: MIT\n" +
+		"compatibility: Requires Python 3.14+ and uv\n" +
+		"allowed-tools: read_file write_file run_command\n" +
+		"metadata:\n" +
+		"  author: someone\n" +
+		"  version: \"1.2\"\n" +
+		"---\nDo the thing."
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := parseExternalSkillFile(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Compatibility != "Requires Python 3.14+ and uv" {
+		t.Errorf("Compatibility = %q", meta.Compatibility)
+	}
+	if len(meta.AllowedTools) != 3 || meta.AllowedTools[0] != "read_file" || meta.AllowedTools[2] != "run_command" {
+		t.Errorf("AllowedTools = %v", meta.AllowedTools)
+	}
+	if meta.License != "MIT" {
+		t.Errorf("License = %q", meta.License)
+	}
+	if meta.Metadata == nil || meta.Metadata["author"] != "someone" || meta.Metadata["version"] != "1.2" {
+		t.Errorf("Metadata = %v", meta.Metadata)
+	}
+	if meta.Body != "Do the thing." {
+		t.Errorf("Body = %q", meta.Body)
+	}
+}
+
+// TestParseExternalSkillFile_MetadataThenTopLevelKey ensures a top-level key
+// after a nested metadata block is still parsed (state machine exits the map).
+func TestParseExternalSkillFile_MetadataThenTopLevelKey(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "meta-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\n" +
+		"name: meta-skill\n" +
+		"metadata:\n" +
+		"  key: value\n" +
+		"capability: after-meta\n" +
+		"---\nBody."
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := parseExternalSkillFile(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Metadata["key"] != "value" {
+		t.Errorf("Metadata = %v", meta.Metadata)
+	}
+	if meta.Capability != "after-meta" {
+		t.Errorf("Capability = %q (top-level key after metadata block was swallowed?)", meta.Capability)
+	}
+}
+
+// TestValidateStandardSkillMeta covers G5 for the strict standard import path.
+func TestValidateStandardSkillMeta(t *testing.T) {
+	valid := &ExternalSkillMeta{Name: "pdf-extraction", Description: "d"}
+
+	cases := []struct {
+		name string
+		meta *ExternalSkillMeta
+		dir  string
+		ok   bool
+	}{
+		{"valid", valid, "pdf-extraction", true},
+		{"name-dir mismatch", &ExternalSkillMeta{Name: "other-name", Description: "d"}, "pdf-extraction", false},
+		{"uppercase name", &ExternalSkillMeta{Name: "PDF-Extraction", Description: "d"}, "PDF-Extraction", false},
+		{"space in name", &ExternalSkillMeta{Name: "pdf extraction", Description: "d"}, "pdf extraction", false},
+		{"leading hyphen", &ExternalSkillMeta{Name: "-pdf", Description: "d"}, "-pdf", false},
+		{"double hyphen", &ExternalSkillMeta{Name: "pdf--x", Description: "d"}, "pdf--x", false},
+		{"name too long", &ExternalSkillMeta{Name: strings.Repeat("a", 65), Description: "d"}, strings.Repeat("a", 65), false},
+		{"empty description", &ExternalSkillMeta{Name: "pdf-extraction"}, "pdf-extraction", false},
+		{"description too long", &ExternalSkillMeta{Name: "pdf-extraction", Description: strings.Repeat("d", 1025)}, "pdf-extraction", false},
+	}
+	for _, tc := range cases {
+		path := filepath.Join("root", tc.dir, "SKILL.md")
+		err := validateStandardSkillMeta(tc.meta, path)
+		if tc.ok && err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("%s: expected validation error, got nil", tc.name)
+		}
+	}
+}
+
+// TestImportStandardSkills_StrictSkipsNonCompliant verifies G5 wiring: the
+// strict path skips non-compliant skills (with a warning) but imports
+// compliant ones; the lenient ImportSkillDirectory still imports both.
+func TestImportStandardSkills_StrictSkipsNonCompliant(t *testing.T) {
+	dir := t.TempDir()
+	for _, sub := range []string{"good-skill", "Bad Skill"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSkill := func(sub, name string) {
+		content := "---\nname: " + name + "\ndescription: d\n---\n## S\n1. x."
+		if err := os.WriteFile(filepath.Join(dir, sub, "SKILL.md"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSkill("good-skill", "good-skill")
+	writeSkill("Bad Skill", "Bad Skill")
+
+	strictReg := &config.Registry{}
+	n, err := NewExternalSkillAdapter(strictReg).ImportStandardSkills(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("strict import count = %d, want 1", n)
+	}
+	if _, ok := strictReg.PendingSkills["ext_good_skill"]; !ok {
+		t.Error("compliant skill missing from PendingSkills")
+	}
+	if len(strictReg.PendingSkills) != 1 {
+		t.Errorf("non-compliant skill should be skipped, PendingSkills = %d", len(strictReg.PendingSkills))
+	}
+
+	lenientReg := &config.Registry{}
+	n, err = NewExternalSkillAdapter(lenientReg).ImportSkillDirectory(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("lenient import count = %d, want 2 (legacy path tolerates non-standard names)", n)
+	}
+}
+
+// TestImportStandardDiscoveryPaths verifies G4: project and user level
+// .agents/skills/ directories are scanned; missing directories are a no-op.
+func TestImportStandardDiscoveryPaths(t *testing.T) {
+	project := t.TempDir()
+	user := t.TempDir()
+	// Distinct skill names per level: identical names dedup to one registry entry.
+	for _, spec := range []struct{ base, name string }{
+		{project, "proj-skill"},
+		{user, "user-skill"},
+	} {
+		skillDir := filepath.Join(spec.base, ".agents", "skills", spec.name)
+		if err := os.MkdirAll(skillDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		content := "---\nname: " + spec.name + "\ndescription: d\n---\n## S\n1. x."
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reg := &config.Registry{}
+	if n := ImportStandardDiscoveryPaths(reg, project, user); n != 2 {
+		t.Errorf("imported = %d, want 2", n)
+	}
+	if len(reg.PendingSkills) != 2 {
+		t.Errorf("PendingSkills = %d, want 2", len(reg.PendingSkills))
+	}
+
+	// Missing dirs → zero, no panic, no error surfaced.
+	reg2 := &config.Registry{}
+	if n := ImportStandardDiscoveryPaths(reg2, filepath.Join(project, "nope"), ""); n != 0 {
+		t.Errorf("imported = %d, want 0 for missing dirs", n)
 	}
 }
