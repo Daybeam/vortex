@@ -126,7 +126,7 @@ func (s *DirectedEngine) plannerToolCatalog(roleID string) (string, map[string]m
 	// Phase 4 integration (2026-10-20): delegate scope enforcement to the
 	// shared enforceScope function from discovery.go. Same visibility logic
 	// as the discover MCP tool — single source of truth for scoping.
-	// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 4.
+	// See docs/completed/2026-10-21/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 4.
 	mcpIDs, scopeErr := enforceScope(s.registry, DiscoveryScope{Mode: "role", RoleID: roleID, AllowPool: false})
 	if scopeErr != nil {
 		s.logger.Log("EventPlannerEmptyCatalog", "", roleID, map[string]any{
@@ -198,7 +198,7 @@ func (s *DirectedEngine) plannerToolCatalog(roleID string) (string, map[string]m
 // Phase 4 integration (2026-10-20): delegates role discovery to DiscoverImpl,
 // sharing the discovery logic with the discover MCP tool. MCP ID enrichment
 // still reads from the registry (DiscoveryRoleSummary doesn't include MCP IDs).
-// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 4.
+// See docs/completed/2026-10-21/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 4.
 func (s *DirectedEngine) plannerAllowedRoles() (string, map[string]bool) {
 	allowed := map[string]bool{}
 	if s.registry == nil {

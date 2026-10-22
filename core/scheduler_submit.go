@@ -155,7 +155,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	// Defense-in-depth: even if the tools layer's ResolveWorkspaceRoot
 	// was bypassed (e.g. direct API handler), the scheduler re-checks
 	// that workspaceRoot is within the allowed scope for the owner.
-	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.5.
+	// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.5.
 	if err := s.validateWorkspaceScope(workspaceRoot, ownerID); err != nil {
 		return "", fmt.Errorf("workspace scope violation: %w", err)
 	}

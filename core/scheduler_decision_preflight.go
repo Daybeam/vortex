@@ -72,6 +72,13 @@ func (s *DirectedEngine) diagnoseFault(output *schemas.SubagentOutput, step *sch
 		return FailureClassTransient, "Execution failed with unknown error.", nil
 	}
 
+	// G2 (2026-10-22): a mount-policy `approval` gate is surfaced as an
+	// approval-required signal, not a failure. Classify it first so the affected
+	// MCP ids reach the human_approval_required decision.
+	if output.Status == schemas.StatusApprovalRequired {
+		return FailureClassApprovalRequired, "Awaiting human approval to mount the requested MCP capability.", output.ApprovalRequiredMounts
+	}
+
 	if len(output.MissingContext) > 0 {
 		return FailureClassContextDeficit, "Prompt the Manager to supply required data or upstream variables.", output.MissingContext
 	}

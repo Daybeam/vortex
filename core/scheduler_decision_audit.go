@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/pkg/jsonrepair"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -268,9 +269,9 @@ func (s *DirectedEngine) verifyExitCriteria(ctx context.Context, graph *schemas.
 	// Zero-token hard verification via DeterministicVerifier registry.
 	// Runs before VerifierModel semantic audit — if any check fails,
 	// the step is immediately rejected without spending any LLM tokens.
-	// See core/deterministic_verifier.go + docs/TIERED_SHORT_CIRCUIT_AUDIT.md
+	// See core/verify/deterministic_verifier.go + docs/TIERED_SHORT_CIRCUIT_AUDIT.md
 	if len(step.DeterministicChecks) > 0 {
-		passed, msg, failTypeStr := runDeterministicChecks(ctx, s.outputBase, step.DeterministicChecks)
+		passed, msg, failTypeStr := verify.RunDeterministicChecks(ctx, s.outputBase, step.DeterministicChecks)
 		if !passed {
 			failType := schemas.FailureLogicError
 			if failTypeStr == "schema_violation" {

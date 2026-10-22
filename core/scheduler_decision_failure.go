@@ -15,6 +15,46 @@ import (
 // handles the situation; VerdictContinue when it falls through to decision
 // blocking.
 
+// emitMountApprovalDecision raises a human_approval_required decision for the
+// given mount-policy `approval` blocks (G2, 2026-10-22; skills added D3).
+// SubmitDecision "approve" records the mounts on the graph and re-queues the
+// step. Extracted from handleStepFailure to keep it within the size ratchet.
+func (s *DirectedEngine) emitMountApprovalDecision(graph *schemas.TaskGraph, step *schemas.Step, mounts, skills []string) {
+	ctx := map[string]any{
+		"message":    "MCP mount requires human approval before this step can run.",
+		"role_id":    step.RoleID,
+		"root_cause": string(FailureClassApprovalRequired),
+	}
+	if len(mounts) > 0 {
+		ctx["approval_required_mounts"] = mounts
+	}
+	if len(skills) > 0 {
+		ctx["approval_required_skills"] = skills
+		ctx["message"] = "MCP/skill mount requires human approval before this step can run."
+	}
+	s.addDecision(graph, step, schemas.DecisionHumanApprovalRequired, ctx, []string{"approve", "reject"})
+}
+
+// reclassifyToolRefusal promotes a generative_uncertainty failure to
+// deterministic_tool_refusal when a tool has repeatedly failed at the task
+// level (E2/E3 fix, 2026-10-02): a same-role follow-up would just repeat the
+// failing call (the amplification loop seen as 21/22 generative_uncertainty).
+// Only overrides generative_uncertainty — context_deficit carries a genuine
+// missing-context signal that must be preserved. Extracted from
+// handleStepFailure to keep that function within the size ratchet.
+func (s *DirectedEngine) reclassifyToolRefusal(taskID string, cause FailureClass, suggestion string, details []string) (FailureClass, string, []string) {
+	if cause != FailureClassGenerativeUncertainty || s.spawner == nil {
+		return cause, suggestion, details
+	}
+	tool, n := s.spawner.RepeatedToolFailure(taskID)
+	if n < toolFailCircuitBreakerThreshold {
+		return cause, suggestion, details
+	}
+	return FailureClassDeterministicToolRefusal,
+		fmt.Sprintf("Tool %q failed %d times this task; deterministic or environmental refusal. Do not repeat the same call.", tool, n),
+		append(details, tool)
+}
+
 func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schemas.Step, result *SpawnResult) DecisionVerdict {
 	taskID := graph.TaskID
 	output := result.Output
@@ -30,20 +70,12 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 
 	cause, suggestion, details := s.diagnoseFault(&output, step)
 
-	// E2/E3 fix (2026-10-02): if a tool has repeatedly failed at the task level,
-	// the failure is deterministic/environmental, not generative. Reclassify so
-	// the follow-up block below does NOT spawn a same-role substep that would
-	// just repeat the same failing tool call (the amplification loop seen as
-	// 21/22 generative_uncertainty in the eval trajectory). Falls through to a
-	// decision_required instead, and the step_failed payload reports the real
-	// cause. Only overrides generative_uncertainty — context_deficit carries a
-	// genuine missing-context signal we must preserve.
-	if cause == FailureClassGenerativeUncertainty && s.spawner != nil {
-		if tool, n := s.spawner.RepeatedToolFailure(taskID); n >= toolFailCircuitBreakerThreshold {
-			cause = FailureClassDeterministicToolRefusal
-			suggestion = fmt.Sprintf("Tool %q failed %d times this task; deterministic or environmental refusal. Do not repeat the same call.", tool, n)
-			details = append(details, tool)
-		}
+	cause, suggestion, details = s.reclassifyToolRefusal(taskID, cause, suggestion, details)
+
+	// G2: an `approval` mount blocks the step on a human decision, not a failure.
+	if cause == FailureClassApprovalRequired {
+		s.emitMountApprovalDecision(graph, step, output.ApprovalRequiredMounts, output.ApprovalRequiredSkills)
+		return VerdictContinue
 	}
 
 	if s.tryBacktrack(graph, step, &output) {
