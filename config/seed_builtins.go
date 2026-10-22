@@ -136,7 +136,7 @@ Constraints:
 //                    that task_planner does NOT have — different quality
 //                    regime (persistent role defs vs ephemeral DAGs).
 //
-// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 3.
+// See docs/completed/2026-10-21/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 3.
 
 var builtinRoles = []Role{
 	{
@@ -153,7 +153,7 @@ var builtinRoles = []Role{
 		// AllowDynamicSkills/MCPs=true means it can create dynamic capabilities.
 		// task_planner has all three=false because it only plans — it must NOT create
 		// capabilities (different quality regime: ephemeral DAG vs persistent role defs).
-		// See docs/plan/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §2.4.
+		// See docs/completed/2026-10-21/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §2.4.
 	},
 	{
 		ID:             "decision_arbiter",

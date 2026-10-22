@@ -21,8 +21,8 @@ type SecretProvider interface {
 // User, quietly eroding the rules layer when long task logs push the
 // context window past its budget.
 type CompleteRequest struct {
-	System       string
-	User         string
+	System string
+	User   string
 
 	// Legacy block form (Volatile only). Still supported for backward compat.
 	SystemBlocks []ContentBlock

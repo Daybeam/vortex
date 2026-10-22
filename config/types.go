@@ -221,6 +221,9 @@ type Skill struct {
 
 	// Multi-capability tags (symmetric with MCP.Provides).
 	Provides []string `json:"provides,omitempty"`
+	// MountPolicy gates skill granting by submitter tier (open/approval/
+	// admin_only; default open — skills are prompt-level, see mount_policy.go).
+	MountPolicy string `json:"mount_policy,omitempty"`
 	// Directory content manifest — path list only, no file contents.
 	Manifest *SkillManifest `json:"manifest,omitempty"`
 
@@ -287,37 +290,7 @@ const (
 	DiscoveryNoURL   = "no_url"
 )
 
-type FewShotExample struct {
-	UserIntent string         `json:"user_intent"`
-	ToolCall   map[string]any `json:"tool_call"`
-}
-
-type MCPDef struct {
-	ID                  string                         `json:"id"`
-	URL                 string                         `json:"url,omitempty"`
-	Command             string                         `json:"command,omitempty"`
-	Args                []string                       `json:"args,omitempty"`
-	Dir                 string                         `json:"dir,omitempty"`
-	Env                 map[string]string              `json:"env,omitempty"`
-	Trusted             bool                           `json:"trusted"`
-	Sandboxed           bool                           `json:"sandboxed,omitempty"`
-	ExpiresAt           time.Time                      `json:"expires_at,omitempty"`
-	AvailableTools      []string                       `json:"available_tools,omitempty"`
-	Provides            []string                       `json:"provides,omitempty"`
-	Domain              string                         `json:"domain,omitempty"`
-	FullToolDefinitions []schemas.ToolDefinition       `json:"full_tool_definitions,omitempty"`
-	RateLimit           *RateLimit                     `json:"rate_limit,omitempty"`
-	Source              SourceType                     `json:"source,omitempty"`
-	FewShots            map[string][]FewShotExample    `json:"few_shots,omitempty"`
-	AuthHeaderName      string                         `json:"auth_header_name,omitempty"`
-	AuthHeaderPrefix    string                         `json:"auth_header_prefix,omitempty"`
-	APIKeyEnv           string                         `json:"api_key_env,omitempty"`
-	URLAuthPlaceholder  string                         `json:"url_auth_placeholder,omitempty"`
-	DiscoveryStatus     string                         `json:"discovery_status,omitempty"`
-	PlatformOverrides   map[string]MCPPlatformOverride `json:"platform_overrides,omitempty"`
-	ToolFilter          filters.ToolFilter             `json:"-"`
-	MountPolicy         string                         `json:"mount_policy,omitempty"` // open|approval|admin_only (default admin_only); see mount_policy.go
-}
+// MCPDef + FewShotExample moved to mcp_def.go (file size ratchet).
 
 // ── Unified Capability Driver Pattern ──────────────────────────────────────
 //
@@ -558,7 +531,7 @@ type FeatureFlags struct {
 }
 
 // ProviderRoutingConfig configures provider routing strategy and telemetry.
-// See docs/plan/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
+// See docs/completed/2026-10-21/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
 type ProviderRoutingConfig struct {
 	Strategy              string `json:"strategy,omitempty"`                 // "coherence_first" (default) or "latency_first"
 	SlidingWindowSize     int    `json:"sliding_window_size,omitempty"`      // e.g. 100
@@ -736,7 +709,7 @@ type SystemSettings struct {
 	// WorkspacePolicy (ADDED 2026-10-13): tier-gated workspace scope.
 	// When Enabled, Public tier callers have workspace_root forced to
 	// a session sandbox; Admin/local callers are unaffected.
-	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md.
+	// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md.
 	WorkspacePolicy WorkspacePolicyConfig `json:"workspace_policy,omitempty"`
 
 	// FeatureFlags (ADDED 2026-10-17): behavior toggles migrated from env vars.
@@ -775,7 +748,7 @@ type SystemSettings struct {
 	LazyDiscovery bool `json:"lazy_discovery,omitempty"`
 
 	// ProviderRouting (ADDED 2026-10-21): configures provider routing strategy
-	// and telemetry. See docs/plan/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
+	// and telemetry. See docs/completed/2026-10-21/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
 	ProviderRouting ProviderRoutingConfig `json:"provider_routing,omitempty"`
 
 	// RejectSimpleTasks (ADDED 2026-10-20): when true, validateTaskComplexity
@@ -826,7 +799,7 @@ type SystemSettings struct {
 }
 
 // WorkspacePolicyConfig configures tier-gated workspace scope resolution.
-// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.6.
+// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §3.6.
 type WorkspacePolicyConfig struct {
 	Enabled            bool                      `json:"enabled,omitempty"`
 	SessionSandboxBase string                    `json:"session_sandbox_base,omitempty"`

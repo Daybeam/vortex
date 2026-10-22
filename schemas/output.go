@@ -58,6 +58,10 @@ const (
 	StatusFailed             SubagentStatus = "failed"
 	StatusCapabilityRequired SubagentStatus = "capability_required"
 	StatusDelegationRequired SubagentStatus = "delegation_required"
+	// StatusApprovalRequired: the step was blocked at prepare because a
+	// mount-policy `approval` MCP needs human sign-off (G2). The scheduler
+	// turns this into a human_approval_required decision; it is not a failure.
+	StatusApprovalRequired SubagentStatus = "approval_required"
 )
 
 // Attachment represents a binary file output by a subagent (e.g. screenshot).
@@ -77,9 +81,15 @@ type SubagentOutput struct {
 	Assumptions          []string       `json:"assumptions"`
 	Warnings             []string       `json:"warnings"`
 	RequiredCapabilities []string       `json:"required_capabilities"`
-	Capability           string         `json:"capability"`
-	SkillIDs             []string       `json:"skill_ids"`
-	TokenUsed            int            `json:"token_used"`
+	// ApprovalRequiredMounts lists MCPs blocked on human approval (G2). Set
+	// only with Status == StatusApprovalRequired.
+	ApprovalRequiredMounts []string `json:"approval_required_mounts,omitempty"`
+	// ApprovalRequiredSkills lists skills blocked on human approval (D3,
+	// 2026-10-22 — same gate shape as ApprovalRequiredMounts).
+	ApprovalRequiredSkills []string `json:"approval_required_skills,omitempty"`
+	Capability             string   `json:"capability"`
+	SkillIDs               []string `json:"skill_ids"`
+	TokenUsed              int      `json:"token_used"`
 
 	Usage *Usage `json:"usage,omitempty"`
 }

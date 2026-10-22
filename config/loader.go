@@ -215,7 +215,7 @@ func (r *Registry) loadLocked() error {
 
 	// Asset gate: verify external assets against manifest.lock if present.
 	// Fail-loud (2026-10-21): refuse startup on tampering instead of logging a warning.
-	// See docs/plan/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §2 Tier 3.
+	// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §2 Tier 3.
 	if AllowExternalAssets() {
 		if err := VerifyAssetManifest(r.configPath); err != nil {
 			return fmt.Errorf("fatal: asset integrity verification failed: %w", err)
