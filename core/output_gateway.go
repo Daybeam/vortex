@@ -109,31 +109,31 @@ func adaptiveOutputResultCLI(rawStdout []byte, command string) []byte {
 			for i, l := range lines {
 				truncLines[i] = truncateLineRuneSafe(l, maxRunesPerLine)
 			}
-		result := fmt.Sprintf("[Output large: %d KB / %d lines. Full log saved to: %s]\n%s",
-			outputBytes/1024, totalLines, dumpPath, strings.Join(truncLines, "\n"))
-		if dumpPath == "" {
-			result = fmt.Sprintf("[Output large: %d KB / %d lines. dump unavailable — the log could not be persisted.]\n%s",
-				outputBytes/1024, totalLines, strings.Join(truncLines, "\n"))
-		}
-		return neverBloatGuard([]byte(result), rawStdout)
+			result := fmt.Sprintf("[Output large: %d KB / %d lines. Full log saved to: %s]\n%s",
+				outputBytes/1024, totalLines, dumpPath, strings.Join(truncLines, "\n"))
+			if dumpPath == "" {
+				result = fmt.Sprintf("[Output large: %d KB / %d lines. dump unavailable — the log could not be persisted.]\n%s",
+					outputBytes/1024, totalLines, strings.Join(truncLines, "\n"))
+			}
+			return neverBloatGuard([]byte(result), rawStdout)
 		}
 
 		head := joinTruncated(lines[:headCount], maxRunesPerLine)
 		tail := joinTruncated(lines[totalLines-tailCount:], maxRunesPerLine)
 
-	summary := fmt.Sprintf(
-		"[⚖️ OUTPUT GATEWAY: Output too large (%d KB, %d lines). Full content persisted to: %s]\n"+
-			"--- FIRST 30 LINES ---\n%s\n\n... [%d lines / %d KB omitted, checking for panic/error keywords] ...\n\n--- LAST 30 LINES ---\n%s",
-		outputBytes/1024, totalLines, dumpPath, head, totalLines-headCount-tailCount, (outputBytes-len(head)-len(tail))/1024, tail,
-	)
-	if dumpPath == "" {
-		summary = fmt.Sprintf(
-			"[⚖️ OUTPUT GATEWAY: Output too large (%d KB, %d lines). dump unavailable — the log could not be persisted.]\n"+
+		summary := fmt.Sprintf(
+			"[⚖️ OUTPUT GATEWAY: Output too large (%d KB, %d lines). Full content persisted to: %s]\n"+
 				"--- FIRST 30 LINES ---\n%s\n\n... [%d lines / %d KB omitted, checking for panic/error keywords] ...\n\n--- LAST 30 LINES ---\n%s",
-			outputBytes/1024, totalLines, head, totalLines-headCount-tailCount, (outputBytes-len(head)-len(tail))/1024, tail,
+			outputBytes/1024, totalLines, dumpPath, head, totalLines-headCount-tailCount, (outputBytes-len(head)-len(tail))/1024, tail,
 		)
-	}
-	return neverBloatGuard([]byte(summary), rawStdout)
+		if dumpPath == "" {
+			summary = fmt.Sprintf(
+				"[⚖️ OUTPUT GATEWAY: Output too large (%d KB, %d lines). dump unavailable — the log could not be persisted.]\n"+
+					"--- FIRST 30 LINES ---\n%s\n\n... [%d lines / %d KB omitted, checking for panic/error keywords] ...\n\n--- LAST 30 LINES ---\n%s",
+				outputBytes/1024, totalLines, head, totalLines-headCount-tailCount, (outputBytes-len(head)-len(tail))/1024, tail,
+			)
+		}
+		return neverBloatGuard([]byte(summary), rawStdout)
 	}
 
 	headCount := 50

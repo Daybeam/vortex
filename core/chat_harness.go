@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/stream"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -434,7 +435,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		// repetitive output that tool-call-centric guards cannot see — e.g.
 		// a weak model emitting dozens of identical reasoning/text chunks
 		// without any tool calls. Inspired by Cordis thinking-loop-guard.
-		chunkDetector := NewStreamChunkDetector()
+		chunkDetector := stream.NewStreamChunkDetector()
 		thinkExtractor := &thinkingExtractor{}
 		resp, err := h.Provider.StreamComplete(ctx, req, func(chunk string) error {
 			if chunk != "" {
@@ -471,7 +472,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			}
 		}
 		if err != nil {
-			if errors.Is(err, ErrRepetitiveOutput) {
+			if errors.Is(err, stream.ErrRepetitiveOutput) {
 				// Steer: undo this turn's partial text, inject guidance,
 				// and retry. Non-latching — the turn continues normally.
 				if finalText.Len() > prevLen {
