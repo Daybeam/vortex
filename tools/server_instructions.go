@@ -22,14 +22,14 @@ import "github.com/daybeam/vortex/config"
 // with the calling host's own system prompt and every other connected
 // tool's description -- padding it with capability descriptions the tool
 // schemas already convey just adds noise that gets skimmed past.
-const ServerInstructions = `Vortex delegates multi-step, tool-using work to a supervised sub-agent.
+const ServerInstructions = `orchestrator_mcp delegates multi-step, tool-using work to a supervised sub-agent.
 
 Core Philosophy: "Professional Roles for Professional Tasks"
-Use Vortex to prevent your system prompt from being cluttered with diverse domain knowledge (e.g., software dev, market research, content writing, platform-specific automation). Delegating to specialized roles ensures context efficiency and higher quality by isolating domain-specific instructions from your main context.
+Use Orchestrator to prevent your system prompt from being cluttered with diverse domain knowledge (e.g., software dev, market research, content writing, platform-specific automation). Delegating to specialized roles ensures context efficiency and higher quality by isolating domain-specific instructions from your main context.
 
 Decision Rules:
-1. Before manually chaining multiple tool calls, consider whether the entire task should be delegated to Vortex.
-2. Prefer Vortex (orchestrator_submit_task) when the task requires:
+1. Before manually chaining multiple tool calls, consider whether the entire task should be delegated to Orchestrator.
+2. Prefer Orchestrator (orchestrator_submit_task) when the task requires:
    - Specialized domain expertise (delegating to a professional role).
    - Planning and logical sequencing before execution.
    - Coordination across multiple tools or MCP servers.
@@ -37,10 +37,10 @@ Decision Rules:
    - Automatic retries or recovery from failures.
    - Long-running execution (delegation).
 3. Prefer direct tool calls ONLY for simple, independent operations (e.g., one search, one filesystem read, one single-step shell command).
-4. Do NOT use Vortex for single-step tasks that can be completed directly.
+4. Do NOT use Orchestrator for single-step tasks that can be completed directly.
 
 Capability Awareness:
-Vortex itself does not provide domain-specific capabilities. It relies on the configured roles and MCP servers in the current environment (see orchestrator_submit_task description for the active list). If a required capability is missing, adapt your execution plan instead of assuming unsupported functionality.
+The orchestrator itself does not provide domain-specific capabilities. It relies on the configured roles and MCP servers in the current environment (see orchestrator_submit_task description for the active list). If a required capability is missing, adapt your execution plan instead of assuming unsupported functionality.
 
 After submitting, use orchestrator_wait_task / orchestrator_get_task_status to check progress. If status becomes "blocked" with pending_decisions, call orchestrator_submit_decision (skip|abort|retry, or admin-only retry_with_skill:ID|create_skill) to unblock it.`
 
@@ -60,13 +60,13 @@ After submitting, use orchestrator_wait_task / orchestrator_get_task_status to c
 // stop calling tools altogether and fabricate a "done" answer instead --
 // this is believed to be a significant contributor to the low tool-
 // utilization / premature-completion behavior observed with public clients.
-const ServerInstructionsPublic = `Vortex delegates multi-step, tool-using work to a supervised sub-agent. You are connected via the public tier: only orchestrator_submit_task, orchestrator_wait_task, orchestrator_get_task_status, orchestrator_discover, orchestrator_analyze_task, orchestrator_get_logs, and orchestrator_submit_decision are available.
+const ServerInstructionsPublic = `orchestrator_mcp delegates multi-step, tool-using work to a supervised sub-agent. You are connected via the public tier: only orchestrator_submit_task, orchestrator_wait_task, orchestrator_get_task_status, orchestrator_discover, orchestrator_analyze_task, orchestrator_get_logs, and orchestrator_submit_decision are available.
 
 Core Philosophy: "Professional Roles for Professional Tasks"
-Use Vortex to prevent your system prompt from being cluttered with diverse domain knowledge. Delegating to specialized roles (software dev, research, etc.) keeps your context efficient and focused.
+Use Orchestrator to prevent your system prompt from being cluttered with diverse domain knowledge. Delegating to specialized roles (software dev, research, etc.) keeps your context efficient and focused.
 
 Decision Rules:
-1. Prefer Vortex (orchestrator_submit_task) when the task requires specialized expertise, planning, coordination across multiple tools, or intermediate judgment.
+1. Prefer Orchestrator (orchestrator_submit_task) when the task requires specialized expertise, planning, coordination across multiple tools, or intermediate judgment.
 2. Prefer direct tool calls for simple, independent operations.
 3. Do NOT submit single-step tasks here.
 
