@@ -69,6 +69,12 @@ func TestDepositExperienceEvolution(t *testing.T) {
 
 // TestDepositExperienceEvolution_EarlyReturns covers the guard clauses
 // in DepositExperienceEvolution that cause early return without depositing.
+//
+// audit TEST-EARLY-RETURNS (2026-10-23): the original body ran the four guard
+// cases but asserted NOTHING ("the fact that we didn't panic is sufficient"),
+// so it would still pass if every guard clause were deleted. It now wires a
+// mock backend into the two cases where one is reachable and asserts that no
+// anti-pattern was deposited.
 func TestDepositExperienceEvolution_EarlyReturns(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := mustNewLogger(t, tmpDir, nil)
@@ -76,10 +82,28 @@ func TestDepositExperienceEvolution_EarlyReturns(t *testing.T) {
 
 	graph := &schemas.TaskGraph{TaskID: "t1"}
 
+	// Backends for the two cases whose guard can still be observed: the guard
+	// must return BEFORE depositing, so the backend must stay empty.
+	emptyTriggerBackend := &mockAntiPatternBackend{}
+	emptyTriggerEngine := &DirectedEngine{
+		expStore: &store.ExperienceStore{
+			AntiPatternStore: store.NewAntiPatternStore(nil, emptyTriggerBackend),
+		},
+		logger: logger,
+	}
+	emptyContextBackend := &mockAntiPatternBackend{}
+	emptyContextEngine := &DirectedEngine{
+		expStore: &store.ExperienceStore{
+			AntiPatternStore: store.NewAntiPatternStore(nil, emptyContextBackend),
+		},
+		logger: logger,
+	}
+
 	tests := []struct {
-		name   string
-		engine *DirectedEngine
-		step   *schemas.Step
+		name    string
+		engine  *DirectedEngine
+		step    *schemas.Step
+		backend *mockAntiPatternBackend // nil when no backend is reachable
 	}{
 		{
 			name: "nil_expStore_returns_early",
@@ -94,28 +118,24 @@ func TestDepositExperienceEvolution_EarlyReturns(t *testing.T) {
 			},
 		},
 		{
-			name: "empty_trigger_error_returns_early",
-			engine: &DirectedEngine{
-				expStore: &store.ExperienceStore{},
-				logger:   logger,
-			},
+			name:   "empty_trigger_error_returns_early",
+			engine: emptyTriggerEngine,
 			step: &schemas.Step{
 				ID:                      "s1",
 				TriggerError:            "",
 				AdditionalPromptContext: "some fix",
 			},
+			backend: emptyTriggerBackend,
 		},
 		{
-			name: "empty_additional_context_returns_early",
-			engine: &DirectedEngine{
-				expStore: &store.ExperienceStore{},
-				logger:   logger,
-			},
+			name:   "empty_additional_context_returns_early",
+			engine: emptyContextEngine,
 			step: &schemas.Step{
 				ID:                      "s1",
 				TriggerError:            "some error",
 				AdditionalPromptContext: "",
 			},
+			backend: emptyContextBackend,
 		},
 		{
 			name: "nil_antipattern_store_returns_early",
@@ -135,14 +155,14 @@ func TestDepositExperienceEvolution_EarlyReturns(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Should not panic and should return without depositing.
+			// Must not panic...
 			tt.engine.DepositExperienceEvolution(context.Background(), graph, tt.step)
 
-			// Verify no deposit happened by checking the mock backend.
-			// For nil expStore or nil AntiPatternStore, there's no backend
-			// to check, so the fact that we didn't panic is sufficient.
-			// For the empty-field cases, the function returns before
-			// reaching the type assertion, so no deposit occurs.
+			// ...and must NOT deposit when the guard clause fired. Pre-fix this
+			// assertion did not exist, so a deleted guard would go unnoticed.
+			if tt.backend != nil && len(tt.backend.upserted) != 0 {
+				t.Errorf("guard clause deposited %d anti-pattern(s); expected 0", len(tt.backend.upserted))
+			}
 		})
 	}
 }

@@ -755,6 +755,12 @@ func (r *Registry) applySystemDefaults() {
 	if v := os.Getenv("VORTEX_ZERO_EFFECT_NUDGE"); v != "" {
 		ff.ZeroEffectNudge = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 	}
+	// MidAbandonNudge (A5, eval FINDINGS.md §A5): same override semantics as
+	// ZeroEffectNudge — truthy/deliberately-false via env for single-run
+	// toggling without editing config.json.
+	if v := os.Getenv("VORTEX_MID_ABANDON_NUDGE"); v != "" {
+		ff.MidAbandonNudge = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+	}
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────

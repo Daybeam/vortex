@@ -394,12 +394,18 @@ type Role struct {
 	AllowDynamicMCPs    bool         `json:"allow_dynamic_mcps"`
 	MaxAdditionalSkills int          `json:"max_additional_skills"`
 	// CoreTools narrows the built-in _core tool surface for this role:
-	//   absent (nil)   -> every core tool (backward compatible; the default)
-	//   []             -> none
+	//   absent (nil)   -> every core tool (the DEFAULT — core tools are part
+	//                     of the engine's operating mechanism: step hand-offs
+	//                     flow through the shared output directory via
+	//                     write_file/read_file, and verification methods name
+	//                     read_file; A6 flip to "absent = none" was reverted
+	//                     by product decision 2026-10-22)
+	//   []             -> none (task_planner's case)
 	//   ["read_file"]  -> only the named ones
+	//   ["*"]          -> every core tool (explicit, self-documenting form)
 	//
 	// Added 2026-10-19 for the task_planner. Every spawn gets the _core server
-	// unconditionally (spawner_mcp.go buildMCPServers), which hands a planner
+	// attached by default (spawner_mcp.go buildMCPServers), which hands a planner
 	// write_file and execute_code — so a planner that decides to "just do the
 	// task" already can, and its instruction claiming "you have no tools" is
 	// simply false. Hiding a tool from the advertised schema is not enough
@@ -536,6 +542,14 @@ type FeatureFlags struct {
 	// noisy for tasks whose correct answer IS a read-only query, so it is opt-in
 	// per deployment. See core/prompt_constants.go SpawnerZeroEffectMsg.
 	ZeroEffectNudge bool `json:"zero_effect_nudge,omitempty"`
+	// MidAbandonNudge enables the mid-abandonment gate (A5, eval FINDINGS.md
+	// §A5, 2026-10-22): the model started working (read-only calls in the
+	// trace), then emitted a PARSEABLE partial and stopped while turns remain.
+	// This is the highest-frequency small-model failure mode ("worked to the
+	// middle, gave up") that noToolCallsYet and the zero-effect gate are both
+	// blind to. Off by default, opt-in per deployment like ZeroEffectNudge.
+	// See core/prompt_constants.go SpawnerMidAbandonMsg.
+	MidAbandonNudge bool `json:"mid_abandon_nudge,omitempty"`
 }
 
 // ProviderRoutingConfig configures provider routing strategy and telemetry.
