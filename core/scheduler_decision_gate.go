@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -113,8 +114,43 @@ func (s *DirectedEngine) addDecision(
 	}
 	s.Mu.RLock()
 	consecutiveSkips := graph.ConsecutiveSkips
+	// Decider global view (2026-10-23): the decider must be able to see the
+	// products in the task's space before choosing. Snapshot under the lock
+	// (these are walker-mutated). Lists/pointers only — full payloads stay
+	// fetchable via get_step_result / the artifact paths, so a decision is not
+	// bloated with workspace values.
+	var outputFiles []schemas.OutputFile
+	if len(graph.OutputFiles) > 0 {
+		outputFiles = append(outputFiles, graph.OutputFiles...)
+	}
+	var artifacts []schemas.ArtifactContract
+	if len(graph.Artifacts) > 0 {
+		artifacts = append(artifacts, graph.Artifacts...)
+	}
+	var workspaceKeys []string
+	for k := range graph.GlobalWorkspace {
+		workspaceKeys = append(workspaceKeys, k)
+	}
+	resultRef := ""
+	if step != nil {
+		resultRef = step.ResultRef
+	}
 	s.Mu.RUnlock()
-	options = filterSkipOptions(consecutiveSkips, maxSkips, ctx, options)
+	options = filterOptionsForTier(consecutiveSkips, maxSkips, ctx, options, graph != nil && graph.SubmitterIsAdmin)
+
+	if resultRef != "" {
+		ctx["result_ref"] = resultRef
+	}
+	if len(outputFiles) > 0 {
+		ctx["output_files"] = outputFiles
+	}
+	if len(artifacts) > 0 {
+		ctx["artifacts"] = artifacts
+	}
+	if len(workspaceKeys) > 0 {
+		slices.Sort(workspaceKeys)
+		ctx["workspace_keys"] = workspaceKeys
+	}
 
 	dec := &schemas.Decision{
 		ID:      schemas.NewDecisionID(),
@@ -344,6 +380,54 @@ func (s *DirectedEngine) askSystemOneForDecision(
 	options []string,
 ) (string, bool) {
 	return "", false
+}
+
+// publicTierOptions is the set of decision options a public-tier submitter may
+// choose. It mirrors validateTierChoice's public branch (tools/tools_task.go):
+// keep the two in sync. Everything else (retry_with_skill:*, retry_with_context,
+// escalate_model, ...) requires admin tier.
+var publicTierOptions = map[string]bool{
+	"skip": true, "abort": true, "retry": true, "refine_and_retry": true,
+	"fulfill": true, "resume_more_turns": true, "replan": true, "create_role": true,
+}
+
+// PublicTierAllowsChoice reports whether the public tier may submit the given
+// decision choice. The admin tier may submit anything. This is the single
+// source of truth: tools.validateTierChoice (which enforces it at submit time)
+// delegates here, so the engine neither OFFERS nor ACCEPTS an option the public
+// tier cannot choose (AUTH-3).
+func PublicTierAllowsChoice(choice string) bool { return publicTierOptions[choice] }
+
+// filterPublicOptions drops options a public-tier submitter cannot choose
+// (validateTierChoice would reject them at submit time), so the engine never
+// OFFERS a choice it will refuse (AUTH-3).
+//
+// Carve-out: if every option is admin-only, the original list is kept. A
+// decision must stay resolvable — an empty option set would dead-end the
+// caller — so such decisions are, by construction, admin-resolution-only. The
+// common case (a mixed list, e.g. a failure decision offering retry_with_skill:*
+// alongside skip/abort/retry) is filtered normally.
+func filterPublicOptions(options []string) []string {
+	out := make([]string, 0, len(options))
+	for _, o := range options {
+		if publicTierOptions[o] {
+			out = append(out, o)
+		}
+	}
+	if len(out) == 0 {
+		return options
+	}
+	return out
+}
+
+// filterOptionsForTier applies the skip-cascade guard and, for a non-admin
+// submitter, the public-tier option filter (AUTH-3).
+func filterOptionsForTier(consecutiveSkips, maxSkips int, ctx map[string]any, options []string, submitterIsAdmin bool) []string {
+	options = filterSkipOptions(consecutiveSkips, maxSkips, ctx, options)
+	if submitterIsAdmin {
+		return options
+	}
+	return filterPublicOptions(options)
 }
 
 // filterSkipOptions removes "skip" from options when the skip cascade would
