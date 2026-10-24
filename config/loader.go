@@ -371,7 +371,7 @@ func (r *Registry) loadLocked() error {
 	}
 	var folderRoles map[string]*Role
 	if AllowExternalAssets() {
-		folderRoles, _ = loadFolderRoles(rolesDir)
+		folderRoles = loadFolderRolesLogged(rolesDir)
 	} else {
 		folderRoles = map[string]*Role{}
 	}
@@ -761,6 +761,15 @@ func (r *Registry) applySystemDefaults() {
 	if v := os.Getenv("VORTEX_MID_ABANDON_NUDGE"); v != "" {
 		ff.MidAbandonNudge = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 	}
+	// StagnationGraceTurns (ADDED 2026-10-23, obs-layer A/B): integer, and 0 is
+	// a MEANINGFUL value (= historical behaviour, kill on next repeat), so this
+	// deliberately does NOT filter n>0 the way FSOnlyStreakLimit does — passing
+	// "0" must pin an arm to the baseline even if config.json set a grace.
+	if v := strings.TrimSpace(os.Getenv("VORTEX_STAGNATION_GRACE_TURNS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			ff.StagnationGraceTurns = n
+		}
+	}
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -819,6 +828,17 @@ func mergeMCPBindings(base, extra []MCPBinding) []MCPBinding {
 		}
 	}
 	return result
+}
+
+// loadFolderRolesLogged loads folder-based roles and logs (but does not fail
+// on) load errors, so a misconfigured workspace/roles dir leaves an operator
+// signal instead of silently dropping all folder roles (audit L-21-1).
+func loadFolderRolesLogged(rolesDir string) map[string]*Role {
+	roles, err := loadFolderRoles(rolesDir)
+	if err != nil {
+		log.Printf("WARN: failed to load folder roles from %s: %v", rolesDir, err)
+	}
+	return roles
 }
 
 func loadFolderRoles(rolesDir string) (map[string]*Role, error) {

@@ -57,7 +57,7 @@ func TestFMCBatchTicker_RunOnce_SkipsWhenProviderNotFound(t *testing.T) {
 	ticker.runOnce() // must not panic; provider genuinely doesn't exist
 
 	logger.Close()
-	events, err := logger.ReadTaskLogs("")
+	events, err := logger.ReadTaskLogs("_system")
 	if err != nil {
 		t.Fatalf("ReadTaskLogs: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestFMCBatchTicker_RunOnce_SkipsWhenExpStoreIsNotConcrete(t *testing.T) {
 	ticker.runOnce() // must not panic
 
 	logger.Close()
-	events, _ := logger.ReadTaskLogs("")
+	events, _ := logger.ReadTaskLogs("_system")
 	found := false
 	for _, ev := range events {
 		if ev["event"] == "EventFMCBatchSkipped" {
@@ -140,7 +140,7 @@ func TestFMCBatchTicker_RunOnce_CompletesAgainstRealProvider(t *testing.T) {
 	ticker.runOnce()
 
 	logger.Close()
-	events, err := logger.ReadTaskLogs("")
+	events, err := logger.ReadTaskLogs("_system")
 	if err != nil {
 		t.Fatalf("ReadTaskLogs: %v", err)
 	}

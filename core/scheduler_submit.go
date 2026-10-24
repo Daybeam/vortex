@@ -179,8 +179,8 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	}
 	// ────────────────────────────────────────────────────────────────
 
-	// ── Pre-check: Complexity and Relevance ──────────────────────────
-	if err := s.validateTaskComplexity(inputs); err != nil {
+	// ── Pre-check: submission validity (complexity + role callability) ─
+	if err := s.validateSubmission(inputs); err != nil {
 		return "", err
 	}
 
@@ -498,19 +498,38 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 			s.Mu.Lock()
 			delegationBlocked := false
+			partialBlocked := false
 			if finalErr != nil {
 				step.Status = schemas.StepFailed
 				step.LastError = finalErr.Error()
 				graph.Status = schemas.GraphFailed
 			} else if finalResult != nil {
-				if finalResult.Output.Status == schemas.StatusDelegationRequired {
-					conf := finalResult.Output.Confidence
-					step.Confidence = &conf
+				conf := finalResult.Output.Confidence
+				step.Confidence = &conf
+				// Subagent standard (2026-10-23): the single-step fast path used
+				// to collapse every non-delegation status to StepOK, so a
+				// subagent reporting partial/failed was reported to the caller
+				// as a SUCCESS ("I couldn't finish" → completed). That diverged
+				// from the walker (scheduler_decision.go routes non-ok to
+				// handleStepFailure) and from how real orchestrator-worker systems
+				// treat a worker result: partial/failed is NOT done — Anthropic's
+				// Research verifies subagent findings in a separate pass before
+				// merging. Route by the subagent's actual status.
+				status := finalResult.Output.Status
+				// Exception: a ParseOutput fallback is a FORMAT failure, not the
+				// model declaring incompleteness. A plain-text answer to a simple
+				// task is legitimate, and routing it to a decision the caller
+				// cannot act on would regress the pinned single-step behavior
+				// (TestSubmit_SingleStepPublishesTerminalEvent, §3). Keep it on the
+				// completion path.
+				if status == schemas.StatusPartial && isParseFallback(finalResult.Output) {
+					status = schemas.StatusOK
+				}
+				switch status {
+				case schemas.StatusDelegationRequired:
 					step.Status = schemas.StepBlocked
 					delegationBlocked = true
-				} else {
-					conf := finalResult.Output.Confidence
-					step.Confidence = &conf
+				case schemas.StatusOK:
 					step.ResultRef = finalResult.Ref
 					step.StatesVisited = finalResult.StatesVisited // PGPO (ADDED 2026-09-08)
 					if step.Status != schemas.StepFailed {
@@ -527,6 +546,23 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 							s.DepositExperienceEvolution(ctx, graph, step)
 						}
 					}
+				case schemas.StatusPartial:
+					// Partial is not success. Surface the true status and raise a
+					// decision so the caller — which holds the task-wide view —
+					// verifies before accepting (the engine must not guess).
+					step.ResultRef = finalResult.Ref
+					step.StatesVisited = finalResult.StatesVisited
+					step.Status = schemas.StepPartial
+					partialBlocked = true
+				default:
+					// failed / capability_required / approval_required / unknown:
+					// the subagent did not succeed. Terminal failure so the task
+					// never reports "completed" on a non-ok result.
+					step.ResultRef = finalResult.Ref
+					step.StatesVisited = finalResult.StatesVisited
+					step.Status = schemas.StepFailed
+					step.LastError = store.SanitizeError("step returned status " + string(finalResult.Output.Status))
+					graph.Status = schemas.GraphFailed
 				}
 			} else {
 				step.Status = schemas.StepFailed
@@ -541,6 +577,18 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 					"prompt":  finalResult.Output.Result,
 					"role_id": step.RoleID,
 				}, []string{"fulfill", "skip", "abort"})
+				s.Broadcast()
+				return
+			}
+			if partialBlocked {
+				// Same option set the walker's handleStepFailure offers for a
+				// step_failed decision (scheduler_decision_failure.go:193).
+				s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
+					"root_cause":       "partial",
+					"suggested_action": "step reported partial completion; verify the output before accepting",
+					"missing_context":  finalResult.Output.MissingContext,
+					"confidence":       finalResult.Output.Confidence,
+				}, []string{"skip", "abort", "retry", "refine_and_retry"})
 				s.Broadcast()
 				return
 			}

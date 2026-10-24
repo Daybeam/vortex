@@ -275,6 +275,9 @@ func TestHandleOutput_SelectSkill_UCB1WiringBuildsRankedOption(t *testing.T) {
 		Status:           schemas.GraphRunning,
 		Steps:            map[string]*schemas.Step{},
 		PendingDecisions: []*schemas.Decision{},
+		// retry_with_skill:* is admin-only (AUTH-3); this test targets the
+		// skill-option emission, so declare an admin submitter.
+		SubmitterIsAdmin: true,
 	}
 	step := &schemas.Step{ID: "s1", Status: schemas.StepPending, RoleID: "role_x"}
 	graph.Steps[step.ID] = step
@@ -319,6 +322,8 @@ func TestHandleOutput_SelectSkill_NilExpStoreFallsBackToRawCapability(t *testing
 		Status:           schemas.GraphRunning,
 		Steps:            map[string]*schemas.Step{},
 		PendingDecisions: []*schemas.Decision{},
+		// retry_with_skill:* is admin-only (AUTH-3); admin submitter to exercise it.
+		SubmitterIsAdmin: true,
 	}
 	step := &schemas.Step{ID: "s1", Status: schemas.StepPending, RoleID: "role_x"}
 	graph.Steps[step.ID] = step
@@ -359,6 +364,8 @@ func TestHandleOutput_SelectSkill_NoRecommendationsColdStart(t *testing.T) {
 		Status:           schemas.GraphRunning,
 		Steps:            map[string]*schemas.Step{},
 		PendingDecisions: []*schemas.Decision{},
+		// retry_with_skill:* is admin-only (AUTH-3); admin submitter to exercise it.
+		SubmitterIsAdmin: true,
 	}
 	step := &schemas.Step{ID: "s1", Status: schemas.StepPending, RoleID: "role_x"}
 	graph.Steps[step.ID] = step

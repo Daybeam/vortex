@@ -42,6 +42,14 @@ func (s *Spawner) ResolveToolMCP(toolName string, bindings []config.MCPBinding, 
 
 	// Tier 1: tool explicitly declared by a binding's available_tools.
 	for _, b := range bindings {
+		// SECURITY (AUTH-2, 2026-10-23): a RESTRICTED binding is governed by its
+		// explicit allow-list (Tier 2), not by the MCP's exposure surface.
+		// Otherwise a restricted binding whose MCP exposes <tool> resolves a
+		// call the step never authorized — authorization collapsed into
+		// exposure. Fail-closed: restricted bindings are skipped here.
+		if b.IsRestricted() {
+			continue
+		}
 		mcp := hub.GetMCP(b.MCPID)
 		if mcp == nil {
 			continue
@@ -75,6 +83,13 @@ func (s *Spawner) ResolveToolMCP(toolName string, bindings []config.MCPBinding, 
 	best := ""
 	bestScore := -1
 	for _, b := range bindings {
+		// SECURITY (AUTH-2, 2026-10-23): no unknown-name fallback for restricted
+		// bindings — their allow-list is the authorization and an unrecognised
+		// name is, by definition, not in it. Unrestricted bindings keep the
+		// fallback so the server can answer or namespace-correct the model.
+		if b.IsRestricted() {
+			continue
+		}
 		mcp := hub.GetMCP(b.MCPID)
 		// The fallback must respect the toggle too: a disabled MCP (or a name in
 		// its deny list) is never a valid route, even for an unknown tool name.
@@ -243,7 +258,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 	cli, err := s.mcpMgr.ensureMCPClient(ctx, mcp, taskID)
 	if err != nil {
 		// FIX (2026-08-30): Log and continue with cached tools if available.
-		s.logger.Log("EventMCPClientFailed", taskID, "", map[string]any{
+		s.logger.Log(EventMCPOffline, taskID, "", map[string]any{
 			"mcp":          mcp.ID,
 			"error":        err.Error(),
 			"cached_tools": len(mcp.FullToolDefinitions),
@@ -269,7 +284,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 			"mcp", mcp.ID,
 			"error", err.Error(),
 			"task", taskID)
-		s.logger.Log("EventMCPToolsDiscoveryFailed", taskID, "", map[string]any{
+		s.logger.Log(EventMCPDiscoveryFailed, taskID, "", map[string]any{
 			"mcp":   mcp.ID,
 			"error": err.Error(),
 		})
@@ -319,7 +334,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 	if s.toolRouter != nil {
 		s.toolRouter.RefreshToolEmbeddings(ctx, s.registry)
 	}
-	s.logger.Log("EventMCPToolsDiscovered", taskID, "", map[string]any{
+	s.logger.Log(EventMCPOnline, taskID, "", map[string]any{
 		"mcp":   mcp.ID,
 		"count": len(mcp.FullToolDefinitions),
 	})
@@ -502,7 +517,7 @@ func (s *Spawner) buildMCPServers(
 				if err == nil {
 					mcp.FullToolDefinitions = tools
 					mcp.DiscoveryStatus = config.DiscoveryOK
-					s.logger.Log("EventMCPToolsDiscovered", taskID, "", map[string]any{
+					s.logger.Log(EventMCPOnline, taskID, "", map[string]any{
 						"mcp":   mcp.ID,
 						"count": len(tools),
 					})
@@ -523,7 +538,7 @@ func (s *Spawner) buildMCPServers(
 						"status", status,
 						"error", errStr,
 						"task", taskID)
-					s.logger.Log("EventMCPToolsDiscoveryFailed", taskID, "", map[string]any{
+					s.logger.Log(EventMCPDiscoveryFailed, taskID, "", map[string]any{
 						"mcp":    mcp.ID,
 						"status": status,
 						"error":  errStr,

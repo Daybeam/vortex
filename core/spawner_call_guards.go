@@ -3,6 +3,7 @@ package core
 import (
 	"strings"
 
+	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -39,6 +40,21 @@ func hasMalformedToolCallTag(text string) bool {
 func traceHasEffect(trace []store.ToolInteraction) bool {
 	for _, t := range trace {
 		if !IsReadOnlyToolName(t.ToolName) {
+			return true
+		}
+	}
+	return false
+}
+
+// isParseFallback reports whether the output was SYNTHESIZED by ParseOutput's
+// fallback (unparseable / semantically-hollow prose) rather than DECLARED by
+// the model. It reuses the exact signal doSpawn keys on
+// (spawner_dospawn.go:747-753) so the single-step fast path and the in-loop
+// gates agree on what "the model declared this status" means — a format
+// failure is not the model reporting incompleteness.
+func isParseFallback(output schemas.SubagentOutput) bool {
+	for _, a := range output.Assumptions {
+		if strings.Contains(a, "not parseable") || strings.Contains(a, "semantically hollow") {
 			return true
 		}
 	}

@@ -54,9 +54,10 @@ func validateTierChoice(tier, choice, output string) error {
 	if tier != TierPublic {
 		return nil
 	}
+	// Single source of truth for the public-tier option set lives in core
+	// (PublicTierAllowsChoice) so the engine neither OFFERS (addDecision) nor
+	// ACCEPTS (here) an option the public tier cannot choose (AUTH-3).
 	switch choice {
-	case "skip", "abort", "retry", "refine_and_retry", "fulfill", "resume_more_turns":
-		return nil
 	case "replan":
 		if output != "" {
 			return fmt.Errorf("public tier replan must not provide output payload (injection risk: use pre-computed planner plan)")
@@ -65,10 +66,11 @@ func validateTierChoice(tier, choice, output string) error {
 		if output != "" {
 			return fmt.Errorf("public tier create_role must not provide role draft payload (injection risk: use GenerateRoleObjects)")
 		}
-	default:
-		return fmt.Errorf("choice %q requires admin tier (public tier allows skip|abort|retry|refine_and_retry|fulfill|resume_more_turns|replan|create_role)", choice)
 	}
-	return nil
+	if core.PublicTierAllowsChoice(choice) {
+		return nil
+	}
+	return fmt.Errorf("choice %q requires admin tier (public tier allows skip|abort|retry|refine_and_retry|fulfill|resume_more_turns|replan|create_role)", choice)
 }
 
 func registerTaskList(s *server.MCPServer, app *App) {
@@ -297,6 +299,12 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			inputs[i].SubmitterIsAdmin = submitterIsAdmin
 		}
 
+		// Issue-3 (2026-10-23): capture the caller's ORIGINAL step count before
+		// the Adaptive Verifier Policy below may append auditor steps. The
+		// response reports both counts (submitted vs final) so an agent does not
+		// mistake an intentional augmentation for a failed submit and resubmit.
+		submittedStepCount := len(inputs)
+
 		// ── Adaptive Verifier Policy (ADDED 2026-09-07) ─────────────────────
 		// Auto-append an "auditor" step after each Critical-tier step, so the
 		// existing auditor role verifies the output through the standard DAG
@@ -470,9 +478,15 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		}
 
 		return jsonOK(map[string]any{
-			"task_id":           id,
-			"complexity_hint":   hint,
+			"task_id":              id,
+			"complexity_hint":      hint,
+			"submitted_step_count": submittedStepCount,
+			// step_count is the FINAL DAG size and may exceed submitted_step_count
+			// when the Adaptive Verifier Policy appended auditor steps (see
+			// adaptive_verifier[].appended_audit_step). added_step_count > 0 is a
+			// successful, intentional augmentation — NOT a failed submit.
 			"step_count":        stepCount,
+			"added_step_count":  stepCount - submittedStepCount,
 			"auto_matched":      autoMatched,
 			"adaptive_verifier": policyNotifications,
 		})

@@ -328,8 +328,16 @@ func ResolveFinalMCPs(hub *ContextHub, roleID string, additionalMCPs []string, a
 			}
 			if len(intersected) > 0 {
 				allowed = intersected
+			} else if !submitterIsAdmin {
+				// SECURITY (AUTH-4, 2026-10-23): for a non-admin submitter an
+				// empty intersection must FAIL CLOSED. The old fallback set
+				// allowed = [] which the "empty = unrestricted" convention reads
+				// as FULL ACCESS — so a planner that named only non-existent
+				// tools silently handed the caller the MCP's entire surface.
+				// An admin keeps the permissive fallback (trusted tier).
+				return nil, fmt.Errorf("role %q mcp %q: none of the requested tools %v exist on this server; refusing full access for a non-admin submitter", roleID, mcpID, allowed)
 			} else {
-				// Intersection empty: fall back to full access.
+				// Intersection empty: admin fallback to full access.
 				// T7 observability: warn so operators can detect silent
 				// over-permissioning (planner specified tools, none exist).
 				slog.Warn("tool allowlist intersection empty — falling back to full access",

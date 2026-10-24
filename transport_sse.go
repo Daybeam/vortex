@@ -66,13 +66,11 @@ func serveSSE(mcpServer *server.MCPServer, rootCancel context.CancelFunc) {
 		log.Printf("[vortex] WARNING: serving SSE/HTTP on %s without authentication — anyone who can reach this port can drive the orchestrator. Bind to a loopback address before exposing it.", addr)
 	}
 
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 0, // SSE connections need unlimited write time (60s kills them)
-		IdleTimeout:  120 * time.Second,
-	}
+	// Single source of truth for server hardening (audit O-10): reuse
+	// newHardenedHTTPServer instead of duplicating the timeout struct inline,
+	// so this handler also gets ReadHeaderTimeout. A struct literal here would
+	// silently drift from http_server_config.go.
+	srv := newHardenedHTTPServer(addr, mux)
 
 	// Graceful shutdown on SIGINT / SIGTERM
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

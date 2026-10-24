@@ -147,6 +147,7 @@ var builtinRoles = []Role{
 		AllowDynamicSkills: true,
 		AllowDynamicMCPs:   true,
 		Generatable:        true,
+		CallableTiers:      []string{"admin"}, // meta role: admin-only (AUTH-1)
 		// WHY these privileges: sop_generator is the capability creation surface.
 		// It generates SOPs, roles, and skills from the cookbook (RoleGenerator).
 		// Generatable=true means it can be auto-generated when missing (spawner_utils.go:813).
@@ -162,7 +163,8 @@ var builtinRoles = []Role{
 		Instruction:    decisionArbiterInstruction,
 		Purpose:        "Resolves blocked decisions in non-interactive mode. Spawned when a step blocks and decision_decider_role is set to this role.",
 		BestFor:        "CI/batch eval, unattended deployments, autonomous decision resolution",
-		MutableByAgent: false, // users can edit the file on disk, but the agent shouldn't rewrite its own decision logic
+		MutableByAgent: false,             // users can edit the file on disk, but the agent shouldn't rewrite its own decision logic
+		CallableTiers:  []string{"admin"}, // meta role: admin-only (AUTH-1)
 	},
 	{
 		ID:                 "task_planner",
@@ -171,10 +173,11 @@ var builtinRoles = []Role{
 		Instruction:        taskPlannerInstruction,
 		Purpose:            "Plans and modifies the DAG when the main agent (weak model) hits complexity threshold or is blocked.",
 		BestFor:            "Weak-model fallback, complex DAG authoring, task decomposition",
-		MutableByAgent:     false, // agent cannot self-modify, same as decision_arbiter
-		AllowDynamicSkills: false, // only plans, does not execute — cannot create skills
-		AllowDynamicMCPs:   false, // only plans, does not execute — cannot mount MCPs
-		Generatable:        false, // cannot be auto-generated — it's a fixed builtin planner
+		MutableByAgent:     false,             // agent cannot self-modify, same as decision_arbiter
+		AllowDynamicSkills: false,             // only plans, does not execute — cannot create skills
+		AllowDynamicMCPs:   false,             // only plans, does not execute — cannot mount MCPs
+		Generatable:        false,             // cannot be auto-generated — it's a fixed builtin planner
+		CallableTiers:      []string{"admin"}, // meta role: admin-only (AUTH-1)
 		// Contrast with sop_generator: task_planner produces ephemeral one-shot DAGs,
 		// not persistent role definitions. Different quality regime, different privileges.
 	},

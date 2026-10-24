@@ -393,13 +393,13 @@ type Role struct {
 	AllowDynamicSkills  bool         `json:"allow_dynamic_skills"`
 	AllowDynamicMCPs    bool         `json:"allow_dynamic_mcps"`
 	MaxAdditionalSkills int          `json:"max_additional_skills"`
+	CallableTiers       []string     `json:"callable_tiers,omitempty"` // tiers that may name this role; empty = any (see CallableByAdmin)
 	// CoreTools narrows the built-in _core tool surface for this role:
 	//   absent (nil)   -> every core tool (the DEFAULT — core tools are part
 	//                     of the engine's operating mechanism: step hand-offs
 	//                     flow through the shared output directory via
-	//                     write_file/read_file, and verification methods name
-	//                     read_file; A6 flip to "absent = none" was reverted
-	//                     by product decision 2026-10-22)
+	//                     write_file/read_file; A6 flip to "absent = none"
+	//                     was reverted by product decision 2026-10-22)
 	//   []             -> none (task_planner's case)
 	//   ["read_file"]  -> only the named ones
 	//   ["*"]          -> every core tool (explicit, self-documenting form)
@@ -550,6 +550,22 @@ type FeatureFlags struct {
 	// blind to. Off by default, opt-in per deployment like ZeroEffectNudge.
 	// See core/prompt_constants.go SpawnerMidAbandonMsg.
 	MidAbandonNudge bool `json:"mid_abandon_nudge,omitempty"`
+	// StagnationGraceTurns (ADDED 2026-10-23, obs-layer evidence): how many
+	// extra consecutive-repeat turns to tolerate AFTER the output-stagnation
+	// hint has already fired, before the hard kill. 0 (default) preserves the
+	// historical behaviour exactly — kill on the very next repeat.
+	//
+	// Why: obs/stagnation.py on the v25 batch found 8/16 runs died by
+	// `output_stagnation`, and all 7 of those that died with >=50% of tests
+	// passing had complete_task_called=false (notably 6171bbc_1 at 5/7=71.4%).
+	// The step was killed while the model still had accumulated work worth
+	// submitting, so the bottleneck was judged to be "kill too early" rather
+	// than "model too lazy". A positive value gives the model N more turns to
+	// break the repeat loop and reach the completion tool.
+	//
+	// Scope: only the hard kill is postponed; the hint itself still fires at
+	// the same turn, so the intervention prompt is unchanged.
+	StagnationGraceTurns int `json:"stagnation_grace_turns,omitempty"`
 }
 
 // ProviderRoutingConfig configures provider routing strategy and telemetry.
@@ -944,161 +960,10 @@ func (p *PluginConfig) UnmarshalJSON(data []byte) error {
 // NamedAPIKey pairs a bearer token with an owner identity and tier.
 // When APIKeys is configured, tieredBearerAuth resolves the presented token
 // against this list and propagates OwnerID via tools.AuthOwnerKey.
-type NamedAPIKey struct {
-	Key     string `json:"key"`
-	OwnerID string `json:"owner_id"`
-	Tier    string `json:"tier"` // "admin" | "public"
-}
-
-// AuthConfig controls the three-mode auth switch: none (dev/CI), apikey
-// (existing tieredBearerAuth), oauth (OAuth 2.1 + PKCE + JWT).
-// See docs/plan/OAUTH_AUTHORIZATION_SERVER_DESIGN.md.
-type AuthConfig struct {
-	Mode string `json:"auth_mode"` // "none" | "apikey" | "oauth"
-
-	// APIKey mode (existing tieredBearerAuth)
-	AdminKey  string        `json:"admin_key"`
-	PublicKey string        `json:"public_key"`
-	APIKeys   []NamedAPIKey `json:"api_keys"`
-
-	// OAuth mode (OAuth 2.1 Authorization Server)
-	OAuth OAuthConfig `json:"oauth"`
-}
-
-// OAuthConfig holds settings for the embedded OAuth 2.1 Authorization Server.
-type OAuthConfig struct {
-	Issuer         string `json:"issuer"`          // e.g. "https://orch.example.com"
-	SigningKey     string `json:"signing_key"`     // HS256 symmetric signing key
-	DCREnabled     bool   `json:"dcr_enabled"`     // DCR (RFC 7591) endpoint toggle
-	FallbackAPIKey bool   `json:"fallback_apikey"` // OAuth fail → degrade to APIKey
-}
-
-// LoadAuthConfig builds AuthConfig from environment variables.
-// Defaults to Mode="none" (backward-compatible: no auth, direct passthrough).
-func LoadAuthConfig() AuthConfig {
-	cfg := AuthConfig{
-		Mode: getenv("VORTEX_AUTH_MODE", "none"),
-	}
-
-	// APIKey mode
-	cfg.AdminKey = getenv("VORTEX_ADMIN_KEY", getenv("VORTEX_ADMIN_KEY", ""))
-	cfg.PublicKey = getenv("VORTEX_PUBLIC_KEY", getenv("VORTEX_PUBLIC_KEY", ""))
-
-	// OAuth mode
-	cfg.OAuth = OAuthConfig{
-		Issuer:         os.Getenv("VORTEX_OAUTH_ISSUER"),
-		SigningKey:     os.Getenv("VORTEX_OAUTH_SIGNING_KEY"),
-		DCREnabled:     os.Getenv("VORTEX_OAUTH_DCR_ENABLED") == "true",
-		FallbackAPIKey: os.Getenv("VORTEX_OAUTH_FALLBACK_APIKEY") == "true",
-	}
-
-	return cfg
-}
-
-// getenv returns the value of the environment variable named by the key,
-// or def if it is empty.
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 // OutputDirOrDefault returns the configured output directory or "outputs" if unset.
 func (s *SystemSettings) OutputDirOrDefault() string {
 	if s != nil && s.OutputDir != "" {
 		return s.OutputDir
 	}
 	return "outputs"
-}
-
-type NotificationRoute struct {
-	Name       string   `json:"name"`
-	TaskType   string   `json:"task_type,omitempty"`    // match role BaseCapability; "*" = all
-	TaskIDGlob string   `json:"task_id_glob,omitempty"` // glob match on task ID ("invest_*")
-	StepIDGlob string   `json:"step_id_glob,omitempty"` // glob match on step ID ("fetch_*")
-	TriggerOn  []string `json:"trigger_on,omitempty"`   // empty = Tier 0 (task_completed + task_failed)
-	TargetURL  string   `json:"target_url"`
-	SecretEnv  string   `json:"secret_env"`
-	Enabled    bool     `json:"enabled"` // per-route on/off; default false for safety
-}
-
-type NotificationConfig struct {
-	Enabled         bool                `json:"enabled"`
-	DefaultEndpoint string              `json:"default_endpoint"`
-	Routes          []NotificationRoute `json:"routes"`
-}
-
-// BudgetGateConfig configures automatic task suspension when token usage
-// exceeds a configured threshold. When Enabled is false (the default),
-// no budget checking occurs and existing behavior is unchanged.
-type BudgetGateConfig struct {
-	Enabled       bool  `json:"enabled"`
-	PerTaskTokens int64 `json:"per_task_tokens"` // 0 = no per-task limit
-	PerRoleTokens int64 `json:"per_role_tokens"` // 0 = no per-role limit
-	AutoResume    bool  `json:"auto_resume"`     // unused in v1; reserved for future
-	WindowMinutes int   `json:"window_minutes"`  // unused in v1; 0 = lifetime cumulative
-}
-
-type TelemetryConfig struct {
-	Enabled          bool   `json:"enabled"`
-	SyncIntervalMins int    `json:"sync_interval_mins"`
-	Endpoint         string `json:"endpoint"`
-	DetailedFeedback bool   `json:"detailed_feedback"`
-}
-
-// ─── Root Config Types ───────────────────────────────────────────────────
-
-type ExternalRuntimes struct {
-	PythonPath string              `json:"python_path,omitempty"`
-	NodePath   string              `json:"node_path,omitempty"`
-	Runtimes   map[string][]string `json:"runtimes,omitempty"`
-}
-
-type Config struct {
-	DefaultProvider          string                    `json:"default_provider"`
-	DefaultEmbeddingProvider string                    `json:"default_embedding_provider,omitempty"`
-	Providers                map[string]ProviderConfig `json:"providers"`
-	Skills                   []Skill                   `json:"skills"`
-	MCPs                     []MCPDef                  `json:"mcps"`
-	Roles                    []Role                    `json:"roles"`
-	RoleGroups               []RoleGroup               `json:"role_groups,omitempty"`
-	SOPs                     []schemas.SOP             `json:"sops,omitempty"`
-	ExternalRuntimes         ExternalRuntimes          `json:"external_runtimes"`
-	System                   SystemSettings            `json:"system"`
-	EnableDynamicRoleGen     bool                      `json:"enable_dynamic_role_gen"`
-	EnableEphemeralRoleGen   bool                      `json:"enable_ephemeral_role_gen"`
-	RequirePlanReview        bool                      `json:"require_plan_review"`
-	SwarmModeEnabled         bool                      `json:"swarm_mode_enabled"`
-	RoleCookbookSource       string                    `json:"role_cookbook_source,omitempty"`
-	RoleCookbookSources      map[string]string         `json:"role_cookbook_sources,omitempty"`
-	SkillsDir                string                    `json:"skills_dir,omitempty"`
-	RolesDir                 string                    `json:"roles_dir,omitempty"`
-	SplitLayout              *SplitLayout              `json:"_split_layout,omitempty"`
-	// WALCheckpoint records the ID of the last WAL commit already reflected
-	// in this snapshot (set automatically by persistLocked whenever a WAL is
-	// active). On the next load, ReplaySince uses this to skip commits that
-	// are already incorporated -- without it, a crash between a snapshot
-	// write and the corresponding WAL clear would cause those commits to be
-	// replayed a second time on restart, which is NOT safe for RFC 6902
-	// "add"/"remove" ops on slices (insert/delete-by-index are non-idempotent).
-	WALCheckpoint string `json:"wal_checkpoint,omitempty"`
-
-	// StepPlan (ADDED 2026-10-10): configures automatic step-plan mode.
-	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §9.
-	StepPlan StepPlanConfig `json:"step_plan,omitempty"`
-}
-
-// StepPlanConfig controls automatic step-plan mode activation.
-// When EnableProbe is true, a System One provider is used to classify
-// task complexity for steps in the "fuzzy zone" (keyword matching
-// inconclusive). FallbackMode controls behavior when the probe is
-// unavailable: "keyword" (default) or "off".
-// RequireForComplexSteps auto-enables step plan for any step where
-// DetermineComplexity returns true, even if the step didn't set
-// EnableStepPlan explicitly.
-type StepPlanConfig struct {
-	EnableProbe            bool   `json:"enable_probe"`
-	FallbackMode           string `json:"fallback_mode,omitempty"` // "keyword" (default) | "off"
-	RequireForComplexSteps bool   `json:"require_for_complex_steps,omitempty"`
 }

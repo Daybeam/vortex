@@ -271,6 +271,12 @@ func (s *DirectedEngine) getOrReloadGraphLocked(taskID string) *schemas.TaskGrap
 	manifestPath := filepath.Join(s.outputBase, taskID, "manifest.json")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
+		// audit L-21-2: distinguish "no such task" (normal — new task, no
+		// manifest yet) from a real read failure (permissions, I/O) so operators
+		// get a signal instead of a silent nil.
+		if !os.IsNotExist(err) {
+			slog.Warn("scheduler_status: manifest read failed", "taskID", taskID, "err", err)
+		}
 		return nil
 	}
 	var g schemas.TaskGraph
