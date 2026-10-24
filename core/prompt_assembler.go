@@ -168,6 +168,22 @@ func NewPromptAssembler(expStore store.IExperienceStore, loader *ResourceLoader,
 	}
 }
 
+// stablePromptTime returns a turn-stable timestamp for prompt templates. The
+// value feeds the cacheable system-prompt PREFIX (base_role.md renders it), so a
+// per-call time.Now() changed the prefix on every turn and defeated provider
+// prefix caching — the engine's own CacheSentinel names this exact cause
+// ("prompt prefix changes every turn (timestamp/random injection) breaking
+// cache stability"). The task graph's CreatedAt is set once at submit, so it is
+// identical for every turn of every step of the task: a deliberate trade of
+// second-level clock accuracy for cache stability. Falls back to time.Now()
+// when no graph is available (unchanged behavior).
+func stablePromptTime(hub *ContextHub) time.Time {
+	if hub != nil && hub.Graph != nil && !hub.Graph.CreatedAt.IsZero() {
+		return hub.Graph.CreatedAt
+	}
+	return time.Now()
+}
+
 // Build generates the complete structured system prompt blocks for a subagent.
 // This is the body formerly known as Spawner.buildSystemPrompt.
 func (s *PromptAssembler) Build(
@@ -208,7 +224,7 @@ func (s *PromptAssembler) Build(
 				"role": role.Name,
 			},
 			"env": map[string]string{
-				"Time": time.Now().Format(time.RFC3339),
+				"Time": stablePromptTime(hub).Format(time.RFC3339),
 			},
 		}
 		if rendered, err := s.promptManager.GetAndRender("base_role.md", tmplCtx); err == nil && rendered != "" {
