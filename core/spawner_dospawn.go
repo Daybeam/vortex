@@ -15,66 +15,6 @@ import (
 	"github.com/daybeam/vortex/store"
 )
 
-// defaultSpawnOutputTokens is the response cap for a spawn that does not ask
-// for its own. It covers everything the model emits, and on a thinking model
-// that includes reasoning tokens, which never reach response text.
-//
-// 8192, not the original 4096. Measured 2026-10-20 (gemini-3-flash-preview via
-// an OpenAI-compatible gateway): three responses hit the cap at 4068/4069/3932
-// completion tokens where the last emitted zero characters and zero tool calls
-// — the whole budget was reasoning. The old value was sized for prose answers,
-// which is the wrong unit once reasoning shares the same budget.
-//
-// Also used by the single-shot generation calls in this package that emit a
-// structured document (role generation, reflection's Lua script), because they
-// are subject to exactly the same failure: reasoning consumes the budget before
-// the document starts. Keep one constant rather than three literals that drift.
-const defaultSpawnOutputTokens = 8192
-
-// defaultDedupHardCap is the reason-blind ceiling for identical calls inside
-// one step, used when system.dedup_hard_cap is unset.
-//
-// Chosen at 5 because #11 already blocks the 3rd repeat for a model that does
-// not explain itself; the cap only has to catch the model that *does*. Two
-// extra calls is enough slack for a genuine retry (data refresh, transient
-// error) without giving a looping model a budget worth burning.
-const defaultDedupHardCap = 5
-
-// dedupHardCap resolves the ceiling for one spawn, mirroring spawnOutputBudget:
-// deployment setting first, built-in default second.
-func (s *Spawner) dedupHardCap() int {
-	if s != nil && s.registry != nil {
-		s.registry.Mu.RLock()
-		configured := s.registry.System.DedupHardCap
-		s.registry.Mu.RUnlock()
-		if configured > 0 {
-			return configured
-		}
-	}
-	return defaultDedupHardCap
-}
-
-// spawnOutputBudget resolves the response token cap for one spawn.
-//
-// Precedence: an explicit per-spawn request, then the deployment setting, then
-// the built-in default. The middle step exists because the right cap depends on
-// the model, not on this code: a thinking model needs room for reasoning that a
-// prose-tuned constant cannot anticipate.
-func (s *Spawner) spawnOutputBudget(req *SpawnRequest) int {
-	if req != nil && req.MaxOutputTokens > 0 {
-		return req.MaxOutputTokens
-	}
-	if s != nil && s.registry != nil {
-		s.registry.Mu.RLock()
-		configured := s.registry.System.DefaultSpawnOutputTokens
-		s.registry.Mu.RUnlock()
-		if configured > 0 {
-			return configured
-		}
-	}
-	return defaultSpawnOutputTokens
-}
-
 func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult, error) {
 	prep, earlyResult, err := s.prepareSpawn(ctx, req)
 	if err != nil {
@@ -141,6 +81,15 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	var lastResultHash uint64
 	var consecutiveRepeatCount int
 	outputStagnationHinted := false
+	// ADDED 2026-10-23 (obs-layer A/B, eval-workspace/appworld-kaggle/obs):
+	// grace window after the stagnation hint has fired. 0 = historical
+	// behaviour (hard-kill on the very next repeat), so the default is
+	// byte-for-byte the old control flow. A positive value tolerates that many
+	// extra consecutive-repeat turns before killing, giving the model a chance
+	// to break the loop and reach the completion tool. The HINT itself is not
+	// delayed — only the kill.
+	stagnationGraceTurns := s.registry.System.FeatureFlags.StagnationGraceTurns
+	stagnationHintAt := 0
 	const maxConsecutiveDuplicates = 3
 	// P1 fix (2026-10-03, eval §0.5): Consecutive parse failure counter.
 	// After 3 consecutive unparseable outputs, break the spin loop instead
@@ -283,26 +232,9 @@ turnLoop:
 			mcpServers := s.buildMCPServers(ctx, req.Hub, req.TaskID, bindings, pCfg.Provider, req.RoleID)
 			lastMCPServers = mcpServers
 
-			// Priority 4: Dynamic Re-routing & Progressive Disclosure Hint
-			if turn == 0 && progressiveEnabled {
-				// Check if we actually hid many tools
-				totalTools := 0
-				for _, b := range initialBindings {
-					m := req.Hub.GetMCP(b.MCPID)
-					if m != nil {
-						totalTools += len(m.AvailableTools)
-					}
-				}
-				visibleTools := 0
-				for _, b := range bindings {
-					visibleTools += len(b.AllowedTools)
-				}
-
-				if totalTools > visibleTools+5 {
-					hint := fmt.Sprintf("\n[SYSTEM HINT]: I have over %d specialized tools available but am currently exposing only the %d most relevant discovery/status tools to keep your context focused. Use discovery tools (list, search, status) to explore the environment; as your intent becomes more specific, I will automatically unlock the necessary specialized tools.", totalTools, visibleTools)
-					userBlocks = append(userBlocks, schemas.ContentBlock{Text: hint, CacheControl: "ephemeral"})
-				}
-			}
+			// Priority 4: Progressive-Disclosure hint — details in
+			// maybeAppendDisclosureHint (size gate).
+			userBlocks = s.maybeAppendDisclosureHint(req.Hub, initialBindings, bindings, userBlocks, turn, progressiveEnabled)
 
 			// Apply generation parameter overrides
 			temp := pCfg.Temperature
@@ -314,33 +246,11 @@ turnLoop:
 				freqPen = req.FrequencyPenalty
 			}
 
-			// Apply Output Constraints
-			// FIX (2026-09-07): Revert ForceToolCall to only turn-0 pressure.
-			// ForceToolCall=ANY on Gemini is a hard constraint that forbids text
-			// output — forcing it across the whole budget would trap the model
-			// into calling tools it doesn't need (like `think` with no args) just
-			// to satisfy the schema. The real fix is the re-prompt nudge below:
-			// when the model writes text early, tell it to keep calling tools.
-			// This preserves the model's ability to decide when it's done.
-			constraints := make(map[string]any)
-			forceTool := turn < maxTurns-1 && len(trace) == 0 && !s.registry.System.FeatureFlags.DisableForceTool
-			if forceTool {
-				toolCallSchema := map[string]any{
-					"type": "array",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"name":      map[string]any{"type": "string"},
-							"arguments": map[string]any{"type": "object"},
-						},
-						"required": []string{"name", "arguments"},
-					},
-				}
-				field, val := s.constraintAdapter.Resolve(pCfg.Provider, toolCallSchema)
-				if field != "" {
-					constraints[field] = val
-				}
-			}
+			// Apply Output Constraints — details in resolveOutputConstraints
+			// (size gate). forceTool stays turn-0-ish pressure only; widening it
+			// to the whole budget is the 2026-09-07 regression that fix reverted
+			// (see the doc comment there before touching this call).
+			forceTool, constraints := s.resolveOutputConstraints(pCfg, turn, maxTurns, len(trace))
 
 			var streamBuffer strings.Builder
 			var patternWindow []byte
@@ -729,270 +639,25 @@ turnLoop:
 		}
 
 		if len(resp.ToolCalls) == 0 {
-			cleanText := thoughtRe.ReplaceAllString(resp.Text, "")
-
-			output := schemas.ParseOutput(cleanText, role.BaseCapability)
-			output.Usage = &schemas.Usage{
-				PromptTokens:     resp.PromptTokens,
-				CompletionTokens: resp.CompletionTokens,
-				TotalTokens:      resp.PromptTokens + resp.CompletionTokens,
+			st := &spawnTurnState{
+				consecutiveParseFailures: consecutiveParseFailures,
+				zeroEffectNudged:         zeroEffectNudged,
+				midAbandonNudged:         midAbandonNudged,
+				userBlocks:               userBlocks,
+				trace:                    trace,
 			}
-			noToolCallsYet := len(trace) == 0
-			selfReportedLowConfidence := output.Status == schemas.StatusPartial && output.Confidence < 0.4
-
-			// P1 fix (2026-10-03, eval §0.5): Detect parse failures and track consecutive count.
-			// ParseOutput fallback sets Assumptions to "output not parseable" or
-			// "output parseable but semantically hollow". Use this to distinguish
-			// "model didn't call tools" from "model called tools but output was garbage".
-			parseFailed := false
-			for _, a := range output.Assumptions {
-				if strings.Contains(a, "not parseable") || strings.Contains(a, "semantically hollow") {
-					parseFailed = true
-					break
-				}
+			out := s.completeTurn(ctx, req, role, resp, st, turn, maxTurns, turnDecisionID,
+				effectiveProviderID, effectiveModelID, decisionIDs, statesVisited, maxConsecutiveParseFailures)
+			consecutiveParseFailures = st.consecutiveParseFailures
+			zeroEffectNudged = st.zeroEffectNudged
+			midAbandonNudged = st.midAbandonNudged
+			userBlocks = st.userBlocks
+			if out.done {
+				return out.result, nil
 			}
-			if parseFailed {
-				consecutiveParseFailures++
-			} else {
-				consecutiveParseFailures = 0
-			}
-
-			// [EVAL-OBS] 2026-10-07 observation print: diagnose 'how many rounds the engine ran
-			// within a single τ² turn, what each round called, and why it didn't exit'. Enabled by VORTEX_EVAL_OBS env var, off by default.
-			if s.registry.System.FeatureFlags.EvalObs {
-				fmt.Fprintf(os.Stderr, "[EVAL-OBS] task=%s step=%s turn=%d/%d calls=%d trace=%d status=%s conf=%.2f parse=%v(consec=%d) noTool=%v lowConf=%v\n",
-					req.TaskID, req.StepID, turn+1, maxTurns, len(resp.ToolCalls), len(trace),
-					output.Status, output.Confidence, parseFailed, consecutiveParseFailures, noToolCallsYet, selfReportedLowConfidence)
-				for _, tc := range resp.ToolCalls {
-					fmt.Fprintf(os.Stderr, "[EVAL-OBS]   -> %s %v\n", tc.Name, tc.Arguments)
-				}
-				if strings.TrimSpace(cleanText) != "" {
-					txt := strings.TrimSpace(cleanText)
-					if len(txt) > 200 {
-						txt = txt[:200]
-					}
-					fmt.Fprintf(os.Stderr, "[EVAL-OBS]   text: %s\n", strings.ReplaceAll(txt, "\n", " | "))
-				}
-			}
-
-			// P1 fix (2026-10-03, eval §0.5): Spin breaker.
-			// After N consecutive parse failures, stop spinning and return the
-			// best partial result. Burning the entire turn budget on identical
-			// failures wastes 19-43 provider calls for zero benefit.
-			if consecutiveParseFailures >= maxConsecutiveParseFailures {
-				output.Warnings = append(output.Warnings, fmt.Sprintf(
-					"orchestrator: broke spin loop after %d consecutive parse failures", consecutiveParseFailures))
-				s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
-					"turn":                       turn,
-					"consecutive_parse_failures": consecutiveParseFailures,
-					"action":                     "spin_break",
-				})
-				observability.GetGlobalMetrics().Inc("orchestrator.spin.broken", 1)
-				return &SpawnResult{
-					Output:        output,
-					ProviderID:    effectiveProviderID,
-					ModelID:       effectiveModelID,
-					Ref:           req.TaskID + ":" + req.StepID,
-					TurnsUsed:     turn + 1,
-					StatesVisited: statesVisited,
-				}, nil
-			}
-
-			// FIX (2026-09-07): Malformatted Tool Call Guard.
-			// When the model outputs pseudo-XML (<anim:call>, <tool_code>) instead of real JSON tool calls,
-			// intercept it and inject a stern correction prompt so it doesn't get trapped.
-			if hasMalformedToolCallTag(cleanText) {
-				msg := SpawnerInvalidToolFormatMsg
-				for i := range userBlocks {
-					userBlocks[i].CacheControl = ""
-				}
-				userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
-				userBlocks = append(userBlocks, schemas.ContentBlock{Text: msg, CacheControl: "ephemeral"})
+			if out.skip {
 				continue
 			}
-			// WITHOUT ever calling a tool. Once the model has made tool calls
-			// (len(trace) > 0), subsequent text is legitimate chain-of-thought
-			// reasoning — not an early exit. Let the model declare completion
-			// on its own; Auditor (verifyExitCriteria) will catch incomplete
-			// results at the exit gate and trigger auto-refine. This preserves
-			// the model's ability to reason between tool calls, which is
-			// essential for multi-step DAGs.
-			// A7 (eval FINDINGS.md §A7, 2026-10-22): DisableForceTool is NOT
-			// consulted here. It disables the provider-side output constraint
-			// (turn-0 "must call a tool" grammar, :323); this gate is the
-			// prompt-side reminder for a model that is spinning without doing
-			// anything. "Give the model freedom from the forced-tool constraint"
-			// and "remind a motionless model to act" are different mechanisms —
-			// turning off the former must not silence the latter. (Not triggered
-			// in the v20 configs — the flag was absent — but the coupling would
-			// bite the first deployment that sets it.)
-			if turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0) {
-				if s.registry.System.FeatureFlags.EvalObs {
-					fmt.Fprintf(os.Stderr, "[EVAL-OBS] NUDGE triggered turn=%d noTool=%v lowConf=%v parse=%v\n",
-						turn+1, noToolCallsYet, selfReportedLowConfidence, parseFailed)
-				}
-				msg := SpawnerNoToolsMsg
-				if output.Status == schemas.StatusCapabilityRequired && len(output.RequiredCapabilities) > 0 {
-					msg = fmt.Sprintf("%s Before finalizing capability_required, double-check your bound tools. If none fulfill %v, explain and finalize.", MarkerSystem, output.RequiredCapabilities)
-				}
-				// P1 fix (2026-10-03, eval §0.5): When the spin is caused by parse
-				// failure (not just "no tools"), include format guidance so the model
-				// knows BOTH problems: (1) call tools, (2) output valid JSON.
-				// Without this, the model retries with the same bad format → spin.
-				if parseFailed {
-					msg = SpawnerNoToolsBadJSONMsg
-				}
-				for i := range userBlocks {
-					userBlocks[i].CacheControl = ""
-				}
-				userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
-				userBlocks = append(userBlocks, schemas.ContentBlock{Text: msg, CacheControl: "ephemeral"})
-				continue
-			}
-
-			// ── Zero-effect completion gate (ADDED 2026-10-21, eval v14) ──────
-			// `noToolCallsYet` only asks "did the model call anything at all".
-			// A single read-only call (show_profile, get_balance, search_*) is
-			// enough to defeat it, after which the model may declare status=ok at
-			// 0.90 confidence and the step is accepted with no state change.
-			//
-			// AppWorld evidence: task d4e9306_1 ran five times on one config; in
-			// 4/5 the trace held exactly [supervisor__show_profile,
-			// supervisor__show_account_passwords] and the model still wrote "Now
-			// following all artists..." — scored 1/6 each time.
-			//
-			// Deliberately one-shot and opt-in. Read-only tasks legitimately hit
-			// this condition, so the injected text asks the model to *classify*
-			// its own step rather than asserting it did nothing. Re-firing would
-			// turn a genuine "this was a query" answer into a loop.
-			//
-			// A2 (eval FINDINGS.md §A2, 2026-10-22): the gate also fires when
-			// parseFailed — ParseOutput degraded the output to partial (conf
-			// 0.3), which is the engine's own artifact, not the model declaring
-			// completion. Requiring StatusOK left the v20 format collapse with
-			// zero corrective signal (ZERO-EFFECT NUDGE fired 0 times in 8
-			// tasks): A1's guard catches the KNOWN pseudo-tags before parsing,
-			// this arm catches whatever malformed shapes the future invents
-			// after ParseOutput degrades them. parse-failure turns get their own
-			// message variant — the ok-variant would assert "you declared
-			// status=ok" about text the engine could not read.
-			if s.registry.System.FeatureFlags.ZeroEffectNudge && !zeroEffectNudged && !noToolCallsYet &&
-				(output.Status == schemas.StatusOK || parseFailed) && turn < maxTurns-1 {
-				hasEffect := false
-				seenTools := make([]string, 0, len(trace))
-				for _, t := range trace {
-					seenTools = append(seenTools, t.ToolName)
-					if !IsReadOnlyToolName(t.ToolName) {
-						hasEffect = true
-					}
-				}
-				if !hasEffect {
-					zeroEffectNudged = true
-					s.logger.Log("EventZeroEffectNudged", req.TaskID, req.StepID, map[string]any{
-						"turn":         turn + 1,
-						"trace_len":    len(trace),
-						"trace_tools":  seenTools,
-						"confidence":   output.Confidence,
-						"parse_failed": parseFailed,
-					})
-					observability.GetGlobalMetrics().Inc("orchestrator.zero_effect.nudged", 1)
-					if s.registry.System.FeatureFlags.EvalObs {
-						fmt.Fprintf(os.Stderr, "[EVAL-OBS] ZERO-EFFECT NUDGE turn=%d trace=%d conf=%.2f parse=%v tools=%v\n",
-							turn+1, len(trace), output.Confidence, parseFailed, seenTools)
-					}
-					for i := range userBlocks {
-						userBlocks[i].CacheControl = ""
-					}
-					userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
-					msg := SpawnerZeroEffectMsg
-					if parseFailed {
-						msg = SpawnerZeroEffectParseFailMsg
-					}
-					userBlocks = append(userBlocks, schemas.ContentBlock{Text: msg, CacheControl: "ephemeral"})
-					continue
-				}
-			}
-
-			if noToolCallsYet && output.Status == schemas.StatusOK {
-				output.Status = schemas.StatusPartial
-				if output.Confidence > 0.4 {
-					output.Confidence = 0.4
-				}
-				output.Warnings = append(output.Warnings, "orchestrator: model reported status=ok but no tool calls were recorded; downgraded to partial")
-			}
-
-			// ── Mid-abandonment gate (A5, eval FINDINGS.md §A5, 2026-10-22) ──
-			// The highest-frequency small-model failure mode: the model starts
-			// working (read-only calls land in the trace), hits friction (a
-			// 422, an empty page), then emits a PARSEABLE partial and stops
-			// while turns remain. All three earlier gates are blind to it:
-			// noToolCallsYet is false (work started), the zero-effect gate
-			// wants ok/parseFailed (this is a clean partial), and without this
-			// gate the partial is accepted as-is right below.
-			//
-			// Deliberately one-shot and opt-in (mid_abandon_nudge), like the
-			// zero-effect gate. `!parseFailed` keeps the message honest — a
-			// parse-collapsed turn gets the zero-effect parse-fail variant
-			// instead (A2), not "you reported this step as incomplete", which
-			// would assert the engine read an output it did not. StatusFailed
-			// is excluded on purpose: parseable failures already route through
-			// the in-loop failure/retry machinery. The message leaves a
-			// legitimate exit open — a genuinely blocked model is told to
-			// finalize with missing_context, not forced into a loop.
-			if s.registry.System.FeatureFlags.MidAbandonNudge && !midAbandonNudged && !noToolCallsYet &&
-				output.Status == schemas.StatusPartial && !parseFailed && turn < maxTurns-1 &&
-				!traceHasEffect(trace) {
-				midAbandonNudged = true
-				seenTools := make([]string, 0, len(trace))
-				for _, t := range trace {
-					seenTools = append(seenTools, t.ToolName)
-				}
-				s.logger.Log("EventMidAbandonNudged", req.TaskID, req.StepID, map[string]any{
-					"turn":        turn + 1,
-					"trace_len":   len(trace),
-					"trace_tools": seenTools,
-					"confidence":  output.Confidence,
-				})
-				observability.GetGlobalMetrics().Inc("orchestrator.mid_abandon.nudged", 1)
-				if s.registry.System.FeatureFlags.EvalObs {
-					fmt.Fprintf(os.Stderr, "[EVAL-OBS] MID-ABANDON NUDGE turn=%d trace=%d conf=%.2f tools=%v\n",
-						turn+1, len(trace), output.Confidence, seenTools)
-				}
-				for i := range userBlocks {
-					userBlocks[i].CacheControl = ""
-				}
-				userBlocks = append(userBlocks, schemas.ContentBlock{Text: cleanText})
-				userBlocks = append(userBlocks, schemas.ContentBlock{Text: SpawnerMidAbandonMsg, CacheControl: "ephemeral"})
-				continue
-			}
-
-			// ── Priority 5: Update Decision Outcome (Final) ──────────────────
-			if turnDecisionID != "" && req.Hub != nil && req.Hub.Graph != nil {
-				req.Hub.Graph.UpdateDecisionOutcome(turnDecisionID, string(output.Status))
-			}
-
-			s.taskStoreSet(ctx, req.TaskID, req.StepID, &store.StepResult{
-				Data:           output.Result,
-				Confidence:     output.Confidence,
-				MissingContext: output.MissingContext,
-				Capability:     role.BaseCapability,
-				ProviderID:     effectiveProviderID,
-				ModelID:        effectiveModelID,
-				Attachments:    output.Attachments,
-				Trace:          trace,
-				DecisionIDs:    decisionIDs,
-				StatesVisited:  statesVisited,
-				CreatedAt:      time.Now(),
-			})
-
-			return &SpawnResult{
-				Output:        output,
-				ProviderID:    effectiveProviderID,
-				ModelID:       effectiveModelID,
-				Ref:           req.TaskID + ":" + req.StepID,
-				StatesVisited: statesVisited,
-				TurnsUsed:     turn + 1,
-			}, nil
 		}
 
 		// Handle Tool Calls
@@ -1001,42 +666,16 @@ turnLoop:
 		needsVerification := false
 
 		// ── Sieve Guardian: Tool Loop Detection (Two-Tier Escalation) ───────
-		if valid, reason := s.checkSieveGuardian(req.TaskID, req.StepID, turn, resp.ToolCalls, trace); !valid {
-			sieveGuardianHits++
-			observability.GetGlobalMetrics().Inc("orchestrator.sieve.interceptions", 1)
-			if sieveGuardianHits == 1 {
-				userBlocks = append(userBlocks, schemas.ContentBlock{
-					Text: fmt.Sprintf(SpawnerLoopDetectedFmt, reason),
-				})
-				continue
-			}
-			if noToolProvider, perr := providers.Get(currentPCfg, req.Hub.Registry.ExternalRuntimes); perr == nil {
-				noToolResp, nerr := noToolProvider.StreamComplete(ctx, providers.CompleteRequest{
-					UserBlocks: append(userBlocks, schemas.ContentBlock{
-						Text: SpawnerLoopPersistMsg,
-					}),
-					System:    SysPromptBestAnswer,
-					Model:     currentPCfg.Model,
-					MaxTokens: s.spawnOutputBudget(req),
-				}, nil)
-				if nerr == nil && noToolResp.Text != "" {
-					degradedOutput := schemas.ParseOutput(noToolResp.Text, role.BaseCapability)
-					degradedOutput.Status = schemas.StatusPartial
-					if degradedOutput.Confidence > 0.3 {
-						degradedOutput.Confidence = 0.3
-					}
-					degradedOutput.Warnings = append(degradedOutput.Warnings, "degraded: "+reason)
-					return &SpawnResult{
-						Output:        degradedOutput,
-						ProviderID:    effectiveProviderID,
-						ModelID:       effectiveModelID,
-						Ref:           req.TaskID + ":" + req.StepID,
-						TurnsUsed:     turn + 2,
-						StatesVisited: statesVisited,
-					}, nil
-				}
-			}
-			return s.failedOutput(role.BaseCapability, reason), nil
+		// Details in sieveGuardianTurn (size gate).
+		sieveSt := &sieveTurnState{sieveGuardianHits: sieveGuardianHits, userBlocks: userBlocks}
+		sieveOut := s.sieveGuardianTurn(ctx, req, role, resp, trace, turn, currentPCfg,
+			effectiveProviderID, effectiveModelID, statesVisited, sieveSt)
+		sieveGuardianHits, userBlocks = sieveSt.sieveGuardianHits, sieveSt.userBlocks
+		if sieveOut.done {
+			return sieveOut.result, nil
+		}
+		if sieveOut.skip {
+			continue
 		}
 
 		// Execute tool calls via extracted method (Option B split).
@@ -1085,34 +724,20 @@ turnLoop:
 					lastResultHash = turnHash
 					consecutiveRepeatCount = 1
 				}
-				if consecutiveRepeatCount > maxConsecutiveDuplicates {
-					if !outputStagnationHinted {
-						outputStagnationHinted = true
-						userBlocks = append(userBlocks, schemas.ContentBlock{
-							Text: "System: You have produced identical tool results multiple times. You appear to be stuck re-fetching the same data. Summarize what you have found so far and proceed to complete the task. Do not repeat the same tool calls.",
-						})
-						s.logger.Log("EventOutputStagnationHinted", req.TaskID, req.StepID, map[string]any{
-							"turn": turn, "consecutive_count": consecutiveRepeatCount,
-						})
-					} else {
-						s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
-							"error":             "output_stagnation: identical tool results repeated after hint",
-							"consecutive_count": consecutiveRepeatCount,
-							"root_cause":        "model_stuck",
-						})
-						// A8 (eval FINDINGS.md §A8, 2026-10-22): the hint stage logs
-						// EventOutputStagnationHinted, but the kill itself was invisible
-						// to EVAL-OBS greps — after the hint, whether a task died and how
-						// it ended could not be answered from the eval logs. EventStepFailed
-						// above is always emitted; this only adds the eval channel.
-						if s.registry.System.FeatureFlags.EvalObs {
-							fmt.Fprintf(os.Stderr, "[EVAL-OBS] STAGNATION KILL task=%s step=%s turn=%d trace=%d repeats=%d\n",
-								req.TaskID, req.StepID, turn+1, len(trace), consecutiveRepeatCount)
-						}
-						return s.partialStagnationOutput(role.BaseCapability,
-							fmt.Sprintf("output_stagnation: identical tool results repeated %d consecutive times after intervention hint", consecutiveRepeatCount),
-							trace), nil
-					}
+				// Stagnation decision extracted to handleStagnationTurn
+				// (spawner_stagnation.go) for the size gate; behaviour
+				// unchanged — the helper reports the hint text / a kill
+				// result and the caller owns the state updates.
+				hintText, kill := s.handleStagnationTurn(req, turn, consecutiveRepeatCount,
+					stagnationGraceTurns, stagnationHintAt, maxConsecutiveDuplicates,
+					outputStagnationHinted, trace, role.BaseCapability)
+				if kill != nil {
+					return kill, nil
+				}
+				if hintText != "" {
+					outputStagnationHinted = true
+					stagnationHintAt = consecutiveRepeatCount
+					userBlocks = append(userBlocks, schemas.ContentBlock{Text: hintText})
 				}
 			} else {
 				// Different turn (short/error-only) — reset consecutive tracking
@@ -1123,43 +748,15 @@ turnLoop:
 			}
 		}
 
-		// Accumulate sticky results (auth/login) into stickyContext for
-		// prepending to subsequent turns. Dedup by substring containment.
-		stickyContext = accumulateSticky(stickyContext, tcState.stickyResults)
+		// Accumulate sticky results + gateway watchdog — details in
+		// accumulateTurnObservations (size gate).
+		stickyContext, toolResults = s.accumulateTurnObservations(req, resp, stickyContext, tcState.stickyResults, toolResults)
 
-		// ── Priority 3: Gateway Watchdog (Active Conflict Probing) ────────
-		if alert := s.watchdog.Sniff(resp.ToolCalls, req.Hub); alert != nil {
-			toolResults = append(toolResults, fmt.Sprintf("\n%s", alert.Message))
-			s.logger.Log(EventSwarmWatchdogTriggered, req.TaskID, req.StepID, map[string]any{
-				"type": alert.Type,
-			})
-		}
-
-		// ── VDA: Forced Visual Audit ──────────────────────────────────────
-		if needsVerification {
-			for _, b := range bindings {
-				mcp := req.Hub.GetMCP(b.MCPID)
-				if mcp == nil {
-					continue
-				}
-				if containsTool(mcp.AvailableTools, "capture_screenshot") {
-					cli, err := s.mcpMgr.ensureMCPClient(ctx, mcp, req.TaskID)
-					if err == nil {
-						screen, err := cli.SendRequest(ctx, "tools/call", map[string]any{
-							"name":      "capture_screenshot",
-							"arguments": map[string]any{},
-						})
-						if err == nil {
-							if att, ok := screen.(schemas.SubagentOutput); ok {
-								turnAttachments = append(turnAttachments, att.Attachments...)
-							}
-							toolResults = append(toolResults, "System: Automatic verification screenshot captured.")
-						}
-					}
-					break
-				}
-			}
-		}
+		// ── VDA: Forced Visual Audit ──────────────────────────
+		// Details in runForcedVisualAudit (size gate).
+		vdaSt := &vdaState{turnAttachments: turnAttachments, toolResults: toolResults}
+		s.runForcedVisualAudit(ctx, req, bindings, needsVerification, vdaSt)
+		turnAttachments, toolResults = vdaSt.turnAttachments, vdaSt.toolResults
 
 		s.persistAttachments(req.TaskID, req.StepID, turnAttachments)
 
@@ -1168,87 +765,28 @@ turnLoop:
 			req.Hub.Graph.UpdateDecisionOutcome(turnDecisionID, fmt.Sprintf("executed %d tools", len(resp.ToolCalls)))
 		}
 
-		// Priority 4: Re-route tools for the next turn based on updated context
-		// (Progressive Disclosure).
-		// P1 fix (2026-10-20): Only re-route on the first turn (turn == 0).
-		// Re-routing every turn changes the tool block → prompt cache miss
-		// every turn. For turns > 0, keep existing bindings and grow via
-		// sticky union only (append-only surface). Progressive discovery
-		// on later turns is handled by the decision gate's refine_and_retry.
+		// Priority 4: Re-route tools for the next turn (Progressive Disclosure)
+		// — turn 0 only (see rerouteTurnZero for why later turns must not).
 		if turn == 0 {
-			bindings = s.toolRouter.Route(ctx, RouteRequest{
-				Task:               req.Task + " " + resp.Text,
-				Bindings:           initialBindings,
-				Turn:               turn + 1,
-				ProgressiveMode:    progressiveEnabled,
-				PredecessorSkillID: req.PredecessorSkillID,
-				MaxTokenBudget:     s.toolSchemaBudget(),
-				TaskID:             req.TaskID,
-			})
+			bindings = s.rerouteTurnZero(ctx, req, resp, initialBindings, turn, progressiveEnabled)
 		}
 
 		// R2: Sticky union — re-route may drop tools the model was actively
 		// using. Add them back so multi-turn workflows don't break.
 		bindings = s.stickyUnionBindings(bindings, initialBindings, calledTools)
 
-		vdaPrompt := ""
-		if needsVerification {
-			vdaPrompt = SpawnerVDAPrompt
-		}
+		// Update history blocks - Rolling Marker strategy + observation
+		// append — details in appendTurnObservation (size gate).
+		userBlocks = s.appendTurnObservation(userBlocks, resp, toolResults, needsVerification)
 
-		// Update history blocks - Rolling Marker strategy
-		for i := range userBlocks {
-			userBlocks[i].CacheControl = ""
-		}
-		userBlocks = append(userBlocks, schemas.ContentBlock{Text: resp.Text}) // Assistant turn
-
-		// Mechanism 1: Single-Action Observation Loop
-		// Mechanism 2: Error-Driven Self-Healing Classifier
-		observation := strings.Join(toolResults, "\n")
-		healingAdvice := s.healer.Diagnose(observation)
-
-		resMD := fmt.Sprintf("%s\n%s%s%s", MarkerEnvObservation, observation, healingAdvice, vdaPrompt)
-		userBlocks = append(userBlocks, schemas.ContentBlock{Text: resMD, CacheControl: "ephemeral"}) // Tool results turn
-
-		// #15 (eval §8.35): No-progress turn detection. If this turn had tool
-		// calls but ALL were fs-only (no domain MCP calls), increment the
-		// streak. Otherwise reset. Emit metric so an arm can validate before
-		// adding a threshold/action.
-		if len(resp.ToolCalls) > 0 {
-			allFsOnly := true
-			for _, tc := range resp.ToolCalls {
-				if !CoreToolNames[tc.Name] {
-					allFsOnly = false
-					break
-				}
-			}
-			if allFsOnly {
-				fsOnlyTurnStreak++
-			} else {
-				if fsOnlyTurnStreak > 0 {
-					observability.GetGlobalMetrics().Inc("orchestrator.progress.fs_only_streak_max", int64(fsOnlyTurnStreak))
-				}
-				fsOnlyTurnStreak = 0
-			}
-			if fsOnlyTurnStreak >= 2 {
-				observability.GetGlobalMetrics().Inc("orchestrator.progress.stalled_turns", 1)
-			}
-			// #4+#15 (eval §8.37.2/§8.40): Break the turn loop if the fs-only
-			// streak exceeds the configured limit. The model is stuck in a
-			// write→read self-proof loop with no domain progress.
-			if fsOnlyStreakLimit > 0 && fsOnlyTurnStreak >= fsOnlyStreakLimit {
-				observability.GetGlobalMetrics().Inc("orchestrator.progress.fs_only_stall_break", 1)
-				s.logger.Log("EventFsOnlyStallBreak", req.TaskID, req.StepID, map[string]any{
-					"turn":         turn,
-					"streak":       fsOnlyTurnStreak,
-					"limit":        fsOnlyStreakLimit,
-					"max_turns":    maxTurns,
-					"tool_results": len(toolResults),
-				})
-				// Persist partial trace for observability (eval §8.48.6).
-				s.persistTraceOnError(ctx, req, trace, effectiveProviderID, effectiveModelID, role.BaseCapability)
-				return nil, fmt.Errorf("fs_only_stall: %d consecutive turns used only filesystem tools (write_file/read_file/execute_code) without domain MCP calls; breaking to conserve budget (limit=%d)", fsOnlyTurnStreak, fsOnlyStreakLimit)
-			}
+		// #15 (eval §8.35) no-progress detection + #4+#15 (§8.37.2/§8.40)
+		// loop break — details in fsOnlyStallGuard (size gate).
+		newStreak, stallErr := s.fsOnlyStallGuard(ctx, req, role, resp, trace,
+			fsOnlyTurnStreak, fsOnlyStreakLimit, turn, maxTurns, toolResults,
+			effectiveProviderID, effectiveModelID)
+		fsOnlyTurnStreak = newStreak
+		if stallErr != nil {
+			return nil, stallErr
 		}
 	}
 
