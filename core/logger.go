@@ -54,18 +54,26 @@ const (
 	EventHumanApprovalAttached   EventType = "human_approval_attached"
 	EventFallbackActivated       EventType = "fallback_activated"
 	EventMCPDegraded             EventType = "mcp_degraded"
-	EventStepDeprecated          EventType = "step_deprecated"          // ADDED (2026-09-07): DAG surgery
-	EventStepInjected            EventType = "step_injected"            // ADDED (2026-09-07): DAG surgery
-	EventAutonomousStepSpawned   EventType = "autonomous_step_spawned"  // ASAE (ADDED 2026-09-09)
-	EventDynamicRubricGen        EventType = "dynamic_rubric_gen"       // Phase 2 (ADDED 2026-09-09)
-	EventCacheInefficiency       EventType = "cache_inefficiency"       // Cost governance (ADDED 2026-09-14)
-	EventBudgetPredictExceed     EventType = "budget_predict_exceed"    // Cost governance (ADDED 2026-09-14)
-	EventBehaviorDeviation       EventType = "behavior_deviation"       // Cost governance (ADDED 2026-09-14)
-	EventDebateStarted           EventType = "debate_started"           // Cross-family debate (ADDED 2026-09-14)
-	EventDebateCritiqueReceived  EventType = "debate_critique_received" // Cross-family debate (ADDED 2026-09-14)
-	EventDebateConcluded         EventType = "debate_concluded"         // Cross-family debate (ADDED 2026-09-14)
-	EventHTTPRequest             EventType = "http_request"             // HTTP observability (ADDED 2026-10-03)
-	EventOutputTruncated         EventType = "output_truncated"         // Response cut off by output cap (ADDED 2026-10-20)
+	// MCP lifecycle (up/down). Emitted via logger.Log, which also publishes to
+	// DefaultBus, so an admin NotificationRoute can trigger on these names.
+	// Normalized from raw string literals (2026-10-23); previously the bus
+	// event type was the literal "EventMCPClientFailed" etc., which no route
+	// could predict.
+	EventMCPOnline              EventType = "mcp_online"               // handshake + tools/list succeeded
+	EventMCPOffline             EventType = "mcp_offline"              // the MCP client failed to start
+	EventMCPDiscoveryFailed     EventType = "mcp_discovery_failed"     // tools/list failed
+	EventStepDeprecated         EventType = "step_deprecated"          // ADDED (2026-09-07): DAG surgery
+	EventStepInjected           EventType = "step_injected"            // ADDED (2026-09-07): DAG surgery
+	EventAutonomousStepSpawned  EventType = "autonomous_step_spawned"  // ASAE (ADDED 2026-09-09)
+	EventDynamicRubricGen       EventType = "dynamic_rubric_gen"       // Phase 2 (ADDED 2026-09-09)
+	EventCacheInefficiency      EventType = "cache_inefficiency"       // Cost governance (ADDED 2026-09-14)
+	EventBudgetPredictExceed    EventType = "budget_predict_exceed"    // Cost governance (ADDED 2026-09-14)
+	EventBehaviorDeviation      EventType = "behavior_deviation"       // Cost governance (ADDED 2026-09-14)
+	EventDebateStarted          EventType = "debate_started"           // Cross-family debate (ADDED 2026-09-14)
+	EventDebateCritiqueReceived EventType = "debate_critique_received" // Cross-family debate (ADDED 2026-09-14)
+	EventDebateConcluded        EventType = "debate_concluded"         // Cross-family debate (ADDED 2026-09-14)
+	EventHTTPRequest            EventType = "http_request"             // HTTP observability (ADDED 2026-10-03)
+	EventOutputTruncated        EventType = "output_truncated"         // Response cut off by output cap (ADDED 2026-10-20)
 )
 
 type LogEvent struct {
@@ -298,7 +306,15 @@ func (l *Logger) write(ev LogEvent) {
 		_ = os.MkdirAll(dir, 0755)
 		l.dirCache[dir] = true
 	}
-	path := filepath.Join(dir, fmt.Sprintf("%s.jsonl", ev.TaskID))
+	// Guard against an empty TaskID: system-level events (cookbook sync,
+	// schedule reloads, channel failures) log with task_id="" — without this,
+	// fmt.Sprintf("%s.jsonl", "") yields a nameless ".jsonl" file in logDir.
+	// Route them to a stable "_system.jsonl" so they stay captured and named.
+	taskID := ev.TaskID
+	if taskID == "" {
+		taskID = "_system"
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%s.jsonl", taskID))
 
 	// LMP: Size-based rotation (MaxLogSizeMB threshold)
 	maxLogSize := int64(100 * 1024 * 1024)

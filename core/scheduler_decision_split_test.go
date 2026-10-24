@@ -319,6 +319,10 @@ func TestAddDecision_UpstreamInsufficientInjectsRewriteDAGOption(t *testing.T) {
 		TaskID:           "task_add_decision_upstream",
 		Steps:            map[string]*schemas.Step{},
 		PendingDecisions: []*schemas.Decision{},
+		// rewrite_dag is admin-only (validateTierChoice / PublicTierAllowsChoice);
+		// this test targets the injection, not the tier filter, so declare an
+		// admin submitter (AUTH-3, 2026-10-23).
+		SubmitterIsAdmin: true,
 	}
 	step := &schemas.Step{ID: "s1", Status: schemas.StepBlocked}
 	graph.Steps["s1"] = step
