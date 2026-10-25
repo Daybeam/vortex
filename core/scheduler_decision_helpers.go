@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/search"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -229,36 +230,115 @@ func (s *DirectedEngine) archiveStep(graph *schemas.TaskGraph, step *schemas.Ste
 	}
 }
 
+// ─── Intent-Shift Branching (B11, WIRED 2026-10-25) ──────────────────────
+// See docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md.
+
+// defaultIntentShiftThreshold is the cosine-similarity floor below which a
+// step counts as an intent shift from the current context node. Same order
+// as SegmentManager's segmentSealThreshold: deliberately conservative, so
+// only a real drift forks the tree (avoids fragmentation on noisy embeddings).
+const defaultIntentShiftThreshold = 0.20
+
+// Telemetry modes for EventIntentShiftBranch.
+const (
+	intentShiftModeSemantic  = "semantic"
+	intentShiftModeHeuristic = "heuristic"
+)
+
+// intentShiftSettings resolves the semantic branching policy from the
+// registry. Defaults (nil pointer / non-positive threshold) preserve the
+// pre-2026-10-25 behavior: enabled at defaultIntentShiftThreshold.
+// Registry reads are lock-free by convention (feature flags are hot-reloadable;
+// same pattern as prompt_assembler.go's MemoryBankEnabled read).
+func (s *DirectedEngine) intentShiftSettings() (enabled bool, threshold float64) {
+	enabled, threshold = true, defaultIntentShiftThreshold
+	if s.registry == nil {
+		return enabled, threshold
+	}
+	if p := s.registry.System.IntentShiftBranchingEnabled; p != nil {
+		enabled = *p
+	}
+	if t := s.registry.System.IntentShiftThreshold; t > 0 {
+		threshold = t
+	}
+	return enabled, threshold
+}
+
+// intentShifted compares two CACHED embeddings and reports whether the step
+// has drifted below threshold (B11 semantic pull). Pure function — no engine
+// state, no I/O: the decision must stay far under B11's 50ms budget, so
+// embedding computation is never attempted here. A cold cache (either side
+// empty) or a dimension mismatch returns drifted=false with score -1, sending
+// the caller to the heuristic fallback; the async backfills
+// (updateStepEmbedding in handleStepSuccess, updateNodeEmbedding at node
+// creation) warm the cache for the next transition.
+// NOTE: pkg/search.CosineSimilarity returns 0.0 for unequal lengths, which is
+// indistinguishable from maximal drift — hence the explicit length-equality
+// guard instead of trusting a 0.0 score as "orthogonal".
+func intentShifted(nodeEmb, stepEmb []float32, threshold float64) (drifted bool, driftScore float64) {
+	if len(nodeEmb) == 0 || len(stepEmb) == 0 || len(nodeEmb) != len(stepEmb) {
+		return false, -1
+	}
+	score := search.CosineSimilarity(nodeEmb, stepEmb)
+	return score < threshold, score
+}
+
 // transitionContextTree implements Phase 3.5: Context Tree Transition.
-// When a step succeeds with "new task" in its assumptions, a child context
-// node is created and CurrentNodeID is updated. Extracted from executeStep
-// so tests can verify branching without reimplementing the logic.
+// When a step succeeds with an intent shift — semantic (cached-embedding
+// cosine below IntentShiftThreshold, WIRED 2026-10-25) or heuristic
+// ("new task" in the model's Assumptions, pre-2026-10-25 fallback) — a child
+// context node is created and CurrentNodeID is updated. Extracted from
+// executeStep so tests can verify branching without reimplementing the logic.
 func (s *DirectedEngine) transitionContextTree(graph *schemas.TaskGraph, step *schemas.Step, result *SpawnResult) {
 	s.Mu.Lock()
+	var branchTelemetry map[string]any // logged after unlock (I/O outside lock)
 	currNode := graph.ContextTree[graph.CurrentNodeID]
 	if currNode != nil {
 		currNode.StepIDs = append(currNode.StepIDs, step.ID)
 
 		// Detect Branch Point
 		if step.Status == schemas.StepOK {
+			enabled, threshold := s.intentShiftSettings()
 			needsNewNode := false
-			reason := result.Output.Assumptions
-			if len(reason) > 0 && strings.Contains(strings.Join(reason, " "), "new task") {
+			branchMode := ""
+			driftScore := -1.0 // telemetry: -1 = not a semantic branch
+
+			// Heuristic fallback: the model self-reports a new task in its
+			// Assumptions. Retained because the semantic path needs warm
+			// cached vectors (cold cache on the first transition after a
+			// branch — see intentShifted).
+			if reason := result.Output.Assumptions; len(reason) > 0 &&
+				strings.Contains(strings.Join(reason, " "), "new task") {
 				needsNewNode = true
+				branchMode = intentShiftModeHeuristic
 			}
 
-			// Semantic Check (Semantic Pull)
-			if !needsNewNode && len(currNode.Embedding) > 0 {
-				// In a real execution, we would embed the result here
-				// For now, we rely on the heuristic or trigger async embed
+			// Semantic Check (Semantic Pull, B11): cosine(currNode, step)
+			// < threshold ⇒ IntentShift ⇒ TreeBranching. Cached vectors
+			// only — never blocks on an embedding call (plan §3.3).
+			if !needsNewNode && enabled {
+				if drift, score := intentShifted(currNode.Embedding, step.Embedding, threshold); drift {
+					needsNewNode = true
+					branchMode = intentShiftModeSemantic
+					driftScore = score
+				}
 			}
 
 			if needsNewNode {
 				newNodeID := fmt.Sprintf("node_%s", uuid.New().String()[:6])
+				// Intent carries the drifted task text (plan §3.4) so the
+				// node's async embedding reflects the NEW intent — that
+				// embedding is what the next transition's drift check
+				// compares against. Fallback keeps the old provenance
+				// string when the step has no task text.
+				intent := step.Task
+				if intent == "" {
+					intent = "Adaptive Transition from " + step.ID
+				}
 				newNode := &schemas.ContextNode{
 					ID:       newNodeID,
 					ParentID: currNode.ID,
-					Intent:   "Adaptive Transition from " + step.ID,
+					Intent:   intent,
 					Status:   schemas.NodeActive,
 					Metadata: make(map[string]any),
 				}
@@ -272,6 +352,14 @@ func (s *DirectedEngine) transitionContextTree(graph *schemas.TaskGraph, step *s
 				graph.ContextTree[newNodeID] = newNode
 				graph.CurrentNodeID = newNodeID
 
+				branchTelemetry = map[string]any{
+					"mode":        branchMode,
+					"drift_score": driftScore,
+					"threshold":   threshold,
+					"parent_node": currNode.ID,
+					"new_node_id": newNodeID,
+				}
+
 				// Async Embedding of new intent
 				s.goBackground(func() { s.updateNodeEmbedding(graph.TaskID, newNodeID, newNode.Intent) })
 
@@ -281,4 +369,10 @@ func (s *DirectedEngine) transitionContextTree(graph *schemas.TaskGraph, step *s
 		}
 	}
 	s.Mu.Unlock()
+
+	// Telemetry outside the lock: logger.Log fans out to the event bus, and
+	// subscribers must never be able to re-enter engine locks.
+	if branchTelemetry != nil {
+		s.logger.Log(EventIntentShiftBranch, graph.TaskID, step.ID, branchTelemetry)
+	}
 }

@@ -449,8 +449,10 @@ func (s *DirectedEngine) applyApproveChoice(graph *schemas.TaskGraph, step *sche
 	mounts := decisionApprovalMounts(dec)
 	skills := decisionApprovalIDs(dec, "approval_required_skills")
 	if len(mounts) > 0 || len(skills) > 0 {
-		graph.ApproveMCPMounts(mounts)
-		graph.ApproveSkillMounts(skills)
+		approverID, _ := dec.Context["_resolver_owner_id"].(string)
+		channel, _ := dec.Context["_resolver_channel"].(string)
+		graph.ApproveMCPMounts(mounts, approverID, channel)
+		graph.ApproveSkillMounts(skills, approverID, channel)
 		step.Status = schemas.StepPending
 		step.RetryCount = 0
 		step.LastError = ""

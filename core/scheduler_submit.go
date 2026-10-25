@@ -221,7 +221,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	if len(inputs) == 1 && len(inputs[0].DependsOn) == 0 && s.plannerFirstEnabled() {
 		probeTask := inputs[0].Task
 		planTaskID := schemas.NewTaskID()
-		planned, reason := s.RequestPlanning(planTaskID, inputs[0].RoleID, probeTask, 0)
+		planned, reason := s.RequestPlanning(planTaskID, inputs[0].RoleID, probeTask, 0, inputs[0].SubmitterIsAdmin)
 		if reason != "" {
 			s.logger.Log("planner_first_skipped", planTaskID, inputs[0].ID, map[string]any{
 				"reason": reason,
