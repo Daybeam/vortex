@@ -61,7 +61,10 @@ type PromptAssembler struct {
 	// the current step's trace, used by CheckDataShapeMismatch to detect
 	// inconsistent DataShape metadata and warn the model.
 	// Nil-safe: when nil/empty, shape mismatch check is skipped.
-	recentInteractions []store.ToolInteraction
+	// Guarded by recentInteractionsMu — SetRecentInteractions writes from
+	// the spawner goroutine while shapeMismatchBlock reads from Build.
+	recentInteractionsMu sync.Mutex
+	recentInteractions   []store.ToolInteraction
 
 	// P2-11: Dynamic warm context budget feedback loop.
 	// When subagent duration exceeds the baseline, the budget is tightened
@@ -105,7 +108,9 @@ func (s *PromptAssembler) SetMemoryBankStore(mb *store.MemoryBankStore) {
 // Build can detect DataShape mismatches via CheckDataShapeMismatch.
 // Nil-safe: when nil/empty, the shape mismatch check is skipped.
 func (s *PromptAssembler) SetRecentInteractions(trace []store.ToolInteraction) {
+	s.recentInteractionsMu.Lock()
 	s.recentInteractions = trace
+	s.recentInteractionsMu.Unlock()
 }
 
 // RecordSubagentDuration records the last subagent execution duration and
@@ -797,10 +802,13 @@ func (s *PromptAssembler) resolveFailureModeProfile(modelID string) string {
 // shapeMismatchBlock returns a Tier-2 warning block if recent tool
 // interactions have inconsistent DataShape metadata, or nil otherwise.
 func (s *PromptAssembler) shapeMismatchBlock() []schemas.ContentBlock {
-	if len(s.recentInteractions) == 0 {
+	s.recentInteractionsMu.Lock()
+	trace := s.recentInteractions
+	s.recentInteractionsMu.Unlock()
+	if len(trace) == 0 {
 		return nil
 	}
-	warn := CheckDataShapeMismatch(s.recentInteractions)
+	warn := CheckDataShapeMismatch(trace)
 	if warn == "" {
 		return nil
 	}
