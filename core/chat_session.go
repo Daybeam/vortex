@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -41,6 +42,13 @@ type ChatSession struct {
 	seenMsg    map[string]bool
 	dirtyMsgs  []string // message IDs added since last Persist (audit PERF-6: avoid re-saving all messages)
 	lastAccess time.Time
+	// clientIDs maps caller-supplied message ids (web optimistic ids,
+	// Telegram message ids) to stored message ids. Clients chain later
+	// turns onto their own ids, so every inbound reference (parent_id,
+	// reply_to) must be resolved through this map — otherwise the stored
+	// tree contains dangling parents and the active path breaks on reload.
+	// Rebuilt from the persisted client_id column on load.
+	clientIDs map[string]string
 }
 
 // GetActiveRoleID returns the session's active role ID (thread-safe).
@@ -87,8 +95,15 @@ func (s *ChatSession) EventsAfter(lastSeq int64) []ChatEvent {
 
 // AppendUserMessage adds a user message, deduplicating by messageID.
 // parentID selects the branch point: empty means continue from ActiveLeafID.
+// replyTo references a quoted message (Mode 2, may be on any branch).
+// All three references may be caller-supplied ids (web optimistic ids,
+// Telegram message ids); they are resolved to stored ids via the session's
+// clientIDs map before use.
+// forkedFrom is computed here (not by the caller): when the resolved
+// parentID is NOT the previous active leaf, the message forks the tree and
+// parentID is recorded as the fork origin so the UI can draw a connector.
 // Returns false if messageID was already processed.
-func (s *ChatSession) AppendUserMessage(messageID, content, parentID string) bool {
+func (s *ChatSession) AppendUserMessage(messageID, content, parentID, replyTo string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.seenMsg == nil {
@@ -96,6 +111,9 @@ func (s *ChatSession) AppendUserMessage(messageID, content, parentID string) boo
 	}
 	if s.Messages == nil {
 		s.Messages = make(map[string]*ChatMessage)
+	}
+	if s.clientIDs == nil {
+		s.clientIDs = make(map[string]string)
 	}
 	if messageID != "" {
 		if s.seenMsg[messageID] {
@@ -117,17 +135,33 @@ func (s *ChatSession) AppendUserMessage(messageID, content, parentID string) boo
 			s.seenMsg[messageID] = true
 		}
 	}
+	// Resolve caller-supplied ids to stored ids BEFORE any topology
+	// decision (fork detection below) and before persisting the links.
+	parentID = s.resolveClientIDLocked(parentID)
+	replyTo = s.resolveClientIDLocked(replyTo)
+	// Mode 1 fork marker: appending onto anything other than the current
+	// active leaf means the conversation jumped back to an earlier point.
+	forkedFrom := ""
+	if parentID != "" && parentID != s.ActiveLeafID {
+		forkedFrom = parentID
+	}
 	if parentID == "" {
 		parentID = s.ActiveLeafID
 	}
 	msg := &ChatMessage{
-		ID:        uuid.New().String(),
-		ParentID:  parentID,
-		Role:      "user",
-		Content:   content,
-		CreatedAt: time.Now(),
+		ID:         uuid.New().String(),
+		ClientID:   messageID,
+		ParentID:   parentID,
+		ReplyTo:    replyTo,
+		ForkedFrom: forkedFrom,
+		Role:       "user",
+		Content:    content,
+		CreatedAt:  time.Now(),
 	}
 	s.Messages[msg.ID] = msg
+	if messageID != "" {
+		s.clientIDs[messageID] = msg.ID
+	}
 	// audit P-MED-9: cap in-memory messages to prevent unbounded growth.
 	// Messages are persisted to disk/SQLite, so eviction is safe.
 	if len(s.Messages) > maxChatMessages {
@@ -205,6 +239,23 @@ func (s *ChatSession) GetPath(msgID string) []ChatMessage {
 	return s.getPathLocked(msgID)
 }
 
+// resolveClientIDLocked maps a caller-supplied message reference to the
+// stored message id. Values that are already stored ids pass through
+// unchanged; unknown values are returned as-is (cross-branch quotes and
+// stale ids degrade gracefully in the UI). Caller must hold s.mu.
+func (s *ChatSession) resolveClientIDLocked(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	if _, ok := s.Messages[ref]; ok {
+		return ref // already a stored id (e.g. after a history reload)
+	}
+	if stored, ok := s.clientIDs[ref]; ok {
+		return stored
+	}
+	return ref
+}
+
 // ListBranches returns all message IDs that are direct children of parentID.
 // Useful for discovering sibling branches ("information after the branch point").
 func (s *ChatSession) ListBranches(parentID string) []string {
@@ -255,6 +306,7 @@ func (s *ChatSession) Clear() {
 	s.ActiveRoleID = ""
 	s.events = nil
 	s.seenMsg = make(map[string]bool)
+	s.clientIDs = make(map[string]string)
 	s.dirtyMsgs = nil // audit PERF-6: reset dirty tracking on clear
 }
 
@@ -434,7 +486,18 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 		// Now only saves messages added since last persist.
 		for _, id := range dirtyIDs {
 			if msg := msgCopy[id]; msg != nil {
-				if err := st.backend.SaveMessage(ctx, msg.ID, s.ID, msg.ParentID, msg.Role, msg.Content, msg.CreatedAt); err != nil {
+				row := &store.ChatMessageRow{
+					ID:         msg.ID,
+					SessionID:  s.ID,
+					ParentID:   msg.ParentID,
+					ClientID:   msg.ClientID,
+					ReplyTo:    msg.ReplyTo,
+					ForkedFrom: msg.ForkedFrom,
+					Role:       msg.Role,
+					Content:    msg.Content,
+					CreatedAt:  msg.CreatedAt,
+				}
+				if err := st.backend.SaveMessage(ctx, row); err != nil {
 					log.Printf("WARN: chat_session: SaveMessage failed for %s/%s: %v", s.ID, msg.ID, err)
 				}
 			}
@@ -445,6 +508,15 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
+	}
+	// Self-heal the session dir before writing. NewChatSessionStore calls
+	// MkdirAll at init, but that is a one-shot — if it failed (only logged
+	// a warning) or the dir was removed after init (temp cleanup, external
+	// rm), every persist would fail with "path not found". MkdirAll is
+	// idempotent (cheap no-op if the dir exists), so calling it here makes
+	// persist robust across the session lifetime.
+	if err := os.MkdirAll(st.dir, 0755); err != nil {
+		return fmt.Errorf("create session dir %s: %w", st.dir, err)
 	}
 	return os.WriteFile(filepath.Join(st.dir, s.ID+".json"), raw, 0644)
 }
@@ -460,15 +532,19 @@ func (st *ChatSessionStore) loadLocked(s *ChatSession) {
 			s.Messages = make(map[string]*ChatMessage)
 			for id, row := range msgs {
 				s.Messages[id] = &ChatMessage{
-					ID:        row.ID,
-					ParentID:  row.ParentID,
-					Role:      row.Role,
-					Content:   row.Content,
-					CreatedAt: row.CreatedAt,
+					ID:         row.ID,
+					ParentID:   row.ParentID,
+					ClientID:   row.ClientID,
+					ReplyTo:    row.ReplyTo,
+					ForkedFrom: row.ForkedFrom,
+					Role:       row.Role,
+					Content:    row.Content,
+					CreatedAt:  row.CreatedAt,
 				}
 			}
 			s.RootID = rootID
 			s.ActiveLeafID = leafID
+			s.rebuildClientIDsLocked()
 			return
 		}
 	}
@@ -484,6 +560,7 @@ func (st *ChatSessionStore) loadLocked(s *ChatSession) {
 		s.RootID = tsd.RootID
 		s.ActiveLeafID = tsd.ActiveLeafID
 		s.ActiveRoleID = tsd.ActiveRoleID // regression for audit LOGIC-5: restore active role
+		s.rebuildClientIDsLocked()
 		return
 	}
 	// Fallback: old flat array format — convert to tree with sequential IDs.
@@ -509,4 +586,17 @@ func (st *ChatSessionStore) loadLocked(s *ChatSession) {
 		prevID = m.ID
 	}
 	s.ActiveLeafID = prevID
+	s.rebuildClientIDsLocked()
+}
+
+// rebuildClientIDsLocked recomputes the client-id → stored-id map from the
+// loaded messages so references from clients keep resolving after a reload
+// or restart. Caller must hold s.mu.
+func (s *ChatSession) rebuildClientIDsLocked() {
+	s.clientIDs = make(map[string]string, len(s.Messages))
+	for id, m := range s.Messages {
+		if m != nil && m.ClientID != "" {
+			s.clientIDs[m.ClientID] = id
+		}
+	}
 }

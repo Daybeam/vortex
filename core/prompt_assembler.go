@@ -57,6 +57,12 @@ type PromptAssembler struct {
 	// See ONION_ARCHITECTURE.md §8 "Wire PromptManager".
 	promptManager *PromptManager
 
+	// recentInteractions (ADDED 2026-10-25): recent tool interactions from
+	// the current step's trace, used by CheckDataShapeMismatch to detect
+	// inconsistent DataShape metadata and warn the model.
+	// Nil-safe: when nil/empty, shape mismatch check is skipped.
+	recentInteractions []store.ToolInteraction
+
 	// P2-11: Dynamic warm context budget feedback loop.
 	// When subagent duration exceeds the baseline, the budget is tightened
 	// (reduced) to speed up execution. When duration is below baseline,
@@ -93,6 +99,13 @@ func (s *PromptAssembler) SetFoldEngine(fe *FoldEngine) {
 // ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
 func (s *PromptAssembler) SetMemoryBankStore(mb *store.MemoryBankStore) {
 	s.memoryBankStore = mb
+}
+
+// SetRecentInteractions injects the current step's tool interactions so
+// Build can detect DataShape mismatches via CheckDataShapeMismatch.
+// Nil-safe: when nil/empty, the shape mismatch check is skipped.
+func (s *PromptAssembler) SetRecentInteractions(trace []store.ToolInteraction) {
+	s.recentInteractions = trace
 }
 
 // RecordSubagentDuration records the last subagent execution duration and
@@ -177,6 +190,7 @@ func NewPromptAssembler(expStore store.IExperienceStore, loader *ResourceLoader,
 // identical for every turn of every step of the task: a deliberate trade of
 // second-level clock accuracy for cache stability. Falls back to time.Now()
 // when no graph is available (unchanged behavior).
+// @decision:DECISION-KVCACHE-STABLE-TIME
 func stablePromptTime(hub *ContextHub) time.Time {
 	if hub != nil && hub.Graph != nil && !hub.Graph.CreatedAt.IsZero() {
 		return hub.Graph.CreatedAt
@@ -385,35 +399,6 @@ func (s *PromptAssembler) Build(
 		}
 	}
 
-	// P1-5 (2026-10-10): Path D — Archive step summary injection into Warm layer.
-	// Queries the ContextArchive for the current task's recent step summaries
-	// and injects them as a Warm-layer block. This gives the executing step
-	// visibility into what previous steps in the same task produced, without
-	// requiring full step output.
-	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
-	if s.archive != nil && taskID != "" {
-		stepSummaries := s.archive.SearchRecentStepSummaries(taskID, 3)
-		if len(stepSummaries) > 0 {
-			var archivePart strings.Builder
-			archivePart.WriteString("# Recent Step Summaries (Same Task)\n")
-			archivePart.WriteString("The following summaries are from previously completed steps in this task. Use them to understand what has already been done:\n\n")
-			for _, sm := range stepSummaries {
-				stepLabel := sm.NodeID
-				if stepLabel == "" && len(sm.StepIDs) > 0 {
-					stepLabel = sm.StepIDs[0]
-				}
-				if stepLabel == "" {
-					stepLabel = "unknown"
-				}
-				archivePart.WriteString(fmt.Sprintf("- **Step %s**: %s\n", stepLabel, sm.Summary))
-			}
-			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-				Text:         archivePart.String(),
-				CacheControl: "ephemeral",
-			}, GovTier2, CategoryArchiveSummary))
-		}
-	}
-
 	// FMC Phase 3: static per-model failure-mode profile (GetFailureModeProfile).
 	// Distinct from the Assemble() call above (which surfaces experience
 	// relevant to THIS capability/error); this surfaces what THIS model tends
@@ -475,6 +460,12 @@ func (s *PromptAssembler) Build(
 					if err != nil {
 						skillPart.WriteString(fmt.Sprintf("# Skill %s\n%v\n\n", id, err))
 					} else {
+						// M2 (2026-10-25): wrap Trial skill prompts in an untrusted_data
+						// fence so the model treats the content as unverified (injection
+						// defense for pending skills used via session_skills).
+						if skill.Trial {
+							prompt = fmt.Sprintf("<untrusted_data from=\"trial_skill\" reason=\"pending_verification\">\n%s\n</untrusted_data>", prompt)
+						}
 						skillPart.WriteString(prompt + "\n\n")
 					}
 				}
@@ -632,6 +623,37 @@ func (s *PromptAssembler) Build(
 	// ─── Runtime Two-Level Interception (§5) ───────────────────────────
 	// After assembling all blocks, enforce the model-aware System Prompt
 	// budget. If the total estimated tokens exceed the budget, the tiered
+	// KV-2 (2026-10-25): archive blocks moved to the END of the block list
+	// (after all stable blocks) so the stable prefix (role + constraints +
+	// tools + few-shots) is byte-identical across turns → prefix cache hits.
+	// The archive changes mid-step (Archive.Append during the turn loop) →
+	// placing it after the stable blocks prevents it from invalidating the
+	// cacheable prefix.
+	if s.archive != nil && taskID != "" {
+		stepSummaries := s.archive.SearchRecentStepSummaries(taskID, 3)
+		if len(stepSummaries) > 0 {
+			var archivePart strings.Builder
+			archivePart.WriteString("# Recent Step Summaries (Same Task)\n")
+			archivePart.WriteString("The following summaries are from previously completed steps in this task. Use them to understand what has already been done:\n\n")
+			for _, sm := range stepSummaries {
+				stepLabel := sm.NodeID
+				if stepLabel == "" && len(sm.StepIDs) > 0 {
+					stepLabel = sm.StepIDs[0]
+				}
+				if stepLabel == "" {
+					stepLabel = "unknown"
+				}
+				archivePart.WriteString(fmt.Sprintf("- **Step %s**: %s\n", stepLabel, sm.Summary))
+			}
+			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
+				Text:         archivePart.String(),
+				CacheControl: "ephemeral",
+			}, GovTier2, CategoryArchiveSummary))
+		}
+	}
+
+	blocks = append(blocks, s.shapeMismatchBlock()...)
+
 	// trimming pipeline drops Tier 3 → Tier 2 → compresses Tier 1, never
 	// touching Protected blocks.
 	//
@@ -770,6 +792,22 @@ func (s *PromptAssembler) resolveFailureModeProfile(modelID string) string {
 		sb.WriteString(fmt.Sprintf("- %s (%d prior occurrence(s))\n", e.mode, e.count))
 	}
 	return sb.String()
+}
+
+// shapeMismatchBlock returns a Tier-2 warning block if recent tool
+// interactions have inconsistent DataShape metadata, or nil otherwise.
+func (s *PromptAssembler) shapeMismatchBlock() []schemas.ContentBlock {
+	if len(s.recentInteractions) == 0 {
+		return nil
+	}
+	warn := CheckDataShapeMismatch(s.recentInteractions)
+	if warn == "" {
+		return nil
+	}
+	return []schemas.ContentBlock{TagBlockWithCategory(schemas.ContentBlock{
+		Text:         warn,
+		CacheControl: "ephemeral",
+	}, GovTier2, CategoryShapeMismatch)}
 }
 
 // CheckDataShapeMismatch checks if recent tool interactions have inconsistent

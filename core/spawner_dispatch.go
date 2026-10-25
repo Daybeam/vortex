@@ -56,7 +56,7 @@ func (s *Spawner) checkSieveGuardian(taskID, stepID string, turn int, toolCalls 
 // decompress) directly without MCP transport. Returns the result string,
 // status, and the tool interaction record for the trace.
 // Extracted from spawner.go per SPAWNER_REFACTORING_EXECUTION_PLAN.md Step 2.
-func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall, taskID, stepID string, validator *SafePathValidator) (string, string, store.ToolInteraction) {
+func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall, taskID, stepID string, validator *SafePathValidator, ownerID string) (string, string, store.ToolInteraction) {
 	var result string
 	var herr error
 
@@ -149,7 +149,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 	// Egress redaction (I5): strip secrets before result enters LLM context.
 	// Output bounding: adaptive truncation for oversized tool results.
 	// See docs/completed/2026-10-21/TIER_GATED_WORKSPACE_SCOPE_DESIGN.md §4.2.
-	res = RedactEgress(res)
+	res = RedactEgressWithOwner(res, ownerID)
 	// Skip second truncation for execute_code — its output is already gated
 	// inside executeCode() via AdaptiveOutputResult (8KB threshold). Double
 	// truncation at 2000 bytes would destroy useful script output that the

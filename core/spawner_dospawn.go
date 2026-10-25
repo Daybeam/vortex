@@ -225,7 +225,7 @@ turnLoop:
 			}
 
 			// Dynamic Protocol: Re-build prompts and servers for each candidate family
-			systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, mergedContext, toolFewShots, req.Isolation, precedents, req.Task, "", req.TaskID)
+			systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, mergedContext, toolFewShots, req.Isolation, precedents, req.Task, "", req.TaskID, trace)
 			if err != nil {
 				return s.failedOutput(role.BaseCapability, fmt.Sprintf("failed to render prompt: %v", err)), nil
 			}
@@ -585,6 +585,17 @@ turnLoop:
 					"current model channel does not support prompt caching",
 					"Anthropic cache_control markers misplaced",
 				},
+			})
+		}
+
+		// KV-5 (2026-10-24): surface the cache-hit rate per step so a prefix-
+		// stability regression is caught immediately, not after N rounds.
+		if resp.PromptTokens > 0 {
+			s.logger.Log("cache_hit_rate", req.TaskID, req.StepID, map[string]any{
+				"prompt_tokens":     resp.PromptTokens,
+				"cache_read_tokens": resp.CacheReadTokens,
+				"cache_hit_rate":    float64(resp.CacheReadTokens) / float64(resp.PromptTokens),
+				"model":             currentPCfg.Model,
 			})
 		}
 

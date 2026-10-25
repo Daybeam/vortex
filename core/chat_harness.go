@@ -25,11 +25,24 @@ import (
 // tree: branching from a past message creates a new node with ParentID set
 // to the replied-to message's ID. Empty ParentID means root.
 type ChatMessage struct {
-	ID        string    `json:"id"`
-	ParentID  string    `json:"parent_id,omitempty"`
-	Role      string    `json:"role"` // "user" | "assistant" | "tool"
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at,omitempty"`
+	ID       string `json:"id"`
+	ParentID string `json:"parent_id,omitempty"`
+	// ClientID is the caller-supplied message id (web UI optimistic id,
+	// Telegram message id). Stored so references sent by clients in later
+	// turns (parent_id / reply_to) can be resolved to the stored ID —
+	// without it, the active path breaks on reload because clients chain
+	// onto ids the backend never persisted. See AppendUserMessage.
+	ClientID string `json:"client_id,omitempty"`
+	ReplyTo  string `json:"reply_to,omitempty"` // quoted message ID (Mode 2 — persisted so the UI can show "↩ Quoted" after refresh)
+	// ForkedFrom references the branch point this message was forked from
+	// (Mode 1, CHAT_BRANCHING_AND_QUOTE_DESIGN.md §3). Set when the message's
+	// parent is NOT the previous active leaf (i.e. the conversation jumped
+	// back to an earlier point). The UI renders a connector line from that
+	// message down to this one.
+	ForkedFrom string    `json:"forked_from,omitempty"`
+	Role       string    `json:"role"` // "user" | "assistant" | "tool"
+	Content    string    `json:"content"`
+	CreatedAt  time.Time `json:"created_at,omitempty"`
 }
 
 // ChatEvent is a streamed event emitted during a chat run.

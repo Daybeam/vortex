@@ -191,6 +191,23 @@ func accumulateSticky(current string, newResults []string) string {
 	return current
 }
 
+// logSERFFailureClass maps a SERF category to FailureClass and emits an
+// event + metric. Bridges SERF metadata into scheduler retry/decision
+// observability. Wired at both local and remote MCP error sites.
+func (s *Spawner) logSERFFailureClass(taskID, stepID, toolName string, serf *SERFError) {
+	if serf == nil {
+		return
+	}
+	fc := SERFCategoryToFailureClass(serf.Category)
+	s.logger.Log("EventSERFFailureClassified", taskID, stepID, map[string]any{
+		"tool":          toolName,
+		"serf_category": serf.Category,
+		"failure_class": string(fc),
+		"retryable":     serf.Retryable,
+	})
+	observability.GetGlobalMetrics().Inc("orchestrator.serf.failure."+string(fc), 1)
+}
+
 // processToolCalls executes each tool call in the provider response, updating
 // the shared state in place. Extracted from doSpawn's tool execution loop.
 func (s *Spawner) processToolCalls(
@@ -327,7 +344,7 @@ func (s *Spawner) processToolCalls(
 		if CoreToolNames[call.Name] {
 			taskDir := filepath.Join(s.outputBase, req.TaskID)
 			validator := NewSafePathValidator(taskDir, req.SessionRoot, s.allowedWorkspaces)
-			res, status, interaction := s.handleCoreToolCall(ctx, call, req.TaskID, req.StepID, validator)
+			res, status, interaction := s.handleCoreToolCall(ctx, call, req.TaskID, req.StepID, validator, req.OwnerID)
 			// A2/A4 (Effect Boundary Defense): record the tool call's effect.
 			s.recordEffect(req.TaskID, req.StepID, call.Name, call.Arguments, res, status)
 			if status == "error" {
@@ -602,14 +619,15 @@ func (s *Spawner) processToolCalls(
 				if isToolError {
 					state.toolFailCount[call.Name]++
 					effCount := s.incrTaskToolFail(req.TaskID, call.Name, state.toolFailCount[call.Name])
-					recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
-					interaction.Result = recoveryMsg
-					env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
-					state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
-				} else {
-					state.toolFailCount[call.Name] = 0
-					interaction.Result = finalRes
-					interaction.Meta = extractMeta(finalRes) // Phase 2: extract structured metadata
+				recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
+				s.logSERFFailureClass(req.TaskID, req.StepID, call.Name, serf)
+				interaction.Result = recoveryMsg
+				env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
+				state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
+			} else {
+				state.toolFailCount[call.Name] = 0
+				interaction.Result = finalRes
+				interaction.Meta = extractMeta(finalRes) // Phase 2: extract structured metadata
 					if att, ok := finalRes.(schemas.SubagentOutput); ok {
 						state.turnAttachments = dedupAttachments(state.turnAttachments, att.Attachments)
 					}
@@ -634,7 +652,7 @@ func (s *Spawner) processToolCalls(
 					}
 					// Egress redaction (I5) + L1 injection marking (input_normalization.go).
 					// Output bounding: adaptive truncation for oversized results.
-					md = redactAndMarkUntrusted(md)
+					md = redactAndMarkUntrusted(md, req.OwnerID)
 					if len(md) > s.processor.MaxBodyChars {
 						md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
@@ -664,14 +682,15 @@ func (s *Spawner) processToolCalls(
 				if isToolError {
 					state.toolFailCount[call.Name]++
 					effCount := s.incrTaskToolFail(req.TaskID, call.Name, state.toolFailCount[call.Name])
-					recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
-					interaction.Result = recoveryMsg
-					env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
-					state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
-				} else {
-					state.toolFailCount[call.Name] = 0
-					interaction.Result = finalRes
-					status := "ok"
+				recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
+				s.logSERFFailureClass(req.TaskID, req.StepID, call.Name, serf)
+				interaction.Result = recoveryMsg
+				env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
+				state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
+			} else {
+				state.toolFailCount[call.Name] = 0
+				interaction.Result = finalRes
+				status := "ok"
 					if m, ok := finalRes.(map[string]any); ok {
 						if s, ok := m["status"].(string); ok {
 							status = s
@@ -691,7 +710,7 @@ func (s *Spawner) processToolCalls(
 						s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
 					}
 					// Egress redaction (I5) + L1 injection marking (mirrors the local branch).
-					md = redactAndMarkUntrusted(md)
+					md = redactAndMarkUntrusted(md, req.OwnerID)
 					if len(md) > s.processor.MaxBodyChars {
 						md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
