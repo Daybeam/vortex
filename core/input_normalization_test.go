@@ -100,7 +100,7 @@ func TestNormalizeInput_NoFalsePositives(t *testing.T) {
 // already-marked content is never double-wrapped.
 func TestRedactAndMarkUntrusted(t *testing.T) {
 	t.Run("direct hijack is wrapped, content preserved", func(t *testing.T) {
-		out := redactAndMarkUntrusted(hijack)
+		out := redactAndMarkUntrusted(hijack, "")
 		if !strings.Contains(out, untrustedToolResultTag) {
 			t.Fatalf("expected untrusted wrap, got: %q", out)
 		}
@@ -114,20 +114,20 @@ func TestRedactAndMarkUntrusted(t *testing.T) {
 
 	t.Run("benign text is untouched", func(t *testing.T) {
 		benign := "Tool returned: file saved to outputs/report.md (2.3KB)."
-		if got := redactAndMarkUntrusted(benign); got != benign {
+		if got := redactAndMarkUntrusted(benign, ""); got != benign {
 			t.Fatalf("benign content must pass through, got: %q", got)
 		}
 	})
 
 	t.Run("no double wrap", func(t *testing.T) {
-		marked := redactAndMarkUntrusted(hijack)
-		if again := redactAndMarkUntrusted(marked); strings.Count(again, untrustedToolResultTag) != 1 {
+		marked := redactAndMarkUntrusted(hijack, "")
+		if again := redactAndMarkUntrusted(marked, ""); strings.Count(again, untrustedToolResultTag) != 1 {
 			t.Fatalf("double wrap detected: %q", again)
 		}
 	})
 
 	t.Run("empty passes", func(t *testing.T) {
-		if got := redactAndMarkUntrusted(""); got != "" {
+		if got := redactAndMarkUntrusted("", ""); got != "" {
 			t.Fatalf("empty input must stay empty, got %q", got)
 		}
 	})
@@ -138,7 +138,7 @@ func TestRedactAndMarkUntrusted(t *testing.T) {
 func TestRedactAndMarkUntrusted_SubsumesRedactEgress(t *testing.T) {
 	input := "Benign payload with api_key=sk-test1234567890abcdef content."
 	redacted := RedactEgress(input)
-	got := redactAndMarkUntrusted(input)
+	got := redactAndMarkUntrusted(input, "")
 	if got != redacted && got != untrustedToolResultTag+"\n"+redacted+"\n</untrusted_data>" {
 		t.Fatalf("must equal RedactEgress output (optionally wrapped), got %q want %q", got, redacted)
 	}
@@ -150,7 +150,7 @@ func TestRedactAndMarkUntrusted_OversizeBounded(t *testing.T) {
 	if len(huge) <= maxNormalizeBytes {
 		t.Fatal("test setup: input must exceed the normalization bound")
 	}
-	got := redactAndMarkUntrusted(huge) // must not hang, must not wrap (skip path)
+	got := redactAndMarkUntrusted(huge, "") // must not hang, must not wrap (skip path)
 	if strings.Contains(got, untrustedToolResultTag) {
 		t.Fatal("oversize input should skip the injection view, not wrap")
 	}

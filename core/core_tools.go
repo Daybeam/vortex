@@ -11,10 +11,21 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/client"
+	"github.com/daybeam/vortex/core/sandbox"
 	"github.com/daybeam/vortex/core/skeleton"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 )
+
+// sandboxProvider (M3, 2026-10-25): when non-nil, execute_code routes through
+// the SandboxProvider factory for OS-level isolation (bwrap/docker). Set at
+// startup via SetSandboxProvider. Default = nil = raw exec + ApplySandbox.
+var sandboxProvider sandbox.SandboxProvider
+
+// SetSandboxProvider wires the SandboxProvider factory into execute_code.
+// Call at startup: SetSandboxProvider(sandbox.SelectSandboxProvider(reg, outputBase)).
+// nil or local provider = backward-compatible raw exec.
+func SetSandboxProvider(p sandbox.SandboxProvider) { sandboxProvider = p }
 
 var CoreToolNames = map[string]bool{
 	"write_file":     true,
@@ -282,6 +293,25 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 	candidates, ok := langCommands[lang]
 	if !ok {
 		return nil, fmt.Errorf("unsupported language: %s (supported: python, node, bun, lua)", lang)
+	}
+
+	// M3 (2026-10-25): if a SandboxProvider is configured (non-local mode),
+	// route through it for OS-level isolation (bwrap/docker). Default = nil = raw
+	// exec + ApplySandbox (backward-compatible). See TRIAL_SKILL_INSTANT_USE_DESIGN §4.
+	if sandboxProvider != nil {
+		result, err := sandboxProvider.Execute(ctx, sandbox.ExecRequest{
+			Script:   code,
+			Language: lang,
+			Timeout:  30 * time.Second,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("sandbox execution failed: %v", err)
+		}
+		return map[string]any{
+			"stdout":    result.Stdout,
+			"stderr":    result.Stderr,
+			"exit_code": result.ExitCode,
+		}, nil
 	}
 
 	var cmd *exec.Cmd

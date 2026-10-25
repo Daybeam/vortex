@@ -219,7 +219,10 @@ func resolveMountPolicyGate(hub *ContextHub, role *config.Role, roleID string, a
 					approvalNeeded = append(approvalNeeded, b.MCPID)
 				}
 			default: // admin_only (empty/unknown)
-				return nil, fmt.Errorf("role %q binds admin_only MCP %q; non-admin submitters may not use this role", roleID, b.MCPID)
+				// SECURITY (2026-10-24, admin-hiding): do NOT echo the MCP id —
+				// admin-only MCPs must be invisible to public-tier submitters, so
+				// the rejection must not reveal which MCP is privileged.
+				return nil, fmt.Errorf("role %q is not available to non-admin submitters", roleID)
 			}
 		}
 	}

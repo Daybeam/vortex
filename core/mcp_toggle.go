@@ -19,6 +19,7 @@ import (
 
 // mcpActive reports whether an MCP participates in the tool surface.
 // Nil-safe: an unknown MCP is inactive.
+// @decision:DECISION-MCP-TOGGLE
 func mcpActive(m *config.MCPDef) bool {
 	return m != nil && !m.Disabled
 }

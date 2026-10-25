@@ -74,6 +74,14 @@ const (
 	EventDebateConcluded        EventType = "debate_concluded"         // Cross-family debate (ADDED 2026-09-14)
 	EventHTTPRequest            EventType = "http_request"             // HTTP observability (ADDED 2026-10-03)
 	EventOutputTruncated        EventType = "output_truncated"         // Response cut off by output cap (ADDED 2026-10-20)
+	// EventIntentShiftBranch (ADDED 2026-10-25): the context tree branched
+	// because a step's cached embedding drifted from the current node's
+	// (semantic) or the model self-reported a "new task" (heuristic).
+	// Detail: mode ("semantic"|"heuristic"), drift_score (-1 when heuristic),
+	// threshold, parent_node, new_node_id. See
+	// docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §3.4 and
+	// behavior contract B11.
+	EventIntentShiftBranch EventType = "intent_shift_branch"
 )
 
 type LogEvent struct {
@@ -407,15 +415,23 @@ func (l *Logger) compressFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer gzFile.Close()
 
 	zw := gzip.NewWriter(gzFile)
-	defer zw.Close()
-
+	// Check all close errors in the correct order: zw.Close() writes the gzip
+	// footer (CRC + size) and must succeed before gzFile.Close() flushes to
+	// disk. If either fails (disk full, I/O error), the gzip file is corrupt.
+	// The caller deletes the source log on nil return, so propagating the
+	// error here prevents permanent log data loss.
+	// (audit LE-1: unchecked Close errors → data loss, 2026-10-24)
 	if _, err := io.Copy(zw, f); err != nil {
+		gzFile.Close()
 		return err
 	}
-	return nil
+	if err := zw.Close(); err != nil {
+		gzFile.Close()
+		return err
+	}
+	return gzFile.Close()
 }
 
 // ReadTaskLogs returns all log lines for a given task (today's log).

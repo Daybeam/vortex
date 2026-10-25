@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -700,6 +701,11 @@ func findFailedStep(history []AgentEvent) string {
 
 // Start runs the replay cycle on a fixed interval in a background goroutine.
 func (rs *replayScheduler) Start(ctx context.Context, interval time.Duration) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[ReplayScheduler] background loop panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	if interval <= 0 {
 		interval = 6 * time.Hour
 	}

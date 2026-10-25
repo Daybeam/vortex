@@ -235,8 +235,8 @@ const untrustedToolResultTag = `<untrusted_data from="tool_result" reason="injec
 // the result matches known hijack phrasings (directly or via any encoding
 // layer) — the original content is wrapped as untrusted data so the model
 // treats it as data, not instructions. Soft defense: content still flows.
-func redactAndMarkUntrusted(md string) string {
-	md = RedactEgress(md)
+func redactAndMarkUntrusted(md string, ownerID string) string {
+	md = RedactEgressWithOwner(md, ownerID)
 	if md == "" || len(md) > maxNormalizeBytes {
 		return md
 	}

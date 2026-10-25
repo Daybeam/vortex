@@ -107,6 +107,12 @@ type SpawnRequest struct {
 	// See docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2.
 	SessionRoot string
 
+	// OwnerID is the task owner's identity (from TaskGraph.OwnerID), used
+	// for cross-tenant egress redaction. When non-empty, tool results
+	// containing other tenants' OwnerID references are redacted.
+	// ADDED 2026-10-25. Empty = single-user mode (no cross-tenant check).
+	OwnerID string
+
 	// Hub provides access to tiered role/skill resolution (Session IR + Global Registry).
 	// ADDED (2026-07-20) for Session Role support.
 	Hub *ContextHub

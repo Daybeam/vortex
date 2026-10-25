@@ -96,15 +96,27 @@ func (n *CapabilityNavigator) ClassifyIntent(ctx context.Context, query string) 
 
 	// 2. LLM Analysis (Primary)
 	var provider interfaces.Provider
+	// Snapshot registry fields under RLock, then release BEFORE calling
+	// ResolveProviderConfig (which acquires its own RLock). Holding the lock
+	// across ResolveProviderConfig re-enters the same RWMutex — Go's
+	// sync.RWMutex is NOT reentrant and deadlocks if a writer is waiting.
+	// (audit PF-1: reentrant RLock deadlock, 2026-10-24)
 	n.Registry.Mu.RLock()
+	roles := make([]*config.Role, 0, len(n.Registry.Roles))
 	for _, role := range n.Registry.Roles {
+		roles = append(roles, role)
+	}
+	externalRuntimes := n.Registry.ExternalRuntimes
+	secrets := n.Registry.Secrets
+	n.Registry.Mu.RUnlock()
+
+	for _, role := range roles {
 		pCfg := n.Registry.ResolveProviderConfig(role)
-		if p, err := providers.Get(pCfg, n.Registry.ExternalRuntimes); err == nil {
+		if p, err := providers.Get(pCfg, externalRuntimes); err == nil {
 			provider = p
 			break
 		}
 	}
-	n.Registry.Mu.RUnlock()
 
 	if provider != nil {
 		prompt := fmt.Sprintf("Analyze the user query and extract a list of high-level capability tags (e.g., 'research.paper', 'knowledge.compare').\nKnown capabilities: %s\n\nQuery: %s\n\nRespond ONLY with a comma-separated list of tags.",
@@ -116,7 +128,7 @@ func (n *CapabilityNavigator) ClassifyIntent(ctx context.Context, query string) 
 		resp, err := provider.Complete(ctx, providers.CompleteRequest{
 			System:  SysPromptIntentClassifier,
 			User:    prompt,
-			Secrets: n.Registry.Secrets,
+			Secrets: secrets,
 		})
 
 		if err == nil && resp.Text != "" {
