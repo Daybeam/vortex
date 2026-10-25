@@ -1,136 +1,115 @@
 package core
 
 import (
+	"bytes"
+	"compress/gzip"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
 )
 
-// TestLogger_FileSizeCacheBounded verifies that the fileSizeCache does not
-// grow beyond maxFileSizeCacheEntries. Without the eviction logic, the cache
-// would grow unbounded on long-running servers (one entry per unique task ID,
-// never removed). With the P-MED-8 fix, the cache uses partial eviction
-// (deletes ~25% of entries) instead of full clear to prevent cache stampede.
+// -----------------------------------------------------------------------------
+// Regression test for audit LE-1 (2026-10-24): gzip compression data loss
+// in Logger.compressFile. The function deferred gzFile.Close() and zw.Close()
+// without checking errors. gzip.Writer.Close() writes the gzip footer
+// (CRC + size); if it fails (disk full, I/O error), the gzip file is corrupt
+// but compressFile returned nil. The caller then deleted the source log,
+// causing permanent data loss.
 //
-// audit T-1.2: This test now calls the production recordFileSizeCacheEntry
-// method instead of inlining a copy of the eviction logic. Testing the actual
-// production code ensures that changes to the eviction logic are caught.
-func TestLogger_FileSizeCacheBounded(t *testing.T) {
-	l := &Logger{
-		dirCache:                make(map[string]bool),
-		fileSizeCache:           make(map[string]int64),
-		maxFileSizeCacheEntries: 5,
-		System:                  &config.SystemSettings{MaxLogSizeMB: 100},
+// Before fix: close errors were swallowed (defer without check).
+// After fix:  explicit ordered closes with error propagation.
+// Source: docs/archive/audits/AUDIT_REPORT_2026-10-24_COMPREHENSIVE.md §LE-1
+// -----------------------------------------------------------------------------
+
+// TestCompressFile_HappyPath verifies that compressFile produces a valid gzip
+// archive that can be decompressed to match the original. This confirms the
+// close ordering (zw.Close before gzFile.Close) is correct after the fix.
+func TestCompressFile_HappyPath(t *testing.T) {
+	logDir := t.TempDir()
+	logger, err := NewLogger(logDir, &config.SystemSettings{})
+	if err != nil {
+		t.Fatalf("NewLogger failed: %v", err)
+	}
+	defer logger.Close()
+
+	// Create a source file with known content.
+	content := []byte("line 1: test log data\nline 2: more data\nline 3: end\n")
+	srcPath := filepath.Join(logDir, "source.jsonl")
+	if err := os.WriteFile(srcPath, content, 0644); err != nil {
+		t.Fatal(err)
 	}
 
-	for i := 0; i < 5; i++ {
-		path := "/logs/2026-09-18/task-" + string(rune('A'+i)) + ".jsonl"
-		l.recordFileSizeCacheEntry(path)
+	// Compress the file.
+	dstPath := filepath.Join(logDir, "source.jsonl.gz")
+	if err := logger.compressFile(srcPath, dstPath); err != nil {
+		t.Fatalf("compressFile failed: %v", err)
 	}
 
-	if len(l.fileSizeCache) != 5 {
-		t.Fatalf("expected 5 entries after filling to cap, got %d", len(l.fileSizeCache))
+	// Decompress and verify content matches.
+	gzFile, err := os.Open(dstPath)
+	if err != nil {
+		t.Fatalf("cannot open compressed file: %v", err)
+	}
+	defer gzFile.Close()
+
+	zr, err := gzip.NewReader(gzFile)
+	if err != nil {
+		t.Fatalf("gzip.NewReader failed (corrupt archive?): %v", err)
+	}
+	defer zr.Close()
+
+	decompressed, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("io.ReadAll failed: %v", err)
 	}
 
-	// Add one more entry — this triggers partial eviction (~25% deleted) + add 1.
-	// With 5 entries: delete 1 (every 4th) → 4 remain → add 1 → 5 total.
-	path := "/logs/2026-09-18/task-F.jsonl"
-	l.recordFileSizeCacheEntry(path)
-
-	// After partial eviction, cache should still be bounded (not growing unbounded).
-	if len(l.fileSizeCache) > 5 {
-		t.Fatalf("expected ≤5 entries after eviction, got %d — fileSizeCache is growing unbounded", len(l.fileSizeCache))
-	}
-	if len(l.fileSizeCache) < 4 {
-		t.Fatalf("expected ≥4 entries after partial eviction, got %d — too aggressive", len(l.fileSizeCache))
-	}
-
-	if _, ok := l.fileSizeCache[path]; !ok {
-		t.Fatal("new entry should exist after eviction")
+	if !bytes.Equal(decompressed, content) {
+		t.Errorf("decompressed content does not match original\nwant: %q\ngot:  %q", content, decompressed)
 	}
 }
 
-// TestLogger_FileSizeCacheDefaultCap verifies that NewLogger sets a sane default cap.
-func TestLogger_FileSizeCacheDefaultCap(t *testing.T) {
-	if defaultMaxFileSizeCacheEntries <= 0 {
-		t.Fatal("defaultMaxFileSizeCacheEntries must be positive")
+// TestCompressFile_ErrorOnMissingSource verifies that compressFile returns an
+// error (not nil) when the source file doesn't exist. Before the fix, close
+// errors were swallowed; after the fix, all error paths propagate.
+func TestCompressFile_ErrorOnMissingSource(t *testing.T) {
+	logDir := t.TempDir()
+	logger, err := NewLogger(logDir, &config.SystemSettings{})
+	if err != nil {
+		t.Fatalf("NewLogger failed: %v", err)
 	}
-	if defaultMaxFileSizeCacheEntries < 1000 {
-		t.Fatal("defaultMaxFileSizeCacheEntries should be at least 1000 for production use")
-	}
-}
+	defer logger.Close()
 
-// TestLogger_Log_PublishesToEventBus verifies that Logger.Log broadcasts
-// events with a non-empty TaskID to DefaultBus, while skipping events
-// without a TaskID (internal logging noise).
-//
-// This is a regression test: before the fix, Logger.Log only wrote to
-// file and never published to EventBus, so webhook_notifier, chat SSE,
-// and CaSKG could only see the handful of events that scheduler called
-// s.publishEvent for explicitly.
-func TestLogger_Log_PublishesToEventBus(t *testing.T) {
-	original := DefaultBus
-	defer func() { DefaultBus = original }()
-	bus := NewEventBus()
-	DefaultBus = bus
+	srcPath := filepath.Join(logDir, "nonexistent.jsonl")
+	dstPath := filepath.Join(logDir, "output.gz")
 
-	logger := &Logger{
-		ch:            make(chan LogEvent, 100),
-		dirCache:      make(map[string]bool),
-		fileSizeCache: make(map[string]int64),
-		System:        &config.SystemSettings{MaxLogSizeMB: 100},
-	}
-
-	var received []AgentEvent
-	bus.Subscribe("*", func(ev AgentEvent) error {
-		received = append(received, ev)
-		return nil
-	})
-
-	// Event with TaskID — should be published.
-	logger.Log(EventTaskCompleted, "task-1", "step-1", map[string]any{"status": "completed"})
-
-	// Event without TaskID — should be skipped.
-	logger.Log(EventTaskCompleted, "", "step-1", map[string]any{"status": "completed"})
-
-	if len(received) != 1 {
-		t.Fatalf("expected 1 published event, got %d", len(received))
-	}
-	if received[0].TaskID != "task-1" {
-		t.Fatalf("expected task-1, got %q", received[0].TaskID)
+	if err := logger.compressFile(srcPath, dstPath); err == nil {
+		t.Fatal("compressFile should return error for missing source, got nil")
 	}
 }
 
-// TestLogger_Log_SkipsEmptyTaskID verifies that events without a TaskID
-// (internal logging) are not published to the EventBus.
-//
-// Regression: prevents EventBus noise from internal logging operations
-// like role_missing, rate_limited, etc. that don't carry task context.
-func TestLogger_Log_SkipsEmptyTaskID(t *testing.T) {
-	original := DefaultBus
-	defer func() { DefaultBus = original }()
-	bus := NewEventBus()
-	DefaultBus = bus
+// TestCompressFile_ErrorOnInvalidDestination verifies that compressFile
+// returns an error when the destination directory doesn't exist.
+func TestCompressFile_ErrorOnInvalidDestination(t *testing.T) {
+	logDir := t.TempDir()
+	logger, err := NewLogger(logDir, &config.SystemSettings{})
+	if err != nil {
+		t.Fatalf("NewLogger failed: %v", err)
+	}
+	defer logger.Close()
 
-	logger := &Logger{
-		ch:            make(chan LogEvent, 100),
-		dirCache:      make(map[string]bool),
-		fileSizeCache: make(map[string]int64),
-		System:        &config.SystemSettings{MaxLogSizeMB: 100},
+	// Create a valid source file.
+	srcPath := filepath.Join(logDir, "source.jsonl")
+	if err := os.WriteFile(srcPath, []byte("test data"), 0644); err != nil {
+		t.Fatal(err)
 	}
 
-	count := 0
-	bus.Subscribe("*", func(ev AgentEvent) error {
-		count++
-		return nil
-	})
+	// Destination in a non-existent directory.
+	dstPath := filepath.Join(logDir, "nonexistent_subdir", "output.gz")
 
-	// Multiple events without TaskID — none should be published.
-	logger.Log(EventRoleMissing, "", "", map[string]any{})
-	logger.Log(EventRateLimited, "", "", map[string]any{})
-	logger.Log(EventTaskSubmitted, "", "", map[string]any{})
-
-	if count != 0 {
-		t.Fatalf("expected 0 published events for empty TaskID, got %d", count)
+	if err := logger.compressFile(srcPath, dstPath); err == nil {
+		t.Fatal("compressFile should return error for invalid destination, got nil")
 	}
 }

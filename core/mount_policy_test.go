@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -162,7 +163,7 @@ func TestResolveFinalMCPs_ApprovalRequiredErrorAndRecordedApproval(t *testing.T)
 
 	// A human approval recorded on the graph unblocks the same mount.
 	hub.Graph = &schemas.TaskGraph{}
-	hub.Graph.ApproveMCPMounts([]string{"approv_mcp"})
+	hub.Graph.ApproveMCPMounts([]string{"approv_mcp"}, "", "")
 	if _, err := ResolveFinalMCPs(hub, "worker", []string{"approv_mcp"}, nil, false); err != nil {
 		t.Fatalf("approved mount must be allowed, got: %v", err)
 	}
@@ -246,5 +247,31 @@ func TestSubmitDecision_ApproveMountRecordsAndRequeues(t *testing.T) {
 	}
 	if step.Status != schemas.StepPending {
 		t.Fatalf("approve must re-queue the blocked step, got %q", step.Status)
+	}
+}
+
+// Regression (Stage 5 admin-hiding, 2026-10-24): a non-admin submitter naming a
+// role that binds an admin_only MCP must be rejected WITHOUT leaking the MCP id
+// — admin-only MCPs are invisible to the public tier.
+func TestResolveFinalMCPs_AdminOnlyBoundMCPErrorDoesNotLeakID(t *testing.T) {
+	hub := NewContextHub(&config.Registry{
+		Roles: map[string]*config.Role{
+			"privileged": {ID: "privileged", BoundMCPBindings: []config.MCPBinding{{MCPID: "secret_admin_mcp"}}},
+		},
+		MCPs: map[string]*config.MCPDef{
+			"secret_admin_mcp": {ID: "secret_admin_mcp"}, // empty policy ⇒ admin_only
+		},
+	}, nil, nil)
+
+	_, err := ResolveFinalMCPs(hub, "privileged", nil, nil, false)
+	if err == nil {
+		t.Fatal("non-admin must be rejected from a role binding an admin_only MCP")
+	}
+	if strings.Contains(err.Error(), "secret_admin_mcp") {
+		t.Fatalf("SECURITY: rejection must not leak the admin MCP id, got: %v", err)
+	}
+	// Admin submitter may still use the role (the gate is submitter-tier based).
+	if _, err := ResolveFinalMCPs(hub, "privileged", nil, nil, true); err != nil {
+		t.Fatalf("admin must use the role, got: %v", err)
 	}
 }

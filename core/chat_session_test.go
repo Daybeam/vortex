@@ -24,13 +24,13 @@ func TestChatSessionEventReplay(t *testing.T) {
 
 func TestChatSessionAppendUserMessageIdempotent(t *testing.T) {
 	s := &ChatSession{ID: "s1", Messages: make(map[string]*ChatMessage), seenMsg: map[string]bool{}}
-	if !s.AppendUserMessage("m1", "hello", "") {
+	if !s.AppendUserMessage("m1", "hello", "", "") {
 		t.Fatal("first append should be accepted")
 	}
-	if s.AppendUserMessage("m1", "hello", "") {
+	if s.AppendUserMessage("m1", "hello", "", "") {
 		t.Fatal("duplicate messageID should be rejected")
 	}
-	if s.AppendUserMessage("m2", "world", "") {
+	if s.AppendUserMessage("m2", "world", "", "") {
 		if len(s.SnapshotMessages()) != 2 {
 			t.Fatalf("expected 2 messages, got %d", len(s.SnapshotMessages()))
 		}
@@ -42,7 +42,7 @@ func TestChatSessionStorePersistAndLoad(t *testing.T) {
 	st := NewChatSessionStore(dir, nil)
 
 	s := st.GetOrCreate("abc")
-	s.AppendUserMessage("m1", "first", "")
+	s.AppendUserMessage("m1", "first", "", "")
 	s.AppendMessage(ChatMessage{Role: "assistant", Content: "reply"}, "")
 
 	if err := st.Persist(s); err != nil {
@@ -62,9 +62,9 @@ func TestChatSessionBranching(t *testing.T) {
 	s := &ChatSession{ID: "s1", Messages: make(map[string]*ChatMessage), seenMsg: map[string]bool{}}
 
 	// Build a linear conversation: user1 → assistant1 → user2 → assistant2
-	s.AppendUserMessage("u1", "what is 1+1", "")
+	s.AppendUserMessage("u1", "what is 1+1", "", "")
 	s.AppendMessage(ChatMessage{Role: "assistant", Content: "2"}, "")
-	s.AppendUserMessage("u2", "what is 2+2", "")
+	s.AppendUserMessage("u2", "what is 2+2", "", "")
 	s.AppendMessage(ChatMessage{Role: "assistant", Content: "4"}, "")
 
 	// Active path should be 4 messages long.
@@ -75,7 +75,7 @@ func TestChatSessionBranching(t *testing.T) {
 
 	// Branch from the first assistant reply (path[1]).
 	branchPoint := path[1].ID
-	s.AppendUserMessage("u3", "actually, what is 1+2?", branchPoint)
+	s.AppendUserMessage("u3", "actually, what is 1+2?", branchPoint, "")
 	s.AppendMessage(ChatMessage{Role: "assistant", Content: "3"}, "")
 
 	// Active path should now be 3 messages: user1 → assistant1 → user3 → assistant3
@@ -115,7 +115,7 @@ func TestChatSessionBranching(t *testing.T) {
 func TestChatSessionGetMessage(t *testing.T) {
 	s := &ChatSession{ID: "s1", Messages: make(map[string]*ChatMessage), seenMsg: map[string]bool{}}
 
-	s.AppendUserMessage("u1", "first message", "")
+	s.AppendUserMessage("u1", "first message", "", "")
 	s.AppendMessage(ChatMessage{Role: "assistant", Content: "first reply"}, "")
 
 	path := s.SnapshotMessages()
@@ -155,7 +155,7 @@ func TestChatSessionGetMessage(t *testing.T) {
 // the returned message should not affect the session's internal state.
 func TestChatSessionGetMessageReturnsCopy(t *testing.T) {
 	s := &ChatSession{ID: "s1", Messages: make(map[string]*ChatMessage), seenMsg: map[string]bool{}}
-	s.AppendUserMessage("u1", "original", "")
+	s.AppendUserMessage("u1", "original", "", "")
 
 	path := s.SnapshotMessages()
 	msgID := path[0].ID

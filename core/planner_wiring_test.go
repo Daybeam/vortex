@@ -258,7 +258,7 @@ func TestPlannerToolCatalog_OnlyDiscoveredTools(t *testing.T) {
 	}
 	reg.Mu.Unlock()
 
-	rendered, catalog := s.plannerToolCatalog("appworld_agent")
+	rendered, catalog := s.plannerToolCatalog("appworld_agent", true)
 
 	if len(catalog["appworld"]) != 2 {
 		t.Fatalf("catalog should hold 2 tools, got %d", len(catalog["appworld"]))
@@ -271,6 +271,38 @@ func TestPlannerToolCatalog_OnlyDiscoveredTools(t *testing.T) {
 	}
 	if strings.Contains(rendered, "venmo__delete_everything") {
 		t.Fatal("catalog invented a tool")
+	}
+}
+
+// Stage 5 (admin-hiding, 2026-10-24): a non-admin submitter's planner catalog
+// must EXCLUDE admin_only MCPs so admin tool names never reach the plan (and
+// thus the public-visible task status). An admin submitter still sees them.
+func TestPlannerToolCatalog_HidesAdminOnlyForNonAdmin(t *testing.T) {
+	s, reg := newPlannerTestEngine(t)
+	defer s.Stop()
+	reg.Mu.Lock()
+	reg.Roles["appworld_agent"] = &config.Role{
+		ID: "appworld_agent",
+		BoundMCPBindings: []config.MCPBinding{
+			{MCPID: "appworld", AllowedTools: []string{}},
+		},
+	}
+	reg.MCPs["appworld"] = &config.MCPDef{
+		ID:             "appworld",
+		AvailableTools: []string{"venmo__login"},
+		// no MountPolicy ⇒ admin_only (the default)
+	}
+	reg.Mu.Unlock()
+
+	// admin sees the (admin_only) MCP
+	_, adminCat := s.plannerToolCatalog("appworld_agent", true)
+	if len(adminCat["appworld"]) == 0 {
+		t.Fatal("admin planner catalog must include the admin_only MCP")
+	}
+	// non-admin does NOT — admin tool names stay out of the plan
+	_, publicCat := s.plannerToolCatalog("appworld_agent", false)
+	if _, ok := publicCat["appworld"]; ok {
+		t.Fatal("SECURITY: non-admin planner catalog must exclude admin_only MCPs")
 	}
 }
 
@@ -302,7 +334,7 @@ func TestParsePlannerOutput_RealisticPlannerReply(t *testing.T) {
 		   "allowed_tools":["venmo__login","venmo__show_sent_payment_requests"]}
 		]}` + "\n```"
 
-	steps, err := s.parsePlannerOutput(raw, "appworld_agent")
+	steps, err := s.parsePlannerOutput(raw, "appworld_agent", true)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}

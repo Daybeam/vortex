@@ -25,7 +25,7 @@ func TestListSessions_FileFallback(t *testing.T) {
 
 	// Create two sessions with messages
 	s1 := st.GetOrCreate("session-aaa")
-	if !s1.AppendUserMessage("msg1", "hello", "") {
+	if !s1.AppendUserMessage("msg1", "hello", "", "") {
 		t.Fatal("failed to append user message")
 	}
 	if err := st.Persist(s1); err != nil {
@@ -36,7 +36,7 @@ func TestListSessions_FileFallback(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	s2 := st.GetOrCreate("session-bbb")
-	if !s2.AppendUserMessage("msg2", "world", "") {
+	if !s2.AppendUserMessage("msg2", "world", "", "") {
 		t.Fatal("failed to append user message")
 	}
 	if err := st.Persist(s2); err != nil {
@@ -77,7 +77,7 @@ func TestListSessions_FileFallback_Limit(t *testing.T) {
 	// Create 3 sessions
 	for i := 0; i < 3; i++ {
 		s := st.GetOrCreate("session-" + string(rune('a'+i)))
-		s.AppendUserMessage("msg", "content", "")
+		s.AppendUserMessage("msg", "content", "", "")
 		st.Persist(s)
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -184,7 +184,7 @@ func (f *fakeListBackend) ListSessions(ctx context.Context, limit, offset int) (
 func (f *fakeListBackend) SaveSession(ctx context.Context, id, rootID, leafID string, createdAt time.Time) error {
 	return nil
 }
-func (f *fakeListBackend) SaveMessage(ctx context.Context, msgID, sessionID, parentID, role, content string, createdAt time.Time) error {
+func (f *fakeListBackend) SaveMessage(ctx context.Context, msg *store.ChatMessageRow) error {
 	return nil
 }
 func (f *fakeListBackend) LoadSession(ctx context.Context, sessionID string) (rootID, leafID string, msgs map[string]*store.ChatMessageRow, err error) {

@@ -247,7 +247,7 @@ CROSS_TENANT_REF=owner:other-tenant-456
 			Name:      "read_file",
 			Arguments: map[string]any{"path": "config.txt"},
 		},
-		taskID, "step-1", validator,
+		taskID, "step-1", validator, "",
 	)
 
 	if status != "success" {
@@ -325,7 +325,7 @@ func TestIntegration_EgressRedaction_NoSecrets_Passthrough(t *testing.T) {
 			Name:      "read_file",
 			Arguments: map[string]any{"path": "clean.txt"},
 		},
-		taskID, "step-1", validator,
+		taskID, "step-1", validator, "",
 	)
 
 	if status != "success" {
