@@ -46,6 +46,11 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
+	// Migrations (2026-10-24/26): best-effort ALTER TABLE for existing DBs.
+	_, _ = db.Exec(`ALTER TABLE chat_messages ADD COLUMN reply_to TEXT`)
+	_, _ = db.Exec(`ALTER TABLE chat_messages ADD COLUMN forked_from TEXT`)
+	_, _ = db.Exec(`ALTER TABLE chat_messages ADD COLUMN client_id TEXT`)
+
 	return db, nil
 }
 
@@ -315,6 +320,9 @@ func runMigrations(db *sql.DB) error {
 		id         TEXT PRIMARY KEY,
 		session_id TEXT NOT NULL,
 		parent_id  TEXT,
+		client_id  TEXT,
+		reply_to   TEXT,
+		forked_from TEXT,
 		role       TEXT NOT NULL,
 		content    TEXT NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP

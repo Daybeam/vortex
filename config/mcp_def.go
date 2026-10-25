@@ -52,4 +52,10 @@ type MCPDef struct {
 	// and refused at dispatch. Names the MCP does not serve are ignored (never
 	// widens the surface).
 	DisabledTools []string `json:"disabled_tools,omitempty"`
+
+	// Approver gates who may resolve a mount_policy=approval decision for
+	// this MCP: "admin" (default; empty ⇒ admin) requires an admin-tier
+	// resolver; "owner" allows the task owner (graph.OwnerID) or an admin.
+	// See docs/plan/DECISION_APPROVAL_AUTHORITY_DESIGN.md §2.
+	Approver string `json:"approver,omitempty"`
 }

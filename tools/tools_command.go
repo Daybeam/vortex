@@ -31,7 +31,11 @@ const (
 	sandboxRunCheckInterval = 1 * time.Hour
 )
 
-var sandboxRunCleanerOnce sync.Once
+var (
+	sandboxRunCleanerOnce   sync.Once
+	sandboxRunCleanerStop   = make(chan struct{})
+	sandboxRunCleanerClosed sync.Once
+)
 
 // activeSandboxRuns tracks sandbox workspaces currently in use so the
 // background cleaner doesn't RemoveAll a directory while a command is
@@ -40,6 +44,8 @@ var activeSandboxRuns sync.Map
 
 // startSandboxRunCleaner starts a background goroutine (once per process)
 // that periodically removes sandbox run workspaces older than sandboxRunTTL.
+// The goroutine exits when stopSandboxRunCleaner is called or the process
+// exits. (audit RL-1: goroutine leak — no stop channel, 2026-10-24)
 func startSandboxRunCleaner() {
 	sandboxRunCleanerOnce.Do(func() {
 		go func() {
@@ -50,10 +56,23 @@ func startSandboxRunCleaner() {
 			}()
 			ticker := time.NewTicker(sandboxRunCheckInterval)
 			defer ticker.Stop()
-			for range ticker.C {
-				cleanSandboxRunDir()
+			for {
+				select {
+				case <-ticker.C:
+					cleanSandboxRunDir()
+				case <-sandboxRunCleanerStop:
+					return
+				}
 			}
 		}()
+	})
+}
+
+// stopSandboxRunCleaner signals the background cleaner goroutine to exit.
+// Safe to call multiple times or when the cleaner was never started (no-op).
+func stopSandboxRunCleaner() {
+	sandboxRunCleanerClosed.Do(func() {
+		close(sandboxRunCleanerStop)
 	})
 }
 

@@ -25,15 +25,18 @@ func (b *SQLiteChatBackend) SaveSession(ctx context.Context, sessionID, rootID, 
 	return err
 }
 
-func (b *SQLiteChatBackend) SaveMessage(ctx context.Context, msgID, sessionID, parentID, role, content string, createdAt time.Time) error {
+func (b *SQLiteChatBackend) SaveMessage(ctx context.Context, msg *ChatMessageRow) error {
 	_, err := b.db.ExecContext(ctx, `
-		INSERT INTO chat_messages (id, session_id, parent_id, role, content, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO chat_messages (id, session_id, parent_id, client_id, reply_to, forked_from, role, content, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			parent_id=excluded.parent_id,
+			client_id=excluded.client_id,
+			reply_to=excluded.reply_to,
+			forked_from=excluded.forked_from,
 			role=excluded.role,
 			content=excluded.content
-	`, msgID, sessionID, parentID, role, content, createdAt)
+	`, msg.ID, msg.SessionID, msg.ParentID, msg.ClientID, msg.ReplyTo, msg.ForkedFrom, msg.Role, msg.Content, msg.CreatedAt)
 	return err
 }
 
@@ -47,7 +50,7 @@ func (b *SQLiteChatBackend) LoadSession(ctx context.Context, sessionID string) (
 	rootID = root.String
 	activeLeafID = leaf.String
 
-	rows, err := b.db.QueryContext(ctx, `SELECT id, parent_id, role, content, created_at FROM chat_messages WHERE session_id = ?`, sessionID)
+	rows, err := b.db.QueryContext(ctx, `SELECT id, parent_id, client_id, reply_to, forked_from, role, content, created_at FROM chat_messages WHERE session_id = ?`, sessionID)
 	if err != nil {
 		return rootID, activeLeafID, nil, err
 	}
@@ -56,11 +59,14 @@ func (b *SQLiteChatBackend) LoadSession(ctx context.Context, sessionID string) (
 	messages = make(map[string]*ChatMessageRow)
 	for rows.Next() {
 		var m ChatMessageRow
-		var parentID sql.NullString
-		if err := rows.Scan(&m.ID, &parentID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+		var parentID, clientID, replyTo, forkedFrom sql.NullString
+		if err := rows.Scan(&m.ID, &parentID, &clientID, &replyTo, &forkedFrom, &m.Role, &m.Content, &m.CreatedAt); err != nil {
 			continue
 		}
 		m.ParentID = parentID.String
+		m.ClientID = clientID.String
+		m.ReplyTo = replyTo.String
+		m.ForkedFrom = forkedFrom.String
 		m.SessionID = sessionID
 		messages[m.ID] = &m
 	}

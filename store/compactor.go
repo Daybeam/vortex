@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"runtime/debug"
 	"time"
 
 	"github.com/daybeam/vortex/config"
@@ -109,6 +110,11 @@ func (c *StorageCompactor) RunCompaction(ctx context.Context) error {
 // Start runs the compaction loop in a background goroutine on a fixed interval
 // derived from AutoVacuumIntervalDays. Returns immediately.
 func (c *StorageCompactor) Start(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Compactor] background loop panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	interval := time.Duration(c.config.AutoVacuumIntervalDays) * 24 * time.Hour
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

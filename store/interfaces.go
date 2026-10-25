@@ -194,7 +194,7 @@ type IAntiPatternBackend interface {
 // IChatBackend defines persistence for chat sessions and messages (A20 DB collapse).
 type IChatBackend interface {
 	SaveSession(ctx context.Context, sessionID, rootID, activeLeafID string, createdAt time.Time) error
-	SaveMessage(ctx context.Context, msgID, sessionID, parentID, role, content string, createdAt time.Time) error
+	SaveMessage(ctx context.Context, msg *ChatMessageRow) error
 	LoadSession(ctx context.Context, sessionID string) (rootID, activeLeafID string, messages map[string]*ChatMessageRow, err error)
 	ListSessions(ctx context.Context, limit, offset int) ([]ChatSessionRow, error)
 }
@@ -204,9 +204,15 @@ type ChatMessageRow struct {
 	ID        string
 	SessionID string
 	ParentID  string
-	Role      string
-	Content   string
-	CreatedAt time.Time
+	// ClientID is the caller-supplied message id (web optimistic id,
+	// Telegram message id). Persisted so later turns that reference it
+	// (parent_id / reply_to) can be resolved to the stored ID.
+	ClientID   string
+	ReplyTo    string // quoted message ID (Mode 2)
+	ForkedFrom string // branch point this message forked from (Mode 1)
+	Role       string
+	Content    string
+	CreatedAt  time.Time
 }
 
 // ChatSessionRow is the DB representation of a chat session.
