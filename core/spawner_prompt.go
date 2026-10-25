@@ -97,6 +97,7 @@ func (s *Spawner) buildSystemPrompt(
 	taskText string,
 	latestError string,
 	taskID string, // P1-5: for Archive Path D query
+	trace []store.ToolInteraction, // ADDED 2026-10-25: for DataShape mismatch detection
 ) ([]schemas.ContentBlock, error) {
 	if s.pa == nil {
 		s.pa = NewPromptAssembler(s.expStore, s.ResourceLoader, s.registry, s.logger)
@@ -104,6 +105,7 @@ func (s *Spawner) buildSystemPrompt(
 	if s.archive != nil {
 		s.pa.SetArchive(s.archive)
 	}
+	s.pa.SetRecentInteractions(trace)
 	return s.pa.Build(ctx, hub, role, skillIDs, capability, providerCfg, toolConstraints, mergedContext, fewShots, isolation, precedents, taskText, latestError, taskID)
 }
 
@@ -119,7 +121,7 @@ func (s *Spawner) PreviewPrompt(roleID, task string, ctxMap map[string]any) (str
 	// audit L-NEW-13: add timeout to prevent blocking forever on I/O during prompt construction.
 	promptCtx, promptCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer promptCancel()
-	blocks, err := s.buildSystemPrompt(promptCtx, hub, role, []string{}, role.BaseCapability, &config.ProviderConfig{}, []string{}, ctxMap, []string{}, false, nil, task, "", "")
+	blocks, err := s.buildSystemPrompt(promptCtx, hub, role, []string{}, role.BaseCapability, &config.ProviderConfig{}, []string{}, ctxMap, []string{}, false, nil, task, "", "", nil)
 	if err != nil {
 		return "", err
 	}

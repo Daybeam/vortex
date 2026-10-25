@@ -620,7 +620,7 @@ func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string) string 
 	// planner can name real tools instead of guessing.
 	// T4 fix (2026-10-19): roleHint, graphStatus, stepCount extracted under
 	// s.Mu.RLock above — no more lock-after-unlock reads on graph.Steps/Status.
-	toolCatalog, _ := s.plannerToolCatalog(roleHint)
+	toolCatalog, _ := s.plannerToolCatalog(roleHint, graph.SubmitterIsAdmin)
 	roleList, _ := s.plannerAllowedRoles()
 
 	prompt := fmt.Sprintf(`You are a Task Planner. The current execution has hit a problem and needs re-planning.
@@ -676,7 +676,7 @@ Note: the problem step will be marked deprecated and replaced by the steps you e
 	// reaches submitDecision as a "replan" option that would silently do
 	// nothing. A rejected plan is logged with the reason and the option is
 	// simply not offered.
-	steps, perr := s.parsePlannerOutput(raw, roleHint)
+	steps, perr := s.parsePlannerOutput(raw, roleHint, graph.SubmitterIsAdmin)
 	if perr != nil {
 		s.logger.Log("planner_replan_rejected", taskID, stepID, map[string]any{
 			"reason": perr.Error(),
@@ -698,8 +698,8 @@ Note: the problem step will be marked deprecated and replaced by the steps you e
 // parsePlannerOutput validates raw planner text into StepInputs using the
 // same contract the submission path uses, so the two entry points cannot
 // drift apart.
-func (s *DirectedEngine) parsePlannerOutput(raw, targetRole string) ([]schemas.StepInput, error) {
-	_, catalog := s.plannerToolCatalog(targetRole)
+func (s *DirectedEngine) parsePlannerOutput(raw, targetRole string, submitterIsAdmin bool) ([]schemas.StepInput, error) {
+	_, catalog := s.plannerToolCatalog(targetRole, submitterIsAdmin)
 	opt := s.plannerParseOptions(targetRole, catalog)
 	return schemas.ParsePlanDAG(raw, opt)
 }

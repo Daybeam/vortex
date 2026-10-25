@@ -36,7 +36,7 @@ func TestC6_ChatSession_ConcurrentPersistAppend(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				msgID := "msg-" + strconv.Itoa(gid) + "-" + strconv.Itoa(j)
-				s.AppendUserMessage(msgID, "content", "")
+				s.AppendUserMessage(msgID, "content", "", "")
 			}
 		}(i)
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -117,7 +118,7 @@ Hard rules — violating any of these makes the plan unusable and it will be dis
 // deliberately deferred: (a) doubles MCP startup cost per submission and
 // (b) duplicates a 60-entry list per MCP that will silently rot. Until one
 // lands, keep enable_planner_first=false for AppWorld.
-func (s *DirectedEngine) plannerToolCatalog(roleID string) (string, map[string]map[string]bool) {
+func (s *DirectedEngine) plannerToolCatalog(roleID string, submitterIsAdmin bool) (string, map[string]map[string]bool) {
 	catalog := map[string]map[string]bool{}
 	if s.registry == nil {
 		return "", catalog
@@ -159,6 +160,12 @@ func (s *DirectedEngine) plannerToolCatalog(roleID string) (string, map[string]m
 		}
 		s.registry.Mu.RUnlock()
 		if !ok || mcpDef == nil {
+			continue
+		}
+		// Stage 5 (admin-hiding, 2026-10-24): drop admin_only MCPs from the
+		// catalog for non-admin submitters so admin tool names never reach
+		// the plan (and thus the public-visible task status).
+		if !submitterIsAdmin && mcpDef.EffectiveMountPolicy() == config.MountPolicyAdminOnly {
 			continue
 		}
 
@@ -369,7 +376,7 @@ func (s *DirectedEngine) plannerParseOptions(targetRole string, catalog map[stri
 // trip on the critical path. Turning "the planner was slow/garbled" into a
 // submission failure would make the system strictly less reliable than not
 // planning at all.
-func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSecs int) ([]schemas.StepInput, string) {
+func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSecs int, submitterIsAdmin bool) ([]schemas.StepInput, string) {
 	if s.registry == nil || s.spawner == nil {
 		return nil, "engine not initialised"
 	}
@@ -409,7 +416,7 @@ func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSec
 	}
 
 	roleList, allowedRoles := s.plannerAllowedRoles()
-	toolCatalog, catalog := s.plannerToolCatalog(roleID)
+	toolCatalog, catalog := s.plannerToolCatalog(roleID, submitterIsAdmin)
 
 	// Count total tools across all MCPs in the catalog so the planner's
 	// output budget can scale with tool-set size. A fixed 8192-token cap

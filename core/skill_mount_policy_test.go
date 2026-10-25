@@ -94,7 +94,7 @@ func TestResolveFinalSkills_ApprovalSkillDecisionFlow(t *testing.T) {
 	}
 
 	// After the human approval is recorded, the non-admin retry passes.
-	graph.ApproveSkillMounts(ae.SkillIDs)
+	graph.ApproveSkillMounts(ae.SkillIDs, "", "")
 	hub3 := NewContextHub(&config.Registry{
 		Roles: map[string]*config.Role{
 			"approver_role": {ID: "approver_role", BoundSkills: []string{"approv_sk", "open_sk"}},

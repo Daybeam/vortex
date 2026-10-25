@@ -298,7 +298,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		taskText := step.Task
 		for _, depID := range step.DependsOn {
 			if dep, ok := graph.Steps[depID]; ok && dep.PartialOutput != "" {
-				sanitized := sanitizePartialOutputForPassthrough(dep.PartialOutput, dep.LastError)
+				sanitized := sanitizePartialOutputForPassthrough(dep.PartialOutput, dep.LastError, graph.OwnerID)
 				if sanitized != "" {
 					taskText = fmt.Sprintf("%s\n\nUPSTREAM PARTIAL OUTPUT (step %s was intercepted by Sieve Guardian; verify or build on this):\n%s", taskText, depID, sanitized)
 				}
@@ -325,6 +325,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			CompressionHint:          step.CompressionHint,
 			TurnsBudgetBonus:         step.TurnsBudgetBonus,
 			SessionRoot:              graph.WorkspaceRoot,
+			OwnerID:                  graph.OwnerID,
 			PredecessorSkillID:       predecessorSkillID,
 			Metadata: map[string]any{
 				"context_tree_path": treeHistory,

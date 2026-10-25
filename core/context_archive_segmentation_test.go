@@ -650,6 +650,7 @@ func TestSpawnRequest_TaskID_PassedToBuildSystemPrompt(t *testing.T) {
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
 		"test task", "", "task-id-123",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt failed: %v", err)

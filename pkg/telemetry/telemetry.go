@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/daybeam/vortex/config"
@@ -70,6 +71,11 @@ func (e *Exporter) Sync(ctx context.Context) error {
 
 // StartBackgroundSync runs a ticker that periodically syncs experience data.
 func (e *Exporter) StartBackgroundSync(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[telemetry] background loop panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	if !e.config.Enabled || e.config.Endpoint == "" {
 		log.Printf("[telemetry] Background sync disabled (enabled=%v, endpoint=%q)", e.config.Enabled, e.config.Endpoint)
 		return

@@ -235,6 +235,12 @@ type Skill struct {
 	License       string            `json:"license,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 
+	// Trial marks a skill submitted from PendingSkills for one-shot instant use
+	// (docs/plan/TRIAL_SKILL_INSTANT_USE_DESIGN.md §4.1). Set by list_pending_skills
+	// on the returned copy; never persisted by the registry (PendingSkills entries
+	// themselves are not mutated — the flag travels with the session copy only).
+	Trial bool `json:"trial,omitempty"`
+
 	// StagedAt records when the skill was placed into PendingSkills (staging).
 	// Used by PendingSkillGC to expire un-promoted external skills after TTL.
 	// Zero value means the skill was not staged (native or already promoted).
@@ -581,7 +587,12 @@ type SystemSettings struct {
 	ConfidenceThreshold float64 `json:"confidence_threshold"`
 	MaxDecisionOutcomes int     `json:"max_decision_outcomes"`
 	MaxContextKeep      int     `json:"max_context_keep"`
-	MaxToolResultChars  int     `json:"max_tool_result_chars,omitempty"` // 0 = dynamic from model context window; >0 = explicit override
+	// ApprovalExpiry caps how long a human_approval_required decision stays
+	// approvable. nil ⇒ default 30m; *0 (or negative) ⇒ never expires (stays
+	// pending until approved/rejected). Seconds.
+	// See docs/plan/DECISION_APPROVAL_AUTHORITY_DESIGN.md §7.
+	ApprovalExpiry     *int `json:"approval_expiry,omitempty"`
+	MaxToolResultChars int  `json:"max_tool_result_chars,omitempty"` // 0 = dynamic from model context window; >0 = explicit override
 	// MaxToolSchemaBudgetTokens caps the total size of the tool schemas the
 	// router exposes in one step. 0 = router default
 	// (core.defaultToolSchemaBudgetTokens). Expressed in tokens rather than a
@@ -834,6 +845,22 @@ type SystemSettings struct {
 	// tool_calls so a reasoning-dominated truncation is distinguishable from a
 	// genuinely long answer.
 	DefaultSpawnOutputTokens int `json:"default_spawn_output_tokens,omitempty"`
+
+	// IntentShiftBranchingEnabled (ADDED 2026-10-25) toggles the semantic
+	// intent-shift auto-branching path of the context tree (behavior contract
+	// B11). nil or true = enabled: in addition to the pre-existing "new task"
+	// heuristic, a cosine-similarity drop between the current node's cached
+	// embedding and the step's cached embedding also branches. false =
+	// heuristic only, exactly the pre-2026-10-25 behavior.
+	// See docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §3.2.
+	IntentShiftBranchingEnabled *bool `json:"intent_shift_branching_enabled,omitempty"`
+	// IntentShiftThreshold (ADDED 2026-10-25) is the cosine-similarity floor
+	// for semantic branching: score < threshold ⇒ intent shift ⇒ branch.
+	// 0 = built-in default (0.20, same order as SegmentManager's
+	// segmentSealThreshold — deliberately conservative so only a real drift
+	// forks the tree). Only consulted when IntentShiftBranchingEnabled is
+	// true and both cached embeddings are usable.
+	IntentShiftThreshold float64 `json:"intent_shift_threshold,omitempty"`
 }
 
 // WorkspacePolicyConfig configures tier-gated workspace scope resolution.

@@ -201,7 +201,7 @@ var securityInterceptionReasons = []string{"injection", "pii", "security", "mali
 //     not instructions (prompt injection defense).
 //
 // Returns empty string if passthrough should be skipped entirely.
-func sanitizePartialOutputForPassthrough(partialOutput, interceptionReason string) string {
+func sanitizePartialOutputForPassthrough(partialOutput, interceptionReason, ownerID string) string {
 	if partialOutput == "" {
 		return ""
 	}
@@ -213,7 +213,7 @@ func sanitizePartialOutputForPassthrough(partialOutput, interceptionReason strin
 		}
 	}
 	// Egress redaction: strip secrets before sending to model.
-	redacted := RedactEgress(partialOutput)
+	redacted := RedactEgressWithOwner(partialOutput, ownerID)
 	// Truncate to bound prompt growth.
 	if len(redacted) > MaxPartialOutputChars {
 		head := redacted[:MaxPartialOutputChars/2]
@@ -843,7 +843,7 @@ func (s *Spawner) tryDelegationMode(ctx context.Context, req *SpawnRequest, role
 	// Defect 3 fix: redact sensitive context in delegation mode
 	delegationCtx := redactContextForDelegation(mergedContext)
 	delegationPrecedents := []*schemas.DecisionNode{}
-	systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "", req.TaskID)
+	systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "", req.TaskID, nil)
 	if err != nil {
 		return nil, false
 	}

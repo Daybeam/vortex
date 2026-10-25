@@ -52,6 +52,7 @@ func TestBuild_PrecedentsCappedAtTopN(t *testing.T) {
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		precedents, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
@@ -92,6 +93,7 @@ func TestBuild_RoleInstructionCompressed(t *testing.T) {
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		nil, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
@@ -151,6 +153,7 @@ func TestBuild_TreePathSlidingWindow(t *testing.T) {
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
@@ -203,6 +206,7 @@ func TestBuild_BudgetEnforced(t *testing.T) {
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "llama-3-8b"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
@@ -248,6 +252,7 @@ func TestBuild_ProtectedBlocksSurviveBudgetPressure(t *testing.T) {
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{Model: "llama-3-8b"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
@@ -287,6 +292,7 @@ func TestBuild_LightModelBudgetTighterThanFlagship(t *testing.T) {
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "llama-3-8b"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("light model buildSystemPrompt: %v", err)
@@ -296,6 +302,7 @@ func TestBuild_LightModelBudgetTighterThanFlagship(t *testing.T) {
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("flagship model buildSystemPrompt: %v", err)
@@ -325,6 +332,7 @@ func TestBuild_FewShotsTaggedTier3(t *testing.T) {
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, fewShots, false,
 		nil, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
@@ -394,6 +402,7 @@ func TestBuild_SingleSkillFullPrompt(t *testing.T) {
 		context.Background(), hub, &config.Role{ID: "r1", Name: "test"}, []string{"s1"}, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		nil, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
@@ -444,6 +453,7 @@ func TestBuild_MultipleSkillsProgressiveDisclosure(t *testing.T) {
 		context.Background(), hub, &config.Role{ID: "r1", Name: "test"}, []string{"s1", "s2"}, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		nil, "do the task", "", "",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)

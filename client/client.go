@@ -191,6 +191,11 @@ func (c *MCPClient) stderrString() string {
 
 func (c *MCPClient) readLoop() {
 	defer close(c.done)
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mcp-client] readLoop panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 
 	for c.scanner.Scan() {
 		line := make([]byte, len(c.scanner.Bytes()))

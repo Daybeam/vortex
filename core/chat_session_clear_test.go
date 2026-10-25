@@ -14,7 +14,7 @@ func TestChatSessionClear_ResetsAllState(t *testing.T) {
 	}
 
 	// Populate with messages and events.
-	s.AppendUserMessage("msg-1", "hello", "")
+	s.AppendUserMessage("msg-1", "hello", "", "")
 	s.AppendMessage(ChatMessage{Role: "assistant", Content: "hi"}, "")
 	s.AddEvent(ChatEvent{Type: "done"})
 	s.AddEvent(ChatEvent{Type: "done"})

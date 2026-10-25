@@ -10,6 +10,10 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
+// NOTE (2026-10-24): tests below previously passed the literal dir "anti_slop_test"
+// (and "/tmp") to mustNewLogger, so NewLogger wrote residue into the source tree
+// (core/anti_slop_test/<date>/t1.jsonl). Use mustTempDir so it auto-cleans on test end.
+// Regression guard for the source-tree log-residue bug (deletion-review-log 2026-10-24).
 func TestAntiSlop_Enabled_Strict_Block(t *testing.T) {
 	reg := &config.Registry{
 		System: config.SystemSettings{
@@ -21,7 +25,7 @@ func TestAntiSlop_Enabled_Strict_Block(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -52,7 +56,7 @@ func TestAntiSlop_Enabled_NonStrict_Warn(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -81,7 +85,7 @@ func TestAntiSlop_Clean_ResponseNoFiller(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -109,7 +113,7 @@ func TestAntiSlop_Disabled_PassThrough(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 
 	ctx := context.Background()
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}
@@ -147,7 +151,7 @@ func TestAntiSlop_NestedMap_Detection(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -180,7 +184,7 @@ func TestAntiSlop_UpperCase_CaseInsensitive(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -206,7 +210,7 @@ func TestAntiSlop_MinHits_Configurable(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -234,7 +238,7 @@ func TestAntiSlop_DefaultMinHits(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -260,7 +264,7 @@ func TestAntiSlop_Interceptor_StrictBlock_ReturnsError(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	var err error
 	ctx := context.Background()
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}
@@ -295,7 +299,7 @@ func TestAntiSlop_Interceptor_Warn_AppendsWarning(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	ctx := context.Background()
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}
 
@@ -332,7 +336,7 @@ func TestAntiSlop_ScanResultMapSliceOfMaps(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -365,7 +369,7 @@ func TestAntiSlop_ScanAssumptions(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "anti_slop_test", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 	defer logger.Close()
 	isc := NewAntiSlopInterceptor(reg, logger)
 
@@ -392,7 +396,7 @@ func TestAntiSlop_FakeProvider_EndToEnd(t *testing.T) {
 			},
 		},
 	}
-	logger := mustNewLogger(t, "/tmp", &config.SystemSettings{})
+	logger := mustNewLogger(t, mustTempDir(t, "anti_slop"), &config.SystemSettings{})
 
 	ctx := context.Background()
 	req := &SpawnRequest{TaskID: "t1", StepID: "s1"}

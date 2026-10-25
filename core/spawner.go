@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -212,9 +214,22 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 
 		// Wire up embedding client for ToolRouter hybrid search.
 		spawner.toolRouter.SetEmbedClient(NewHubEmbeddingClient(hub))
-		refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
-		spawner.toolRouter.RefreshToolEmbeddings(refreshCtx, reg)
-		refreshCancel()
+		// Non-blocking (2026-10-24 startup-perf): build BM25 + embeddings in the
+		// background so startup isn't held up to 30s on remote embedding I/O
+		// (cold start re-embeds every tool; the cache is in-memory only). The
+		// router is nil-safe — Route falls back to string/BM25 matching until
+		// the caches populate (BM25 is local, ready in ~ms; embeddings follow).
+		// Writes are under r.mu, so there's no race with concurrent Route calls.
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[spawner] embedding refresh panic: %v\n%s", r, debug.Stack())
+				}
+			}()
+			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6
+			defer refreshCancel()
+			spawner.toolRouter.RefreshToolEmbeddings(refreshCtx, reg)
+		}()
 		reg.OnReload(func() {
 			reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
 			defer reloadCancel()

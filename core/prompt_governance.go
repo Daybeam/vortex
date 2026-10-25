@@ -64,6 +64,7 @@ const (
 	CategoryFewShot         = "few_shot"         // Few-shot tool-call examples (Tier 3)
 	CategoryTreePath        = "tree_path"        // Context tree path (Tier 3)
 	CategoryConstraints     = "constraints"      // Hard rules + tool usage + output contract (Protected)
+	CategoryShapeMismatch   = "shape_mismatch"   // DataShape mismatch warning (Tier 2)
 
 	// charsPerToken mirrors config.CharsPerToken for token estimation.
 	charsPerToken = 4

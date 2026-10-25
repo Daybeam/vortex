@@ -312,7 +312,7 @@ func registerAdminSubsystem(app *App) {
 			}, nil
 		},
 	}
-
+	s.registerListPendingSkills()
 	s.Actions["debug_dump"] = Action{
 		Name:        "debug_dump",
 		Description: "Get a goroutine stack dump for debugging hangs.",
@@ -324,4 +324,46 @@ func registerAdminSubsystem(app *App) {
 	}
 
 	registry.Register(s)
+}
+
+// registerListPendingSkills adds the list_pending_skills action (Trial Skill
+// Instant-Use, docs/plan/TRIAL_SKILL_INSTANT_USE_DESIGN.md §4.1). Extracted
+// from registerAdminSubsystem to keep it within the size ratchet.
+func (s *Subsystem) registerListPendingSkills() {
+	s.Actions["list_pending_skills"] = Action{
+		Name:        "list_pending_skills",
+		Description: "List pending (unverified) external skills in the staging area. Returns full skill objects with a Trial flag — submit any of them via session_skills to use immediately without promotion. See docs/plan/TRIAL_SKILL_INSTANT_USE_DESIGN.md.",
+		Parameters: map[string]any{
+			"query": "string (optional) - substring filter on skill name or description",
+		},
+		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			query := strings.ToLower(strArg(args, "query"))
+			app.Registry.Mu.RLock()
+			defer app.Registry.Mu.RUnlock()
+			if len(app.Registry.PendingSkills) == 0 {
+				return map[string]any{"pending_skills": []any{}, "count": 0, "message": "no pending skills in staging"}, nil
+			}
+			results := make([]map[string]any, 0, len(app.Registry.PendingSkills))
+			for id, skill := range app.Registry.PendingSkills {
+				if query != "" && !strings.Contains(strings.ToLower(skill.Name), query) && !strings.Contains(strings.ToLower(skill.Description), query) {
+					continue
+				}
+				skillCopy := *skill
+				skillCopy.Trial = true
+				results = append(results, map[string]any{
+					"id":          id,
+					"name":        skill.Name,
+					"description": skill.Description,
+					"capability":  skill.Capability,
+					"trial":       true,
+					"skill":       skillCopy,
+				})
+			}
+			return map[string]any{
+				"pending_skills": results,
+				"count":          len(results),
+				"message":        "submit any skill via session_skills to trial-use it without promotion",
+			}, nil
+		},
+	}
 }

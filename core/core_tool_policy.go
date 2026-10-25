@@ -79,6 +79,7 @@ func coreToolPolicyForRole(reg *config.Registry, roleID string) coreToolPolicy {
 	return coreToolPolicyFromRole(r)
 }
 
+// @decision:DECISION-CORETOOLS-DEFAULT
 // coreToolPolicyFromRole is the form used where the *config.Role is already in
 // hand but its ID is not — PromptAssembler.Build receives the resolved role,
 // not the roleID. Both forms must agree, because the prompt and the dispatcher
