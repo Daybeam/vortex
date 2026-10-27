@@ -335,6 +335,83 @@ func IdentifyShellTask(command string, args []string) (shellType, scriptBody str
 	return "", ""
 }
 
+// resolveWindowsBash prefers git bash over WSL's bash.exe on Windows.
+// WSL's bash (C:\Windows\System32\bash.exe) requires WSL to be running;
+// git bash is self-contained and more reliable for script execution.
+// Only redirects bare "bash"/"sh" (not full paths) — a caller who passes
+// an explicit path is intentionally choosing that shell. Returns the
+// original command if git bash isn't found or the command isn't a shell.
+func resolveWindowsBash(command string) string {
+	if runtime.GOOS != "windows" {
+		return command
+	}
+	// Only redirect bare names (no path separator).
+	if strings.ContainsAny(command, `/\`) {
+		return command
+	}
+	cmdName := strings.ToLower(strings.TrimSuffix(command, ".exe"))
+	if cmdName != "bash" && cmdName != "sh" {
+		return command
+	}
+
+	// If LookPath already resolves to a non-WSL bash, it's fine (git bash
+	// or MSYS is first in PATH). Only intervene when WSL's bash wins.
+	resolved, err := exec.LookPath(command)
+	if err != nil {
+		return command // not found at all — let CommandContext report the error
+	}
+	if !isWSLBash(resolved) {
+		return resolved // git bash or other non-WSL bash already first in PATH
+	}
+
+	// WSL bash won the PATH lookup. Try standard git bash install locations.
+	for _, p := range gitBashCandidates() {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
+
+	// Standard locations missed (non-standard install dir). Scan PATH dirs
+	// for bash.exe outside System32 — this finds git bash wherever it's
+	// installed, as long as it's in PATH.
+	if p := scanPathForNonWSLBash(); p != "" {
+		return p
+	}
+
+	return command // no git bash found — fall through to WSL bash
+}
+
+// isWSLBash reports whether the path is WSL's bash wrapper.
+func isWSLBash(p string) bool {
+	lower := strings.ToLower(p)
+	return strings.Contains(lower, "system32") && strings.Contains(lower, "bash")
+}
+
+// gitBashCandidates returns common git bash install locations.
+func gitBashCandidates() []string {
+	return []string{
+		filepath.Join(os.Getenv("ProgramFiles"), "Git", "bin", "bash.exe"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Git", "bin", "bash.exe"),
+		filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Git", "bin", "bash.exe"),
+	}
+}
+
+// scanPathForNonWSLBash scans PATH directories for bash.exe outside System32.
+// Returns the first match, or "" if none found.
+func scanPathForNonWSLBash() string {
+	pathEnv := os.Getenv("PATH")
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" || isWSLBash(dir) {
+			continue
+		}
+		candidate := filepath.Join(dir, "bash.exe")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func (e *ControlledExecutor) verifyRobustness(ctx context.Context, directRes *ExecutionResult, shellType, body, cwd string) {
 	// Use a separate context for the verification path to avoid interfering with main path timing
 	verifyCtx, cancel := context.WithTimeout(ctx, e.TotalTimeout)

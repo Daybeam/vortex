@@ -65,7 +65,7 @@ func (p *AnthropicProvider) StreamComplete(ctx context.Context, req CompleteRequ
 		}
 		// Add multimodal attachments (Anthropic)
 		for _, att := range req.Attachments {
-			data, err := os.ReadFile(att.Path)
+			data, err := readAttachmentData(att.Path, att.MimeType)
 			if err != nil {
 				continue
 			}
@@ -323,7 +323,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompleteRequest) (
 		}
 		// Add multimodal attachments (Anthropic)
 		for _, att := range req.Attachments {
-			data, err := os.ReadFile(att.Path)
+			data, err := readAttachmentData(att.Path, att.MimeType)
 			if err != nil {
 				continue
 			}

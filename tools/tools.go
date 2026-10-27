@@ -157,11 +157,21 @@ type App struct {
 	Promoter          *Promoter // Optional usage-driven hot-promoter for invoke actions
 	SOPManager        *core.SOPManager
 	BudgetGate        *core.BudgetGate
+	QualityTracker    *core.QualityTracker
 	PendingSkillGC    *core.PendingSkillGC
 	CostTracker       *core.CostTracker
 	DB                *sql.DB
 	editionSubsystems []EditionSubsystem
 	archiveStop       chan struct{} // stops the TTL pruning goroutine (audit: was goroutine leak)
+}
+
+// WireQualityTracker creates a QualityTracker, assigns it to app, and returns
+// the unsubscribe closure to be deferred by the caller. Keeps caller bodies
+// short (size-gate friendly). Design §2.4 方案 D.
+func (app *App) WireQualityTracker() func() {
+	qt := core.NewQualityTracker()
+	app.QualityTracker = qt
+	return qt.Wire()
 }
 
 // InitArchive wires the ContextArchive (hot-data memory) into the app and

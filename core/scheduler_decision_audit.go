@@ -401,6 +401,7 @@ func (s *DirectedEngine) generateDynamicRubrics(ctx context.Context, graph *sche
 		TaskID:           graph.TaskID,
 		StepID:           "rubric_" + step.ID,
 		RoleID:           "auditor",
+		SubmitterIsAdmin: graph.SubmitterIsAdmin, // inherit, do not default (2026-10-26)
 		Task:             prompt,
 		ProviderOverride: step.VerifierModel,
 		Isolation:        true,

@@ -84,10 +84,11 @@ func (r *Registry) SetEnvReloadHook(hook func()) {
 
 // ProviderHealth tracks the reliability of a specific provider.
 type ProviderHealth struct {
-	LastFailure   time.Time
-	FailureCount  int
-	CircuitOpened bool
-	CooldownUntil time.Time
+	LastFailure     time.Time
+	FailureCount    int
+	CircuitOpened   bool
+	CooldownUntil   time.Time
+	WasCoolingDown  bool // tracks cooldown→recovery transition (admin lifecycle §3.2)
 }
 
 // GetWorkspacePolicy returns the WorkspacePolicy for the given owner.

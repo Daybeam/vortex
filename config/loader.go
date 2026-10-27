@@ -62,6 +62,13 @@ func NewRegistry(configPath string) (*Registry, error) {
 			r.compactor = NewCompactor(r)
 		}
 	}
+	// One line, not a dump (operator decision 2026-10-26): with 20+ MCPs most of
+	// them unclassified, listing each one every boot is noise. The RULE is what
+	// an operator needs: no explicit mount_policy ⇒ admin_only, not exposed to
+	// the public tier.
+	if hint := r.MountPolicyHint(); hint != "" {
+		log.Print(hint)
+	}
 	return r, nil
 }
 

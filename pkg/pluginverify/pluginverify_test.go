@@ -1,7 +1,9 @@
 package pluginverify
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -150,5 +152,116 @@ func TestIsWriteTool_CaseInsensitive(t *testing.T) {
 	}
 	if !IsWriteTool("DeleteItem") {
 		t.Error("DeleteItem should be a write tool (case-insensitive)")
+	}
+}
+
+func TestVerifyScriptSignature_EmptyPubKey_AllowsAlways(t *testing.T) {
+	// Empty public key = backward compat, always allows
+	err := VerifyScriptSignature("/nonexistent/script.py", "/nonexistent/script.sig", "")
+	if err != nil {
+		t.Fatalf("empty pub key should allow: %v", err)
+	}
+}
+
+func TestVerifyScriptSignature_ValidSignature(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "plugin.py")
+	sigPath := filepath.Join(dir, "plugin.sig")
+
+	scriptContent := []byte("def run(ctx): pass\n")
+	if err := os.WriteFile(scriptPath, scriptContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(priv, scriptContent)
+	if err := os.WriteFile(sigPath, sig, 0644); err != nil {
+		t.Fatal(err)
+	}
+	pubKeyB64 := base64.StdEncoding.EncodeToString(pub)
+
+	if err := VerifyScriptSignature(scriptPath, sigPath, pubKeyB64); err != nil {
+		t.Fatalf("valid signature should pass: %v", err)
+	}
+}
+
+func TestVerifyScriptSignature_TamperedScript(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "plugin.py")
+	sigPath := filepath.Join(dir, "plugin.sig")
+
+	original := []byte("def run(ctx): pass\n")
+	if err := os.WriteFile(scriptPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(priv, original)
+	if err := os.WriteFile(sigPath, sig, 0644); err != nil {
+		t.Fatal(err)
+	}
+	pubKeyB64 := base64.StdEncoding.EncodeToString(pub)
+
+	// Tamper the script after signing
+	if err := os.WriteFile(scriptPath, []byte("def run(ctx): EVIL\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = VerifyScriptSignature(scriptPath, sigPath, pubKeyB64)
+	if err == nil {
+		t.Fatal("tampered script should fail signature verification")
+	}
+}
+
+func TestVerifyScriptSignature_MissingSigFile(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "plugin.py")
+	if err := os.WriteFile(scriptPath, []byte("print('hi')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubKeyB64 := base64.StdEncoding.EncodeToString(pub)
+
+	err = VerifyScriptSignature(scriptPath, filepath.Join(dir, "nonexistent.sig"), pubKeyB64)
+	if err == nil {
+		t.Fatal("missing signature file should fail")
+	}
+}
+
+func TestVerifyScriptSignature_InvalidPubKeyEncoding(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "plugin.py")
+	if err := os.WriteFile(scriptPath, []byte("print('hi')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := VerifyScriptSignature(scriptPath, "sig", "!!!not-valid-base64!!!")
+	if err == nil {
+		t.Fatal("invalid base64 public key should fail")
+	}
+}
+
+func TestVerifyScriptSignature_WrongPubKeySize(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "plugin.py")
+	if err := os.WriteFile(scriptPath, []byte("print('hi')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 16 bytes instead of 32
+	shortKey := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef"))
+	err := VerifyScriptSignature(scriptPath, "sig", shortKey)
+	if err == nil {
+		t.Fatal("wrong-size public key should fail")
 	}
 }

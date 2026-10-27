@@ -51,6 +51,7 @@ type Spawner struct {
 	logger            *Logger
 	mcpMgr            *MCPConnectionManager
 	Mu                sync.Mutex
+	refreshWg         sync.WaitGroup // F3: tracks startup embedding-refresh goroutine
 	interceptors      []Interceptor
 	contextProviders  []ContextProvider
 	outputBase        string
@@ -220,7 +221,9 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		// router is nil-safe — Route falls back to string/BM25 matching until
 		// the caches populate (BM25 is local, ready in ~ms; embeddings follow).
 		// Writes are under r.mu, so there's no race with concurrent Route calls.
+		spawner.refreshWg.Add(1) // F3: track so CloseMCPConnections waits for drain
 		go func() {
+			defer spawner.refreshWg.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("[spawner] embedding refresh panic: %v\n%s", r, debug.Stack())
@@ -403,7 +406,11 @@ func (s *Spawner) RecordSubagentDuration(d time.Duration) {
 
 // CloseMCPConnections closes all cached MCP subprocess clients. Call on
 // shutdown to prevent orphaned subprocesses (audit finding C2).
+// It also waits for the startup embedding-refresh goroutine to drain
+// (F3 fix, audit 2026-10-26: goroutine was untracked, could leak on
+// fast shutdown within 30s of startup).
 func (s *Spawner) CloseMCPConnections() {
+	s.refreshWg.Wait() // F3: drain startup embedding refresh before closing MCPs
 	s.mcpMgr.CloseAll()
 }
 

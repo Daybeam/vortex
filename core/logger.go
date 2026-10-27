@@ -34,7 +34,16 @@ const (
 	// EventDecisionAutoResolved is emitted when NonInteractive mode auto-selects
 	// a conservative default for a decision that would otherwise block forever.
 	// ADDED (2026-10-02, E5).
-	EventDecisionAutoResolved    EventType = "decision_auto_resolved"
+	EventDecisionAutoResolved EventType = "decision_auto_resolved"
+	// EventMountPolicyRejected is emitted when the submitter-tier mount gate
+	// refuses a role because one of its bound MCPs is not mountable at this
+	// tier. The public error message is deliberately vague (admin-hiding: the
+	// caller must not learn which MCP is privileged), so WITHOUT this event the
+	// operator sees only `role %q is not available to non-admin submitters` and
+	// cannot tell which MCP or which policy caused it. That ambiguity is what
+	// made the 2026-10-26 AppWorld wedge take hours instead of minutes.
+	// ADDED (2026-10-26).
+	EventMountPolicyRejected     EventType = "mount_policy_rejected"
 	EventTaskCompleted           EventType = "task_completed"
 	EventTaskFailed              EventType = "task_failed"
 	EventTaskSuspended           EventType = "task_suspended"
@@ -46,6 +55,7 @@ const (
 	EventRoleSynthesisSuppressed EventType = "RoleSynthesisSuppressed"
 	EventUISuspendRequested      EventType = "ui_suspend_requested"
 	EventProviderCooldownSkip    EventType = "provider_cooldown_skip"
+	EventProviderRecovered       EventType = "provider_recovered"
 	EventRateLimitWaitStarted    EventType = "rate_limit_wait_started"
 	EventRateLimitWaitCompleted  EventType = "rate_limit_wait_completed"
 	EventRateLimitWaitFailed     EventType = "rate_limit_wait_failed"

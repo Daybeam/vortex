@@ -31,7 +31,7 @@ type BudgetGate struct {
 	roleUsage map[string]int64 // role_id → cumulative token count
 	suspended map[string]bool  // task_id → already suspended (avoid double-suspend)
 
-	unsubscribe func()
+	unsubscribes []func() // F2 fix: track all subscriptions (step + terminal events)
 }
 
 // NewBudgetGate creates a BudgetGate. Returns nil if disabled.
@@ -48,23 +48,31 @@ func NewBudgetGate(cfg config.BudgetGateConfig, scheduler *DirectedEngine) *Budg
 	}
 }
 
-// Wire subscribes the BudgetGate to EventStepCompleted on the global EventBus.
+// Wire subscribes the BudgetGate to EventStepCompleted on the global EventBus,
+// plus EventTaskCompleted/EventTaskFailed to prune per-task entries on terminal
+// transition (F2 fix, audit 2026-10-26: prevents unbounded map growth).
 // Call once at startup; defer the returned func to tear down.
 func (g *BudgetGate) Wire() func() {
 	if g == nil {
 		return func() {}
 	}
-	g.unsubscribe = DefaultBus.SubscribeWithCancel(string(EventStepCompleted), g.OnStepCompleted)
+	g.unsubscribes = append(g.unsubscribes,
+		DefaultBus.SubscribeWithCancel(string(EventStepCompleted), g.OnStepCompleted),
+		DefaultBus.SubscribeWithCancel(string(EventTaskCompleted), g.onTaskTerminal),
+		DefaultBus.SubscribeWithCancel(string(EventTaskFailed), g.onTaskTerminal),
+	)
 	return g.Unwire
 }
 
-// Unwire tears down the EventBus subscription. Safe to call multiple times.
+// Unwire tears down all EventBus subscriptions. Safe to call multiple times.
 func (g *BudgetGate) Unwire() {
-	if g == nil || g.unsubscribe == nil {
+	if g == nil || len(g.unsubscribes) == 0 {
 		return
 	}
-	g.unsubscribe()
-	g.unsubscribe = nil
+	for _, unsub := range g.unsubscribes {
+		unsub()
+	}
+	g.unsubscribes = nil
 }
 
 // OnStepCompleted is the EventBus callback. It extracts token usage from the
@@ -149,6 +157,30 @@ func (g *BudgetGate) IsSuspended(taskID string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.suspended[taskID]
+}
+
+// Reset removes all per-task accounting for the given taskID.
+// Call on terminal transition (task_completed / task_failed) to prevent
+// unbounded map growth in long-running servers.
+// (F2 fix, audit 2026-10-26: usage/roleUsage/suspended never had eviction.)
+func (g *BudgetGate) Reset(taskID string) {
+	if g == nil || taskID == "" {
+		return
+	}
+	g.mu.Lock()
+	delete(g.usage, taskID)
+	delete(g.suspended, taskID)
+	g.mu.Unlock()
+}
+
+// onTaskTerminal is the EventBus callback for EventTaskCompleted/EventTaskFailed.
+// It prunes the per-task entry so the maps don't grow without bound.
+func (g *BudgetGate) onTaskTerminal(ev AgentEvent) error {
+	if g == nil || ev.TaskID == "" {
+		return nil
+	}
+	g.Reset(ev.TaskID)
+	return nil
 }
 
 // extractTokens pulls the total token count from a step-completed event payload.

@@ -443,6 +443,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	}
 	app.InitArchive(outputBase)
 	defer app.StopArchive() // audit M12: stop pruning goroutine on shutdown
+	defer app.WireQualityTracker()() // quality trend observability
 
 	// Budget Gate: auto-suspend tasks when token usage exceeds configured
 	// thresholds. No-op unless budget_gate.enabled is set in config.json.
@@ -477,6 +478,11 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	switch transport {
 	case "sse":
 		serveSSE(mcpServer, rootCancel) // audit L4: pass rootCancel so background goroutines stop on shutdown
+	case "acp":
+		fmt.Fprintln(os.Stderr, "[orchestrator] ACP transport mode (Agent Client Protocol over stdio)")
+		if err := serveACP(scheduler, os.Stdin, os.Stdout); err != nil {
+			log.Printf("[acp] server error: %v", err)
+		}
 	default:
 		fmt.Fprintln(os.Stderr, "[orchestrator] stdio mode (Claude Desktop)")
 		// Graceful shutdown on SIGINT/SIGTERM: run ServeStdio in a goroutine,

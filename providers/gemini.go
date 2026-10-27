@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -95,7 +94,7 @@ func (p *GeminiProvider) buildGeminiBody(req CompleteRequest) map[string]any {
 	}
 
 	for _, att := range req.Attachments {
-		data, err := os.ReadFile(att.Path)
+		data, err := readAttachmentData(att.Path, att.MimeType)
 		if err != nil {
 			continue
 		}
