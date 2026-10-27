@@ -572,6 +572,10 @@ type FeatureFlags struct {
 	// Scope: only the hard kill is postponed; the hint itself still fires at
 	// the same turn, so the intervention prompt is unchanged.
 	StagnationGraceTurns int `json:"stagnation_grace_turns,omitempty"`
+	// WebPowerMode (2026-10-27): enables admin-tier power slash commands
+	// (/run, etc.) that mirror orchestrator_* MCP tools. Off by default
+	// (fail-safe). Still gated by admin tier. Hot-reloadable.
+	WebPowerMode bool `json:"web_power_mode,omitempty"`
 }
 
 // ProviderRoutingConfig configures provider routing strategy and telemetry.

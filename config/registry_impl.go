@@ -249,6 +249,36 @@ func (r *Registry) IsCoolingDown(pID string) (bool, time.Duration) {
 	return false, 0
 }
 
+// CheckRecovery detects a cooldown→recovered transition for a provider.
+// Returns true when the provider was cooling down on the previous call but
+// is no longer cooling down now. Callers should emit EventProviderRecovered
+// when this returns true. Idempotent: returns false on subsequent calls
+// until the provider cools down again.
+//
+// Admin lifecycle design §3.2 (2026-10-26): provider_recovered event.
+func (r *Registry) CheckRecovery(pID string) bool {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+
+	if r.ProviderHealth == nil {
+		return false
+	}
+	h, ok := r.ProviderHealth[pID]
+	if !ok {
+		return false
+	}
+	remaining := time.Until(h.CooldownUntil)
+	if remaining > 0 {
+		h.WasCoolingDown = true
+		return false
+	}
+	if h.WasCoolingDown {
+		h.WasCoolingDown = false
+		return true
+	}
+	return false
+}
+
 func (r *Registry) IsHealthy(pID string) bool {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()

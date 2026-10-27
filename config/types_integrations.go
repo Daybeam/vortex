@@ -11,6 +11,8 @@ type NotificationRoute struct {
 	TargetURL  string   `json:"target_url"`
 	SecretEnv  string   `json:"secret_env"`
 	Enabled    bool     `json:"enabled"` // per-route on/off; default false for safety
+	Channel    string   `json:"channel,omitempty"` // "" | "webhook" (default) | "telegram" | …
+	ChatID     string   `json:"chat_id,omitempty"` // telegram chat ID (Channel="telegram")
 }
 
 type NotificationConfig struct {

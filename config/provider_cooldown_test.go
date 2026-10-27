@@ -74,3 +74,37 @@ func TestSetCooldown_ExpiresNaturally(t *testing.T) {
 		t.Fatalf("expected cooldown to have expired naturally, got cooling=%v remaining=%v", cooling, remaining)
 	}
 }
+
+// TestCheckRecovery_Transition verifies that CheckRecovery detects the
+// cooldown→recovered transition and emits true exactly once.
+// Admin lifecycle design §3.2 (2026-10-26).
+func TestCheckRecovery_Transition(t *testing.T) {
+	r := &Registry{}
+
+	// No cooldown set → no recovery.
+	if r.CheckRecovery("openai") {
+		t.Error("expected false when provider was never cooling down")
+	}
+
+	// Set cooldown → CheckRecovery tracks it but returns false.
+	r.SetCooldown("openai", 10*time.Millisecond)
+	if r.CheckRecovery("openai") {
+		t.Error("expected false while still cooling down")
+	}
+
+	// Wait for cooldown to expire → CheckRecovery returns true (transition).
+	time.Sleep(30 * time.Millisecond)
+	if !r.CheckRecovery("openai") {
+		t.Error("expected true on first call after cooldown expired")
+	}
+
+	// Subsequent call → false (idempotent, no re-emission).
+	if r.CheckRecovery("openai") {
+		t.Error("expected false on subsequent call after recovery already emitted")
+	}
+
+	// Unknown provider → false.
+	if r.CheckRecovery("nonexistent") {
+		t.Error("expected false for unknown provider")
+	}
+}
