@@ -64,9 +64,22 @@ func NewMemoryBankStore(baseDir string, backend IMemoryBankBackend) *MemoryBankS
 
 // Save writes all MemoryBank categories to their respective markdown files.
 // ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 2.
+// Self-healing §4 (2026-10-26): negative assertions in SystemPatterns and
+// Decisions are bounded with a temporal anchor to prevent unbounded
+// "client does not want X" / "API does not support Y" from blocking valid
+// actions when conditions change.
 func (s *MemoryBankStore) Save(mb MemoryBank) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Self-healing §4: bound negative assertions with a temporal anchor.
+	for i, p := range mb.SystemPatterns {
+		mb.SystemPatterns[i] = boundNegativeAssertion(p)
+	}
+	for i := range mb.Decisions {
+		mb.Decisions[i].Decision = boundNegativeAssertion(mb.Decisions[i].Decision)
+		mb.Decisions[i].Rationale = boundNegativeAssertion(mb.Decisions[i].Rationale)
+	}
 
 	if err := os.MkdirAll(s.baseDir, 0755); err != nil {
 		return err
@@ -450,4 +463,43 @@ func parseUserProfile(content string) UserProfile {
 		}
 	}
 	return up
+}
+
+// negativeKeywords are terms that indicate a negative assertion (constraint,
+// rejection, or unsupported claim). Matched case-insensitively.
+var negativeKeywords = []string{"not ", "reject", "unsupported", "cannot", "can't", "don't", "doesn't", "won't"}
+
+// temporalAnchors are terms that indicate a temporal or conditional bound,
+// making a negative assertion safe to persist. Matched case-insensitively.
+var temporalAnchors = []string{"as of", "because", "since ", "until ", "currently", "2024", "2025", "2026", "2027"}
+
+// boundNegativeAssertion appends a temporal anchor to negative assertions that
+// lack one (self-healing §4: bounded negative assertions). Unbounded negative
+// assertions (e.g., "client does not want X") persist forever and block valid
+// actions when conditions change. If the string already has a temporal anchor
+// ("as of", "because", a year, etc.) it is returned unchanged.
+func boundNegativeAssertion(s string) string {
+	if s == "" {
+		return s
+	}
+	lower := strings.ToLower(s)
+
+	hasNeg := false
+	for _, kw := range negativeKeywords {
+		if strings.Contains(lower, kw) {
+			hasNeg = true
+			break
+		}
+	}
+	if !hasNeg {
+		return s
+	}
+
+	for _, anchor := range temporalAnchors {
+		if strings.Contains(lower, anchor) {
+			return s // already bounded
+		}
+	}
+
+	return s + fmt.Sprintf(" (as of %s — verify before relying on this constraint)", time.Now().Format("2006-01-02"))
 }

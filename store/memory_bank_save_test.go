@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -142,5 +143,85 @@ func TestMemoryBankSave_OverwritesExisting(t *testing.T) {
 	}
 	if len(loaded.UserProfile.Expertise) != 2 {
 		t.Fatalf("expected 2 expertise items after overwrite, got %d", len(loaded.UserProfile.Expertise))
+	}
+}
+
+func TestBoundNegativeAssertion(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		bounded bool // expect a temporal anchor appended
+	}{
+		{"empty", "", false},
+		{"positive", "client wants feature X", false},
+		{"negative with anchor", "API does not support Y as of 2026-10-01", false},
+		{"negative with because", "cannot use direct DB access because of security policy", false},
+		{"negative no anchor", "client does not want dark mode", true},
+		{"reject no anchor", "reject all external API calls", true},
+		{"unsupported no anchor", "unsupported on Windows", true},
+		{"cannot no anchor", "cannot deploy to production", true},
+		{"negative with since", "not available since last update", false},
+		{"negative with until", "unsupported until v2.0", false},
+		{"negative with currently", "currently not supported on ARM", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := boundNegativeAssertion(tt.input)
+			if tt.input == "" {
+				if result != "" {
+					t.Errorf("empty input should return empty, got %q", result)
+				}
+				return
+			}
+			hasAnchor := strings.Contains(result, "as of") || strings.Contains(result, "verify before relying")
+			if tt.bounded && !hasAnchor {
+				t.Errorf("expected temporal anchor appended to %q, got %q", tt.input, result)
+			}
+			if !tt.bounded && hasAnchor && !strings.Contains(tt.input, "as of") {
+				t.Errorf("did not expect anchor appended to %q, got %q", tt.input, result)
+			}
+		})
+	}
+}
+
+func TestMemoryBankSave_BoundsNegativeAssertions(t *testing.T) {
+	dir := t.TempDir()
+	s := NewMemoryBankStore(dir, nil)
+
+	mb := MemoryBank{
+		SystemPatterns: []string{
+			"config-first",                         // no negative — unchanged
+			"do not use direct DB access",          // negative, no anchor — bounded
+			"cannot deploy without tests as of v2", // negative, has anchor — unchanged
+		},
+		Decisions: []Decision{
+			{Title: "Auth", Decision: "reject plain HTTP", Rationale: "security"}, // reject — bounded
+		},
+	}
+
+	if err := s.Save(mb); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	loaded, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Pattern 0: no negative keyword — unchanged.
+	if loaded.SystemPatterns[0] != "config-first" {
+		t.Errorf("pattern 0 should be unchanged, got %q", loaded.SystemPatterns[0])
+	}
+	// Pattern 1: negative without anchor — should have temporal suffix.
+	if !strings.Contains(loaded.SystemPatterns[1], "verify before relying") {
+		t.Errorf("pattern 1 should be bounded, got %q", loaded.SystemPatterns[1])
+	}
+	// Pattern 2: negative with anchor — unchanged.
+	if loaded.SystemPatterns[2] != "cannot deploy without tests as of v2" {
+		t.Errorf("pattern 2 should be unchanged (already anchored), got %q", loaded.SystemPatterns[2])
+	}
+	// Decision: "reject plain HTTP" — should be bounded.
+	if !strings.Contains(loaded.Decisions[0].Decision, "verify before relying") {
+		t.Errorf("decision should be bounded, got %q", loaded.Decisions[0].Decision)
 	}
 }
