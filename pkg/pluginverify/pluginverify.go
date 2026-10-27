@@ -4,7 +4,9 @@
 package pluginverify
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -79,4 +81,44 @@ func IsWriteTool(toolName string) bool {
 		}
 	}
 	return false
+}
+
+// VerifyScriptSignature checks an Ed25519 signature against a pre-configured
+// public key. signatureFile is the path to a .sig file alongside the script.
+// publicKeyB64 is a base64-encoded Ed25519 public key from config.
+//
+// If publicKeyB64 is empty, returns nil (backward compat — no signing configured).
+// If the signature file does not exist, returns an error (signature required
+// when signing is configured).
+//
+// Plugin integrity design Change 6 (Phase 2, 2026-10-26).
+func VerifyScriptSignature(scriptPath, signatureFile, publicKeyB64 string) error {
+	if publicKeyB64 == "" {
+		return nil // no signing configured — backward compat
+	}
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(publicKeyB64)
+	if err != nil {
+		return fmt.Errorf("plugin: invalid public key encoding: %w", err)
+	}
+	if len(pubKeyBytes) != ed25519.PublicKeySize {
+		return fmt.Errorf("plugin: public key size %d != expected %d", len(pubKeyBytes), ed25519.PublicKeySize)
+	}
+	pubKey := ed25519.PublicKey(pubKeyBytes)
+
+	scriptData, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return fmt.Errorf("plugin: cannot read script: %w", err)
+	}
+	sigData, err := os.ReadFile(signatureFile)
+	if err != nil {
+		return fmt.Errorf("plugin: cannot read signature file: %w", err)
+	}
+	if len(sigData) != ed25519.SignatureSize {
+		return fmt.Errorf("plugin: signature size %d != expected %d", len(sigData), ed25519.SignatureSize)
+	}
+
+	if !ed25519.Verify(pubKey, scriptData, sigData) {
+		return fmt.Errorf("plugin: signature verification FAILED for %s", scriptPath)
+	}
+	return nil
 }
