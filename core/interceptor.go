@@ -117,6 +117,31 @@ type SpawnRequest struct {
 	// ADDED (2026-07-20) for Session Role support.
 	Hub *ContextHub
 
+	// SubmitterIsAdmin carries the mount-gate tier of the task that OWNS this
+	// spawn, for the engine's own sub-spawns (step body, planner, decider,
+	// rubric, replay) — the ones that build a SpawnRequest without a Hub.
+	//
+	// WHY THIS FIELD EXISTS (2026-10-26, root cause of the AppWorld aw16 b2
+	// wedge): the mount gate reads the tier from `req.Hub.Graph.SubmitterIsAdmin`
+	// (core/mount_gate.go). Sub-spawns passed no Hub, and prepareSpawn's
+	// "safety fallback" builds `NewContextHub(reg, nil, expStore)` — Graph is
+	// **nil**, so effectiveSubmitterIsAdmin folded to false. Every engine
+	// sub-spawn was therefore silently classified as a PUBLIC caller, and any
+	// role bound to an MCP whose mount_policy is not explicitly "open" (the
+	// default is admin_only) was rejected with the misleading
+	// `role %q is not available to non-admin submitters`. The decider role in
+	// the AppWorld config is `appworld_agent`, which binds an unclassified
+	// MCP ⇒ every `decision_required(step_failed)` died at
+	// `s1_decider` in <1 ms and the task never reached a terminal status.
+	//
+	// RULE: an internal sub-spawn must INHERIT the owning graph's tier — never
+	// default it, never hardcode admin for a live task. A public task's decider
+	// stays public (so the rejection is consistent with its parent instead of
+	// becoming an escalation path); an admin task's decider stays admin.
+	// replay_scheduler is the one exception: it analyses ALREADY-PERSISTED
+	// graphs offline, so it passes the historical task's tier explicitly.
+	SubmitterIsAdmin bool
+
 	// EvoX-inspired Zero-Loss Coordination (ADDED 2026-08-17)
 	InputMapping map[string]any // Resolved values to inject into tool calls
 	Isolation    bool           // If true, skip historical summaries

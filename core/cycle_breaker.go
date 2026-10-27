@@ -161,9 +161,20 @@ func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.St
 	)
 	delete(graph.CycleCounters, cycleID)
 
+	// Self-healing §3: mark contributing memory items as stale so they are
+	// not recalled in future searches. The failing step + its dependencies
+	// produced unreliable context — flagging them prevents epistemic rigidity
+	// (blindly trusting outdated facts on the next task).
+	staleCount := 0
+	if s.Archive != nil {
+		failingSteps := append([]string{step.ID}, step.DependsOn...)
+		staleCount = s.Archive.MarkStaleByStep(graph.TaskID, failingSteps)
+	}
+
 	s.logger.Log("EventCycleFuse", graph.TaskID, step.ID, map[string]any{
-		"cycle_id":   cycleID,
-		"max_rounds": step.MaxLoopRounds,
+		"cycle_id":    cycleID,
+		"max_rounds":  step.MaxLoopRounds,
+		"stale_marked": staleCount,
 	})
 	s.publishEvent(graph.TaskID, step.ID, EventStepFailed, map[string]any{"cycle_fuse": cycleID, "suspended": true})
 	s.Mu.Unlock()

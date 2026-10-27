@@ -544,6 +544,45 @@ func (a *ContextArchive) writeFileLocked() error {
 	return err
 }
 
+// MarkStaleByStep marks all MemoryItems matching the given taskID and any of
+// stepIDs as "stale" (self-healing §3: CycleBreaker stale memory patch hook).
+// Called when the CycleBreaker reaches its fuse limit — the failing step's
+// contributing memory is presumed unreliable and should not be recalled in
+// future searches. Returns the count of items marked stale.
+func (a *ContextArchive) MarkStaleByStep(taskID string, stepIDs []string) int {
+	if taskID == "" || len(stepIDs) == 0 {
+		return 0
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	stepSet := make(map[string]bool, len(stepIDs))
+	for _, sid := range stepIDs {
+		stepSet[sid] = true
+	}
+
+	marked := 0
+	for i := range a.items {
+		if a.items[i].TaskID != taskID {
+			continue
+		}
+		for _, sid := range a.items[i].StepIDs {
+			if stepSet[sid] && a.items[i].Status != "stale" {
+				a.items[i].Status = "stale"
+				marked++
+				break
+			}
+		}
+	}
+
+	if marked > 0 {
+		_ = a.writeFileLocked()
+		a.indexDirty = true
+	}
+	return marked
+}
+
 // --- Forest Search (Kruskal sink core layer) ---
 
 // ForestResult bundles the selected MemoryItems with the edges of the Kruskal forest.

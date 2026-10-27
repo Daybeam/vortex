@@ -65,10 +65,13 @@ type CommandGuardResult struct {
 }
 
 // CheckCommand runs the full guard pipeline:
+//  0. Windows bash resolution: prefer git bash over WSL's bash.exe
 //  1. Blocklist TUI tools
 //  2. Auto-inject --no-pager for git subcommands
 func CheckCommand(command string, args []string) CommandGuardResult {
-	cmdName := strings.ToLower(filepath.Base(command))
+	// 0. Windows: prefer git bash over WSL's bash.exe when available.
+	resolved := resolveWindowsBash(command)
+	cmdName := strings.ToLower(filepath.Base(resolved))
 	cmdName = strings.TrimSuffix(cmdName, ".exe")
 
 	// 1. TUI blocklist
@@ -90,10 +93,15 @@ func CheckCommand(command string, args []string) CommandGuardResult {
 			newArgs = append(newArgs, "--no-pager")
 			newArgs = append(newArgs, args...)
 			return CommandGuardResult{
-				RewrittenCommand: command,
+				RewrittenCommand: resolved,
 				RewrittenArgs:    newArgs,
 			}
 		}
+	}
+
+	// 3. Return resolved bash path if it differs from the original.
+	if resolved != command {
+		return CommandGuardResult{RewrittenCommand: resolved}
 	}
 
 	return CommandGuardResult{}

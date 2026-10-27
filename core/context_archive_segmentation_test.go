@@ -553,7 +553,7 @@ func TestArchiveQuery_NilSafe(t *testing.T) {
 
 func TestTryPlannerReplan_NilRegistry_ReturnsEmpty(t *testing.T) {
 	s := &DirectedEngine{}
-	result := s.tryPlannerReplan("task-1", "step-1", "test reason")
+	result := s.tryPlannerReplan("task-1", "step-1", "test reason", false)
 	if result != "" {
 		t.Error("tryPlannerReplan should return empty string when registry is nil")
 	}
@@ -564,7 +564,7 @@ func TestTryPlannerReplan_NoPlannerRole_ReturnsEmpty(t *testing.T) {
 		Roles: make(map[string]*config.Role),
 	}
 	s := &DirectedEngine{registry: reg}
-	result := s.tryPlannerReplan("task-1", "step-1", "test reason")
+	result := s.tryPlannerReplan("task-1", "step-1", "test reason", false)
 	if result != "" {
 		t.Error("tryPlannerReplan should return empty string when task_planner role is not defined")
 	}

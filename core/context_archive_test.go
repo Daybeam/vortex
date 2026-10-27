@@ -282,3 +282,67 @@ func TestSingleTaskScopeEnforcement(t *testing.T) {
 		t.Errorf("empty scope: expected 2 results (all tasks), got %d — handler must reject empty task_scope", len(resultsAll))
 	}
 }
+
+func TestContextArchive_MarkStaleByStep(t *testing.T) {
+	tmpDir := t.TempDir()
+	archive := NewContextArchive(filepath.Join(tmpDir, "context.jsonl"))
+
+	// Append items: two for task1 (steps s1, s2), one for task2 (step s1).
+	items := []MemoryItem{
+		{TaskID: "task1", NodeID: "n1", Intent: "alpha", StepIDs: []string{"s1"}, Timestamp: time.Now()},
+		{TaskID: "task1", NodeID: "n2", Intent: "beta", StepIDs: []string{"s2"}, Timestamp: time.Now()},
+		{TaskID: "task2", NodeID: "n3", Intent: "gamma", StepIDs: []string{"s1"}, Timestamp: time.Now()},
+	}
+	for _, item := range items {
+		if err := archive.Append(item); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+	}
+
+	// Mark task1's step s1 as stale — should mark n1 only.
+	marked := archive.MarkStaleByStep("task1", []string{"s1"})
+	if marked != 1 {
+		t.Fatalf("expected 1 item marked stale, got %d", marked)
+	}
+
+	// Verify n1 is stale, n2 and n3 are not.
+	for _, item := range archive.items {
+		if item.NodeID == "n1" && item.Status != "stale" {
+			t.Errorf("n1 should be stale, got status=%q", item.Status)
+		}
+		if item.NodeID == "n2" && item.Status == "stale" {
+			t.Errorf("n2 should NOT be stale")
+		}
+		if item.NodeID == "n3" && item.Status == "stale" {
+			t.Errorf("n3 (different task) should NOT be stale")
+		}
+	}
+
+	// Mark task1's steps s1+s2 — s1 already stale, s2 newly marked.
+	marked = archive.MarkStaleByStep("task1", []string{"s1", "s2"})
+	if marked != 1 {
+		t.Fatalf("expected 1 newly marked (s2; s1 already stale), got %d", marked)
+	}
+
+	// Empty inputs are no-ops.
+	if archive.MarkStaleByStep("", []string{"s1"}) != 0 {
+		t.Error("empty taskID should be no-op")
+	}
+	if archive.MarkStaleByStep("task1", nil) != 0 {
+		t.Error("empty stepIDs should be no-op")
+	}
+
+	// Verify persistence: reload and check.
+	archive2 := NewContextArchive(archive.path)
+	if err := archive2.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	for _, item := range archive2.items {
+		if item.NodeID == "n1" && item.Status != "stale" {
+			t.Errorf("after reload: n1 should be stale, got %q", item.Status)
+		}
+		if item.NodeID == "n2" && item.Status != "stale" {
+			t.Errorf("after reload: n2 should be stale, got %q", item.Status)
+		}
+	}
+}

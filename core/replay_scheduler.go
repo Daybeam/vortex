@@ -588,6 +588,18 @@ Respond ONLY with 'PASS' or 'FAIL: <reason>'.`, toolName, v.Type, string(payload
 		Task:             auditPrompt,
 		ProviderOverride: providerID,
 		Isolation:        true,
+		// NO SubmitterIsAdmin ON PURPOSE (2026-10-26). This spawn is not owned
+		// by a live task: it replays a PERSISTED mutation record, and the prompt
+		// is derived from historical task text, which may have come from a
+		// public caller. Granting admin here would turn "old task text" into an
+		// escalation into admin-only MCPs. Fail-closed is correct.
+		//
+		// KNOWN GAP: as a consequence, the cross-family verifier is silently
+		// rejected for any `auditor` role bound to an MCP whose mount_policy is
+		// not explicitly "open" — the error surfaces only as
+		// "cross_family_spawn_error: role \"auditor\" is not available to
+		// non-admin submitters". Fix by persisting the source task's tier on
+		// ReplayMutationRecord and passing it here; do NOT hardcode true.
 	})
 	if err != nil {
 		return false, "cross_family_spawn_error: " + err.Error()
