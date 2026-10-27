@@ -144,7 +144,7 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 			{"type": "text", "text": req.User},
 		}
 		for _, att := range req.Attachments {
-			data, err := os.ReadFile(att.Path)
+			data, err := readAttachmentData(att.Path, att.MimeType)
 			if err != nil {
 				log.Printf("WARN: openai_provider: failed to read attachment %s: %v", att.Path, err)
 				continue
@@ -403,7 +403,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 			{"type": "text", "text": req.User},
 		}
 		for _, att := range req.Attachments {
-			data, err := os.ReadFile(att.Path)
+			data, err := readAttachmentData(att.Path, att.MimeType)
 			if err != nil {
 				log.Printf("WARN: openai_provider: failed to read attachment %s: %v", att.Path, err)
 				continue
