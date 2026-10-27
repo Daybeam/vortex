@@ -337,3 +337,57 @@ func TestBudgetGate_ZeroTokensSkipped(t *testing.T) {
 		t.Fatal("task should not be suspended with 0 tokens")
 	}
 }
+
+// TestBudgetGate_TerminalEventPrunesTaskEntry is the regression test for
+// F2 (audit 2026-10-26): BudgetGate.usage/roleUsage/suspended maps grew
+// without bound because no eviction existed on task terminal transition.
+// Before fix: maps retained entries for every task_id ever seen.
+// After fix:  EventTaskCompleted/EventTaskFailed trigger Reset(taskID).
+func TestBudgetGate_TerminalEventPrunesTaskEntry(t *testing.T) {
+	s, _ := newAbortTestEngine(t)
+	defer s.Stop()
+
+	taskID := "budget-prune-task"
+	setupRunningTask(t, s, taskID)
+
+	cfg := config.BudgetGateConfig{
+		Enabled:       true,
+		PerTaskTokens: 10000, // high threshold so no suspend during accumulation
+	}
+	g := NewBudgetGate(cfg, s)
+	defer g.Wire()()
+
+	// Accumulate usage for the task.
+	DefaultBus.Publish(NewAgentEvent(taskID, "s1", string(EventStepCompleted), map[string]any{
+		"usage":   map[string]any{"total_tokens": 500},
+		"role_id": "worker",
+	}))
+	if got := g.GetTaskUsage(taskID); got != 500 {
+		t.Fatalf("expected 500 usage after step, got %d", got)
+	}
+
+	// Fire task_completed — should prune the per-task entry.
+	DefaultBus.Publish(NewAgentEvent(taskID, "", string(EventTaskCompleted), nil))
+
+	if got := g.GetTaskUsage(taskID); got != 0 {
+		t.Fatalf("F2 regression: usage for %s should be pruned after task_completed, got %d", taskID, got)
+	}
+	if g.IsSuspended(taskID) {
+		t.Fatal("F2 regression: suspended flag should be pruned after task_completed")
+	}
+
+	// Same for task_failed on a second task.
+	taskID2 := "budget-prune-task-fail"
+	setupRunningTask(t, s, taskID2)
+	DefaultBus.Publish(NewAgentEvent(taskID2, "s1", string(EventStepCompleted), map[string]any{
+		"usage":   map[string]any{"total_tokens": 300},
+		"role_id": "worker",
+	}))
+	if got := g.GetTaskUsage(taskID2); got != 300 {
+		t.Fatalf("expected 300 usage, got %d", got)
+	}
+	DefaultBus.Publish(NewAgentEvent(taskID2, "", string(EventTaskFailed), nil))
+	if got := g.GetTaskUsage(taskID2); got != 0 {
+		t.Fatalf("F2 regression: usage for %s should be pruned after task_failed, got %d", taskID2, got)
+	}
+}
