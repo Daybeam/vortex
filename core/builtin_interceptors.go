@@ -70,13 +70,29 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 				// the task manifest, and a name-matching heuristic. Roles decide
 				// HOW to think (instruction, synthesised from the cookbook);
 				// steps decide WHAT to use. See docs 52 §12.3.
-				req.Hub.Graph.SetSessionRole(req.RoleID, role)
-				if skill != nil {
-					req.Hub.Graph.SetSessionSkill(skill.ID, skill)
-				}
-				logger.Log("EventEphemeralRoleGenerated", req.TaskID, req.StepID, map[string]any{
-					"role_id": req.RoleID,
-				})
+			// FIX (2026-10-27): when the caller supplied RoleID == "" (the
+			// "let the system pick a role from the task" flow),
+			// GenerateRoleObjects derives a real effectiveRoleID internally
+			// (role_generator.go:372) but only exposes it on the returned
+			// role object. Storing under the empty key and leaving
+			// req.RoleID == "" made GetRole("") return nil unconditionally
+			// (hub.go:103), so every empty-RoleID spawn died with
+			// `role "" not found` right after generation "succeeded" —
+			// observed 2026-10-27 in task_68d6fe80 / task_7e8d85f3 (both
+			// reached EventEphemeralRoleGenerated then step_failed).
+			// Mirror the E16.10-B1 fix already in tryDefaultRoleFallback:
+			// rewrite req.RoleID to the generated role's own ID and cache
+			// under that ID so both lookup paths agree.
+			if req.RoleID == "" && role.ID != "" {
+				req.RoleID = role.ID
+			}
+			req.Hub.Graph.SetSessionRole(req.RoleID, role)
+			if skill != nil {
+				req.Hub.Graph.SetSessionSkill(skill.ID, skill)
+			}
+			logger.Log("EventEphemeralRoleGenerated", req.TaskID, req.StepID, map[string]any{
+				"role_id": req.RoleID,
+			})
 			case registry.EnableDynamicRoleGen:
 				logger.Log("EventAutoRoleGeneration", req.TaskID, req.StepID, map[string]any{
 					"message": fmt.Sprintf("Role %s not found, attempting dynamic generation", req.RoleID),

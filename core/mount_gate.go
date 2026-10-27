@@ -21,8 +21,31 @@ import (
 // cannot forge it). Reading it here covers every spawn — including
 // engine-internal sub-spawns (planner/auditor/arbiter/replay) that build their
 // own SpawnRequest without touching this field.
+//
+// ⚠ CORRECTION (2026-10-26): the last sentence above was FALSE and cost a
+// 5.5 h eval round. Building a SpawnRequest "without touching the field" only
+// stays safe if the spawn also carries a Hub — and the internal sub-spawns do
+// not. prepareSpawn then substitutes NewContextHub(reg, nil, …) whose Graph is
+// nil, so this function returned false and every internal sub-spawn was judged
+// a public caller. Use submitterIsAdminFor(req) instead of calling this
+// directly, so a sub-spawn can carry its tier on the request.
 func effectiveSubmitterIsAdmin(hub *ContextHub) bool {
 	return hub != nil && hub.Graph != nil && hub.Graph.SubmitterIsAdmin
+}
+
+// submitterIsAdminFor is the mount gate's single tier lookup: the request's own
+// SubmitterIsAdmin (set by engine sub-spawns from the owning graph) wins, and
+// the hub's graph is the fallback for externally-driven spawns.
+//
+// Fail-closed is preserved: a request with neither yields false.
+func submitterIsAdminFor(req *SpawnRequest) bool {
+	if req == nil {
+		return false
+	}
+	if req.SubmitterIsAdmin {
+		return true
+	}
+	return effectiveSubmitterIsAdmin(req.Hub)
 }
 
 // approvalResult converts a *MountApprovalRequiredError into the
@@ -47,7 +70,7 @@ func (s *Spawner) approvalResult(role *config.Role, err error) *SpawnResult {
 // skill it returns (nil, result, nil) — the same short-circuit shape as
 // resolveMCPBindings (D3, 2026-10-22).
 func (s *Spawner) resolveSkills(req *SpawnRequest, role *config.Role, additionalSkills []string) ([]string, *SpawnResult, error) {
-	final, err := ResolveFinalSkills(req.Hub, req.RoleID, additionalSkills, effectiveSubmitterIsAdmin(req.Hub))
+	final, err := ResolveFinalSkills(req.Hub, req.RoleID, additionalSkills, submitterIsAdminFor(req))
 	if err == nil {
 		return final, nil, nil
 	}
