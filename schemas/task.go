@@ -282,6 +282,23 @@ type Step struct {
 	TargetKey     string            `json:"target_key,omitempty"`
 	InputMapping  map[string]string `json:"input_mapping,omitempty"`
 	Isolation     bool              `json:"isolation,omitempty"`
+
+	// ExecutionProtocol (ADDED 2026-10-26): selects the execution backend for
+	// this step. "" or "internal" = standard Spawner LLM loop (default).
+	// "acp" = delegate to an external ACP-compliant worker via JSON-RPC.
+	// See docs/plan/ACP_CLIENT_SPAWNER_INTEGRATION_DESIGN.md.
+	ExecutionProtocol string         `json:"execution_protocol,omitempty"`
+	ACPConfig         *ACPStepConfig `json:"acp_config,omitempty"`
+}
+
+// ACPStepConfig configures an external ACP (Agent Client Protocol) worker
+// for step execution. Only used when Step.ExecutionProtocol == "acp".
+// See docs/plan/ACP_CLIENT_SPAWNER_INTEGRATION_DESIGN.md §3.1.
+type ACPStepConfig struct {
+	BinaryPath string   `json:"binary_path"`
+	Args       []string `json:"args,omitempty"`
+	WorkDir    string   `json:"work_dir,omitempty"`
+	TimeoutSec int      `json:"timeout_sec,omitempty"`
 }
 
 func (s *Step) IsTerminal() bool {
@@ -319,6 +336,13 @@ type DecisionNode struct {
 	// Perception 2.0 (Semantic Retrieval)
 	Embedding      []float32 `json:"embedding,omitempty"`
 	EmbeddingModel string    `json:"embedding_model,omitempty"`
+
+	// Memory tiering & observability (design §1.4 方案 B, 2026-10-23):
+	// Source classifies whether this decision is user-confirmed, model-guessed,
+	// or verifier-audited — so retrieval can rank trusted decisions above
+	// speculative ones. Confidence is the 0.0-1.0 certainty at decision time.
+	Source     string  `json:"source,omitempty"`      // "user" | "model" | "verifier"
+	Confidence float64 `json:"confidence,omitempty"`  // 0.0-1.0
 }
 
 // ─── OutputFile ───────────────────────────────────────────────────────────
