@@ -194,13 +194,12 @@ turnLoop:
 			// and attempt it anyway rather than blocking the step entirely --
 			// the cooldown is a best-effort optimization, not a hard gate.
 			if req.Hub != nil && req.Hub.Registry != nil {
-				if cooling, remaining := req.Hub.Registry.IsCoolingDown(providers.PoolIDFor(pCfg)); cooling && candIdx < len(candidateConfigs)-1 {
-					s.logger.Log(EventProviderCooldownSkip, req.TaskID, req.StepID, map[string]any{
-						"pool_id":       providers.PoolIDFor(pCfg),
-						"remaining_sec": remaining.Seconds(),
-						"candidate_idx": candIdx,
-					})
+				pid := providers.PoolIDFor(pCfg)
+				if cooling, remaining := req.Hub.Registry.IsCoolingDown(pid); cooling && candIdx < len(candidateConfigs)-1 {
+					s.logger.Log(EventProviderCooldownSkip, req.TaskID, req.StepID, map[string]any{"pool_id": pid, "remaining_sec": remaining.Seconds(), "candidate_idx": candIdx})
 					continue
+				} else if req.Hub.Registry.CheckRecovery(pid) {
+					s.logger.Log(EventProviderRecovered, req.TaskID, req.StepID, map[string]any{"pool_id": pid})
 				}
 			}
 

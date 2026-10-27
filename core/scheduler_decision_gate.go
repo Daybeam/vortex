@@ -260,6 +260,12 @@ func (s *DirectedEngine) addDecision(
 		s.recentDecisions[rlKey] = time.Now()
 		s.recentDecisionsMu.Unlock()
 		taskID, decID := graph.TaskID, dec.ID
+		// Captured OUTSIDE the goroutine: the decider must run as the tier of the
+		// task that owns the decision. Reading graph.SubmitterIsAdmin inside the
+		// closure would let a later mutation change it mid-flight, and the whole
+		// point of this value is that the decider is an INTERNAL sub-spawn of
+		// this task — not a fresh public caller (2026-10-26 root cause).
+		deciderSubmitterIsAdmin := graph.SubmitterIsAdmin
 		deciderRole := s.registry.System.DecisionDeciderRole
 		s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
 			"decision_id":  decID,
@@ -268,7 +274,7 @@ func (s *DirectedEngine) addDecision(
 			"decider_role": deciderRole,
 		})
 		s.goBackground(func() {
-			choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options)
+			choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin)
 			if choice == "" {
 				return // must not auto-resolve (e.g. human_approval_required)
 			}
@@ -291,6 +297,7 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	dtype schemas.DecisionType,
 	ctx map[string]any,
 	options []string,
+	submitterIsAdmin bool,
 ) string {
 	// human_approval_required: legal/compliance gate. Must not auto-resolve
 	// unless explicitly overridden via AllowHumanApprovalAutoResolve.
@@ -301,7 +308,7 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	// Delegate strategy: spawn decider role to choose.
 	if deciderRole != "" && s.spawner != nil {
 		observability.GetGlobalMetrics().Inc("orchestrator.decision_gate.calls", 1)
-		if choice, ok := s.spawnDecider(deciderRole, taskID, stepID, dtype, ctx, options); ok {
+		if choice, ok := s.spawnDecider(deciderRole, taskID, stepID, dtype, ctx, options, submitterIsAdmin); ok {
 			return choice
 		}
 		// Decider failed or returned invalid choice — fall through to conservative.
@@ -330,6 +337,7 @@ func (s *DirectedEngine) spawnDecider(
 	dtype schemas.DecisionType,
 	ctx map[string]any,
 	options []string,
+	submitterIsAdmin bool,
 ) (string, bool) {
 	prompt := fmt.Sprintf(`You are a decision arbiter. A workflow step has blocked and requires a decision.
 
@@ -346,6 +354,12 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 		RoleID:      roleID,
 		Task:        prompt,
 		RoutingMode: schemas.RoutingModeLegacy,
+		// The decider is an internal sub-spawn of the task whose step blocked.
+		// Without this it is judged a public caller and any role bound to an MCP
+		// without an explicit mount_policy is rejected outright — which is what
+		// turned every `decision_required(step_failed)` into a 1 ms
+		// `infrastructure_failure` and left the task wedged forever (2026-10-26).
+		SubmitterIsAdmin: submitterIsAdmin,
 	})
 	if err != nil || res == nil {
 		// audit L-N10: Spawn can return (nil, nil) e.g. when an external
@@ -370,9 +384,8 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 	return "", false
 }
 
-// askSystemOneForDecision is stubbed in the open core — System One is not
-// available. Always returns ("", false) so the caller falls back to the
-// LLM decider or conservative defaults.
+// askSystemOneForDecision is stubbed in the open core (System One is not
+// available in the open-source build).
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,
@@ -535,7 +548,7 @@ func (s *DirectedEngine) RequestAutonomousAbort(taskID, stepID string, failureCl
 	// the task_planner role. If the planner produces a new plan, the abort
 	// decision includes it as a "replan" option.
 	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
-	replanResult := s.tryPlannerReplan(taskID, stepID, reason)
+	replanResult := s.tryPlannerReplan(taskID, stepID, reason, graph.SubmitterIsAdmin)
 
 	decisionCtx := map[string]any{
 		"failure_class": string(failureClass),
@@ -556,7 +569,7 @@ func (s *DirectedEngine) RequestAutonomousAbort(taskID, stepID string, failureCl
 //
 // Path B (Planner Role): uses SearchAllStepSummaries to get full task history.
 // See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
-func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string) string {
+func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string, submitterIsAdmin bool) string {
 	// Check if task_planner role exists in registry.
 	if s.registry == nil {
 		return ""
@@ -662,6 +675,8 @@ Note: the problem step will be marked deprecated and replaced by the steps you e
 		RoleID:      "task_planner",
 		Task:        prompt,
 		RoutingMode: schemas.RoutingModeLegacy,
+		// Inherit the aborting task's tier — see spawnDecider for why (2026-10-26).
+		SubmitterIsAdmin: submitterIsAdmin,
 	})
 	if err != nil || res == nil {
 		return ""

@@ -313,6 +313,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			TraceID:                  traceID,
 			SpanID:                   spanID,
 			RoleID:                   step.RoleID,
+			SubmitterIsAdmin:         graph.SubmitterIsAdmin, // inherit the owning graph's mount-gate tier (2026-10-26)
 			Task:                     taskText,
 			AdditionalSkills:         step.AdditionalSkills,
 			AdditionalMCPs:           step.AdditionalMCPs,

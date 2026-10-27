@@ -522,6 +522,11 @@ func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSec
 			RoleID:      "task_planner",
 			Task:        prompt,
 			RoutingMode: schemas.RoutingModeLegacy,
+			// The planner is an INTERNAL sub-step of this task: it must inherit
+			// the submitter's tier, otherwise the mount gate treats it as a
+			// public caller and any role bound to an MCP without an explicit
+			// mount_policy is rejected (2026-10-26 root cause).
+			SubmitterIsAdmin: submitterIsAdmin,
 			// A plan overflows a prose-sized answer cap; see
 			// plannerMaxOutputTokens for the measurement.
 			MaxOutputTokens: s.plannerMaxOutputTokens(toolCount),

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -63,14 +64,39 @@ func (s *Spawner) preDiscoverMCPs(ctx context.Context, req *SpawnRequest, role *
 // decision instead of failing the step (G2, 2026-10-22). Otherwise it returns
 // the bindings and a nil SpawnResult.
 func (s *Spawner) resolveMCPBindings(req *SpawnRequest, role *config.Role) ([]config.MCPBinding, *SpawnResult, error) {
-	bindings, err := ResolveFinalMCPs(req.Hub, req.RoleID, req.AdditionalMCPs, req.AdditionalToolAllowlists, effectiveSubmitterIsAdmin(req.Hub))
+	bindings, err := ResolveFinalMCPs(req.Hub, req.RoleID, req.AdditionalMCPs, req.AdditionalToolAllowlists, submitterIsAdminFor(req))
 	if err == nil {
 		return bindings, nil, nil
 	}
 	if sr := s.approvalResult(role, err); sr != nil {
 		return nil, sr, nil
 	}
+	s.logMountPolicyRejection(req, err)
 	return nil, s.failedOutput(role.BaseCapability, err.Error()), nil
+}
+
+// logMountPolicyRejection records WHY the tier gate refused a role. The error
+// the caller sees stays vague on purpose (admin-hiding); this is the operator's
+// only way to tell "the role is genuinely privileged" from "one of its MCPs
+// never declared mount_policy and therefore defaulted to admin_only".
+// Added 2026-10-26 after that ambiguity cost a 5.5 h AppWorld round.
+func (s *Spawner) logMountPolicyRejection(req *SpawnRequest, err error) {
+	if s.logger == nil || err == nil {
+		return
+	}
+	var rej *MountPolicyRejectedError
+	if !errors.As(err, &rej) {
+		return
+	}
+	s.logger.Log(EventMountPolicyRejected, req.TaskID, req.StepID, map[string]any{
+		"role":               rej.RoleID,
+		"mcp":                rej.MCPID,
+		"policy":             rej.Policy,
+		"submitter_is_admin": submitterIsAdminFor(req),
+		"internal_spawn":     req.SubmitterIsAdmin,
+		"hub_graph_present":  req.Hub != nil && req.Hub.Graph != nil,
+		"hint":               "MCP mount_policy is empty ⇒ admin_only; set it explicitly (open|approval|admin_only)",
+	})
 }
 
 func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *spawnPreparation, earlyResult *SpawnResult, err error) {
