@@ -1,57 +1,252 @@
-# Binaries
-vortex
-vortex_web
+# Go binaries and object files
+bin/
+# NOTE (2026-07-13): do not re-add a blanket pkg/ rule -- this project keeps real first-party source under pkg/ (codeintel, filters, interfaces, types, verifiers) wired into config/core/providers/tools/main.go. A prior fix for this was reverted by a concurrent commit from another automated agent (8a21f2fd5); re-applying.
 *.exe
+*.exe~
 *.dll
 *.so
 *.dylib
-*.tar.gz
-*.zip
 
-# Backup directories and temporary files
-*_backup_*/
-project_backup_*/
-*.pyc
-__pycache__/
-*.docx
+# Test and coverage
+*.test
+*.out
+coverage.txt
 
-# Go
-vendor/
-go.work
-go.work.sum
-
-# IDE
-.idea/
-.vscode/
-.codegraph/
-.codeartsdoer/
-.claude/
-.junie/
-.gitnexus/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Config (never commit real keys)
-config.json
-config_windows.json
-.env
-.env.local
-
-# Runtime
-data/
+# Temporary and logs
+tmp/
 logs/
-outputs/
-tasks/
+*.log
+
+# JIT-generated tool scripts (runtime artifacts written by the JIT sandbox
+# mechanism per-task, e.g. jit_tools/jit_08cf755c.lua -- not source code,
+# should not be committed; confirmed 2026-07-17 by reading actual content).
+jit_tools/
+
+# Bun cache (runtime dependency cache)
+bridge/.bun/cache/
+  
+# Per-task runtime output/manifest artifacts (2026-08-10)  
+outputs/  
+tasks/  
+_test_pid.xml  
+scripts/launch/safe_build.txt  
+
+# SQLite runtime DB (created by store.InitDB at startup, pure runtime state)
+orchestrator_runtime.db
+orchestrator_runtime.db-shm
+orchestrator_runtime.db-wal
+
+# Temporary recovery/staging files (2026-09-08)
+orchestrator_go.new
+orchestrator_go.prev
+
+# Trash staging directory (2026-09-20) — files quarantined before deletion.
+# Review after a few days of clean operation, then delete for real.
+trash/
+
+# Backup directories (2026-10-12) — stale Go snapshots with //go:build ignore tags.
+# Must be gitignored so they don't pollute the module or break CI tooling.
+backups/
+/.idea/*
+# Git-tracked binary bloat (untracked 2026-09-20) — 22MB compiled binary
+# and large schema diff text file should not be in version control.
+orchestrator_mcp
+schemas/fc_diff.txt
+# Cookbook sync cache (content-addressed .ptr/.txt files fetched at runtime
+# from GitHub cookbook sources via FetchCookbook — may contain vendor-
+# copyrighted prompt text from leaked/system-prompt repos; must never be
+# committed, especially for open-core release)
+store/cookbooks/
+
+# Runtime artifacts
+data/          # CaSKG causal_skill_graph.json + runtime outputs (spawner.go NewCaSKGManager)
+nul
+orchestrator-linux-amd64
+core/data/
+core/task_human_1/
+pkg/api/data/
+_a.py
+_b.py
+AUDIT_REPORT_*.md
 .artifacts/
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
+.artifacts/implementation_plan.artifact.md
+.artifacts/task.artifact.md
+.artifacts/walkthrough.artifact.md
+.artifacts/050c8e97-ac32-4cc7-aa75-8748d126636a/implementation_plan.artifact.md
+.artifacts/20260607-134447-e5075cba-b2e5-4fa5-982b-4c6719011949/implementation_plan.artifact.md
+.artifacts/20260607-134447-e5075cba-b2e5-4fa5-982b-4c6719011949/task.artifact.md
+.artifacts/20260615-073135-76fedf7b-9a2c-47a3-8801-ac59deeb3e66/implementation_plan.artifact.md
+.artifacts/20260615-073135-76fedf7b-9a2c-47a3-8801-ac59deeb3e66/task.artifact.md
+.artifacts/20260615-073135-76fedf7b-9a2c-47a3-8801-ac59deeb3e66/walkthrough.artifact.md
+.artifacts/20260619-200334-0b0b86b7-212b-482a-9952-82d397b4844c/implementation_plan.artifact.md
+.artifacts/20260619-200334-0b0b86b7-212b-482a-9952-82d397b4844c/task.artifact.md
+.artifacts/20260619-200334-0b0b86b7-212b-482a-9952-82d397b4844c/walkthrough.artifact.md
+.artifacts/20260620-133257-7a01a48b-2cfa-4b65-b4b1-e047baa49d6d/implementation_plan.artifact.md
+.artifacts/20260620-133257-7a01a48b-2cfa-4b65-b4b1-e047baa49d6d/walkthrough.artifact.md
+.artifacts/20260621-182257-d392b321-19a1-4bfc-b80c-e7afa8209df7/implementation_plan.artifact.md
+.artifacts/20260621-182257-d392b321-19a1-4bfc-b80c-e7afa8209df7/task.artifact.md
+.artifacts/20260621-182257-d392b321-19a1-4bfc-b80c-e7afa8209df7/walkthrough.artifact.md
+.artifacts/20260623-073350-ca944509-5505-42d1-978c-dfd49e9fc97e/walkthrough.artifact.md
+.artifacts/20260702-001705-0990b3f5-d7c4-4fe6-9f28-c807f5a8742d/implementation_plan.artifact.md
+.artifacts/20260702-001705-0990b3f5-d7c4-4fe6-9f28-c807f5a8742d/task.artifact.md
+.artifacts/20260702-001705-0990b3f5-d7c4-4fe6-9f28-c807f5a8742d/walkthrough.artifact.md
+.artifacts/20260709-074123-7decac45-d06b-433a-b22f-f2273a442d1a/implementation_plan.artifact.md
+.artifacts/20260709-074123-7decac45-d06b-433a-b22f-f2273a442d1a/task.artifact.md
+.artifacts/20260714-000807-71121969-b980-4b01-b636-73f93054471a/implementation_plan.artifact.md
+.artifacts/20260714-000807-71121969-b980-4b01-b636-73f93054471a/task.artifact.md
+.artifacts/20260714-000807-71121969-b980-4b01-b636-73f93054471a/walkthrough.artifact.md
+.artifacts/20260714-095926-d85b7781-63a9-4244-83f1-26ab863b4164/implementation_plan.artifact.md
+.artifacts/20260714-095926-d85b7781-63a9-4244-83f1-26ab863b4164/task.artifact.md
+.artifacts/20260714-095926-d85b7781-63a9-4244-83f1-26ab863b4164/walkthrough.artifact.md
+.artifacts/20260715-002341-675442e1-3a22-4af4-903c-bfc1996287fd/implementation_plan.artifact.md
+.artifacts/20260715-002341-675442e1-3a22-4af4-903c-bfc1996287fd/task.artifact.md
+.artifacts/20260715-002341-675442e1-3a22-4af4-903c-bfc1996287fd/walkthrough.artifact.md
+.artifacts/2ecc1e86-70bd-4490-ad10-7c808bf67ab1/analysis_results.artifact.md
+.artifacts/2ecc1e86-70bd-4490-ad10-7c808bf67ab1/implementation_plan.artifact.md
+.artifacts/2ecc1e86-70bd-4490-ad10-7c808bf67ab1/task.artifact.md
+.artifacts/2ecc1e86-70bd-4490-ad10-7c808bf67ab1/walkthrough.artifact.md
+.artifacts/37a350b0-c971-41b5-b512-9b14fe77b3d6/implementation_plan.artifact.md
+.artifacts/37a350b0-c971-41b5-b512-9b14fe77b3d6/task.artifact.md
+.artifacts/3bef4505-5baf-4ce1-9ece-b7b0959d911b/implementation_plan.artifact.md
+.artifacts/3bef4505-5baf-4ce1-9ece-b7b0959d911b/task.artifact.md
+.artifacts/3bef4505-5baf-4ce1-9ece-b7b0959d911b/walkthrough.artifact.md
+.artifacts/3c98fb9c-bc4e-481f-9c34-bbc255666615/hot_data_memory_walkthrough.artifact.md
+.artifacts/3c98fb9c-bc4e-481f-9c34-bbc255666615/hot_memory_optimization_walkthrough.artifact.md
+.artifacts/3c98fb9c-bc4e-481f-9c34-bbc255666615/implementation_plan.artifact.md
+.artifacts/3c98fb9c-bc4e-481f-9c34-bbc255666615/risk_assessment.artifact.md
+.artifacts/3c98fb9c-bc4e-481f-9c34-bbc255666615/security_hardening_walkthrough.artifact.md
+.artifacts/3c98fb9c-bc4e-481f-9c34-bbc255666615/walkthrough.artifact.md
+.artifacts/3da25c7b-8d3c-4c40-96da-111048a7b5b3/analysis_results.artifact.md
+.artifacts/3da25c7b-8d3c-4c40-96da-111048a7b5b3/implementation_plan.artifact.md
+.artifacts/3da25c7b-8d3c-4c40-96da-111048a7b5b3/task.artifact.md
+.artifacts/40d10ab6-10a3-4585-a47c-a96a3749fbc4/implementation_plan.artifact.md
+.artifacts/415ac7d4-f408-4d6e-92a1-84b30658f2b8/implementation_plan.artifact.md
+.artifacts/415ac7d4-f408-4d6e-92a1-84b30658f2b8/task.artifact.md
+.artifacts/415ac7d4-f408-4d6e-92a1-84b30658f2b8/walkthrough.artifact.md
+.artifacts/507ea543-9d20-4647-964b-9c294b56e092/implementation_plan.artifact.md
+.artifacts/507ea543-9d20-4647-964b-9c294b56e092/task.artifact.md
+.artifacts/507ea543-9d20-4647-964b-9c294b56e092/walkthrough.artifact.md
+.artifacts/587555b1-9d50-45fc-a8e2-637d69127803/analysis_results.artifact.md
+.artifacts/5a486ace-90b6-4169-9194-796f824d6c6c/implementation_plan.artifact.md
+.artifacts/5a486ace-90b6-4169-9194-796f824d6c6c/task.artifact.md
+.artifacts/5a486ace-90b6-4169-9194-796f824d6c6c/walkthrough.artifact.md
+.artifacts/60e58c19-4463-4748-b1ab-683584546df3/task.artifact.md
+.artifacts/635f67f4-6f4e-4dc4-b3c3-3d8e54d8a8c2/implementation_plan.artifact.md
+.artifacts/635f67f4-6f4e-4dc4-b3c3-3d8e54d8a8c2/task.artifact.md
+.artifacts/635f67f4-6f4e-4dc4-b3c3-3d8e54d8a8c2/walkthrough.artifact.md
+.artifacts/6b5d702e-385e-472c-b374-52f223613e3f/implementation_plan.artifact.md
+.artifacts/7691696c-9ccb-4167-b7e2-e39ec894aad0/implementation_plan.artifact.md
+.artifacts/7d087166-19d8-4782-b7bf-61caba39d448/implementation_plan.artifact.md
+.artifacts/7f2df6e4-39f7-456c-a69a-b06e325e3c1c/implementation_plan.artifact.md
+.artifacts/7f2df6e4-39f7-456c-a69a-b06e325e3c1c/task.artifact.md
+.artifacts/7f2df6e4-39f7-456c-a69a-b06e325e3c1c/walkthrough.artifact.md
+.artifacts/81e08b23-87a3-41c8-a5a9-b44a9e1ba6fe/implementation_plan.artifact.md
+.artifacts/81e08b23-87a3-41c8-a5a9-b44a9e1ba6fe/task.artifact.md
+.artifacts/81e08b23-87a3-41c8-a5a9-b44a9e1ba6fe/walkthrough.artifact.md
+.artifacts/81e08b23-87a3-41c8-a5a9-b44a9e1ba6fe/scratch/test_routing.go
+.artifacts/81e08b23-87a3-41c9-a5a9-b44a9e1ba6fe/scratch/test_routing.go
+.artifacts/8b5778bc-3520-40e5-b69b-43d64e279f48/analysis_results.artifact.md
+.artifacts/8b5778bc-3520-40e5-b69b-43d64e279f48/implementation_plan.artifact.md
+.artifacts/8d3f86fa-12b6-430e-9738-1e9a58e2053e/implementation_plan.artifact.md
+.artifacts/8d3f86fa-12b6-430e-9738-1e9a58e2053e/task.artifact.md
+.artifacts/8d3f86fa-12b6-430e-9738-1e9a58e2053e/walkthrough.artifact.md
+.artifacts/985f61b6-7773-4877-8d9b-250162be407e/implementation_plan.artifact.md
+.artifacts/985f61b6-7773-4877-8d9b-250162be407e/walkthrough_verification.artifact.md
+.artifacts/985f61b6-7773-4877-8d9b-250162be407e/walkthrough.artifact.md
+.artifacts/9ade599b-1b70-4eb9-bd2a-50a23ada1a4f/implementation_plan.artifact.md
+.artifacts/9ade599b-1b70-4eb9-bd2a-50a23ada1a4f/task.artifact.md
+.artifacts/9ade599b-1b70-4eb9-bd2a-50a23ada1a4f/walkthrough.artifact.md
+.artifacts/a03bf1f6-206b-4382-a11a-cdeec22a6d29/implementation_plan.artifact.md
+.artifacts/a03bf1f6-206b-4382-a11a-cdeec22a6d29/scratch/verify_wal.go
+.artifacts/a5587717-91d0-418e-9605-87e06afd8960/evomap_analysis.artifact.md
+.artifacts/a5587717-91d0-418e-9605-87e06afd8960/implementation_plan.artifact.md
+.artifacts/a5587717-91d0-418e-9605-87e06afd8960/walkthrough.artifact.md
+.artifacts/a64a2331-4aac-444c-bf0c-07c46fcf6846/config_and_orchestration_analysis.artifact.md
+.artifacts/a64a2331-4aac-444c-bf0c-07c46fcf6846/implementation_plan.artifact.md
+.artifacts/a64a2331-4aac-444c-bf0c-07c46fcf6846/task.artifact.md
+.artifacts/a64a2331-4aac-444c-bf0c-07c46fcf6846/walkthrough.artifact.md
+.artifacts/a6e50d24-64d6-43ca-960b-c02204236925/implementation_plan.artifact.md
+.artifacts/c7c5d3c8-7b01-44db-b015-5fc147dfdec1/data_structures.artifact.md
+.artifacts/cb590119-5899-462e-928e-05d39cee006b/implementation_plan.artifact.md
+.artifacts/cb590119-5899-462e-928e-05d39cee006b/task.artifact.md
+.artifacts/cb590119-5899-462e-928e-05d39cee006b/walkthrough.artifact.md
+.artifacts/cb590119-5899-462e-928e-05d39cee006b/scratch/test_discover.go
+.artifacts/eeb72956-d59b-42e8-b31c-dbce824ea2cf/implementation_plan.artifact.md
+.artifacts/eeb72956-d59b-42e8-b31c-dbce824ea2cf/task.artifact.md
+.artifacts/eeb72956-d59b-42e8-b31c-dbce824ea2cf/walkthrough.artifact.md
+.artifacts/f59eaa9c-561b-4832-a026-277e45a9bf2e/implementation_plan.artifact.md
+.artifacts/f59eaa9c-561b-4832-a026-277e45a9bf2e/task.artifact.md
+.artifacts/f59eaa9c-561b-4832-a026-277e45a9bf2e/walkthrough.artifact.md
+.artifacts/fb237065-2e6f-4d8c-8ba9-3c546ac0f400/analysis_results.artifact.md
+.artifacts/fb237065-2e6f-4d8c-8ba9-3c546ac0f400/implementation_plan.artifact.md
+.artifacts/fb237065-2e6f-4d8c-8ba9-3c546ac0f400/task.artifact.md
+.artifacts/fb237065-2e6f-4d8c-8ba9-3c546ac0f400/walkthrough.artifact.md
+.artifacts/scratch/args_config.json
+.artifacts/scratch/args_get_manifest.json
+.artifacts/scratch/args_list_roles.json
+.artifacts/scratch/args_sop_match_test.json
+.artifacts/scratch/args_sop.json
+.artifacts/scratch/args_update_sop.json
+.artifacts/scratch/args.json
+.artifacts/scratch/huge_task.json
+.artifacts/scratch/long_task.json
+.artifacts/scratch/test_workflow_creation.json
+memory/topology.db
+# Eval/test build artifacts (2026-10-13) — large compiled binaries, do not commit.
+orchestrator_go_linux
+orchestrator_eval_plannerfix_*
 
-# Internal maintainer docs (not for public repo)
-docs/BOUNDARY.md
+# Live test runtime data (CaSKG graph, spawner outputs) — generated at runtime.
+tests/live/data/
 
-# Test-generated output artifacts (skeletonizer dump dirs)
-core/skeleton/workspace/
+# --- Tracked-bloat gaps closed 2026-10-18 (extension rules *.exe/etc. missed these) ---
+# Dependency directories — never commit
+frontend/node_modules/
+bridge/node_modules/
+# Build output
+frontend/dist/
+# Extensionless Go binary + suffix variant (*.exe matches neither)
+/orchestrator_go
+*.exe.old
+# One-off root analysis dumps / scripts
+/_*.txt
+/gen_large_test.py
+# Backup residue
+*.bak
+# Secrets — real API keys (ONION_ARCHITECTURE.md §6: NEVER EXPORT)
+/.env
+/config.json
+/config_windows.json
+# MCP config can embed real API keys (e.g. video-mcp.json GEMINI/GROQ) — local only.
+/workspace/mcps/video-mcp.json
+
+# Nested-repo backup (2026-10-18): inner .git was neutralized so the outer
+# workspace monorepo governs this directory. Kept on disk, must not be tracked.
+/.git_inner_backup_*/
+
+# ExperienceStore runtime data (JIT learning artifacts): decision precedents,
+# routing matrix, role profiles, task patterns, skill affinity, etc. These are
+# generated at runtime by orchestrator (e.g. embeddings in decision_precedents.json
+# can be 768-dim × thousands of entries) and change on every task run. Should
+# never be committed — causes git blame noise, multi-instance conflicts, and
+# repo bloat. Only seed.json is source-controlled.
+experience/*.json
+!experience/seed.json
+
+# workspace/skills — flat .json skill definitions (imported from directory
+# skills, carry runtime staged_at metadata written by PendingSkills staging,
+# config/types.go:247) and directory skills (SKILL.md, imported via
+# external_skill_adapter.go). Both are runtime-derived/imported content that
+# changes on every skill import/load; the loader reads them from disk at
+# runtime (config/loader.go:301-317, os.ReadDir + *.json) regardless of git
+# tracking. Kept on disk, must not be tracked.
+workspace/skills/
+
+# workspace/sops — imported offensive-security SOPs (ext_offensive_*.json),
+# generated one-per-skill when an external multi-step skill is imported via
+# external_skill_adapter.go:117-126 (body containing "## " or "1." auto-
+# registers as a SOP). These are import-derived, not canonical seeds: the
+# built-in SOPs (seed_builtins.go builtinSOPs) remain tracked. Gitignoring
+# keeps import-generated offensive content out of the repo while preserving
+# the canonical SOP set.
+workspace/sops/ext_offensive_*.json

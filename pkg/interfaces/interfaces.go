@@ -47,6 +47,7 @@ type SignalFieldInterface interface {
 	Sensing(layer types.SignalLayer, limit int) []string
 	SensingGlobal(limit int, agentLoad float64) []string
 	Deposit(layer types.SignalLayer, taskID string, value float64)
+	Suppress(taskID string)
 	GetEffectiveSignal(taskID string, agentLoad float64) float64
 }
 

@@ -61,7 +61,7 @@ type acpCancelParams struct {
 
 // serveACP runs the orchestrator as an ACP (Agent Client Protocol) server
 // over stdio (newline-delimited JSON-RPC 2.0). Purely additive transport —
-// zero core changes. See docs/plan/ACP_SERVER_TRANSPORT_DESIGN.md.
+// zero core changes. See docs/completed/2026-10-28/ACP_SERVER_TRANSPORT_DESIGN.md.
 //
 // Methods: initialize, ping, run_task, cancel.
 // Notifications (server→client): task_completed, task_failed.
