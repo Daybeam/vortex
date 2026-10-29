@@ -305,7 +305,12 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 		// first access. This eliminates the need for eager
 		// ensureMCPDiscovery in spawner_prepare.go.
 		if r.lazyDiscoveryHook != nil && len(mcpDef.AvailableTools) == 0 && mcpDef.Command != "" {
-			_ = r.lazyDiscoveryHook(ctx, mcpDef.ID, req.TaskID)
+			// audit fix L7: surface lazy discovery failure — previously swallowed,
+			// so a discovery error left the tool call proceeding without the
+			// discovered tool list (possible restricted-tool bypass, un-auditable).
+			if derr := r.lazyDiscoveryHook(ctx, mcpDef.ID, req.TaskID); derr != nil {
+				slog.Warn("tool-router: lazy discovery failed", "mcp", mcpDef.ID, "error", derr)
+			}
 			// Re-fetch after discovery may have populated AvailableTools.
 			mcpDef = r.Registry.GetMCP(b.MCPID)
 			if mcpDef == nil {

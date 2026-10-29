@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+
+	"github.com/daybeam/vortex/schemas"
+	"github.com/daybeam/vortex/store"
 )
 
 // ── Context Provider ────────────────────────────────────────────────────────
@@ -166,6 +169,23 @@ type SpawnRequest struct {
 	// repeated side effects from irreversible operations.
 	// See docs/plan/DELTA_BACKTRACK_DESIGN.md §change 3.
 	PreviousOutputSummary string
+
+	// SharedContext (ADDED 2026-10-27): per-task append-only knowledge board
+	// for real-time cross-agent knowledge sharing. When non-nil, the spawner
+	// registers shared_context_write and shared_context_read tools so
+	// concurrent agents can exchange typed entries (FAIL, FACT, OBSERVED,
+	// CLAIM, PATCH_SUMMARY). See docs/plan/TYPED_SHARED_CONTEXT_DESIGN.md.
+	SharedContext *store.SharedContext
+
+	// ExecutionProtocol (ADDED 2026-10-27): selects the execution backend.
+	// "" or "internal" = standard Spawner LLM loop (default).
+	// "acp" = delegate to an external ACP-compliant worker via JSON-RPC.
+	// See docs/completed/2026-10-28/ACP_CLIENT_SPAWNER_INTEGRATION_DESIGN.md.
+	ExecutionProtocol string
+
+	// ACPConfig (ADDED 2026-10-27): configuration for the external ACP worker.
+	// Only used when ExecutionProtocol == "acp". Nil = no ACP delegation.
+	ACPConfig *schemas.ACPStepConfig
 }
 
 // SpawnerHandler is the core function signature for spawning a subagent.

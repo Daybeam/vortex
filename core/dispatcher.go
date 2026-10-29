@@ -2,10 +2,14 @@ package core
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/daybeam/vortex/config"
@@ -18,6 +22,12 @@ var webhookTransport = &http.Transport{
 	MaxIdleConnsPerHost: 100,
 	IdleConnTimeout:     90 * time.Second,
 }
+
+// audit fix C: bound concurrent webhook goroutines to prevent goroutine storms
+// under burst event load. Each sendWebhook has a 10s timeout, so without a
+// bound a notification burst with N routes spawns N concurrent HTTP goroutines
+// with no backpressure. The semaphore caps in-flight dispatches.
+var webhookSem = make(chan struct{}, 16) // max 16 concurrent webhook dispatches
 
 func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventType EventType) {
 	// audit L-1.4: snapshot graph.Status + GlobalWorkspace and determine
@@ -65,7 +75,19 @@ func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventTy
 	body, _ := json.Marshal(payload)
 
 	for _, route := range matchingRoutes {
-		go sendWebhook(route.TargetURL, route.SecretEnv, body)
+		go func(route config.NotificationRoute) {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "[webhook] panic for %s: %v\n", route.TargetURL, r)
+				}
+			}()
+			// audit fix C: acquire semaphore slot to bound concurrency. If all
+			// slots are taken, this goroutine blocks until one frees — providing
+			// backpressure instead of unbounded goroutine spawn.
+			webhookSem <- struct{}{}
+			defer func() { <-webhookSem }()
+			sendWebhook(route.TargetURL, route.SecretEnv, body)
+		}(route)
 	}
 }
 
@@ -100,7 +122,16 @@ func sendWebhook(targetURL, secretEnv string, body []byte) {
 
 	if secretEnv != "" {
 		if secret := os.Getenv(secretEnv); secret != "" {
-			req.Header.Set("X-Webhook-Secret", secret)
+			// HMAC-SHA256 webhook signature (Stripe-style signed payload).
+			// Receiver verifies: hex(HMAC-SHA256(secret, ts + "." + body)) == v1.
+			// This avoids transmitting the raw shared secret over the wire.
+			ts := time.Now().Unix()
+			mac := hmac.New(sha256.New, []byte(secret))
+			mac.Write([]byte(strconv.FormatInt(ts, 10)))
+			mac.Write([]byte("."))
+			mac.Write(body)
+			sig := hex.EncodeToString(mac.Sum(nil))
+			req.Header.Set("X-Webhook-Signature", "t="+strconv.FormatInt(ts, 10)+",v1="+sig)
 		}
 	}
 

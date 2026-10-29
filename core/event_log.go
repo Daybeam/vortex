@@ -38,12 +38,13 @@ func NewAgentEvent(taskID, stepID, eventType string, payload map[string]any) Age
 
 // GlobalEventLogger writes events to a central trajectory log file.
 type GlobalEventLogger struct {
-	path    string
-	ch      chan AgentEvent
-	wg      sync.WaitGroup
-	done    chan struct{}
-	closed  uint32 // atomic flag: 1 = closed (audit finding M3)
-	dropped uint64 // atomic counter for dropped events (audit finding M2)
+	path     string
+	ch       chan AgentEvent
+	wg       sync.WaitGroup
+	done     chan struct{}
+	closedMu sync.RWMutex // guards closed + ch send/close (audit fix A: TOCTOU panic)
+	closed   bool
+	dropped  uint64 // atomic counter for dropped events (audit finding M2)
 }
 
 // NewGlobalEventLogger initializes the logger and starts the background writer.
@@ -65,13 +66,17 @@ func NewGlobalEventLogger(logDir string) (*GlobalEventLogger, error) {
 // Log queues an event for writing. Returns an error if the channel is full
 // or the logger has been closed.
 func (l *GlobalEventLogger) Log(event AgentEvent) error {
-	if atomic.LoadUint32(&l.closed) == 1 {
+	l.closedMu.RLock()
+	if l.closed {
+		l.closedMu.RUnlock()
 		return fmt.Errorf("global event logger closed")
 	}
 	select {
 	case l.ch <- event:
+		l.closedMu.RUnlock()
 		return nil
 	default:
+		l.closedMu.RUnlock()
 		atomic.AddUint64(&l.dropped, 1)
 		return fmt.Errorf("global event logger channel full")
 	}
@@ -83,13 +88,17 @@ func (l *GlobalEventLogger) DroppedEvents() uint64 {
 }
 
 // Close flushes the channel and stops the writer. Safe to call concurrently
-// with Log — the atomic closed flag prevents send-on-closed-channel panics
-// (audit finding M3).
+// with Log — closedMu serializes the close-vs-send race so Log can never
+// send on a closed channel (audit fix A: TOCTOU panic, mirroring logger.go).
 func (l *GlobalEventLogger) Close() {
-	if !atomic.CompareAndSwapUint32(&l.closed, 0, 1) {
+	l.closedMu.Lock()
+	if l.closed {
+		l.closedMu.Unlock()
 		return
 	}
+	l.closed = true
 	close(l.ch)
+	l.closedMu.Unlock()
 	l.wg.Wait()
 }
 

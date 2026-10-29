@@ -134,8 +134,12 @@ func (l *ResourceLoader) Fetch(ctx context.Context, source string) (string, erro
 	var content []byte
 	var err error
 
-	// Handle local file
-	if _, err := os.Stat(source); err == nil {
+	// Handle local file.
+	// audit fix D: the previous `if _, err := os.Stat(...)` used `:=` which
+	// shadowed the outer err. If os.ReadFile then failed, the outer err stayed
+	// nil and the function silently returned "" with no error. Use a distinct
+	// variable for the stat result so the ReadFile error propagates correctly.
+	if _, statErr := os.Stat(source); statErr == nil {
 		content, err = os.ReadFile(source)
 	} else {
 		// Handle URL — validate against SSRF before fetching
