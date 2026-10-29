@@ -41,7 +41,7 @@ func TestEnsureRemoteMCPSession_NilManagerLiteral_NoPanic(t *testing.T) {
 			t.Fatalf("ensureRemoteMCPSession panicked on a MCPConnectionManager with a nil remoteSessionCache: %v", r)
 		}
 	}()
-	_ = m.ensureRemoteMCPSession(context.Background(), mcp)
+	_ = m.ensureRemoteMCPSession(context.Background(), mcp, "")
 }
 
 func TestEnsureRemoteMCPSession_CapturesHeaderAndAppliesToSubsequentCall(t *testing.T) {
@@ -76,7 +76,7 @@ func TestEnsureRemoteMCPSession_CapturesHeaderAndAppliesToSubsequentCall(t *test
 	mcp := &config.MCPDef{ID: "hf-style", URL: srv.URL}
 	m := NewMCPConnectionManager(nil, nil)
 
-	sid := m.ensureRemoteMCPSession(context.Background(), mcp)
+	sid := m.ensureRemoteMCPSession(context.Background(), mcp, "")
 	if sid != "sess-abc-123" {
 		t.Fatalf("expected captured session id %q, got %q", "sess-abc-123", sid)
 	}
@@ -84,7 +84,7 @@ func TestEnsureRemoteMCPSession_CapturesHeaderAndAppliesToSubsequentCall(t *test
 		t.Fatalf("expected exactly 1 initialize call, got %d", initCount)
 	}
 
-	tools, err := m.discoverRemoteMCPTools(context.Background(), mcp)
+	tools, err := m.discoverRemoteMCPTools(context.Background(), mcp, "")
 	if err != nil {
 		t.Fatalf("unexpected error from discoverRemoteMCPTools: %v", err)
 	}
@@ -122,12 +122,12 @@ func TestEnsureRemoteMCPSession_NoSessionHeader_ReturnsEmptyAndDoesNotBreakExist
 	mcp := &config.MCPDef{ID: "exa-style", URL: srv.URL}
 	m := NewMCPConnectionManager(nil, nil)
 
-	sid := m.ensureRemoteMCPSession(context.Background(), mcp)
+	sid := m.ensureRemoteMCPSession(context.Background(), mcp, "")
 	if sid != "" {
 		t.Fatalf("expected empty session id when server never returns Mcp-Session-Id, got %q", sid)
 	}
 
-	if _, err := m.discoverRemoteMCPTools(context.Background(), mcp); err != nil {
+	if _, err := m.discoverRemoteMCPTools(context.Background(), mcp, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sawSessionHeaderOnList {
@@ -152,8 +152,8 @@ func TestEnsureRemoteMCPSession_CachesPerMCPID(t *testing.T) {
 	mcp := &config.MCPDef{ID: "cache-test", URL: srv.URL}
 	m := NewMCPConnectionManager(nil, nil)
 
-	first := m.ensureRemoteMCPSession(context.Background(), mcp)
-	second := m.ensureRemoteMCPSession(context.Background(), mcp)
+	first := m.ensureRemoteMCPSession(context.Background(), mcp, "")
+	second := m.ensureRemoteMCPSession(context.Background(), mcp, "")
 
 	if first != "sess-cached" || second != "sess-cached" {
 		t.Fatalf("expected both calls to return %q, got %q and %q", "sess-cached", first, second)
@@ -170,7 +170,7 @@ func TestEnsureRemoteMCPSession_HandshakeFails_ReturnsEmptyGracefully(t *testing
 	mcp := &config.MCPDef{ID: "unreachable", URL: "http://127.0.0.1:1"}
 	m := NewMCPConnectionManager(nil, nil)
 
-	sid := m.ensureRemoteMCPSession(context.Background(), mcp)
+	sid := m.ensureRemoteMCPSession(context.Background(), mcp, "")
 	if sid != "" {
 		t.Fatalf("expected empty session id on handshake failure, got %q", sid)
 	}
@@ -203,7 +203,7 @@ func TestEnsureRemoteMCPSession_ConcurrentAccess_NoDuplicateHandshake(t *testing
 	for i := 0; i < N; i++ {
 		go func() {
 			defer wg.Done()
-			sid := m.ensureRemoteMCPSession(context.Background(), mcp)
+			sid := m.ensureRemoteMCPSession(context.Background(), mcp, "")
 			if sid != "sess-concurrent" {
 				t.Errorf("expected session %q, got %q", "sess-concurrent", sid)
 			}

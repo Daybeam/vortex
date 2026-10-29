@@ -12,6 +12,9 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 		Roles:  make(map[string]*config.Role),
 		Skills: make(map[string]*config.Skill),
 		MCPs:   make(map[string]*config.MCPDef),
+		Providers: map[string]*config.ProviderConfig{
+			"anthropic": {Provider: "anthropic", Model: "claude-3-5-sonnet"},
+		},
 		System: config.SystemSettings{},
 	}
 	ts := &mockTaskStore{}

@@ -121,5 +121,5 @@ func buildMCPServersForTest(t *testing.T, withDomainMCP bool) []providers.MCPSer
 	hub := &ContextHub{}
 	ctx := context.Background()
 	bindings := []config.MCPBinding{}
-	return s.buildMCPServers(ctx, hub, "test_task", bindings, "default", "")
+	return s.buildMCPServers(ctx, hub, "test_task", bindings, "default", "", "")
 }

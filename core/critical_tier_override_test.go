@@ -123,7 +123,7 @@ func TestHumanApprovalOverride_Default_ReturnsEmpty(t *testing.T) {
 		"", "task-ha-default", "dec1", "s1",
 		schemas.DecisionHumanApprovalRequired,
 		map[string]any{}, []string{"abort", "approve"},
-		false,
+		false, "",
 	)
 	if choice != "" {
 		t.Fatalf("expected empty choice for human_approval_required when "+
@@ -145,7 +145,7 @@ func TestHumanApprovalOverride_Enabled_ReturnsAbort(t *testing.T) {
 		"", "task-ha-override", "dec1", "s1",
 		schemas.DecisionHumanApprovalRequired,
 		map[string]any{}, []string{"abort", "approve"},
-		false,
+		false, "",
 	)
 	if choice != "abort" {
 		t.Fatalf("expected conservative 'abort' for human_approval_required "+

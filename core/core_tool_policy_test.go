@@ -151,14 +151,14 @@ func TestBuildMCPServers_PlannerGetsNoCoreServer(t *testing.T) {
 
 	// nil bindings: no MCPs to walk, which is exactly the planner's shape
 	// (task_planner binds nothing).
-	planned := s.buildMCPServers(context.Background(), nil, "task_x", nil, "p", "task_planner")
+	planned := s.buildMCPServers(context.Background(), nil, "task_x", nil, "p", "task_planner", "")
 	for _, srv := range planned {
 		if srv.Name == "_core" {
 			t.Fatal("task_planner must not receive the _core server")
 		}
 	}
 
-	exec := s.buildMCPServers(context.Background(), nil, "task_x", nil, "p", "executor")
+	exec := s.buildMCPServers(context.Background(), nil, "task_x", nil, "p", "executor", "")
 	found := false
 	for _, srv := range exec {
 		if srv.Name == "_core" {
