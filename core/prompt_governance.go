@@ -202,7 +202,18 @@ func (e *PromptBudgetEnforcer) SummarizePrecedent(p *schemas.DecisionNode) strin
 		return ""
 	}
 	reasoning := firstSentence(p.Reasoning, 200)
-	return fmt.Sprintf("- **Intent**: %s\n  **Reasoning**: %s\n  **Action**: %s", p.Outcome, reasoning, p.Action)
+	line := fmt.Sprintf("- **Intent**: %s\n  **Reasoning**: %s\n  **Action**: %s", p.Outcome, reasoning, p.Action)
+	// Confidence annotation (memory tiering gap B, 2026-10-23):
+	// high-confidence decisions are "conclusive", low-confidence are "advisory".
+	// Only annotated when Confidence > 0 to preserve backward compatibility.
+	if p.Confidence > 0 {
+		tag := "advisory"
+		if p.Confidence >= 0.7 {
+			tag = "conclusive"
+		}
+		line += fmt.Sprintf("\n  **Confidence**: %.0f%% (%s)", p.Confidence*100, tag)
+	}
+	return line
 }
 
 // firstSentence returns the first sentence of s, capped at maxChars.

@@ -133,6 +133,18 @@ func (sf *SignalField) Deposit(layer SignalLayer, taskID string, value float64) 
 	}
 }
 
+// Suppress removes a task's signal from all layers. Called after successful
+// execution to prevent completed tasks from dominating SensingGlobal results
+// and starving unexecuted tasks (swarm convergence bug: depositing a positive
+// value on success boosted completed-task signals above unexecuted ones).
+func (sf *SignalField) Suppress(taskID string) {
+	sf.Mu.Lock()
+	defer sf.Mu.Unlock()
+	for _, tasks := range sf.Layers {
+		delete(tasks, taskID)
+	}
+}
+
 // GetState returns a snapshot of the current signal field state.
 func (sf *SignalField) GetState() map[string]any {
 	sf.Mu.RLock()

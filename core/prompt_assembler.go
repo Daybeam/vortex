@@ -222,6 +222,14 @@ func (s *PromptAssembler) Build(
 	taskID string, // P1-5: for Archive Path D query
 ) ([]schemas.ContentBlock, error) {
 	var blocks []schemas.ContentBlock
+	// KV-2 (2026-10-27): volatile blocks (anti-pattern, similar-task,
+	// active-context) are collected separately and appended AFTER the
+	// constraints block (the cache marker). These blocks query the
+	// experience store inside Build, and UpsertDecisionPrecedent writes
+	// during the turn loop (spawner_dospawn.go:652) → they can change
+	// mid-step. Placing them after the stable prefix keeps the prefix
+	// byte-identical across turns → prefix cache hits.
+	var volatileBlocks []schemas.ContentBlock
 
 	// Prepend Role-specific Instructions (agent.md) - Precedence for KVCache.
 	// Tier 1 (compressible): if the instruction exceeds the governance threshold,
@@ -324,18 +332,16 @@ func (s *PromptAssembler) Build(
 	// compression. ADDED (2026-08-27).
 	antiPatternText := s.resolveAntiPatternWarnings(capability, toolConstraints)
 	if antiPatternText != "" {
-		blocks = append(blocks, MarkProtectedWithCategory(schemas.ContentBlock{
-			Text:         antiPatternText,
-			CacheControl: "ephemeral",
+		volatileBlocks = append(volatileBlocks, MarkProtectedWithCategory(schemas.ContentBlock{
+			Text: antiPatternText,
 		}, CategoryAntiPattern))
 	}
 
 	// Historical Similar Task Patterns injection
 	similarTaskText := s.resolveSimilarTaskExperience(ctx, capability)
 	if similarTaskText != "" {
-		blocks = append(blocks, MarkProtectedWithCategory(schemas.ContentBlock{
-			Text:         similarTaskText,
-			CacheControl: "ephemeral",
+		volatileBlocks = append(volatileBlocks, MarkProtectedWithCategory(schemas.ContentBlock{
+			Text: similarTaskText,
 		}, CategorySimilarTask))
 
 		// Embedding model compatibility check (ADDED 2026-09-06)
@@ -397,9 +403,8 @@ func (s *PromptAssembler) Build(
 		assembler := NewActiveContextAssembler(s.expStore, embedClient, warmBudget)
 		// Pass real taskText and latestError into Hot Tier, capability/roleID into Warm/Cold tiers
 		if contextStr := assembler.Assemble(ctx, taskText, "", latestError, capability, roleID); contextStr != "" {
-			blocks = append(blocks, MarkProtectedWithCategory(schemas.ContentBlock{
-				Text:         contextStr,
-				CacheControl: "ephemeral",
+			volatileBlocks = append(volatileBlocks, MarkProtectedWithCategory(schemas.ContentBlock{
+				Text: contextStr,
 			}, CategoryActiveContext))
 		}
 	}
@@ -624,6 +629,12 @@ func (s *PromptAssembler) Build(
 		Text:         buf.String(),
 		CacheControl: "ephemeral", // Marker 1: End of System Prompt
 	}, CategoryConstraints))
+
+	// KV-2 (2026-10-27): append volatile blocks (anti-pattern, similar-task,
+	// active-context) AFTER the cache marker so they don't poison the stable
+	// prefix. These blocks query the experience store inside Build and can
+	// change mid-step (UpsertDecisionPrecedent writes during the turn loop).
+	blocks = append(blocks, volatileBlocks...)
 
 	// ─── Runtime Two-Level Interception (§5) ───────────────────────────
 	// After assembling all blocks, enforce the model-aware System Prompt

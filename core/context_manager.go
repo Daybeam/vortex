@@ -162,6 +162,20 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 		tokenLimit = effectiveMaxCtx
 	}
 
+	// 铁律 52 (2026-10-28): an unset ceiling does not fail loudly — it silently
+	// makes a judgement permanent. EffectiveContextWindow is only ever populated
+	// by hand (config_windows.json sets it for two HF providers); every other
+	// deployment, including the AppWorld harness (kernel.py writes only
+	// max_context_window + reserve_tokens), leaves it 0. effCtx=0 makes
+	// compressibleBudget clamp to 0 below, so `volatileTokens > 0` is true on
+	// every turn -> LevelAggressive forever. LevelNone and LevelLight become
+	// dead code and Squeeze runs on every single turn.
+	// Fall back exactly like tokenLimit does, and BEFORE the hint scaling so
+	// "terse" halves the real capacity instead of halving zero.
+	if effCtx <= 0 {
+		effCtx = effectiveMaxCtx
+	}
+
 	// 2.5 Anti-Cliff uncompressible-floor check: if Protected Zone alone
 	// occupies more than 75% of maxCtx, NO compression tier can help — must
 	// Fork. Squeeze cannot touch protected content.
@@ -177,6 +191,33 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 	}
 
 	effCtx = applyCompressionHint(effCtx, effectiveMaxCtx, req.CompressionHint)
+
+	// 铁律 51-4 (2026-10-27): the reply reserve and this call's max_tokens are
+	// not the same number, and OpenAI-compatible servers reject
+	// `prompt + max_tokens > window`. The reserve only covers the output if it
+	// happens to be at least max_tokens; when it is not, the real input capacity
+	// is `effectiveMaxCtx - max_tokens`.
+	//
+	// This runs BEFORE the FORCE_FORK branches on purpose: when the prompt still
+	// physically fits the window and there is compressible content, compressing
+	// beats aborting the step (Critical maps to DYNAMIC_ESCALATION_REQUIRED at the
+	// call site). Only when totalTokens alone already exceeds maxCtx — nothing can
+	// be squeezed out of the window — does Fork remain the answer.
+	//
+	// aw19 evidence: the audit compared an estimate against the window while the
+	// server saw 39704 + 1871 = 41575 and returned 400; no tier ever fired.
+	if req.MaxTokens > 0 && volatileTokens > 0 && maxCtx > 0 && totalTokens <= maxCtx {
+		if inputCap := effectiveMaxCtx - req.MaxTokens; inputCap > 0 && totalTokens > inputCap {
+			return &AuditResult{
+				Decision:        LevelAggressive,
+				OriginalTokens:  totalTokens,
+				MCSchemaTokens:  mcpSchemaTokens,
+				ActionTaken:     "OUTPUT_BUDGET_PRESSURE",
+				ReserveTokens:   reserveTokens,
+				EffectiveMaxCtx: effectiveMaxCtx,
+			}, nil
+		}
+	}
 
 	// 3. Decision Logic — all comparisons use effectiveMaxCtx (maxCtx minus
 	// reserve) so compression triggers before the model loses reply space.
@@ -350,9 +391,72 @@ func (cm *ContextManager) Squeeze(ctx context.Context, provider providers.Provid
 		volatileSystem = protectedConcat + "\n\n" + volatileSystem
 	}
 
+	// 铁律 51-1 (2026-10-27): rebuild the BLOCK structure.
+	//
+	// The original implementation only produced the flat System/User strings and
+	// left SystemBlocks/UserBlocks nil. The spawner then had to reconstruct
+	// userBlocks from those strings (spawner_dospawn.go, "else if squeezed.User
+	// != ''"), which collapsed the entire conversation into ONE block. That
+	// silently disabled compressUserBlocks — which required >10 blocks — so
+	// every context-limit 400 arrived with nothing to compress and the step died
+	// without emitting a single compression event.
+	//
+	// Keep the flat fields (legacy consumers, anchor verification) AND emit
+	// blocks that preserve granularity, in the same order the flat text uses.
+	type blockFn func(string) string
+	squeezeUserBlock := func(s string) string {
+		if level >= LevelLight {
+			s = applyRTK(s)
+			s = applyJSONCompress(s)
+			s = applyCodeCompress(s)
+		}
+		if level >= LevelAggressive {
+			s = applySemanticPruning(s)
+		}
+		return s
+	}
+	squeezeSysBlock := func(s string) string {
+		if level >= LevelLight {
+			s = applySessionDedup(s)
+		}
+		return s
+	}
+	rebuild := func(protected, legacy, volatileBlk []schemas.ContentBlock, fn blockFn) []schemas.ContentBlock {
+		// NOTE: the protected zone is NOT merged into these slices. It is already
+		// carried verbatim in ProtectedSystemBlocks / ProtectedUserBlocks and only
+		// the flat System/User strings concatenate it; duplicating it here would
+		// bill it twice wherever a consumer concatenates both. In the real spawn
+		// path req.Protected* is always empty (reqSieve only sets
+		// SystemBlocks/UserBlocks), so nothing is lost.
+		if len(legacy) == 0 && len(volatileBlk) == 0 {
+			return nil
+		}
+		out := make([]schemas.ContentBlock, 0, len(legacy)+len(volatileBlk))
+		for _, group := range [][]schemas.ContentBlock{legacy, volatileBlk} {
+			for _, b := range group {
+				t := b.Type
+				if t == "" {
+					t = "text"
+				}
+				out = append(out, schemas.ContentBlock{
+					Type:         t,
+					Text:         fn(b.Text),
+					CacheControl: b.CacheControl,
+					Category:     b.Category,
+					Metadata:     b.Metadata,
+				})
+			}
+		}
+		return out
+	}
+	squeezedSystemBlocks := rebuild(nil, req.SystemBlocks, req.VolatileSystemBlocks, squeezeSysBlock)
+	squeezedUserBlocks := rebuild(nil, req.UserBlocks, req.VolatileUserBlocks, squeezeUserBlock)
+
 	newReq := &schemas.CompleteRequest{
 		System:                volatileSystem,
 		User:                  volatileUser,
+		SystemBlocks:          squeezedSystemBlocks,
+		UserBlocks:            squeezedUserBlocks,
 		ProtectedSystemBlocks: req.ProtectedSystemBlocks,
 		ProtectedUserBlocks:   req.ProtectedUserBlocks,
 		VolatileSystemBlocks:  req.VolatileSystemBlocks,
