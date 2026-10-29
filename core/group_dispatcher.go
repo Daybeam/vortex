@@ -37,6 +37,7 @@ func (gd *GroupDispatcher) DispatchGroup(
 	sessionProviders []*config.ProviderConfig,
 	mainProviderID string,
 	submitterIsAdmin bool,
+	ownerID string,
 ) (string, error) {
 	gd.registry.Mu.RLock()
 	group := gd.registry.RoleGroups[groupID]
@@ -58,9 +59,10 @@ func (gd *GroupDispatcher) DispatchGroup(
 	// (core.mount_gate.go) sees the real caller, not a fail-closed default.
 	for i := range inputs {
 		inputs[i].SubmitterIsAdmin = submitterIsAdmin
+		inputs[i].OwnerID = ownerID
 	}
 
-	return gd.engine.SubmitWithSessionIR(inputs, sessionRoles, sessionSkills, sessionProviders, mainProviderID, "", "", 0, 0, "")
+	return gd.engine.SubmitWithSessionIR(inputs, sessionRoles, sessionSkills, sessionProviders, mainProviderID, "", "", 0, 0, ownerID)
 }
 
 // expandGroup converts a RoleGroup + task string into a concrete []StepInput

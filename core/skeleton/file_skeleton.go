@@ -94,7 +94,10 @@ func jsonSkeleton(data []byte) string {
 				inKey = true
 			case '}':
 				depth--
-				ctx = ctx[:len(ctx)-1]
+				// audit fix F: guard against unmatched '}' in non-JSON output.
+				if len(ctx) > 0 {
+					ctx = ctx[:len(ctx)-1]
+				}
 				inKey = false
 			case '[':
 				depth++
@@ -103,6 +106,14 @@ func jsonSkeleton(data []byte) string {
 				arrayStartLine = append(arrayStartLine, line)
 				skipDepth = depth // skip after first element
 			case ']':
+				// audit fix F: guard against unmatched ']' in non-JSON tool output.
+				// Without this, an empty arrayCount/arrayStartLine panics with
+				// index out of range. The skeletonizer processes arbitrary tool
+				// output which may contain stray brackets.
+				if len(arrayCount) == 0 {
+					// Unmatched ']' — skip to avoid panic; depth/ctx unchanged.
+					continue
+				}
 				count := arrayCount[len(arrayCount)-1]
 				startLine := arrayStartLine[len(arrayStartLine)-1]
 				indent := strings.Repeat("  ", depth-1)

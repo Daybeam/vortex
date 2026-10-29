@@ -33,72 +33,156 @@ var CoreToolNames = map[string]bool{
 	"execute_code":   true,
 	"decompress":     true,
 	"search_archive": true,
+	"batch_replace":  true,
+}
+
+// coreToolDefs is computed once at package init. audit fix P1: previously
+// CoreToolDefinitions() allocated a fresh slice + ~30 nested maps on every
+// call (every tool dispatch). All callers are read-only, so a shared var is
+// safe and eliminates the per-dispatch allocation.
+var coreToolDefs = []schemas.ToolDefinition{
+	{
+		Name:        "write_file",
+		Description: "Write content to a file under the current task's output directory. Path is relative (e.g. 'report.json', 'sub/dir/output.txt'). Cannot write outside the task directory.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string", "description": "Relative path within the task output directory"},
+				"content": map[string]any{"type": "string", "description": "File content (text or JSON string)"},
+			},
+			"required": []string{"path", "content"},
+		},
+	},
+	{
+		Name:        "read_file",
+		Description: "Read a file from the current task's output directory. Path is relative. Large files are auto-truncated with head+tail summary. Use mode='summary' for a structural skeleton with line numbers (JSON keys, HTML tags, code symbols). Use start_line/end_line to read a specific line range (1-indexed) — essential for batch-reading large files that exceed the model's context window.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":       map[string]any{"type": "string", "description": "Relative path within the task output directory"},
+				"mode":       map[string]any{"type": "string", "description": "Read mode: 'full' (default) or 'summary' (structural skeleton with line numbers)"},
+				"start_line": map[string]any{"type": "integer", "description": "First line to read (1-indexed). If omitted, starts from line 1."},
+				"end_line":   map[string]any{"type": "integer", "description": "Last line to read (1-indexed, inclusive). If omitted, reads to end."},
+			},
+			"required": []string{"path"},
+		},
+	},
+	{
+		Name:        "execute_code",
+		Description: "Execute code in a sandboxed environment. Supports: python, node, bun, lua. Returns stdout, stderr, and exit code.\n\nPREFER execute_code over multiple read_file calls when:\n- Counting functions/lines/patterns across many files\n- Extracting structured data from logs/JSON/CSV\n- Comparing or aggregating file contents\nOne script replaces N read_file calls and saves Nx context.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"code":     map[string]any{"type": "string", "description": "Code to execute"},
+				"language": map[string]any{"type": "string", "description": "Language: python, node, bun, or lua", "default": "python"},
+			},
+			"required": []string{"code"},
+		},
+	},
+	{
+		Name:        "decompress",
+		Description: "Recover original content from a folded conversation segment. Use this when you need the full details of a past discussion that was compressed into a summary. Returns the original user messages and assistant responses for the specified segment.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"segment_id": map[string]any{"type": "string", "description": "The segment ID to decompress (from the Folded Conversation Segments section)"},
+			},
+			"required": []string{"segment_id"},
+		},
+	},
+	{
+		Name:        "search_archive",
+		Description: "Search the context archive for relevant past conversation turns, step summaries, and task history. Use this when you need to recall what was discussed or done previously — especially after context compression. Returns matching summaries ranked by relevance.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string", "description": "Natural language query describing what you're looking for (e.g. 'output truncation implementation', 'spawner error handling')"},
+				"limit": map[string]any{"type": "integer", "description": "Max results to return (default 5, max 10)", "default": 5},
+			},
+			"required": []string{"query"},
+		},
+	},
+	{
+		Name:        "batch_replace",
+		Description: "Atomically replace text in one or more files. Each replacement specifies a file path, the exact text to find (old_str), and the replacement text (new_str). All replacements are validated first (old_str must exist and be unique in the file) and applied atomically — if any replacement fails, ALL changes are rolled back. Use this instead of write_file when you only need to change a few lines, to avoid rewriting the entire file.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"replacements": map[string]any{
+					"type":        "array",
+					"description": "List of replacement operations",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"file_path": map[string]any{"type": "string", "description": "Path to the file (relative to workspace or absolute)"},
+							"old_str":   map[string]any{"type": "string", "description": "Exact text to find. Must be unique in the file."},
+							"new_str":   map[string]any{"type": "string", "description": "Text to replace old_str with"},
+						},
+						"required": []string{"file_path", "old_str", "new_str"},
+					},
+				},
+			},
+			"required": []string{"replacements"},
+		},
+	},
 }
 
 func CoreToolDefinitions() []schemas.ToolDefinition {
-	return []schemas.ToolDefinition{
-		{
-			Name:        "write_file",
-			Description: "Write content to a file under the current task's output directory. Path is relative (e.g. 'report.json', 'sub/dir/output.txt'). Cannot write outside the task directory.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":    map[string]any{"type": "string", "description": "Relative path within the task output directory"},
-					"content": map[string]any{"type": "string", "description": "File content (text or JSON string)"},
-				},
-				"required": []string{"path", "content"},
-			},
-		},
-		{
-			Name:        "read_file",
-			Description: "Read a file from the current task's output directory. Path is relative. Large files are auto-truncated with head+tail summary. Use mode='summary' for a structural skeleton with line numbers (JSON keys, HTML tags, code symbols). Use start_line/end_line to read a specific line range (1-indexed) — essential for batch-reading large files that exceed the model's context window.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":       map[string]any{"type": "string", "description": "Relative path within the task output directory"},
-					"mode":       map[string]any{"type": "string", "description": "Read mode: 'full' (default) or 'summary' (structural skeleton with line numbers)"},
-					"start_line": map[string]any{"type": "integer", "description": "First line to read (1-indexed). If omitted, starts from line 1."},
-					"end_line":   map[string]any{"type": "integer", "description": "Last line to read (1-indexed, inclusive). If omitted, reads to end."},
-				},
-				"required": []string{"path"},
-			},
-		},
-		{
-			Name:        "execute_code",
-			Description: "Execute code in a sandboxed environment. Supports: python, node, bun, lua. Returns stdout, stderr, and exit code.\n\nPREFER execute_code over multiple read_file calls when:\n- Counting functions/lines/patterns across many files\n- Extracting structured data from logs/JSON/CSV\n- Comparing or aggregating file contents\nOne script replaces N read_file calls and saves Nx context.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"code":     map[string]any{"type": "string", "description": "Code to execute"},
-					"language": map[string]any{"type": "string", "description": "Language: python, node, bun, or lua", "default": "python"},
-				},
-				"required": []string{"code"},
-			},
-		},
-		{
-			Name:        "decompress",
-			Description: "Recover original content from a folded conversation segment. Use this when you need the full details of a past discussion that was compressed into a summary. Returns the original user messages and assistant responses for the specified segment.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"segment_id": map[string]any{"type": "string", "description": "The segment ID to decompress (from the Folded Conversation Segments section)"},
-				},
-				"required": []string{"segment_id"},
-			},
-		},
-		{
-			Name:        "search_archive",
-			Description: "Search the context archive for relevant past conversation turns, step summaries, and task history. Use this when you need to recall what was discussed or done previously — especially after context compression. Returns matching summaries ranked by relevance.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"query": map[string]any{"type": "string", "description": "Natural language query describing what you're looking for (e.g. 'output truncation implementation', 'spawner error handling')"},
-					"limit": map[string]any{"type": "integer", "description": "Max results to return (default 5, max 10)", "default": 5},
-				},
-				"required": []string{"query"},
-			},
-		},
+	return coreToolDefs
+}
+
+// writeVerifyHint returns a context-aware hint nudging the model to verify
+// its output after write_file. Defect 6 fix (harness-bench §3.6, 2026-10-28):
+// the engine lacked a "read back / run after write" closed loop, causing the
+// model to write files with bugs (e.g. missing JOIN) and never catch them.
+func writeVerifyHint(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".py":
+		return "Hint: verify with execute_code or read_file before declaring done."
+	case ".sql":
+		return "Hint: verify with execute_code or read_file before declaring done."
+	case ".sh", ".bash":
+		return "Hint: verify with execute_code or read_file before declaring done."
+	default:
+		return "Hint: use read_file to verify content before declaring done."
 	}
+}
+
+// handleBatchReplace wires ExecuteBatchReplace (core/replace_batch.go) as a
+// core tool. Defect 7 fix (harness-bench report §3.7, 2026-10-28): without
+// incremental edit, the model must rewrite entire files (26× token waste).
+// ExecuteBatchReplace already has atomic commit + rollback.
+func handleBatchReplace(args map[string]any, resolve func(string) (string, error)) (string, error) {
+	replacementsRaw, _ := args["replacements"].([]any)
+	if len(replacementsRaw) == 0 {
+		return "", fmt.Errorf("replacements array is required and must not be empty")
+	}
+	var replacements []ReplacementItem
+	for i, raw := range replacementsRaw {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("replacement[%d] is not an object", i)
+		}
+		filePath, _ := item["file_path"].(string)
+		oldStr, _ := item["old_str"].(string)
+		newStr, _ := item["new_str"].(string)
+		if filePath == "" || oldStr == "" {
+			return "", fmt.Errorf("replacement[%d]: file_path and old_str are required", i)
+		}
+		fullPath, err := resolve(filePath)
+		if err != nil {
+			return "", fmt.Errorf("replacement[%d]: %v", i, err)
+		}
+		replacements = append(replacements, ReplacementItem{
+			FilePath: fullPath, OldStr: oldStr, NewStr: newStr,
+		})
+	}
+	result, err := ExecuteBatchReplace(BatchReplaceRequest{Replacements: replacements})
+	if err != nil {
+		return "", err
+	}
+	return result.Summary, nil
 }
 
 // HandleCoreTool executes a core tool by name. ctx is used for cancellation
@@ -116,7 +200,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 			if validator != nil && validator.IsAllowed(rel) {
 				return rel, nil
 			}
-			return "", fmt.Errorf("absolute path %q is outside allowed directories", rel)
+			return "", fmt.Errorf("absolute path %q is outside allowed directories (allowed: %s)", rel, allowedDirsStr(validator, taskDir))
 		}
 		if validator != nil && validator.SessionRoot != "" {
 			// Prefer SessionRoot (harness-bench workspace) when available.
@@ -131,15 +215,14 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		}
 		return safeJoin(taskDir, rel)
 	}
-	// resolveExistingPath finds an existing file, trying SessionRoot first
-	// then taskDir. Used by read_file.
+	// resolveExistingPath finds an existing file (SessionRoot first, then taskDir).
 	resolveExistingPath := func(rel string) (string, error) {
 		if filepath.IsAbs(rel) {
 			// Absolute path: check if within allowed roots.
 			if validator != nil && validator.IsAllowed(rel) {
 				return rel, nil
 			}
-			return "", fmt.Errorf("absolute path %q is outside allowed directories", rel)
+			return "", fmt.Errorf("absolute path %q is outside allowed directories (allowed: %s)", rel, allowedDirsStr(validator, taskDir))
 		}
 		if validator != nil && validator.SessionRoot != "" {
 			sessionPath, err := validator.Resolve("session", rel)
@@ -149,7 +232,6 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 				}
 			}
 		}
-		// Try taskDir.
 		var fallback string
 		if validator != nil {
 			fallback, _ = validator.Resolve("task", rel)
@@ -161,7 +243,6 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 				return fallback, nil
 			}
 		}
-		// File not found anywhere — return session path for error message clarity.
 		if validator != nil && validator.SessionRoot != "" {
 			return "", fmt.Errorf("file not found: %s (searched session and task dirs)", rel)
 		}
@@ -192,7 +273,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		} else {
 			rel, _ = filepath.Rel(taskDir, fullPath)
 		}
-		return fmt.Sprintf("Written %d bytes to %s", len(content), rel), nil
+		return fmt.Sprintf("Written %d bytes to %s\n%s", len(content), rel, writeVerifyHint(rel)), nil
 
 	case "read_file":
 		path, _ := args["path"].(string)
@@ -232,6 +313,9 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		}
 		gated := skeleton.AdaptiveOutputResult(data, path, "orchestrator")
 		return string(gated), nil
+
+	case "batch_replace":
+		return handleBatchReplace(args, resolveExistingPath)
 
 	case "execute_code":
 		code, _ := args["code"].(string)
@@ -295,6 +379,12 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 		return nil, fmt.Errorf("unsupported language: %s (supported: python, node, bun, lua)", lang)
 	}
 
+	// Defect 8 fix (harness-bench report §3.8, 2026-10-28):
+	// Record start time so we can detect file changes when stdout is empty.
+	// Without this, exit_code=0 + empty stdout is a silent success the model
+	// can't observe → it loops ("did it work? run it again") until max_turns.
+	startTime := time.Now()
+
 	// M3 (2026-10-25): if a SandboxProvider is configured (non-local mode),
 	// route through it for OS-level isolation (bwrap/docker). Default = nil = raw
 	// exec + ApplySandbox (backward-compatible). See TRIAL_SKILL_INSTANT_USE_DESIGN §4.
@@ -303,15 +393,19 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 			Script:   code,
 			Language: lang,
 			Timeout:  30 * time.Second,
+			Dir:      cwd, // pass working directory to sandbox (defect 5 fix)
 		})
 		if err != nil {
 			return nil, fmt.Errorf("sandbox execution failed: %v", err)
 		}
-		return map[string]any{
+		resp := map[string]any{
 			"stdout":    result.Stdout,
 			"stderr":    result.Stderr,
 			"exit_code": result.ExitCode,
-		}, nil
+		}
+		// Defect 8: add side-effect summary for silent success.
+		addSilentSuccessSummary(resp, cwd, startTime)
+		return resp, nil
 	}
 
 	var cmd *exec.Cmd
@@ -375,10 +469,13 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 		// Head+Tail truncation + Error Keyword Extraction + workspace dump for large outputs.
 		gatedStdout := string(skeleton.AdaptiveOutputResult([]byte(stdout.String()), "execute_code", "orchestrator"))
 		gatedStderr := string(skeleton.AdaptiveOutputResult([]byte(stderr.String()), "execute_code", "orchestrator"))
-		return map[string]any{
+		resp := map[string]any{
 			"stdout": gatedStdout,
 			"stderr": gatedStderr,
-		}, nil
+		}
+		// Defect 8: add side-effect summary for silent success.
+		addSilentSuccessSummary(resp, cwd, startTime)
+		return resp, nil
 	}
 	return map[string]any{
 		"stdout":    string(skeleton.AdaptiveOutputResult([]byte(stdout.String()), "execute_code", "orchestrator")),
@@ -393,4 +490,74 @@ func errToString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// allowedDirsStr returns a human-readable string listing the directories
+// the model is allowed to access, for inclusion in error messages.
+// Defect 9 fix (harness-bench report §3.9, 2026-10-28): error messages
+// said "outside allowed directories" without naming which directories
+// ARE allowed, leaving the model to guess.
+func allowedDirsStr(validator *SafePathValidator, taskDir string) string {
+	if validator == nil {
+		return taskDir
+	}
+	dirs := []string{taskDir}
+	if validator.SessionRoot != "" {
+		dirs = append(dirs, validator.SessionRoot)
+	}
+	return strings.Join(dirs, ", ")
+}
+
+// addSilentSuccessSummary addresses harness-bench defect 8 (2026-10-28):
+// when execute_code succeeds (exit_code=0) but produces no stdout, the model
+// cannot observe whether anything happened → it loops ("run it again") until
+// max_turns. This function scans the working directory for files modified
+// after the script started and includes them in the response. If no changes
+// are found, a hint is added suggesting print() statements.
+//
+// In the 041-capacity-planning task, this fix alone is predicted to cut
+// 38/41 wasted calls (88% reduction) — the script writes 3 deliverables
+// but never prints, so 37 subsequent calls are pure repetition.
+func addSilentSuccessSummary(resp map[string]any, cwd string, startTime time.Time) {
+	stdout, _ := resp["stdout"].(string)
+	if stdout != "" {
+		return // Has output — model can observe success directly.
+	}
+	if cwd == "" {
+		// No working directory to scan. Add a generic hint.
+		resp["hint"] = "Script completed successfully but produced no output. Consider adding print() statements to observe results."
+		return
+	}
+
+	// Scan cwd (non-recursive, top-level only) for files modified after startTime.
+	// Lightweight: os.ReadDir + os.Stat, limited to 20 files.
+	entries, err := os.ReadDir(cwd)
+	if err != nil {
+		resp["hint"] = "Script completed successfully but produced no output. Consider adding print() statements to observe results."
+		return
+	}
+
+	var modified []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(startTime) {
+			modified = append(modified, entry.Name())
+			if len(modified) >= 20 {
+				break
+			}
+		}
+	}
+
+	if len(modified) > 0 {
+		resp["files_modified"] = modified
+		resp["hint"] = fmt.Sprintf("Script completed with no stdout but %d file(s) were modified. Use read_file to verify their contents.", len(modified))
+	} else {
+		resp["hint"] = "Script completed successfully but produced no output and no file changes were detected. Consider adding print() statements to observe results."
+	}
 }

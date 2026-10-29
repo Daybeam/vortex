@@ -155,5 +155,12 @@ func TestRequestAutonomousAbort_NilGraph_NoPanic(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	// ACP mock server re-exec pattern: when the env var is set, the test
+	// binary re-execs itself as a mock ACP server instead of running tests.
+	// See core/acp_client_test.go.
+	if os.Getenv("ACP_MOCK_SERVER") != "" {
+		acpMockServerMain()
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
 }

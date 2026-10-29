@@ -40,10 +40,10 @@ func parseSessionSkills(v any) []*config.Skill {
 
 // shouldRouteToFulfill determines if submit_decision routes to FulfillStep
 // (true) or SubmitDecisionWithPayload (false). T1: replan/create_role/
-// rewrite_dag carry structured payload and must go through
-// SubmitDecisionWithPayload even when output is non-empty.
+// rewrite_dag/goal_change_requested carry structured payload and must go
+// through SubmitDecisionWithPayload even when output is non-empty.
 func shouldRouteToFulfill(choice, output string) bool {
-	return (choice == "fulfill" || output != "") && choice != "rewrite_dag" && choice != "replan" && choice != "create_role"
+	return (choice == "fulfill" || output != "") && choice != "rewrite_dag" && choice != "replan" && choice != "create_role" && choice != "goal_change_requested"
 }
 
 // validateTierChoice returns an error if the given choice is not permitted
@@ -103,6 +103,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithString("workspace_root", mcp.Description("Absolute path to workspace root. IGNORED for public tier (auto-bound to session sandbox). Only honored for local (no API key) and admin tier callers.")),
 		mcp.WithNumber("timeout", mcp.Description("Per-task timeout in seconds. Overrides the global default. 0 = use system default.")),
 		mcp.WithNumber("token_budget", mcp.Description("Per-task token budget cap. Overrides the global default. 0 = use system default.")),
+		mcp.WithAny("charter", mcp.Description("Optional Task Charter: {\"intent\": \"why\", \"non_goals\": [\"what not to do\"], \"constraints\": [\"what must hold\"]}. See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, _ := req.Params.Arguments.(map[string]any)
 		sessionRoles := parseSessionRoles(args["session_roles"])
@@ -150,7 +151,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				}
 			}
 			dispatcher := core.NewGroupDispatcher(app.Scheduler, app.Registry)
-			id, err := dispatcher.DispatchGroup(groupID, taskStr, ctxRefs, sessionRoles, sessionSkills, nil, "", EffectiveTier(ctx, app) == TierAdmin)
+			id, err := dispatcher.DispatchGroup(groupID, taskStr, ctxRefs, sessionRoles, sessionSkills, nil, "", EffectiveTier(ctx, app) == TierAdmin, CallerOwnerID(ctx))
 			if err != nil {
 				return errResult(err.Error())
 			}
@@ -458,6 +459,31 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			return errResult(err.Error())
 		}
 
+		// Optional Task Charter (P1): parse and set on the graph if provided.
+		if charterRaw, ok := args["charter"]; ok && charterRaw != nil {
+			if charterMap, ok := charterRaw.(map[string]any); ok {
+				charter := &schemas.TaskCharter{Version: 1}
+				if v, ok := charterMap["intent"].(string); ok {
+					charter.Intent = v
+				}
+				if v, ok := charterMap["non_goals"].([]any); ok {
+					for _, ng := range v {
+						if s, ok := ng.(string); ok {
+							charter.NonGoals = append(charter.NonGoals, s)
+						}
+					}
+				}
+				if v, ok := charterMap["constraints"].([]any); ok {
+					for _, c := range v {
+						if s, ok := c.(string); ok {
+							charter.Constraints = append(charter.Constraints, s)
+						}
+					}
+				}
+				app.Scheduler.SetCharter(id, charter)
+			}
+		}
+
 		// Inline complexity hint (replaces former orchestrator_analyze_task)
 		stepCount := len(inputs)
 		hasMultipleRoles := false
@@ -616,7 +642,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 	}
 
 	app.register(s, mcp.NewTool("orchestrator_submit_decision",
-		mcp.WithDescription("Respond to a blocked step decision. Choices: skip|abort|retry|refine_and_retry (public tier), retry_with_skill:ID|retry_with_context:TEXT|escalate_model:MODEL|create_skill|rewrite_dag (admin tier only). For rewrite_dag, pass surgery JSON in 'output' with deprecated_step_id and replacement_steps. For delegation-required decisions, pass choice='fulfill' plus an 'output' JSON string containing the subagent/human result payload. Optionally attach 'human_approval' {enabled, evidence_text, evidence_ref} to log a human review trail."),
+		mcp.WithDescription("Respond to a blocked step decision. Choices: skip|abort|retry|refine_and_retry (public tier), retry_with_skill:ID|retry_with_context:TEXT|escalate_model:MODEL|create_skill|rewrite_dag|goal_change_requested (admin tier only). For rewrite_dag, pass surgery JSON in 'output' with deprecated_step_id and replacement_steps. For goal_change_requested, pass a TaskCharter JSON in 'output' with intent, non_goals, constraints. For delegation-required decisions, pass choice='fulfill' plus an 'output' JSON string containing the subagent/human result payload. Optionally attach 'human_approval' {enabled, evidence_text, evidence_ref} to log a human review trail."),
 		mcp.WithString("task_id", mcp.Required()),
 		mcp.WithString("decision_id", mcp.Required()),
 		mcp.WithString("choice", mcp.Required()),

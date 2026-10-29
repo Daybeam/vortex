@@ -71,6 +71,16 @@ type ChatHarness struct {
 	// Returns the orchestrator task id.
 	Delegate func(prompt string) (string, error)
 	MaxTurns int
+	// MaxOutputTokens caps the output tokens per LLM call. 0 = default 2048.
+	// (ADDED 2026-10-28: previously hardcoded to 2048 with no config wiring
+	// — harness-bench report §4.1.)
+	MaxOutputTokens int
+	// SessionRoot is the workspace root for path resolution in core tools.
+	// When non-empty, a SafePathValidator is passed to HandleCoreTool so
+	// relative paths resolve against the workspace instead of outputs/<taskID>.
+	// When empty, behavior is unchanged (backward compatible).
+	// (ADDED 2026-10-28: harness-bench report §4.2.)
+	SessionRoot string
 	// Sieve is an optional repetition detector. If nil, a lightweight
 	// signature-based fallback is used instead.
 	Sieve *Sieve
@@ -183,7 +193,12 @@ func (te *thinkingExtractor) Flush() (content, thinking string) {
 }
 
 func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
-	tools := CoreToolDefinitions()
+	// Copy before mutating: CoreToolDefinitions() returns a shared package-level
+	// var (audit fix P1). ToolDefinitions() mutates Description fields when
+	// SessionRoot is set, so it must operate on a copy.
+	src := CoreToolDefinitions()
+	tools := make([]schemas.ToolDefinition, len(src))
+	copy(tools, src)
 	// Filter out decompress — it requires a FoldEngine which the ChatHarness
 	// doesn't have. decompress is only available to subagents via the Spawner.
 	filtered := tools[:0]
@@ -193,6 +208,32 @@ func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
 		}
 	}
 	tools = filtered
+	// When SessionRoot is set, adapt tool descriptions to reflect the real
+	// workspace root and clarify execute_code is not a shell. (harness-bench
+	// report §3 defect 3: descriptions contradicted actual permissions.)
+	if h.SessionRoot != "" {
+		for i := range tools {
+			switch tools[i].Name {
+			case "write_file":
+				tools[i].Description = "Write content to a file. Path is relative to the workspace root (" +
+					h.SessionRoot + "). Can write anywhere under the workspace."
+			case "read_file":
+				tools[i].Description = "Read content from a file. Path is relative to the workspace root (" +
+					h.SessionRoot + ")."
+			case "execute_code":
+				tools[i].Description = "Execute code in a sandboxed environment. Supports: python, node, bun, lua. " +
+					"Returns stdout, stderr, and exit code.\n\n" +
+					"IMPORTANT: The 'code' parameter is SOURCE CODE, not shell commands. " +
+					"Do NOT pass 'git fetch', 'ls -F', or other shell commands — they will fail with SyntaxError. " +
+					"Use python/node code only.\n\n" +
+					"PREFER execute_code over multiple read_file calls when:\n" +
+					"- Counting functions/lines/patterns across many files\n" +
+					"- Extracting structured data from logs/JSON/CSV\n" +
+					"- Comparing or aggregating file contents\n" +
+					"One script replaces N read_file calls and saves Nx context."
+			}
+		}
+	}
 	tools = append(tools, schemas.ToolDefinition{
 		Name: "delegate_to_orchestrator",
 		Description: "Delegate a complex, multi-step task to the orchestrator (role-based subagent execution). " +
@@ -301,6 +342,10 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	maxTurns := h.MaxTurns
 	if maxTurns <= 0 {
 		maxTurns = 6
+	}
+	maxOutputTokens := h.MaxOutputTokens
+	if maxOutputTokens <= 0 {
+		maxOutputTokens = 2048
 	}
 
 	query := ""
@@ -440,7 +485,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			System:      system,
 			User:        flattenChatMessages(messages),
 			Model:       h.Model,
-			MaxTokens:   2048,
+			MaxTokens:   maxOutputTokens,
 			MCPServers:  mcpServers,
 			Attachments: h.Attachments,
 		}
@@ -787,6 +832,15 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 		}
 		return sb.String(), nil
 	}
+	// When SessionRoot is set, pass a SafePathValidator so relative paths
+	// resolve against the workspace root instead of outputs/<taskID>.
+	// When SessionRoot is empty, no validator is passed — backward compatible
+	// with the legacy safeJoin behavior. (harness-bench report §4.2.)
+	if h.SessionRoot != "" {
+		taskDir := filepath.Join(h.OutputBase, taskID)
+		validator := NewSafePathValidator(taskDir, h.SessionRoot, []string{h.SessionRoot})
+		return HandleCoreTool(ctx, name, args, h.OutputBase, taskID, validator)
+	}
 	return HandleCoreTool(ctx, name, args, h.OutputBase, taskID)
 }
 
@@ -873,14 +927,18 @@ func (h *ChatHarness) externalizeArtifact(result, toolName, taskID string) strin
 		if len(summary) > 500 {
 			summary = summary[:500] + "\n... (skeleton truncated, see file)"
 		}
-		_ = h.Archive.Append(MemoryItem{
+		// audit fix L3: surface Archive.Append failure — previously swallowed,
+		// so recall silently missed indexed artifacts with no signal.
+		if aerr := h.Archive.Append(MemoryItem{
 			TaskID:     taskID,
 			NodeID:     fmt.Sprintf("artifact_%s_%d", taskID, time.Now().UnixNano()),
 			Intent:     fmt.Sprintf("[artifact: %s]", toolName),
 			Summary:    summary,
 			SourceKeys: []string{absPath},
 			Timestamp:  time.Now(),
-		})
+		}); aerr != nil {
+			fmt.Fprintf(os.Stderr, "[chat-harness] WARN: failed to index artifact in ContextArchive: %v\n", aerr)
+		}
 	}
 
 	return fmt.Sprintf(

@@ -221,7 +221,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	if len(inputs) == 1 && len(inputs[0].DependsOn) == 0 && s.plannerFirstEnabled() {
 		probeTask := inputs[0].Task
 		planTaskID := schemas.NewTaskID()
-		planned, reason := s.RequestPlanning(planTaskID, inputs[0].RoleID, probeTask, 0, inputs[0].SubmitterIsAdmin)
+		planned, reason := s.RequestPlanning(planTaskID, inputs[0].RoleID, probeTask, 0, inputs[0].SubmitterIsAdmin, ownerID)
 		if reason != "" {
 			s.logger.Log("planner_first_skipped", planTaskID, inputs[0].ID, map[string]any{
 				"reason": reason,
@@ -498,7 +498,6 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 			s.Mu.Lock()
 			delegationBlocked := false
-			partialBlocked := false
 			if finalErr != nil {
 				step.Status = schemas.StepFailed
 				step.LastError = finalErr.Error()
@@ -547,13 +546,20 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 						}
 					}
 				case schemas.StatusPartial:
-					// Partial is not success. Surface the true status and raise a
-					// decision so the caller — which holds the task-wide view —
-					// verifies before accepting (the engine must not guess).
+					// Partial is not success — but the fast path is loop-less: it
+					// never starts run() (startGraphExecutor is multi-step only),
+					// so raising a decision here deadlocks. The decision's
+					// Broadcast() has no consumer and the task stays "running"
+					// until the harness budget timer expires (PREREG-C5DD §7.2).
+					// Honest terminal instead: preserve StepPartial + the artifact
+					// (ResultRef) so the caller can inspect what was produced, mark
+					// the graph failed (partial ≠ success), and fall through to the
+					// terminal-publish block. The caller decides at the call
+					// boundary — the react/loop model, not a suspended decision.
 					step.ResultRef = finalResult.Ref
 					step.StatesVisited = finalResult.StatesVisited
 					step.Status = schemas.StepPartial
-					partialBlocked = true
+					graph.Status = schemas.GraphFailed
 				default:
 					// failed / capability_required / approval_required / unknown:
 					// the subagent did not succeed. Terminal failure so the task
@@ -580,19 +586,6 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 				s.Broadcast()
 				return
 			}
-			if partialBlocked {
-				// Same option set the walker's handleStepFailure offers for a
-				// step_failed decision (scheduler_decision_failure.go:193).
-				s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
-					"root_cause":       "partial",
-					"suggested_action": "step reported partial completion; verify the output before accepting",
-					"missing_context":  finalResult.Output.MissingContext,
-					"confidence":       finalResult.Output.Confidence,
-				}, []string{"skip", "abort", "retry", "refine_and_retry"})
-				s.Broadcast()
-				return
-			}
-
 			s.persistGraph(graph)
 			s.broadcastDone(taskID) // safe close under Mu with double-close guard
 			// §3 fix: publish terminal event for single-step fast-path tasks.

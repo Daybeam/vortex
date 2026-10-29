@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -11,6 +12,18 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/pkg/search"
+)
+
+// MemoryScope classifies the visibility tier of a MemoryItem (memory tiering
+// gap A, 2026-10-23). Items with team/global scope are shared across tasks;
+// items with task/project scope are isolated to their TaskID.
+type MemoryScope string
+
+const (
+	ScopeTask    MemoryScope = "task"    // current task context (filtered by TaskID)
+	ScopeProject MemoryScope = "project" // project-level business knowledge (filtered by TaskID)
+	ScopeTeam    MemoryScope = "team"    // team conventions/standards (cross-task shared)
+	ScopeGlobal  MemoryScope = "global"  // globally universal (cross-task shared, = existing behavior for shared items)
 )
 
 // MemoryItem is the minimal hot-data unit persisted to disk.
@@ -39,6 +52,10 @@ type MemoryItem struct {
 	// out superseded/stale items so contradictory facts aren't recalled together.
 	Status       string `json:"status,omitempty"`        // "", "active", "superseded", "stale"
 	SupersededBy string `json:"superseded_by,omitempty"` // NodeID of the replacing item
+	// MemoryScope tier (memory tiering gap A, 2026-10-23): classifies whether
+	// this item is task-scoped, project-scoped, team-shared, or global.
+	// Empty = legacy behavior (filtered by TaskID, same as ScopeTask).
+	Scope MemoryScope `json:"scope,omitempty"`
 }
 
 const (
@@ -48,7 +65,26 @@ const (
 	// preventing a noisy BM25 arm from flooding the fusion pool.
 	// 0 = no cap. See docs/plan/search_adaption_design.md §2.2.
 	defaultRRFMaxPerSource = 50
+
+	// decayHalfLife is the time for a memory item's ranking weight to decay
+	// to ~37% (1/e) of its original value (memory tiering gap C, 2026-10-23).
+	// 90 days means: 1d→0.989, 30d→0.717, 90d→0.368, 180d→0.135.
+	// This preserves traceability (old items are still retrievable, just ranked
+	// lower) instead of hard-deleting via TTL.
+	decayHalfLife = 90 * 24 * time.Hour
 )
+
+// computeDecayWeight returns an exponential decay weight in (0, 1] based on
+// the elapsed time since timestamp. Zero-time or future-dated items get 1.0
+// (no decay). Used as a ranking multiplier in SearchWithOptions so recent
+// memories rank above stale ones at equal semantic relevance.
+func computeDecayWeight(timestamp, now time.Time) float64 {
+	if timestamp.IsZero() || now.Before(timestamp) {
+		return 1.0
+	}
+	delta := now.Sub(timestamp)
+	return math.Exp(-delta.Hours() / decayHalfLife.Hours())
+}
 
 // QueryOptions extends Search with optional temporal filtering.
 // Zero values mean "no filter" (backward compatible).
@@ -323,7 +359,12 @@ func (a *ContextArchive) BuildIndex() {
 	a.mu.Unlock()
 }
 
-// filterItemsByTask returns only items matching the given taskID.
+// filterItemsByTask returns items matching the given taskID, plus any items
+// with team/global scope (cross-task shared knowledge).
+//
+// Scope rules (memory tiering gap A, 2026-10-23):
+//   - ScopeTeam / ScopeGlobal → always included (cross-task sharing)
+//   - ScopeTask / ScopeProject / empty (legacy) → only if TaskID == taskScope
 //
 // GUARD (P3.2, 2026-10-22): task_scope is TASK-level isolation, NOT tenant
 // isolation. It answers "which task may recall this memory", never "which
@@ -335,6 +376,12 @@ func (a *ContextArchive) BuildIndex() {
 func filterItemsByTask(items []MemoryItem, taskScope string) []MemoryItem {
 	out := make([]MemoryItem, 0, len(items))
 	for _, it := range items {
+		// Team and global scope items are shared across all tasks.
+		if it.Scope == ScopeTeam || it.Scope == ScopeGlobal {
+			out = append(out, it)
+			continue
+		}
+		// Task, project, and legacy (empty) scope items are filtered by TaskID.
 		if it.TaskID == taskScope {
 			out = append(out, it)
 		}
@@ -416,9 +463,16 @@ func (a *ContextArchive) SearchWithOptions(query string, embedClient EmbeddingCl
 		id    string
 		score float64
 	}
+	// Apply temporal decay weight (memory tiering gap C, 2026-10-23):
+	// recent memories rank above stale ones at equal semantic relevance.
+	now := time.Now()
 	var sorted []scoredItem
 	for id, score := range merged {
-		sorted = append(sorted, scoredItem{id, score})
+		weight := 1.0
+		if item, ok := itemMap[id]; ok {
+			weight = computeDecayWeight(item.Timestamp, now)
+		}
+		sorted = append(sorted, scoredItem{id, score * weight})
 	}
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
 
@@ -577,7 +631,11 @@ func (a *ContextArchive) MarkStaleByStep(taskID string, stepIDs []string) int {
 	}
 
 	if marked > 0 {
-		_ = a.writeFileLocked()
+		// audit fix L1: surface writeFileLocked failure — previously swallowed,
+		// so stale markers were set in memory but lost on restart.
+		if werr := a.writeFileLocked(); werr != nil {
+			fmt.Fprintf(os.Stderr, "[context-archive] WARN: failed to persist stale markers: %v\n", werr)
+		}
 		a.indexDirty = true
 	}
 	return marked

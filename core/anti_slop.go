@@ -92,6 +92,15 @@ func (i *AntiSlopInterceptor) ScanOutput(output schemas.SubagentOutput) (SlopVer
 		pendingPhrases = defaultSlopPhrases
 	}
 
+	// audit fix P9: pre-lowercase phrases once here instead of per-phrase per
+	// call in scanText. Previously strings.ToLower(phrase) ran for every phrase
+	// on every subagent-output scan (static phrases recomputed repeatedly).
+	lowerPhrases := make([]string, len(pendingPhrases))
+	for idx, p := range pendingPhrases {
+		lowerPhrases[idx] = strings.ToLower(p)
+	}
+	pendingPhrases = lowerPhrases
+
 	totalHits := 0
 
 	// 1. Scan the result map recursively for string values
@@ -162,8 +171,9 @@ func (i *AntiSlopInterceptor) scanStrings(items []string, phrases []string) int 
 func (i *AntiSlopInterceptor) scanText(text string, phrases []string) int {
 	lower := strings.ToLower(text)
 	total := 0
-	for _, phrase := range phrases {
-		p := strings.ToLower(phrase)
+	// audit fix P9: phrases are pre-lowercased by ScanOutput, so skip the
+	// per-phrase strings.ToLower that previously ran on every call.
+	for _, p := range phrases {
 		if strings.Contains(lower, p) {
 			total++
 		}

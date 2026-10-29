@@ -279,7 +279,12 @@ func (m *Manager) Commit(sessionID string) error {
 
 	// 5. Mark committed and clean up
 	manifest.Phase = t.SessionCommitted
-	_ = writeManifest(snapDir, manifest)
+	// audit fix L6: if writeManifest fails, do NOT RemoveAll the snapshot
+	// dir — previously both errors were swallowed, so a manifest write failure
+	// was followed by deleting the snapshot, destroying the recovery record.
+	if werr := writeManifest(snapDir, manifest); werr != nil {
+		return fmt.Errorf("commit session %s: write manifest: %w", sess.ID, werr)
+	}
 	_ = os.RemoveAll(snapDir)
 
 	// Clear overlays

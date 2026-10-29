@@ -93,6 +93,10 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 			logger.Log("EventEphemeralRoleGenerated", req.TaskID, req.StepID, map[string]any{
 				"role_id": req.RoleID,
 			})
+			// Record substitution: ephemeral role generated instead of requested role
+			if req.Hub != nil && req.Hub.Graph != nil {
+				req.Hub.Graph.RecordSubstitution("ephemeral_role", "", req.RoleID, "role not found, ephemeral generation used", req.StepID)
+			}
 			case registry.EnableDynamicRoleGen:
 				logger.Log("EventAutoRoleGeneration", req.TaskID, req.StepID, map[string]any{
 					"message": fmt.Sprintf("Role %s not found, attempting dynamic generation", req.RoleID),
@@ -185,6 +189,10 @@ func tryDefaultRoleFallback(registry *config.Registry, logger *Logger, req *Spaw
 		"level":              "ERROR",
 		"mcp_bindings_count": bindingCount,
 	})
+	// Record substitution: fell back to orchestrator_default
+	if req.Hub != nil && req.Hub.Graph != nil {
+		req.Hub.Graph.RecordSubstitution("role_fallback", req.RoleID, "orchestrator_default", genErr.Error(), req.StepID)
+	}
 	if bindingCount == 0 {
 		logger.Log("EventRoleFallbackNoBindings", req.TaskID, req.StepID, map[string]any{
 			"role_id": "orchestrator_default",
@@ -280,12 +288,16 @@ func HealthCheckInterceptor(registry *config.Registry, logger *Logger) Intercept
 
 						// Degrade: skip this MCP instead of blocking the entire step.
 						// The role can still function with its remaining MCPs and skills.
-						logger.Log("EventMCPDegraded", req.TaskID, req.StepID, map[string]any{
-							"mcp_id":  mcpID,
-							"command": cmdName,
-							"action":  "skipped",
-						})
-						degradedMCPs = append(degradedMCPs, mcpID)
+					logger.Log("EventMCPDegraded", req.TaskID, req.StepID, map[string]any{
+						"mcp_id":  mcpID,
+						"command": cmdName,
+						"action":  "skipped",
+					})
+					// Record substitution: MCP degraded (dependency missing)
+					if req.Hub != nil && req.Hub.Graph != nil {
+						req.Hub.Graph.RecordSubstitution("mcp_degraded", mcpID, "", "dependency "+cmdName+" not found, MCP skipped", req.StepID)
+					}
+					degradedMCPs = append(degradedMCPs, mcpID)
 						continue
 					}
 				}

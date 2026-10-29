@@ -386,6 +386,7 @@ type RoleFallback struct {
 
 type Role struct {
 	ID                  string       `json:"id"`
+	Domain              string       `json:"domain,omitempty"` // optional domain tag for experience partitioning, observability grouping, UI display (see VERTICAL_DOMAIN_PLUGIN_ARCHITECTURE.md)
 	Version             string       `json:"version,omitempty"`
 	Author              string       `json:"author,omitempty"`
 	MutableByAgent      bool         `json:"mutable_by_agent,omitempty"`
@@ -661,6 +662,10 @@ type SystemSettings struct {
 	// When > 0, oldest messages are dropped when the budget is exceeded.
 	// 0 = no token budget (disabled).
 	ChatMemoryMaxTokens int `json:"chat_memory_max_tokens,omitempty"`
+	// ChatMaxOutputTokens sets the max output tokens per LLM call in the chat
+	// agent loop. 0 = default 2048. (ADDED 2026-10-28: previously hardcoded
+	// to 2048 with no config wiring — harness-bench report §4.1.)
+	ChatMaxOutputTokens int `json:"chat_max_output_tokens,omitempty"`
 	// ReadinessGateSoft softens the delegation readiness gate language from
 	// "NEVER blindly delegate" to a suggestion. Set true for weak models (≤7B)
 	// that over-apply the hard rule and ask excessive clarifying questions
@@ -865,6 +870,31 @@ type SystemSettings struct {
 	// forks the tree). Only consulted when IntentShiftBranchingEnabled is
 	// true and both cached embeddings are usable.
 	IntentShiftThreshold float64 `json:"intent_shift_threshold,omitempty"`
+
+	// UpstreamSummarizer (ADDED 2026-10-28) controls semantic compression
+	// of upstream context before side-loading in applyRefBasedHandoff.
+	// When Enabled=false (default), behavior is unchanged (placeholder
+	// summary). See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md.
+	UpstreamSummarizer UpstreamSummarizerConfig `json:"upstream_summarizer,omitempty"`
+
+	// OversightMode (ADDED 2026-10-28) controls admin oversight for Live
+	// Co-pilot shared sessions. "off" (default) = no oversight, "observe" =
+	// admin can see shared sessions, "approve" = admin must approve actions.
+	// See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md.
+	OversightMode string `json:"oversight_mode,omitempty"`
+}
+
+// UpstreamSummarizerConfig controls upstream context semantic compression
+// before side-loading. Enabled=false (default) keeps existing behavior.
+// See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §2.4.
+type UpstreamSummarizerConfig struct {
+	Enabled            bool   `json:"enabled,omitempty"`
+	Mode               string `json:"mode,omitempty"`                  // "deterministic" (default) | "llm" | "hybrid"
+	BudgetChars        int    `json:"budget_chars,omitempty"`          // default 2000
+	MinPayloadBytes    int    `json:"min_payload_bytes,omitempty"`     // skip summarization below this; default = threshold/2
+	LLMProvider        string `json:"llm_provider,omitempty"`          // mode=llm only
+	LLMModel           string `json:"llm_model,omitempty"`             // mode=llm only
+	MaxLLMPayloadBytes int    `json:"max_llm_payload_bytes,omitempty"` // llm mode cap; over-limit degrades to deterministic
 }
 
 // WorkspacePolicyConfig configures tier-gated workspace scope resolution.

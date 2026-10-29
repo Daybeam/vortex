@@ -270,50 +270,31 @@ func registerConfigSubsystem(app *App) {
 
 	s.Actions["register_mcp"] = Action{
 		Name:        "register_mcp",
-		Description: "Register an MCP server in the whitelist.",
+		Description: "Register an MCP server in the whitelist. Supports both URL (HTTP/SSE) and command (stdio subprocess) transports.",
 		Parameters: map[string]any{
 			"id":      "string (required)",
-			"url":     "string (required)",
+			"url":     "string (optional, for HTTP/SSE transport)",
+			"command": "string (optional, for stdio subprocess transport)",
+			"args":    "[]string (optional, command arguments for stdio transport)",
+			"dir":     "string (optional, working directory for stdio transport)",
+			"env":     "map[string]string (optional, environment variables for stdio transport)",
 			"trusted": "boolean",
 		},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			if EffectiveTier(ctx, app) == TierPublic {
-				return nil, fmt.Errorf("permission denied: public tier cannot modify global workspace assets (register_role)")
+				return nil, fmt.Errorf("permission denied: public tier cannot modify global workspace assets (register_mcp)")
 			}
 			id := strArg(args, "id")
 			if id == "" {
-				return nil, fmt.Errorf("register_role: 'id' is required and must not be empty")
+				return nil, fmt.Errorf("register_mcp: 'id' is required and must not be empty")
 			}
 			data, err := json.Marshal(args)
 			if err != nil {
-				return nil, fmt.Errorf("register_role: failed to serialize args: %w", err)
-			}
-
-			// FIX (2026-08-31): validate that any bound_skills reference an
-			// already-registered skill before committing. This check existed in
-			// the pre-CommitOps implementation but was dropped when this handler
-			// was rewritten to go through the generic patch.go/CommitOps
-			// mechanism, which applies structural JSON-Patch operations via
-			// reflection and has no knowledge of cross-referential domain
-			// constraints. Without this, a role could reference a nonexistent
-			// skill, silently creating a dangling reference that only surfaces
-			// later as a confusing runtime failure when the role is actually used.
-			var boundSkillsCheck struct {
-				BoundSkills []string `json:"bound_skills"`
-			}
-			if jerr := json.Unmarshal(data, &boundSkillsCheck); jerr == nil && len(boundSkillsCheck.BoundSkills) > 0 {
-				app.Registry.Mu.RLock()
-				for _, sid := range boundSkillsCheck.BoundSkills {
-					if _, ok := app.Registry.Skills[sid]; !ok {
-						app.Registry.Mu.RUnlock()
-						return nil, fmt.Errorf("register_role: skill %q not found. Please use orchestrator_invoke(subsystem=\"config\", action=\"register_skill\", args=...) to create it first", sid)
-					}
-				}
-				app.Registry.Mu.RUnlock()
+				return nil, fmt.Errorf("register_mcp: failed to serialize args: %w", err)
 			}
 
 			ops := []config.PatchOp{
-				{Op: config.OpAdd, Path: "/roles/" + id, Value: json.RawMessage(data)},
+				{Op: config.OpAdd, Path: "/mcps/" + id, Value: json.RawMessage(data)},
 			}
 			actor := strArg(args, "_actor")
 			if actor == "" {
@@ -337,6 +318,29 @@ func registerConfigSubsystem(app *App) {
 			}
 			ops := []config.PatchOp{
 				{Op: config.OpRemove, Path: "/roles/" + id},
+			}
+			actor := strArg(args, "_actor")
+			if actor == "" {
+				actor = "admin"
+			}
+			taskID := strArg(args, "_task_id")
+			return map[string]any{"ok": true, "id": id}, app.Registry.CommitOps(ops, actor, taskID)
+		},
+	}
+
+	s.Actions["unregister_mcp"] = Action{
+		Name:        "unregister_mcp",
+		Description: "Remove a registered MCP server. Persists to config.json.",
+		Parameters: map[string]any{
+			"id": "string (required) - MCP identifier to remove",
+		},
+		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			id := strArg(args, "id")
+			if id == "" {
+				return nil, fmt.Errorf("unregister_mcp: 'id' is required and must not be empty")
+			}
+			ops := []config.PatchOp{
+				{Op: config.OpRemove, Path: "/mcps/" + id},
 			}
 			actor := strArg(args, "_actor")
 			if actor == "" {
@@ -534,7 +538,7 @@ func registerConfigSubsystem(app *App) {
 				}
 			}
 			dispatcher := core.NewGroupDispatcher(app.Scheduler, app.Registry)
-			taskID, err := dispatcher.DispatchGroup(groupID, task, ctxRefs, nil, nil, nil, "", EffectiveTier(ctx, app) == TierAdmin)
+			taskID, err := dispatcher.DispatchGroup(groupID, task, ctxRefs, nil, nil, nil, "", EffectiveTier(ctx, app) == TierAdmin, CallerOwnerID(ctx))
 			if err != nil {
 				return nil, err
 			}

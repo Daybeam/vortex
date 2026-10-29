@@ -128,10 +128,16 @@ func ExecuteBatchReplace(req BatchReplaceRequest) (*BatchReplaceResult, error) {
 	for _, path := range fileOrder {
 		tmpPath := tempFiles[path]
 		if err := os.Rename(tmpPath, path); err != nil {
-			// Rollback already-committed files from originals
+			// Rollback already-committed files from originals.
+			// audit fix E: capture rollback errors — previously swallowed with
+			// `_ =`, so a rollback failure left files modified with no signal
+			// and the original content silently lost.
+			var rollbackErr error
 			for _, committed := range modified {
 				if orig, ok := originals[committed]; ok {
-					_ = os.WriteFile(committed, orig, 0644)
+					if werr := os.WriteFile(committed, orig, 0644); werr != nil {
+						rollbackErr = werr
+					}
 				}
 			}
 			// Clean up remaining uncommitted temp files
@@ -139,6 +145,9 @@ func ExecuteBatchReplace(req BatchReplaceRequest) (*BatchReplaceResult, error) {
 				if p != path {
 					_ = os.Remove(tp)
 				}
+			}
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("failed to atomically commit file %s: %w (additionally, rollback of a previously committed file failed: %v)", path, err, rollbackErr)
 			}
 			return nil, fmt.Errorf("failed to atomically commit file %s: %w", path, err)
 		}

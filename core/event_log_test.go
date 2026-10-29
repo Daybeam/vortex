@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -85,4 +86,41 @@ func TestLogger_HookEventBus(t *testing.T) {
 	if len(data) == 0 {
 		t.Errorf("expected data in log file, got empty")
 	}
+}
+
+// TestGlobalEventLogger_ConcurrentLogCloseNoPanic is a regression test for
+// audit fix A (TOCTOU panic): concurrent Log + Close must never panic with
+// "send on closed channel". Before the fix, the atomic-flag-only guard left a
+// window where Log read closed=0, Close set closed + close(ch), then Log sent
+// on the closed channel → panic. Run with -race -count=50 to stress.
+func TestGlobalEventLogger_ConcurrentLogCloseNoPanic(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "event_log_toctou")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, err := NewGlobalEventLogger(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ev := NewAgentEvent("toctou", "s", "e", nil)
+	var wg sync.WaitGroup
+	const loggers = 16
+	wg.Add(loggers)
+	for i := 0; i < loggers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				// Log returns an error once closed; that is expected and safe.
+				// A panic here (send on closed channel) fails the test process.
+				_ = logger.Log(ev)
+			}
+		}()
+	}
+	// Close while loggers are still hammering Log — the race window.
+	logger.Close()
+	wg.Wait()
+	// Reaching here means no goroutine panicked on send-to-closed-channel.
 }

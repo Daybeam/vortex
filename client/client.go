@@ -425,6 +425,12 @@ func (c *MCPClient) Close() {
 		if werr := c.cmd.Wait(); werr != nil {
 			log.Printf("[mcp-client] subprocess reaped on close: %v", werr)
 		}
+		// audit fix C1: await the readLoop goroutine so Close() doesn't return
+		// while the reader is still active. cmd.Wait() closes stdout which
+		// causes readLoop's scanner to error and exit (defer close(c.done)),
+		// but without this wait a caller could race the still-running reader.
+		// Mirrors acp_client.go:304 which correctly does <-c.done.
+		<-c.done
 		if c.sandboxCleanup != nil {
 			c.sandboxCleanup()
 		}

@@ -48,6 +48,17 @@ func TestServerRiskyMCP(t *testing.T) {
 		// (core/mcp_manager.go errors out instead), so it is a config bug, not
 		// an impersonation path.
 		{"public URL + auth_header_name only", &MCPDef{URL: "https://api.example.com/mcp", AuthHeaderName: "Authorization"}, false},
+
+		// L1: credential_scope=per_tenant declares that the credential is the
+		// tenant's, not the operator's. A public URL + api_key_env + per_tenant
+		// is NOT server-risky: the remote sees the tenant, so the risk is
+		// tenant-scoped (the tenant can already curl their own account).
+		{"per_tenant + api_key_env → not server-risky", &MCPDef{URL: "https://api.example.com/mcp", APIKeyEnv: "TENANT_TOKEN", CredentialScope: CredentialPerTenant}, false},
+		{"per_tenant + url_auth_placeholder → not server-risky", &MCPDef{URL: "https://api.example.com/mcp?key=__K__", URLAuthPlaceholder: "__K__", APIKeyEnv: "X", CredentialScope: CredentialPerTenant}, false},
+		// Explicit operator scope: same as default (backward compat).
+		{"explicit operator + api_key_env → server-risky", &MCPDef{URL: "https://api.example.com/mcp", APIKeyEnv: "TENANT_TOKEN", CredentialScope: CredentialOperator}, true},
+		// Unknown scope ⇒ fail-closed ⇒ operator ⇒ server-risky.
+		{"unknown scope + api_key_env → fail-closed operator", &MCPDef{URL: "https://api.example.com/mcp", APIKeyEnv: "X", CredentialScope: "garbage"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -78,6 +89,73 @@ func TestServerRiskyMCP_SeesPlatformOverrideCommand(t *testing.T) {
 	def.Sandboxed = true
 	if ServerRiskyMCP(def) {
 		t.Fatal("a sandboxed platform command must not be flagged")
+	}
+}
+
+// ── L1: CredentialScope — whose identity does the remote see? ───────────────
+//
+// OAUTH §4 L1: credential_scope makes the credential ownership explicit.
+// Default (empty) ⇒ operator (fail-closed). per_tenant ⇒ the tenant's own
+// credential, so CarriesOperatorCredential is false even when api_key_env is
+// set. See docs/plan/OAUTH_SHARED_MCP_MULTI_TENANT_DESIGN.md §4 L1, §6 O5.
+
+func TestEffectiveCredentialScope(t *testing.T) {
+	cases := []struct {
+		name string
+		def  *MCPDef
+		want CredentialScope
+	}{
+		{"nil ⇒ operator (fail-closed)", nil, CredentialOperator},
+		{"empty ⇒ operator (fail-closed)", &MCPDef{ID: "x"}, CredentialOperator},
+		{"explicit operator", &MCPDef{ID: "x", CredentialScope: CredentialOperator}, CredentialOperator},
+		{"per_tenant", &MCPDef{ID: "x", CredentialScope: CredentialPerTenant}, CredentialPerTenant},
+		{"unknown ⇒ operator (fail-closed)", &MCPDef{ID: "x", CredentialScope: "garbage"}, CredentialOperator},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.def.EffectiveCredentialScope(); got != c.want {
+				t.Fatalf("EffectiveCredentialScope() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestCarriesOperatorCredential_PerTenantIsFalse(t *testing.T) {
+	// O5 acceptance: credential_scope=per_tenant + api_key_env ⇒ NOT operator
+	// credential. This is the core of L1: the same config that was
+	// impersonation yesterday is tenant-scoped today, just by adding one field.
+	def := &MCPDef{
+		URL:             "https://api.example.com/mcp",
+		APIKeyEnv:       "TENANT_TOKEN",
+		CredentialScope: CredentialPerTenant,
+	}
+	if def.CarriesOperatorCredential() {
+		t.Fatal("per_tenant scope must not carry operator credential, " +
+			"even when api_key_env is set")
+	}
+}
+
+func TestCarriesOperatorCredential_OperatorDefaultIsTrue(t *testing.T) {
+	// Backward compat: no credential_scope ⇒ operator ⇒ carries operator
+	// credential when api_key_env is set. Every existing MCP behaves identically.
+	def := &MCPDef{
+		URL:       "https://api.example.com/mcp",
+		APIKeyEnv: "OPS_KEY",
+	}
+	if !def.CarriesOperatorCredential() {
+		t.Fatal("default (empty) scope + api_key_env must carry operator credential " +
+			"(backward compat)")
+	}
+}
+
+func TestCarriesOperatorCredential_NoCredentialIsFalse(t *testing.T) {
+	// No api_key_env / url_auth_placeholder ⇒ no credential at all, regardless
+	// of scope. A public API needs no auth.
+	for _, scope := range []CredentialScope{"", CredentialOperator, CredentialPerTenant} {
+		def := &MCPDef{URL: "https://api.example.com/mcp", CredentialScope: scope}
+		if def.CarriesOperatorCredential() {
+			t.Fatalf("scope=%q: no credential fields set ⇒ must not carry operator credential", scope)
+		}
 	}
 }
 

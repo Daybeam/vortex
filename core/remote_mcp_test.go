@@ -117,7 +117,7 @@ func TestCallRemoteMCPTool_SuccessWithHeaderAuth(t *testing.T) {
 	}
 
 	m := NewMCPConnectionManager(nil, nil)
-	result, err := m.callRemoteMCPTool(context.Background(), mcp, "search", map[string]any{"query": "foo"})
+	result, err := m.callRemoteMCPTool(context.Background(), mcp, "search", map[string]any{"query": "foo"}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestCallRemoteMCPTool_SuccessWithURLPlaceholderAuth(t *testing.T) {
 	}
 
 	m := NewMCPConnectionManager(nil, nil)
-	_, err := m.callRemoteMCPTool(context.Background(), mcp, "query", map[string]any{})
+	_, err := m.callRemoteMCPTool(context.Background(), mcp, "query", map[string]any{}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestCallRemoteMCPTool_JSONRPCError_Propagated(t *testing.T) {
 
 	mcp := &config.MCPDef{ID: "x", URL: srv.URL}
 	m := NewMCPConnectionManager(nil, nil)
-	_, err := m.callRemoteMCPTool(context.Background(), mcp, "nonexistent", map[string]any{})
+	_, err := m.callRemoteMCPTool(context.Background(), mcp, "nonexistent", map[string]any{}, "")
 	if err == nil {
 		t.Fatal("expected error for JSON-RPC error response, got nil")
 	}
@@ -188,7 +188,7 @@ func TestCallRemoteMCPTool_HTTPError_Propagated(t *testing.T) {
 
 	mcp := &config.MCPDef{ID: "x", URL: srv.URL}
 	m := NewMCPConnectionManager(nil, nil)
-	_, err := m.callRemoteMCPTool(context.Background(), mcp, "whatever", map[string]any{})
+	_, err := m.callRemoteMCPTool(context.Background(), mcp, "whatever", map[string]any{}, "")
 	if err == nil {
 		t.Fatal("expected error for HTTP 500 response, got nil")
 	}

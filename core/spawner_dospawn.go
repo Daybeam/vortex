@@ -228,7 +228,13 @@ turnLoop:
 			if err != nil {
 				return s.failedOutput(role.BaseCapability, fmt.Sprintf("failed to render prompt: %v", err)), nil
 			}
-			mcpServers := s.buildMCPServers(ctx, req.Hub, req.TaskID, bindings, pCfg.Provider, req.RoleID)
+			mcpServers := s.buildMCPServers(ctx, req.Hub, req.TaskID, bindings, pCfg.Provider, req.RoleID, req.OwnerID)
+			// SharedContext tools (ADDED 2026-10-27): register the
+			// shared_context_write/read tools as a virtual MCP server
+			// when the SpawnRequest carries a SharedContext instance.
+			if req.SharedContext != nil {
+				mcpServers = append(mcpServers, sharedContextServerDef())
+			}
 			lastMCPServers = mcpServers
 
 			// Priority 4: Progressive-Disclosure hint — details in
@@ -284,6 +290,8 @@ turnLoop:
 				SystemBlocks:    systemBlocks,
 				UserBlocks:      userBlocks,
 				Model:           pCfg.Model,
+				MaxTokens:       s.spawnOutputBudget(req), // 铁律 51-4: the audit needs
+				// the output reserve to see `prompt + max_tokens > window`.
 				CompressionHint: req.CompressionHint,
 			}
 			auditRes, err := s.contextManager.Audit(ctxWithTimeout, provider, reqSieve)
@@ -374,25 +382,36 @@ turnLoop:
 				}, nil
 			}
 
-			// #20 (eval §8.46): Reactive context compression. When the provider
-			// returns a context-limit error (prompt too long for the model's
-			// window), compress the conversation history by dropping older
-			// middle blocks and retry the same provider once. This prevents
-			// a hard 400 crash that kills the step — the model gets a second
-			// chance with a shorter context.
+			// #20 (eval §8.46) + 铁律 51 (2026-10-27): Reactive context
+			// compression. When the provider returns a context-limit error the
+			// conversation history is shrunk to fit the call's input budget and
+			// the same provider is retried once.
+			//
+			// Before this fix the guard keyed on BLOCK COUNT (>10) and returned
+			// nil otherwise. Because Squeeze had already collapsed userBlocks to
+			// a single block, it returned nil on every 400 and the step died
+			// without logging anything at all (aw19: 0 compression events across
+			// 51 turns). The decision is now budget-based and EITHER branch emits
+			// exactly one event, so "did not fire" is observable instead of
+			// invisible — the whole point of 铁律 51-3.
 			if err != nil && isContextLimitError(err) {
-				compressed := compressUserBlocks(userBlocks)
-				if compressed != nil {
+				budget := s.contextInputBudget(pCfg, req)
+				cres := compressUserBlocksToBudget(userBlocks, budget)
+				if cres.Changed {
 					observability.GetGlobalMetrics().Inc("orchestrator.context.compressed", 1)
-					s.logger.Log("EventContextCompressed", req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(EventContextCompressed, req.TaskID, req.StepID, map[string]any{
 						"turn":          turn,
 						"provider":      pCfg.Provider,
 						"model":         pCfg.Model,
-						"blocks_before": len(userBlocks),
-						"blocks_after":  len(compressed),
+						"blocks_before": cres.Before,
+						"blocks_after":  cres.After,
+						"dropped":       cres.Dropped,
+						"tokens_before": cres.BeforeTok,
+						"tokens_after":  cres.AfterTok,
+						"budget":        budget,
 						"error":         err.Error(),
 					})
-					userBlocks = compressed
+					userBlocks = cres.Blocks
 
 					// Retry with compressed context.
 					retryCtx, retryCancel := context.WithTimeout(ctx, 120*time.Second)
@@ -418,7 +437,7 @@ turnLoop:
 
 					if err == nil {
 						observability.GetGlobalMetrics().Inc("orchestrator.context.compress_retry_success", 1)
-						s.logger.Log("EventContextCompressRetrySuccess", req.TaskID, req.StepID, map[string]any{
+						s.logger.Log(EventContextCompressRetrySuccess, req.TaskID, req.StepID, map[string]any{
 							"turn":     turn,
 							"provider": pCfg.Provider,
 							"model":    pCfg.Model,
@@ -428,10 +447,23 @@ turnLoop:
 						break // Turn succeeded with compressed context
 					}
 					// Retry also failed — fall through to normal error handling.
-					s.logger.Log("EventContextCompressRetryFailed", req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(EventContextCompressRetryFailed, req.TaskID, req.StepID, map[string]any{
 						"turn":     turn,
 						"provider": pCfg.Provider,
 						"model":    pCfg.Model,
+						"error":    err.Error(),
+					})
+				} else {
+					// Nothing compressible: say so. Retrying the identical request
+					// would 400 again, so fall through instead of burning a call.
+					s.logger.Log(EventContextCompressSkipped, req.TaskID, req.StepID, map[string]any{
+						"turn":     turn,
+						"provider": pCfg.Provider,
+						"model":    pCfg.Model,
+						"reason":   cres.Reason,
+						"blocks":   cres.Before,
+						"tokens":   cres.BeforeTok,
+						"budget":   budget,
 						"error":    err.Error(),
 					})
 				}
@@ -645,6 +677,68 @@ turnLoop:
 				if s.expStore != nil {
 					s.expStore.UpsertDecisionPrecedent(ctx, node)
 				}
+			}
+		}
+
+		// ── Self-Driven Heartbeat (ADDED 2026-10-27) ──────────────────────
+		// Parse VCP-inspired heartbeat directives from the agent's response.
+		// The agent can self-pace background tasks: sleep while waiting for
+		// CI, explicitly complete/fail, or customize the next wakeup prompt.
+		// See docs/plan/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md §2.
+		hb := parseHeartbeat(resp.Text)
+		if hb.Action == HeartbeatComplete {
+			s.logger.Log("EventHeartbeatComplete", req.TaskID, req.StepID, map[string]any{
+				"turn": turn,
+			})
+			return &SpawnResult{
+				Output: schemas.SubagentOutput{
+					Status:     schemas.StatusOK,
+					Confidence: 1.0,
+					Result:     map[string]any{"report": hb.Report},
+					Capability: role.BaseCapability,
+				},
+				ProviderID: effectiveProviderID,
+				ModelID:    effectiveModelID,
+				TurnsUsed:  turn + 1,
+			}, nil
+		}
+		if hb.Action == HeartbeatFail {
+			s.logger.Log("EventHeartbeatFail", req.TaskID, req.StepID, map[string]any{
+				"turn": turn,
+			})
+			return &SpawnResult{
+				Output: schemas.SubagentOutput{
+					Status:     schemas.StatusFailed,
+					Confidence: 0.1,
+					Result:     map[string]any{"error": hb.Report},
+					Capability: role.BaseCapability,
+				},
+				ProviderID: effectiveProviderID,
+				ModelID:    effectiveModelID,
+				TurnsUsed:  turn + 1,
+			}, nil
+		}
+		if hb.Action == HeartbeatSleep {
+			s.logger.Log("EventHeartbeatSleep", req.TaskID, req.StepID, map[string]any{
+				"turn":         turn,
+				"sleep_seconds": hb.SleepSeconds,
+			})
+			// audit LOW (2026-10-28): use NewTimer + Stop instead of time.After
+			// to prevent timer leak when ctx.Done() fires first.
+			timer := time.NewTimer(time.Duration(hb.SleepSeconds) * time.Second)
+			select {
+			case <-timer.C:
+				// Wake up — inject WakePrompt as the next-turn user context.
+				if hb.WakePrompt != "" {
+					userBlocks = append(userBlocks, schemas.ContentBlock{
+						Type: "text",
+						Text: "[Heartbeat WakePrompt]\n" + hb.WakePrompt,
+					})
+				}
+				continue
+			case <-ctx.Done():
+				timer.Stop()
+				return s.failedOutput(role.BaseCapability, "heartbeat sleep interrupted: task cancelled"), nil
 			}
 		}
 

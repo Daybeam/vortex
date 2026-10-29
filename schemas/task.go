@@ -36,6 +36,7 @@ type StepInput struct {
 	AdditionalToolAllowlists map[string][]string `json:"additional_tool_allowlists"`
 	ContextRefs              map[string]string   `json:"context_refs"`
 	SubmitterIsAdmin         bool                `json:"-"` // set by entry handler; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
+	OwnerID                  string              `json:"-"` // set by entry handler from AuthOwnerKey; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
 	FallbackFor              string              `json:"fallback_for,omitempty"`
 	MaxRetries               int                 `json:"max_retries"`
 
@@ -286,14 +287,14 @@ type Step struct {
 	// ExecutionProtocol (ADDED 2026-10-26): selects the execution backend for
 	// this step. "" or "internal" = standard Spawner LLM loop (default).
 	// "acp" = delegate to an external ACP-compliant worker via JSON-RPC.
-	// See docs/plan/ACP_CLIENT_SPAWNER_INTEGRATION_DESIGN.md.
+	// See docs/completed/2026-10-28/ACP_CLIENT_SPAWNER_INTEGRATION_DESIGN.md.
 	ExecutionProtocol string         `json:"execution_protocol,omitempty"`
 	ACPConfig         *ACPStepConfig `json:"acp_config,omitempty"`
 }
 
 // ACPStepConfig configures an external ACP (Agent Client Protocol) worker
 // for step execution. Only used when Step.ExecutionProtocol == "acp".
-// See docs/plan/ACP_CLIENT_SPAWNER_INTEGRATION_DESIGN.md §3.1.
+// See docs/completed/2026-10-28/ACP_CLIENT_SPAWNER_INTEGRATION_DESIGN.md §3.1.
 type ACPStepConfig struct {
 	BinaryPath string   `json:"binary_path"`
 	Args       []string `json:"args,omitempty"`
@@ -518,6 +519,21 @@ type TaskGraph struct {
 	// Value = current round count. Removed on fuse.
 	// See docs/architecture/CYCLE_BREAKER_DESIGN.md.
 	CycleCounters map[string]int `json:"cycle_counters,omitempty"`
+
+	// Substitutions records every instance where actual execution differed from
+	// the request (role fallback, MCP degradation, etc.). Surfaced in
+	// get_task_status so drift is visible without log mining.
+	// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
+	Substitutions []Substitution `json:"substitutions,omitempty"`
+
+	// Charter captures the task's intent, non-goals, and constraints.
+	// Optional — nil means "unspecified" and behavior is identical to
+	// pre-charter tasks (backward compatible).
+	// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.
+	Charter *TaskCharter `json:"charter,omitempty"`
+
+	// substitutionMu guards Substitutions append.
+	substitutionMu sync.Mutex `json:"-"`
 }
 
 // CoordinationEdge represents a directed flow of information between steps/agents.
@@ -527,6 +543,30 @@ type CoordinationEdge struct {
 	Type      string  `json:"type"`    // mapping | reference | shared_vfs
 	Payload   int64   `json:"payload"` // Estimated size in bytes/tokens
 	Timestamp float64 `json:"ts"`      // Unix nano timestamp
+}
+
+// RecordSubstitution appends a Substitution entry to the ledger. Thread-safe.
+// Call this at every fallback/degradation point alongside the existing log event.
+func (g *TaskGraph) RecordSubstitution(kind, requested, actual, reason, stepID string) {
+	g.substitutionMu.Lock()
+	g.Substitutions = append(g.Substitutions, Substitution{
+		Kind:      kind,
+		Requested: requested,
+		Actual:    actual,
+		Reason:    reason,
+		StepID:    stepID,
+		At:        time.Now(),
+	})
+	g.substitutionMu.Unlock()
+}
+
+// GetSubstitutions returns a snapshot of the substitution ledger. Thread-safe.
+func (g *TaskGraph) GetSubstitutions() []Substitution {
+	g.substitutionMu.Lock()
+	defer g.substitutionMu.Unlock()
+	cp := make([]Substitution, len(g.Substitutions))
+	copy(cp, g.Substitutions)
+	return cp
 }
 
 // GetSessionRole returns the raw stored value for a session-scoped role (either
@@ -753,6 +793,13 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 			// stay in the full view). Safe: every summary caller holds the
 			// engine mutex or passed a locally-unmarshalled graph.
 			"pending_decision_count": len(g.PendingDecisions),
+			// Substitution count: non-zero means actual execution diverged from
+			// the request (role fallback, MCP degradation, etc.). See
+			// docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
+			"substitution_count": len(g.Substitutions),
+			// Charter present: non-nil means the task has an explicit intent /
+			// non-goals / constraints charter. See §P1.
+			"has_charter": g.Charter != nil,
 		}
 	}
 
@@ -919,6 +966,11 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 		"decision_history":    sanitizedHistory,
 		"context_tree":        sanitizedTree,
 		"current_node_id":     g.CurrentNodeID,
+		// Substitution ledger: every instance where actual execution diverged
+		// from the request. See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
+		"substitutions": g.GetSubstitutions(),
+		// Task charter: intent, non-goals, constraints. See §P1.
+		"charter": g.Charter,
 	}
 	if g.CompletedAt != nil {
 		res["completed_at"] = g.CompletedAt.Format(time.RFC3339)

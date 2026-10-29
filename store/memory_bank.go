@@ -50,9 +50,10 @@ type Progress struct {
 }
 
 type MemoryBankStore struct {
-	mu      sync.RWMutex
-	baseDir string
-	backend IMemoryBankBackend
+	mu             sync.RWMutex
+	baseDir        string
+	backend        IMemoryBankBackend
+	embeddingClient IEmbeddingClient // DB-audit P1: enables embedding computation in Load()
 }
 
 func NewMemoryBankStore(baseDir string, backend IMemoryBankBackend) *MemoryBankStore {
@@ -60,6 +61,15 @@ func NewMemoryBankStore(baseDir string, backend IMemoryBankBackend) *MemoryBankS
 		baseDir: filepath.Join(baseDir, "memory-bank"),
 		backend: backend,
 	}
+}
+
+// SetEmbeddingClient wires an embedding client for semantic search.
+// DB-audit P1 (VECTOR_EMPTY): without this, SaveItem never populates the
+// embedding column, so SearchItems (WHERE embedding IS NOT NULL) returns 0 rows.
+func (s *MemoryBankStore) SetEmbeddingClient(cli IEmbeddingClient) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.embeddingClient = cli
 }
 
 // Save writes all MemoryBank categories to their respective markdown files.
@@ -338,13 +348,23 @@ func (s *MemoryBankStore) Load() (*MemoryBank, error) {
 		}
 	}
 
+	// Capture embedding client under lock for use after RUnlock (audit C-HIGH-3).
+	embedCli := s.embeddingClient
 	s.mu.RUnlock()
 
 	// DB writes with timeout — no longer holding RLock.
 	saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for _, p := range pending {
-		s.backend.SaveItem(saveCtx, p.category, p.key, p.content, nil)
+		// DB-audit P1 (VECTOR_EMPTY): compute embedding so SearchItems can find
+		// this item via cosine similarity. Best-effort — on failure, the item is
+		// still saved without an embedding (keyword search still works).
+		var emb []float32
+		var model string
+		if embedCli != nil && p.content != "" {
+			emb, model, _ = embedCli.EmbedWithModel(saveCtx, p.content)
+		}
+		s.backend.SaveItemWithEmbedding(saveCtx, p.category, p.key, p.content, nil, emb, model)
 	}
 
 	return mb, nil

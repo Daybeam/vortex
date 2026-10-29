@@ -13,6 +13,12 @@ type ExecRequest struct {
 	Timeout   time.Duration
 	MemoryMB  uint64
 	EnvVars   map[string]string
+	// Dir sets the working directory for the executed code. When empty,
+	// the provider's default cwd is used (backward compatible).
+	// (ADDED 2026-10-28: harness-bench report §3 defect 5 — previously
+	// the sandbox branch silently dropped cwd, so execute_code ran in the
+	// engine process cwd instead of the workspace root.)
+	Dir string
 }
 
 // ExecResult defines the output of a sandbox execution (ADDED 2026-09-02).

@@ -133,8 +133,10 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 		s.logger.Log(EventFallbackActivated, taskID, step.ID, map[string]any{
 			"fallback_step": fallback.ID,
 			"root_cause":    string(cause),
-			"confidence":    conf,
+			"confidence":   conf,
 		})
+		// Record substitution: fallback step activated instead of original step
+		graph.RecordSubstitution("fallback_step", step.ID, fallback.ID, fmt.Sprintf("confidence %.2f, root cause: %s", conf, string(cause)), step.ID)
 		return VerdictReturn
 	}
 	s.Mu.Unlock()

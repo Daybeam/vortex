@@ -13,6 +13,12 @@ import (
 func TestAgnesProvider(t *testing.T) {
 	// audit T-1.1: gate behind env var instead of unconditional skip so the
 	// test is no longer permanently dead. Set RUN_LIVE_TESTS=1 to run.
+	//
+	// MOCK-BOUNDARY (B1): This is the ONLY test that hits a real LLM API,
+	// but it's gated behind RUN_LIVE_TESTS=1 which is never set in CI —
+	// real provider integration is UNVERIFIED. Verification checkpoint:
+	// set RUN_LIVE_TESTS=1 with a valid config.json in staging.
+	// See docs/MOCK_BOUNDARY_TEST_SCENARIOS.md §B1.
 	if os.Getenv("RUN_LIVE_TESTS") != "1" {
 		t.Skip("Skipping live provider test; set RUN_LIVE_TESTS=1 to run (requires config.json with 'agnes' provider)")
 	}

@@ -546,12 +546,14 @@ func (s *DirectedEngine) buildArtifactsLocked(graph *schemas.TaskGraph) []schema
 			ac.SHA256 = hash
 		} else if f, err := os.Open(of.Path); err == nil {
 			h := sha256.New()
-			if _, err := io.Copy(h, f); err != nil {
-				log.Printf("WARN: persistGraph: failed to hash artifact %s: %v", of.Path, err)
-			}
+			_, hashErr := io.Copy(h, f)
 			f.Close()
-			ac.SHA256 = fmt.Sprintf("%x", h.Sum(nil))
-			s.recordHashCacheEntry(of.Path, ac.SHA256)
+			if hashErr != nil {
+				log.Printf("WARN: persistGraph: failed to hash artifact %s: %v", of.Path, hashErr)
+			} else {
+				ac.SHA256 = fmt.Sprintf("%x", h.Sum(nil))
+				s.recordHashCacheEntry(of.Path, ac.SHA256)
+			}
 		}
 		// Provenance: source steps that fed this step
 		if owner, ok := graph.Steps[of.StepID]; ok {
@@ -635,6 +637,10 @@ func (s *DirectedEngine) Clear(taskID string) error {
 	if cancel != nil {
 		cancel()
 	}
+	if s.spawner != nil {
+		s.spawner.ClearEffectTracker(taskID)
+	}
+	s.lastPersistAt.Delete(taskID)
 	if _, err := s.taskStore.ClearTask(s.lifecycleCtx, taskID); err != nil {
 		return fmt.Errorf("clear task store for %s: %w", taskID, err)
 	}
@@ -775,6 +781,16 @@ func (s *DirectedEngine) SetMemoryBankStore(mb *store.MemoryBankStore) {
 	}
 	if s.spawner != nil {
 		s.spawner.SetMemoryBankStore(mb)
+	}
+}
+
+// SetCharter sets the TaskCharter on a submitted task's graph.
+// Called after SubmitWithSessionIR returns a task ID. Thread-safe.
+func (s *DirectedEngine) SetCharter(taskID string, charter *schemas.TaskCharter) {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	if graph, ok := s.graphs[taskID]; ok && graph != nil {
+		graph.Charter = charter
 	}
 }
 

@@ -36,6 +36,24 @@ func InvalidateMCPEnvCache() {
 	})
 }
 
+// InvalidateSessionCache clears all cached remote MCP session IDs. Called on
+// config hot-reload (R7) so stale sessions from the old config are not reused.
+func (m *MCPConnectionManager) InvalidateSessionCache() {
+	m.mu.Lock()
+	m.remoteSessionCache = make(map[string]string)
+	m.mu.Unlock()
+}
+
+// invalidateSessionCacheEntry removes one (mcpID, ownerID) entry from the
+// session cache. Called on 401 (R3) so the next request triggers a fresh
+// handshake instead of reusing the dead session.
+func (m *MCPConnectionManager) invalidateSessionCacheEntry(mcpID, ownerID string) {
+	cacheKey := mcpSessionCacheKey(mcpID, ownerID)
+	m.mu.Lock()
+	delete(m.remoteSessionCache, cacheKey)
+	m.mu.Unlock()
+}
+
 func cachedGetenv(key string) string {
 	if v, ok := mcpEnvCache.Load(key); ok {
 		return v.(string)
@@ -64,6 +82,21 @@ type MCPConnectionManager struct {
 // on long-running servers with dynamic MCPs (P-H9 fix). Entries are best-effort
 // caches — eviction causes re-connection on next access, not data loss.
 const maxMCPCacheSize = 128
+
+// mcpSessionCacheKey builds the remote-session cache key. When ownerID is empty
+// (single-user / operator-credential mode), the key is just mcpID — backward
+// compatible with pre-multi-tenant behavior. When ownerID is non-empty
+// (per-tenant credentials), the key includes the tenant so different tenants
+// get isolated Mcp-Session-Id handles (OAUTH §8.2 R4).
+//
+// The \x00 separator cannot appear in either field (they are normal Go strings
+// from config / JWT claims), so the composite key is unambiguous.
+func mcpSessionCacheKey(mcpID, ownerID string) string {
+	if ownerID == "" {
+		return mcpID
+	}
+	return mcpID + "\x00" + ownerID
+}
 
 func NewMCPConnectionManager(registry *config.Registry, logger *Logger) *MCPConnectionManager {
 	return &MCPConnectionManager{
@@ -185,9 +218,10 @@ func resolveMCPURL(mcp *config.MCPDef) (string, error) {
 	return strings.ReplaceAll(mcp.URL, mcp.URLAuthPlaceholder, secret), nil
 }
 
-func (m *MCPConnectionManager) ensureRemoteMCPSession(ctx context.Context, mcp *config.MCPDef) string {
+func (m *MCPConnectionManager) ensureRemoteMCPSession(ctx context.Context, mcp *config.MCPDef, ownerID string) string {
+	cacheKey := mcpSessionCacheKey(mcp.ID, ownerID)
 	m.mu.Lock()
-	sid, cached := m.remoteSessionCache[mcp.ID]
+	sid, cached := m.remoteSessionCache[cacheKey]
 	m.mu.Unlock()
 	if cached {
 		return sid
@@ -203,7 +237,7 @@ func (m *MCPConnectionManager) ensureRemoteMCPSession(ctx context.Context, mcp *
 	// Double-check after acquiring per-ID lock — another goroutine may
 	// have completed the handshake while we were waiting.
 	m.mu.Lock()
-	sid, cached = m.remoteSessionCache[mcp.ID]
+	sid, cached = m.remoteSessionCache[cacheKey]
 	m.mu.Unlock()
 	if cached {
 		return sid
@@ -222,7 +256,7 @@ func (m *MCPConnectionManager) ensureRemoteMCPSession(ctx context.Context, mcp *
 			break
 		}
 	}
-	m.remoteSessionCache[mcp.ID] = sid
+	m.remoteSessionCache[cacheKey] = sid
 	m.mu.Unlock()
 	return sid
 }
@@ -300,7 +334,7 @@ func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mc
 	return sid
 }
 
-func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *config.MCPDef) ([]schemas.ToolDefinition, error) {
+func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *config.MCPDef, ownerID string) ([]schemas.ToolDefinition, error) {
 	resolvedURL, err := resolveMCPURL(mcp)
 	if err != nil {
 		return nil, fmt.Errorf("discoverRemoteMCPTools: %w", err)
@@ -325,7 +359,7 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 	if sid := GetSpanID(ctx); sid != "" {
 		req.Header.Set("x-span-id", sid)
 	}
-	if sid := m.ensureRemoteMCPSession(ctx, mcp); sid != "" {
+	if sid := m.ensureRemoteMCPSession(ctx, mcp, ownerID); sid != "" {
 		req.Header.Set("Mcp-Session-Id", sid)
 	}
 
@@ -418,7 +452,7 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 	return out, nil
 }
 
-func (m *MCPConnectionManager) callRemoteMCPTool(ctx context.Context, mcp *config.MCPDef, toolName string, arguments map[string]any) (any, error) {
+func (m *MCPConnectionManager) callRemoteMCPTool(ctx context.Context, mcp *config.MCPDef, toolName string, arguments map[string]any, ownerID string) (any, error) {
 	// Validate arguments against the tool's JSON Schema before dispatching.
 	// Prevents wasted round-trips and gives clear 400-style errors.
 	if err := validateToolArgs(mcp, toolName, arguments); err != nil {
@@ -440,48 +474,62 @@ func (m *MCPConnectionManager) callRemoteMCPTool(ctx context.Context, mcp *confi
 		},
 	})
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resolvedURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("callRemoteMCPTool: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if tid := GetTraceID(ctx); tid != "" {
-		req.Header.Set("x-trace-id", tid)
-	}
-	if sid := GetSpanID(ctx); sid != "" {
-		req.Header.Set("x-span-id", sid)
-	}
-	if sid := m.ensureRemoteMCPSession(ctx, mcp); sid != "" {
-		req.Header.Set("Mcp-Session-Id", sid)
-	}
-
-	if mcp.AuthHeaderName != "" {
-		if mcp.APIKeyEnv == "" {
-			return nil, fmt.Errorf("callRemoteMCPTool: mcp %q has auth_header_name set but no api_key_env configured", mcp.ID)
-		}
-		secret := cachedGetenv(mcp.APIKeyEnv)
-		if secret == "" {
-			return nil, fmt.Errorf("callRemoteMCPTool: mcp %q requires env var %q for auth, but it is unset or empty", mcp.ID, mcp.APIKeyEnv)
-		}
-		req.Header.Set(mcp.AuthHeaderName, mcp.AuthHeaderPrefix+secret)
-	}
-
+	// R3 (OAUTH §4 L2): 401 ⇒ invalidate session cache for this (mcp, tenant),
+	// retry once. A second 401 is returned as an error (no infinite loop).
 	httpClient := m.httpClient // audit H4: reuse shared client
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("callRemoteMCPTool: request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	var respBody []byte
+	var statusCode int
 
-	// audit H1: cap response to prevent OOM from unbounded responses
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, safelimits.MaxResponseBody))
-	if err != nil {
-		return nil, fmt.Errorf("callRemoteMCPTool: read response: %w", err)
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, resolvedURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("callRemoteMCPTool: build request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if tid := GetTraceID(ctx); tid != "" {
+			req.Header.Set("x-trace-id", tid)
+		}
+		if sid := GetSpanID(ctx); sid != "" {
+			req.Header.Set("x-span-id", sid)
+		}
+		if sid := m.ensureRemoteMCPSession(ctx, mcp, ownerID); sid != "" {
+			req.Header.Set("Mcp-Session-Id", sid)
+		}
+
+		if mcp.AuthHeaderName != "" {
+			if mcp.APIKeyEnv == "" {
+				return nil, fmt.Errorf("callRemoteMCPTool: mcp %q has auth_header_name set but no api_key_env configured", mcp.ID)
+			}
+			secret := cachedGetenv(mcp.APIKeyEnv)
+			if secret == "" {
+				return nil, fmt.Errorf("callRemoteMCPTool: mcp %q requires env var %q for auth, but it is unset or empty", mcp.ID, mcp.APIKeyEnv)
+			}
+			req.Header.Set(mcp.AuthHeaderName, mcp.AuthHeaderPrefix+secret)
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("callRemoteMCPTool: request failed: %w", err)
+		}
+		// audit H1: cap response to prevent OOM from unbounded responses
+		respBody, err = io.ReadAll(io.LimitReader(resp.Body, safelimits.MaxResponseBody))
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("callRemoteMCPTool: read response: %w", err)
+		}
+		statusCode = resp.StatusCode
+
+		if statusCode == http.StatusUnauthorized && attempt == 0 {
+			// 401: session may be stale. Invalidate and retry with a fresh handshake.
+			m.invalidateSessionCacheEntry(mcp.ID, ownerID)
+			continue
+		}
+		break
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("callRemoteMCPTool: mcp %q tool %q returned HTTP %d: %s", mcp.ID, toolName, resp.StatusCode, truncateForLog(string(respBody), 300))
+	if statusCode < 200 || statusCode >= 300 {
+		return nil, fmt.Errorf("callRemoteMCPTool: mcp %q tool %q returned HTTP %d: %s", mcp.ID, toolName, statusCode, truncateForLog(string(respBody), 300))
 	}
 
 	var parsed map[string]any

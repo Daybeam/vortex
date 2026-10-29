@@ -244,6 +244,10 @@ func (f *RemoteSignalField) Deposit(layer types.SignalLayer, taskID string, valu
 	// Workers typically don't deposit signals directly to Hub's field via API yet
 }
 
+func (f *RemoteSignalField) Suppress(taskID string) {
+	// Workers typically don't suppress signals directly to Hub's field via API yet
+}
+
 func (f *RemoteSignalField) GetEffectiveSignal(taskID string, agentLoad float64) float64 {
 	return 1.0
 }

@@ -148,6 +148,7 @@ type App struct {
 	CodeIntel         *ci.Handler
 	Navigator         *core.CapabilityNavigator
 	ConfigPath        string
+	RootDir           string // project root dir for absolute path resolution (desktop: walked-up config dir)
 	Tier              string
 	ResourceLoader    *core.ResourceLoader
 	IntentRouter      *core.IntentRouter

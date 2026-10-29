@@ -182,6 +182,10 @@ type IScheduleBackend interface {
 // IMemoryBankBackend defines indexing/persistence for memory bank items.
 type IMemoryBankBackend interface {
 	SaveItem(ctx context.Context, category, key, content string, metadata map[string]any) error
+	// SaveItemWithEmbedding persists an item with its pre-computed embedding vector.
+	// DB-audit P1 (VECTOR_EMPTY): SaveItem never saved the embedding column, so
+	// SearchItems (WHERE embedding IS NOT NULL) always returned 0 rows.
+	SaveItemWithEmbedding(ctx context.Context, category, key, content string, metadata map[string]any, embedding []float32, embeddingModel string) error
 	LoadCategory(ctx context.Context, category string) (map[string]string, error)
 }
 

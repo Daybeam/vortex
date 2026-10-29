@@ -119,6 +119,11 @@ func (p *LocalProvider) Execute(ctx context.Context, req ExecRequest) (*ExecResu
 
 	cmdArgs := append(interpArgs, scriptPath)
 	cmd := exec.CommandContext(ctx, interpreter, cmdArgs...)
+	// Set working directory when provided (defect 5 fix: harness-bench report §3).
+	// When Dir is empty, the provider's default cwd is used (backward compatible).
+	if req.Dir != "" {
+		cmd.Dir = req.Dir
+	}
 	return runSandboxedCommand(ctx, cmd, req, startTime)
 }
 

@@ -272,7 +272,13 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpPath)
 		return cerr
 	}
-	_ = os.Chmod(tmpPath, perm)
+	// audit fix L5: surface Chmod failure — previously swallowed, so the file
+	// was renamed with whatever permissions the temp file happened to have
+	// (potentially too permissive for config files that may contain secrets).
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("atomic write %s: chmod failed: %w", path, err)
+	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		if _, statErr := os.Stat(path); statErr == nil {
 			if remErr := os.Remove(path); remErr == nil {

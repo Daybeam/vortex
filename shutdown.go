@@ -27,7 +27,7 @@ import (
 func waitForServerOrSignal(serverDone <-chan error, sigCh <-chan os.Signal, rootCancel context.CancelFunc, stdin io.Closer) error {
 	select {
 	case <-sigCh:
-		fmt.Fprintln(os.Stderr, "[vortex] shutdown signal received, cleaning up...")
+		fmt.Fprintln(os.Stderr, "[orchestrator] shutdown signal received, cleaning up...")
 		rootCancel()
 		stdin.Close() // unblock ServeStdio's stdin reader
 		return <-serverDone
@@ -43,7 +43,10 @@ func waitForServerOrSignal(serverDone <-chan error, sigCh <-chan os.Signal, root
 //
 // audit C6: without this, SIGINT/SIGTERM kills the process immediately
 // and all deferred cleanup is skipped.
-func waitForHTTPSignal(srv *http.Server, rootCancel context.CancelFunc) {
+// audit fix B: the optional shutdown channel lets a caller (e.g. the
+// desktop window-quit path) trigger graceful shutdown without relying on
+// OS signals. A nil shutdown channel is a no-op (never selected).
+func waitForHTTPSignal(srv *http.Server, rootCancel context.CancelFunc, shutdown <-chan struct{}) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -53,16 +56,23 @@ func waitForHTTPSignal(srv *http.Server, rootCancel context.CancelFunc) {
 		errCh <- srv.ListenAndServe()
 	}()
 
-	select {
-	case <-sigCh:
-		fmt.Fprintln(os.Stderr, "[vortex] shutdown signal received, cleaning up...")
+	gracefulShutdown := func() {
 		rootCancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		srv.Shutdown(ctx) // gracefully drain in-flight requests
+	}
+
+	select {
+	case <-sigCh:
+		fmt.Fprintln(os.Stderr, "[orchestrator] shutdown signal received, cleaning up...")
+		gracefulShutdown()
+	case <-shutdown:
+		fmt.Fprintln(os.Stderr, "[orchestrator] external shutdown requested, cleaning up...")
+		gracefulShutdown()
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "[vortex] HTTP server error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[orchestrator] HTTP server error: %v\n", err)
 		}
 		rootCancel()
 	}

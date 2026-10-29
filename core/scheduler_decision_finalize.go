@@ -72,6 +72,14 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 		s.spawner.ClearSanitizer(graph.TaskID)
 	}
 
+	// audit HIGH (2026-10-28): clear EffectTracker to prevent unbounded
+	// memory growth — effectTrackers sync.Map had LoadOrStore but no Delete.
+	if s.spawner != nil {
+		s.spawner.ClearEffectTracker(graph.TaskID)
+	}
+	// audit MEDIUM (2026-10-28): clear lastPersistAt for this task.
+	s.lastPersistAt.Delete(graph.TaskID)
+
 	// Write manifest
 	outDir := filepath.Join(s.outputBase, graph.TaskID)
 	if err := os.MkdirAll(outDir, 0755); err != nil { // audit L-3.1: log MkdirAll failure

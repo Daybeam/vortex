@@ -53,6 +53,11 @@ func (m *mockChatProvider) CountTokens(ctx context.Context, text string) (int, e
 func (m *mockChatProvider) Name() string { return "mock" }
 
 func TestChatHarnessToolLoop(t *testing.T) {
+	// MOCK-BOUNDARY (B1): Uses mockChatProvider (canned responses) — validates
+	// harness turn loop / tool dispatch / steer logic, but NOT real LLM API
+	// integration. Verification checkpoint: run with real SCNet/OpenAI endpoint
+	// and assert the LLM produces correct tool calls for a novel task.
+	// See docs/MOCK_BOUNDARY_TEST_SCENARIOS.md §B1.
 	outBase := t.TempDir()
 	h := &ChatHarness{
 		Provider:   &mockChatProvider{},
