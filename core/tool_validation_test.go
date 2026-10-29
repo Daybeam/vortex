@@ -196,7 +196,7 @@ func TestCallRemoteMCPTool_ValidationRejectsBeforeHTTP(t *testing.T) {
 
 	m := NewMCPConnectionManager(nil, nil)
 	// Missing required "query" field — should fail before HTTP.
-	_, err := m.callRemoteMCPTool(context.Background(), mcp, "search", map[string]any{})
+	_, err := m.callRemoteMCPTool(context.Background(), mcp, "search", map[string]any{}, "")
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
 	}
@@ -233,7 +233,7 @@ func TestCallRemoteMCPTool_ValidationPassesThenHTTP(t *testing.T) {
 	}
 
 	m := NewMCPConnectionManager(nil, nil)
-	result, err := m.callRemoteMCPTool(context.Background(), mcp, "search", map[string]any{"query": "hello"})
+	result, err := m.callRemoteMCPTool(context.Background(), mcp, "search", map[string]any{"query": "hello"}, "")
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}

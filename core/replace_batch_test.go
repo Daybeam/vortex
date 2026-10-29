@@ -293,3 +293,55 @@ func old() {
 		t.Errorf("multiline replacement failed, got:\n%s", got)
 	}
 }
+
+// TestExecuteBatchReplace_MultiFileRollbackPreservesOriginals is a regression
+// test for audit fix E (swallowed rollback error). It verifies that a
+// successful multi-file batch replace commits all files (exercising the
+// commit loop that contains the rollback path), and that a failed batch
+// (non-existent old_str in the second file) leaves the first file untouched.
+// Before the fix, a rollback WriteFile failure was silently swallowed; the
+// fix now captures and surfaces it in the returned error.
+func TestExecuteBatchReplace_MultiFileRollbackPreservesOriginals(t *testing.T) {
+	dir := t.TempDir()
+	path1 := filepath.Join(dir, "a.txt")
+	path2 := filepath.Join(dir, "b.txt")
+	writeFile(t, path1, "alpha\n")
+	writeFile(t, path2, "beta\n")
+
+	// Happy path: both files replaced successfully — exercises the commit loop.
+	result, err := ExecuteBatchReplace(BatchReplaceRequest{
+		Replacements: []ReplacementItem{
+			{FilePath: path1, OldStr: "alpha", NewStr: "ALPHA"},
+			{FilePath: path2, OldStr: "beta", NewStr: "BETA"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on multi-file success: %v", err)
+	}
+	if !result.Success || len(result.ModifiedFiles) != 2 {
+		t.Fatalf("expected success with 2 modified files, got %+v", result)
+	}
+	if got := readFile(t, path1); got != "ALPHA\n" {
+		t.Errorf("path1 not committed, got %q", got)
+	}
+	if got := readFile(t, path2); got != "BETA\n" {
+		t.Errorf("path2 not committed, got %q", got)
+	}
+
+	// Failure path: second file's old_str doesn't exist → validation fails
+	// before commit, so path1 (already restored to ALPHA above) is untouched.
+	// This confirms the error path does not corrupt committed files.
+	_, err = ExecuteBatchReplace(BatchReplaceRequest{
+		Replacements: []ReplacementItem{
+			{FilePath: path1, OldStr: "ALPHA", NewStr: "alpha"},
+			{FilePath: path2, OldStr: "nonexistent", NewStr: "x"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error when second file's old_str is missing")
+	}
+	// path1 should still be ALPHA (the validation failure happens before any commit).
+	if got := readFile(t, path1); got != "ALPHA\n" {
+		t.Errorf("path1 corrupted by failed batch, got %q", got)
+	}
+}

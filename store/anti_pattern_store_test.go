@@ -140,3 +140,38 @@ func TestAntiPatternStore_ContainsFold(t *testing.T) {
 		t.Fatalf("case-insensitive keyword failed: got %v", got)
 	}
 }
+
+// TestSetEmbeddingClient_WiresAntiPatternStore is a regression test for
+// DB-audit VECTOR_EMPTY: SetEmbeddingClient must propagate the embedding
+// client to AntiPatternStore.embedder so Upsert computes embeddings.
+// Before fix, NewAntiPatternStore(nil, ...) left embedder nil.
+func TestSetEmbeddingClient_WiresAntiPatternStore(t *testing.T) {
+	es := &ExperienceStore{
+		AntiPatternStore: NewAntiPatternStore(nil, &mockAPBackend{}),
+	}
+
+	// Set embedding client — must propagate to AntiPatternStore.embedder
+	es.SetEmbeddingClient(&mockAPTEmbedder{})
+
+	ctx := context.Background()
+	es.AntiPatternStore.Upsert(ctx, AntiPatternPrecedent{
+		ID:          "prec_embed_test",
+		AntiPattern: "test pattern",
+		SourceText:  "some text to embed",
+		Confidence:  0.5,
+	})
+
+	// Verify embedding was computed
+	for _, p := range es.AntiPatternStore.precedents {
+		if p.ID == "prec_embed_test" {
+			if len(p.Embedding) == 0 {
+				t.Fatal("embedding is empty — SetEmbeddingClient did not wire AntiPatternStore.embedder")
+			}
+			if p.EmbeddingModel != "mock" {
+				t.Errorf("embedding model = %s, want 'mock'", p.EmbeddingModel)
+			}
+			return
+		}
+	}
+	t.Fatal("precedent prec_embed_test not found")
+}
