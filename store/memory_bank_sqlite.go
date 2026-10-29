@@ -18,15 +18,21 @@ func NewSQLiteMemoryBankBackend(db *sql.DB) *SQLiteMemoryBankBackend {
 }
 
 func (b *SQLiteMemoryBankBackend) SaveItem(ctx context.Context, category, key, content string, metadata map[string]any) error {
+	return b.SaveItemWithEmbedding(ctx, category, key, content, metadata, nil, "")
+}
+
+func (b *SQLiteMemoryBankBackend) SaveItemWithEmbedding(ctx context.Context, category, key, content string, metadata map[string]any, embedding []float32, embeddingModel string) error {
 	metaJSON, _ := json.Marshal(metadata)
 	_, err := b.db.ExecContext(ctx, `
-		INSERT INTO memory_bank (category, key, content, metadata_json, last_updated)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO memory_bank (category, key, content, metadata_json, embedding, embedding_model, last_updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(category, key) DO UPDATE SET
 			content=excluded.content,
 			metadata_json=excluded.metadata_json,
+			embedding=excluded.embedding,
+			embedding_model=excluded.embedding_model,
 			last_updated=excluded.last_updated
-	`, category, key, content, string(metaJSON), time.Now())
+	`, category, key, content, string(metaJSON), float32ToBytes(embedding), embeddingModel, time.Now())
 	return err
 }
 

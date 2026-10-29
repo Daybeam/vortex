@@ -71,14 +71,8 @@ func runMigrations(db *sql.DB) error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
-	CREATE TABLE IF NOT EXISTS mcp_configs (
-		id TEXT PRIMARY KEY,
-		url TEXT,
-		command TEXT,
-		trusted BOOLEAN,
-		raw_json TEXT NOT NULL,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
+	-- mcp_configs table removed (DB-audit P2: dead schema, configs are file-based).
+	-- Existing databases may still have the table; it is harmless and unused.
 
 	CREATE TABLE IF NOT EXISTS task_steps (
 		task_id    TEXT NOT NULL,
@@ -411,5 +405,11 @@ func runMigrations(db *sql.DB) error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_task_baselines_sop ON task_baselines(sop_id, sop_version);
 	`)
+	if err != nil {
+		return err
+	}
+
+	// DB-audit P2: record schema version (idempotent via INSERT OR IGNORE).
+	_, err = db.Exec(`INSERT OR IGNORE INTO schema_migrations (version) VALUES (1)`)
 	return err
 }

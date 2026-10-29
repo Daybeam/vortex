@@ -197,6 +197,11 @@ type ExperienceStore struct {
 	// the backend (audit H10).
 	saveWg sync.WaitGroup
 
+	// embeddingWg tracks async embedding goroutines (DecisionPrecedent).
+	// PersistAll waits on this before snapshotting so the first persist
+	// after an upsert includes the embedding (DB-audit P1 timing fix).
+	embeddingWg sync.WaitGroup
+
 	// lifecycleCtx is used as parent for async embedding goroutines
 	// (audit C-13). When nil, context.Background() is used.
 	lifecycleCtx context.Context
@@ -210,10 +215,12 @@ func (es *ExperienceStore) SetLifecycleContext(ctx context.Context) {
 }
 
 // WaitAsyncSaves blocks until all fire-and-forget DB save goroutines
-// (StatePotential, Cooccurrence) have completed. Call before closing
-// the backend to prevent "database is closed" errors (audit H10).
+// (StatePotential, Cooccurrence) and async embedding goroutines
+// (DecisionPrecedent) have completed. Call before closing the backend
+// to prevent "database is closed" errors (audit H10).
 func (es *ExperienceStore) WaitAsyncSaves() {
 	es.saveWg.Wait()
+	es.embeddingWg.Wait()
 }
 
 type EnvironmentIssue struct {
@@ -261,6 +268,12 @@ func (s *ExperienceStore) SetEmbeddingClient(cli IEmbeddingClient) {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
 	s.embeddingClient = cli
+	// DB-audit P1 (VECTOR_EMPTY): propagate embedding client to AntiPatternStore
+	// so Upsert computes embeddings. Previously the embedder resolver was nil
+	// (NewAntiPatternStore(nil, ...)), so anti_patterns.embedding was always empty.
+	if s.AntiPatternStore != nil {
+		s.AntiPatternStore.embedder = func() IEmbeddingClient { return cli }
+	}
 }
 
 // SetRerankerClient wires a System One reranker for experience retrieval.
@@ -496,7 +509,37 @@ func (es *ExperienceStore) seedCanonicalAntiPatterns(ctx context.Context) {
 	}
 }
 
+// copyRoutingMatrix deep-copies a 4-level nested routing matrix map.
+// Extracted from PersistAll for size-guard compliance (audit size-fix).
+func copyRoutingMatrix(src map[string]map[string]map[string]map[string]*RouteWeight) map[string]map[string]map[string]map[string]*RouteWeight {
+	dst := make(map[string]map[string]map[string]map[string]*RouteWeight, len(src))
+	for k1, v1 := range src {
+		m1 := make(map[string]map[string]map[string]*RouteWeight, len(v1))
+		for k2, v2 := range v1 {
+			m2 := make(map[string]map[string]*RouteWeight, len(v2))
+			for k3, v3 := range v2 {
+				m3 := make(map[string]*RouteWeight, len(v3))
+				for k4, v4 := range v3 {
+					cp := *v4
+					m3[k4] = &cp
+				}
+				m2[k3] = m3
+			}
+			m1[k2] = m2
+		}
+		dst[k1] = m1
+	}
+	return dst
+}
+
 func (es *ExperienceStore) PersistAll(ctx context.Context) error {
+	// DB-audit P1 timing fix: wait for pending async embedding goroutines
+	// (DecisionPrecedent) to finish writing embeddings to in-memory nodes
+	// before we snapshot. Without this, the first PersistAll after an
+	// upsert saves nodes without embeddings — they self-heal on the next
+	// cycle, but a crash between cycles loses them permanently.
+	es.embeddingWg.Wait()
+
 	// audit P-MED-3: Snapshot all data under RLock via fast struct copies,
 	// then marshal outside the lock. Struct copies are O(n) with cheap memory
 	// copies vs O(n) with expensive reflection + string encoding for JSON
@@ -525,23 +568,7 @@ func (es *ExperienceStore) PersistAll(ctx context.Context) error {
 	}
 
 	// 4. RoutingMatrix (4-level nested map)
-	routingMatrixCopy := make(map[string]map[string]map[string]map[string]*RouteWeight, len(es.RoutingMatrix))
-	for k1, v1 := range es.RoutingMatrix {
-		m1 := make(map[string]map[string]map[string]*RouteWeight, len(v1))
-		for k2, v2 := range v1 {
-			m2 := make(map[string]map[string]*RouteWeight, len(v2))
-			for k3, v3 := range v2 {
-				m3 := make(map[string]*RouteWeight, len(v3))
-				for k4, v4 := range v3 {
-					cp := *v4
-					m3[k4] = &cp
-				}
-				m2[k3] = m3
-			}
-			m1[k2] = m2
-		}
-		routingMatrixCopy[k1] = m1
-	}
+	routingMatrixCopy := copyRoutingMatrix(es.RoutingMatrix)
 
 	// 5. GeneratedSkills (map[string]*GeneratedSkill)
 	generatedSkillsCopy := make(map[string]*GeneratedSkill, len(es.GeneratedSkills))
@@ -648,6 +675,12 @@ func (es *ExperienceStore) PersistAll(ctx context.Context) error {
 	if err := es.backend.SaveExperienceBatch(ctx, nodesSliceCopy, edgesCopy, logsCopy); err != nil {
 		log.Printf("WARN: PersistAll: SaveExperienceBatch failed: %v", err)
 	}
+	// DB collapse: persist all remaining entities to SQLite backend.
+	// Previously only written to JSON files — SQLite tables stayed empty.
+	es.persistSnapshotsToBackend(ctx, taskPatternsCopy, roleProfilesCopy,
+		skillAffinitiesCopy, routingMatrixCopy, generatedSkillsCopy,
+		environmentIssuesCopy, roleAffinitiesCopy, decisionPrecedentsCopy,
+		statePotentialsCopy)
 	writeBytes(filepath.Join(es.dir, "experience_nodes.json"), experienceNodesData)
 	writeBytes(filepath.Join(es.dir, "experience_edges.json"), experienceEdgesData)
 	writeBytes(filepath.Join(es.dir, "jit_candidates.json"), jitCandidatesData)
@@ -656,6 +689,91 @@ func (es *ExperienceStore) PersistAll(ctx context.Context) error {
 	writeBytes(filepath.Join(es.dir, "promotion_audit_logs.json"), promotionAuditLogsData)
 	writeBytes(filepath.Join(es.dir, "state_potentials.json"), statePotentialsData)
 	return nil
+}
+
+// persistSnapshotsToBackend writes all experience entity snapshots to the
+// SQLite backend. Called from PersistAll after JSON file writes.
+// DB-collapse fix: previously these entities were only persisted to JSON
+// files; the SQLite tables (task_patterns, role_profiles, etc.) stayed
+// empty because the backend Save methods were never called.
+func (es *ExperienceStore) persistSnapshotsToBackend(
+	ctx context.Context,
+	taskPatterns map[string]TaskPattern,
+	roleProfiles map[string]*RoleProfile,
+	skillAffinities map[string]*SkillAffinity,
+	routingMatrix map[string]map[string]map[string]map[string]*RouteWeight,
+	generatedSkills map[string]*GeneratedSkill,
+	environmentIssues map[string]*EnvironmentIssue,
+	roleAffinities map[string]map[string]float64,
+	decisionPrecedents map[string]*schemas.DecisionNode,
+	statePotentials map[string]*StatePotential,
+) {
+	if es.backend == nil {
+		return
+	}
+	for _, p := range taskPatterns {
+		pat := p
+		if err := es.backend.SaveTaskPattern(ctx, &pat); err != nil {
+			log.Printf("WARN: persistToBackend: SaveTaskPattern: %v", err)
+			return
+		}
+	}
+	for _, rp := range roleProfiles {
+		if err := es.backend.SaveRoleProfile(ctx, rp); err != nil {
+			log.Printf("WARN: persistToBackend: SaveRoleProfile: %v", err)
+			return
+		}
+	}
+	for _, sa := range skillAffinities {
+		if err := es.backend.SaveSkillAffinity(ctx, sa); err != nil {
+			log.Printf("WARN: persistToBackend: SaveSkillAffinity: %v", err)
+			return
+		}
+	}
+	for _, m1 := range routingMatrix {
+		for _, m2 := range m1 {
+			for _, m3 := range m2 {
+				for _, rw := range m3 {
+					if err := es.backend.SaveRouteWeight(ctx, rw); err != nil {
+						log.Printf("WARN: persistToBackend: SaveRouteWeight: %v", err)
+						return
+					}
+				}
+			}
+		}
+	}
+	for _, gs := range generatedSkills {
+		if err := es.backend.SaveGeneratedSkill(ctx, gs); err != nil {
+			log.Printf("WARN: persistToBackend: SaveGeneratedSkill: %v", err)
+			return
+		}
+	}
+	for _, ei := range environmentIssues {
+		if err := es.backend.SaveEnvironmentIssue(ctx, ei); err != nil {
+			log.Printf("WARN: persistToBackend: SaveEnvironmentIssue: %v", err)
+			return
+		}
+	}
+	for roleID, tasks := range roleAffinities {
+		for taskType, score := range tasks {
+			if err := es.backend.SaveRoleAffinity(ctx, roleID, taskType, score); err != nil {
+				log.Printf("WARN: persistToBackend: SaveRoleAffinity: %v", err)
+				return
+			}
+		}
+	}
+	for _, dn := range decisionPrecedents {
+		if err := es.backend.SaveDecisionPrecedent(ctx, dn); err != nil {
+			log.Printf("WARN: persistToBackend: SaveDecisionPrecedent: %v", err)
+			return
+		}
+	}
+	for _, sp := range statePotentials {
+		if err := es.backend.SaveStatePotential(ctx, sp); err != nil {
+			log.Printf("WARN: persistToBackend: SaveStatePotential: %v", err)
+			return
+		}
+	}
 }
 
 func (es *ExperienceStore) getConfidenceThreshold() float64 {

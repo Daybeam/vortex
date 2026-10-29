@@ -273,15 +273,16 @@ func (s *ExperienceStore) UpsertDecisionPrecedent(ctx context.Context, node *sch
 
 	// Async embedding if client available
 	if cli != nil && len(node.Embedding) == 0 && node.Reasoning != "" {
-		// audit M13: track with saveWg so WaitAsyncSaves drains this goroutine
-		s.saveWg.Add(1)
+		// audit M13: track with embeddingWg so PersistAll waits for the
+		// embedding before snapshotting (DB-audit P1 timing fix).
+		s.embeddingWg.Add(1)
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(os.Stderr, "[experience-brief] goroutine panic: %v\n%s", r, debug.Stack())
 				}
 			}()
-			defer s.saveWg.Done()
+			defer s.embeddingWg.Done()
 			parent := s.lifecycleCtx
 			if parent == nil {
 				parent = context.Background()
@@ -332,7 +333,12 @@ func (s *ExperienceStore) QueryDecisionPrecedents(ctx context.Context, intent st
 		if len(p.Embedding) > 0 {
 			score := cosineSimilarity(emb, p.Embedding)
 			if score > 0.7 { // High threshold for precedents
-				scored = append(scored, ScoredNode{Node: p, Score: score})
+				// Confidence-weighted ranking (memory tiering gap B, 2026-10-23):
+				// high-confidence precedents rank above low-confidence ones at
+				// similar semantic relevance. conf=0 → 0.5× weight, conf=1 → 1.0×.
+				// The threshold stays on raw cosine so recall is unaffected.
+				confWeight := 0.5 + 0.5*p.Confidence
+				scored = append(scored, ScoredNode{Node: p, Score: score * confWeight})
 			}
 		}
 	}
