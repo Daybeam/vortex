@@ -83,6 +83,37 @@ func (r *Registry) IsModelConfigured(model string) bool {
 	return false
 }
 
+// FindProviderByModel searches all registered providers for one whose Model
+// field matches the given model name. Returns nil if no match is found.
+//
+// This is the locked-accessor counterpart to IsModelConfigured that returns
+// the actual ProviderConfig, not just a bool. It is used by
+// resolveCandidateConfig to handle escalate_model:MODEL_NAME — the user passes
+// a model name (e.g. "gpt-4o"), not a provider ID (e.g. "openai"). Without
+// this lookup, the escalation silently falls back to the role's default
+// provider because GetProviderConfig("gpt-4o") returns nil.
+//
+// If multiple providers share the same model, the one with the
+// lexicographically smallest provider ID is returned for determinism.
+func (r *Registry) FindProviderByModel(model string) *ProviderConfig {
+	if model == "" {
+		return nil
+	}
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
+	var bestID string
+	var best *ProviderConfig
+	for id, p := range r.Providers {
+		if p.Model == model {
+			if best == nil || id < bestID {
+				bestID = id
+				best = p
+			}
+		}
+	}
+	return best
+}
+
 func (r *Registry) ResolveProviderConfig(role *Role) *ProviderConfig {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()

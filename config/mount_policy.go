@@ -123,26 +123,41 @@ func ServerRiskyMCP(m *MCPDef) bool {
 // CarriesOperatorCredential reports whether this definition authenticates to the
 // remote side as the OPERATOR rather than as the caller.
 //
-// The test is APIKeyEnv / URLAuthPlaceholder being set, and it is exact rather
-// than heuristic: both fields name a PROCESS ENVIRONMENT variable
-// (`cachedGetenv` in core/mcp_manager.go), and an env var can only be set by
-// whoever started the engine. A public caller cannot supply their own value,
-// so the resulting credential is always the operator's identity.
+// The test is APIKeyEnv / URLAuthPlaceholder being set, AND the credential
+// scope being operator (the fail-closed default). Both fields name a PROCESS
+// ENVIRONMENT variable (`cachedGetenv` in core/mcp_manager.go), and=and an env
+// var can only be set by whoever started the engine. A public caller cannot
+// supply their own value, so the resulting credential is always the operator's
+// identity — unless credential_scope=per_tenant declares that each tenant
+// brings their own.
 //
 // Why it belongs with ServerRiskyMCP: reaching the host is not the only way to
 // put the server at risk. Presenting the operator's identity to a remote service
 // lets a caller read and write data as the operator, and the engine cannot see
 // that leak at all — core/egress_redaction.go only scans text that came back,
 // and per-user data does not arrive labelled "owner: …".
-//
-// When MCPDef.CredentialScope is implemented (design §4 L1), this becomes
-// `… && EffectiveCredentialScope() == CredentialOperator`; until then the
-// default IS operator, because that is what the code does today.
 func (m *MCPDef) CarriesOperatorCredential() bool {
 	if m == nil {
 		return false
 	}
-	return strings.TrimSpace(m.APIKeyEnv) != "" || strings.TrimSpace(m.URLAuthPlaceholder) != ""
+	hasCredential := strings.TrimSpace(m.APIKeyEnv) != "" || strings.TrimSpace(m.URLAuthPlaceholder) != ""
+	return hasCredential && m.EffectiveCredentialScope() == CredentialOperator
+}
+
+// EffectiveCredentialScope returns the effective credential scope, defaulting
+// to CredentialOperator when unset or unknown (fail-closed). This matches
+// today's behavior: every MCP with api_key_env presents the operator's
+// identity, because that is what the code does.
+func (m *MCPDef) EffectiveCredentialScope() CredentialScope {
+	if m == nil || m.CredentialScope == "" {
+		return CredentialOperator
+	}
+	switch m.CredentialScope {
+	case CredentialOperator, CredentialPerTenant:
+		return m.CredentialScope
+	default:
+		return CredentialOperator // unknown ⇒ fail-closed
+	}
 }
 
 // urlHost extracts the hostname from a URL-ish string, tolerating "host:port"

@@ -17,6 +17,23 @@ type FewShotExample struct {
 	ToolCall   map[string]any `json:"tool_call"`
 }
 
+// CredentialScope declares whose identity an MCP presents to the remote side.
+// See docs/plan/OAUTH_SHARED_MCP_MULTI_TENANT_DESIGN.md §4 L1.
+type CredentialScope string
+
+const (
+	// CredentialOperator (default, fail-closed): the MCP authenticates using a
+	// process environment variable set by whoever started the engine. The
+	// remote sees the operator's identity, so any caller can act as the
+	// operator. This is what every existing MCP does today.
+	CredentialOperator CredentialScope = "operator"
+
+	// CredentialPerTenant: each tenant provides their own credential (via
+	// SecretRef or a future CredentialResolver). The remote sees the tenant,
+	// not the operator, so the risk is tenant-scoped.
+	CredentialPerTenant CredentialScope = "per_tenant"
+)
+
 type MCPDef struct {
 	ID                  string                         `json:"id"`
 	URL                 string                         `json:"url,omitempty"`
@@ -58,4 +75,11 @@ type MCPDef struct {
 	// resolver; "owner" allows the task owner (graph.OwnerID) or an admin.
 	// See docs/plan/DECISION_APPROVAL_AUTHORITY_DESIGN.md §2.
 	Approver string `json:"approver,omitempty"`
+
+	// CredentialScope declares whose credential this MCP uses. Empty ⇒ operator
+	// (fail-closed): the default matches today's behavior — every MCP with
+	// api_key_env/url_auth_placeholder presents the operator's identity.
+	// Set to "per_tenant" when each tenant has their own credential.
+	// See docs/plan/OAUTH_SHARED_MCP_MULTI_TENANT_DESIGN.md §4 L1.
+	CredentialScope CredentialScope `json:"credential_scope,omitempty"`
 }
