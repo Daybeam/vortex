@@ -307,6 +307,17 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		}
 		// P-2.1 Step 2: GraphMu removed; DecisionHistory is now protected by
 		// TaskGraph.decisionMu (accessed via RecordDecision/UpdateDecisionOutcome).
+		// SharedContext (ADDED 2026-10-27): per-task append-only knowledge board
+		// for real-time cross-agent knowledge sharing. Nil-safe: if creation
+		// fails, the spawn proceeds without shared context tools.
+		// See docs/plan/TYPED_SHARED_CONTEXT_DESIGN.md.
+		var sharedCtx *store.SharedContext
+		scDir := filepath.Join(s.outputBase, taskID, "shared_context")
+		sharedCtx, scErr := store.NewSharedContext(scDir, taskID)
+		if scErr != nil {
+			s.logger.Log("EventSharedContextInitFailed", taskID, step.ID, map[string]any{"error": scErr.Error()})
+			sharedCtx = nil
+		}
 		result, err := s.spawner.Spawn(ctx, &SpawnRequest{
 			TaskID:                   taskID,
 			StepID:                   step.ID,
@@ -337,6 +348,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			AdditionalPromptContext: step.AdditionalPromptContext,
 			EnableStepPlan:          step.EnableStepPlan,
 			PreviousOutputSummary:   step.PreviousOutputSummary,
+			SharedContext:           sharedCtx,
+			ExecutionProtocol:       step.ExecutionProtocol,
+			ACPConfig:               step.ACPConfig,
 		})
 
 		if err == nil {
@@ -717,7 +731,12 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			if rerr := stagedWS.Rollback(preSnapshot); rerr != nil {
 				s.logger.Log("EventStagingError", taskID, step.ID, map[string]any{"phase": "rollback", "error": rerr.Error()})
 			} else {
-				_ = stagedWS.MarkRolledBack(step.ID)
+				// audit fix L2: surface MarkRolledBack failure — previously
+				// swallowed, so a step could be rolled back on disk with no
+				// record, risking re-execution of undone side effects.
+				if merr := stagedWS.MarkRolledBack(step.ID); merr != nil {
+					s.logger.Log("EventStagingError", taskID, step.ID, map[string]any{"phase": "mark_rolled_back", "error": merr.Error()})
+				}
 				s.logger.Log("EventStagingRolledBack", taskID, step.ID, nil)
 			}
 		}

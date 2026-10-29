@@ -496,7 +496,8 @@ func (s *DirectedEngine) SubmitDecision(taskID, decisionID, choice string) error
 
 func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, payload string) error {
 	s.Mu.Lock()
-	defer s.Mu.Unlock()
+	unlocked := false
+	defer func() { if !unlocked { s.Mu.Unlock() } }()
 
 	graph := s.getOrReloadGraphLocked(taskID)
 	if graph == nil {
@@ -509,6 +510,12 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 			return fmt.Errorf("invalid surgery data for rewrite_dag: %v", err)
 		}
 		if err := s.mutateGraphTopologyLocked(graph, data); err != nil {
+			return err
+		}
+	}
+
+	if choice == "goal_change_requested" {
+		if err := s.applyGoalChangeLocked(graph, taskID, payload); err != nil {
 			return err
 		}
 	}
@@ -740,6 +747,10 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 			// as an explicit no-op so the step state already written there is
 			// not clobbered and the generic default branch does not reject
 			// the choice with "unknown choice".
+		case "goal_change_requested":
+			// Unreachable: the charter update happens above, before this
+			// switch. Kept as an explicit no-op so the generic default
+			// branch does not reject the choice with "unknown choice".
 		case "replan":
 			// Task-level replan (ADDED 2026-10-18).
 			//
@@ -795,6 +806,16 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 				step.RetryCount = 0
 			case strings.HasPrefix(choice, "escalate_model:"):
 				model := strings.TrimPrefix(choice, "escalate_model:")
+				// Availability check: verify the requested model is configured
+				// before setting the override. Without this, an unavailable
+				// model silently falls back to the role's default provider
+				// (e.g. gemini), defeating the escalation and causing
+				// confusion + repetition loops. Bug P0-2 (2026-10-28).
+				if s.registry != nil {
+					if s.registry.GetProvider(model) == nil && s.registry.FindProviderByModel(model) == nil {
+						return fmt.Errorf("escalate_model: model %q is not available — not a provider ID and no configured provider serves this model", model)
+					}
+				}
 				step.ProviderOverride = model
 				step.Status = schemas.StepPending
 				step.RetryCount = 0
@@ -822,10 +843,9 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 
 	// Resume if no more pending decisions
 	if len(graph.PendingDecisions) == 0 {
-		// Graph is already GraphRunning (step-level blocking never set
-		// GraphBlocked). Create a fresh done channel so WaitTask callers
-		// can wait for the next terminal state, and Broadcast to wake
-		// the run() loop which is waiting for decision resolution.
+		if s.finalizeSmartRoutedAfterDecision(graph, taskID, dec.StepID, &unlocked) {
+			return nil
+		}
 		s.doneChans[taskID] = make(chan struct{})
 	}
 
