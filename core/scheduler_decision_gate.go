@@ -266,6 +266,7 @@ func (s *DirectedEngine) addDecision(
 		// point of this value is that the decider is an INTERNAL sub-spawn of
 		// this task — not a fresh public caller (2026-10-26 root cause).
 		deciderSubmitterIsAdmin := graph.SubmitterIsAdmin
+		deciderOwnerID := graph.OwnerID // inherit, do not default (2026-10-27 OAUTH §8.1)
 		deciderRole := s.registry.System.DecisionDeciderRole
 		s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
 			"decision_id":  decID,
@@ -274,7 +275,7 @@ func (s *DirectedEngine) addDecision(
 			"decider_role": deciderRole,
 		})
 		s.goBackground(func() {
-			choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin)
+			choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin, deciderOwnerID)
 			if choice == "" {
 				return // must not auto-resolve (e.g. human_approval_required)
 			}
@@ -298,6 +299,7 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	ctx map[string]any,
 	options []string,
 	submitterIsAdmin bool,
+	ownerID string,
 ) string {
 	// human_approval_required: legal/compliance gate. Must not auto-resolve
 	// unless explicitly overridden via AllowHumanApprovalAutoResolve.
@@ -308,7 +310,7 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	// Delegate strategy: spawn decider role to choose.
 	if deciderRole != "" && s.spawner != nil {
 		observability.GetGlobalMetrics().Inc("orchestrator.decision_gate.calls", 1)
-		if choice, ok := s.spawnDecider(deciderRole, taskID, stepID, dtype, ctx, options, submitterIsAdmin); ok {
+		if choice, ok := s.spawnDecider(deciderRole, taskID, stepID, dtype, ctx, options, submitterIsAdmin, ownerID); ok {
 			return choice
 		}
 		// Decider failed or returned invalid choice — fall through to conservative.
@@ -338,6 +340,7 @@ func (s *DirectedEngine) spawnDecider(
 	ctx map[string]any,
 	options []string,
 	submitterIsAdmin bool,
+	ownerID string,
 ) (string, bool) {
 	prompt := fmt.Sprintf(`You are a decision arbiter. A workflow step has blocked and requires a decision.
 
@@ -360,6 +363,7 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 		// turned every `decision_required(step_failed)` into a 1 ms
 		// `infrastructure_failure` and left the task wedged forever (2026-10-26).
 		SubmitterIsAdmin: submitterIsAdmin,
+		OwnerID:          ownerID, // inherit owning graph's owner (2026-10-27 OAUTH §8.1)
 	})
 	if err != nil || res == nil {
 		// audit L-N10: Spawn can return (nil, nil) e.g. when an external
@@ -548,7 +552,7 @@ func (s *DirectedEngine) RequestAutonomousAbort(taskID, stepID string, failureCl
 	// the task_planner role. If the planner produces a new plan, the abort
 	// decision includes it as a "replan" option.
 	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
-	replanResult := s.tryPlannerReplan(taskID, stepID, reason, graph.SubmitterIsAdmin)
+	replanResult := s.tryPlannerReplan(taskID, stepID, reason, graph.SubmitterIsAdmin, graph.OwnerID)
 
 	decisionCtx := map[string]any{
 		"failure_class": string(failureClass),
@@ -569,7 +573,7 @@ func (s *DirectedEngine) RequestAutonomousAbort(taskID, stepID string, failureCl
 //
 // Path B (Planner Role): uses SearchAllStepSummaries to get full task history.
 // See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.2.
-func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string, submitterIsAdmin bool) string {
+func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string, submitterIsAdmin bool, ownerID string) string {
 	// Check if task_planner role exists in registry.
 	if s.registry == nil {
 		return ""
@@ -677,6 +681,7 @@ Note: the problem step will be marked deprecated and replaced by the steps you e
 		RoutingMode: schemas.RoutingModeLegacy,
 		// Inherit the aborting task's tier — see spawnDecider for why (2026-10-26).
 		SubmitterIsAdmin: submitterIsAdmin,
+		OwnerID:          ownerID, // inherit owning graph's owner (2026-10-27 OAUTH §8.1)
 	})
 	if err != nil || res == nil {
 		return ""

@@ -376,7 +376,7 @@ func (s *DirectedEngine) plannerParseOptions(targetRole string, catalog map[stri
 // trip on the critical path. Turning "the planner was slow/garbled" into a
 // submission failure would make the system strictly less reliable than not
 // planning at all.
-func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSecs int, submitterIsAdmin bool) ([]schemas.StepInput, string) {
+func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSecs int, submitterIsAdmin bool, ownerID string) ([]schemas.StepInput, string) {
 	if s.registry == nil || s.spawner == nil {
 		return nil, "engine not initialised"
 	}
@@ -527,6 +527,7 @@ func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSec
 			// public caller and any role bound to an MCP without an explicit
 			// mount_policy is rejected (2026-10-26 root cause).
 			SubmitterIsAdmin: submitterIsAdmin,
+			OwnerID:          ownerID, // inherit owning graph's owner (2026-10-27 OAUTH §8.1)
 			// A plan overflows a prose-sized answer cap; see
 			// plannerMaxOutputTokens for the measurement.
 			MaxOutputTokens: s.plannerMaxOutputTokens(toolCount),
