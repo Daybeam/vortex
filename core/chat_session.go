@@ -36,6 +36,13 @@ type ChatSession struct {
 	UserTier     string                  `json:"user_tier,omitempty"` // guest | authorized | admin
 	CreatedAt    time.Time               `json:"created_at"`
 
+	// Live Co-pilot shared session fields (ADDED 2026-10-28).
+	// OwnerID is the session owner's user ID. For shared sessions, guest
+	// requests are routed through the owner's approval pipeline by overriding
+	// AuthOwnerKey with this value. See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md.
+	OwnerID string `json:"owner_id,omitempty"`
+	Shared  bool   `json:"shared,omitempty"`
+
 	mu         sync.Mutex
 	events     []ChatEvent
 	nextSeq    int64
@@ -65,6 +72,35 @@ func (s *ChatSession) SetActiveRoleID(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ActiveRoleID = id
+}
+
+// GetOwnerID returns the session owner's user ID (thread-safe).
+// For shared sessions, this is used to override AuthOwnerKey for guest users.
+func (s *ChatSession) GetOwnerID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.OwnerID
+}
+
+// SetOwnerID sets the session owner's user ID (thread-safe).
+func (s *ChatSession) SetOwnerID(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.OwnerID = id
+}
+
+// IsShared returns whether this session is shared with public users (thread-safe).
+func (s *ChatSession) IsShared() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Shared
+}
+
+// SetShared marks the session as shared or not shared (thread-safe).
+func (s *ChatSession) SetShared(shared bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Shared = shared
 }
 
 // AddEvent assigns the next sequence number and appends to the ring buffer.

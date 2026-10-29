@@ -63,6 +63,15 @@ const (
 	EventToolPromoted            EventType = "tool_promoted"
 	EventHumanApprovalAttached   EventType = "human_approval_attached"
 	EventFallbackActivated       EventType = "fallback_activated"
+	// Context-compression events (铁律 51, 2026-10-27). These were string
+	// literals at the call site, which violated the "event names are a schema"
+	// rule (铁律 29). The three legacy names keep their original PascalCase wire
+	// values so existing dashboards / judges do not silently break (铁律 24);
+	// the new skipped event uses snake_case, which is the table convention.
+	EventContextCompressed            EventType = "EventContextCompressed"
+	EventContextCompressRetrySuccess  EventType = "EventContextCompressRetrySuccess"
+	EventContextCompressRetryFailed   EventType = "EventContextCompressRetryFailed"
+	EventContextCompressSkipped       EventType = "context_compress_skipped"
 	EventMCPDegraded             EventType = "mcp_degraded"
 	// MCP lifecycle (up/down). Emitted via logger.Log, which also publishes to
 	// DefaultBus, so an admin NotificationRoute can trigger on these names.
