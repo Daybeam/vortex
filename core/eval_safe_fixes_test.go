@@ -185,24 +185,38 @@ func TestIsContextLimitError(t *testing.T) {
 }
 
 // TestCompressUserBlocks_KeepsFirst2Last6WithMarker (#20 regression, eval §8.46):
-// Verifies that compressUserBlocks correctly compresses conversation history
-// by keeping the first 2 and last 6 blocks, with a compression marker.
+// Verifies the compression contract: keep the first 2 and last 6 blocks, insert
+// a compression marker, and DROP nothing when the history already fits.
+//
+// CONTRACT CHANGED 2026-10-27 (铁律 51): the old function returned nil unless
+// len(blocks) > 10 and the caller read nil as "nothing to do". Squeeze collapsed
+// userBlocks to a single block, so the guard returned nil on every context-limit
+// 400 and the step died silently. The old assertion "5 blocks => nil" was
+// therefore pinning the bug in place; it is now "5 blocks => unchanged", and the
+// positional drop only happens when the token budget actually demands it.
 func TestCompressUserBlocks_KeepsFirst2Last6WithMarker(t *testing.T) {
-	// Not enough blocks to compress (< 10).
+	// Small history, no budget pressure: returned as-is (never nil).
 	small := make([]schemas.ContentBlock, 5)
-	if got := compressUserBlocks(small); got != nil {
-		t.Errorf("compressUserBlocks with 5 blocks: expected nil, got %d blocks", len(got))
+	for i := range small {
+		small[i] = schemas.ContentBlock{Text: fmt.Sprintf("block-%d", i)}
+	}
+	if got := compressUserBlocksToBudget(small, 1_000_000); got.Changed || got.Blocks == nil {
+		t.Errorf("5 blocks under a huge budget: expected unchanged non-nil, got changed=%v nil=%v", got.Changed, got.Blocks == nil)
+	}
+	if got := compressUserBlocksToBudget(small, 0); got.Changed || got.Blocks == nil {
+		t.Errorf("5 blocks with no budget: expected unchanged non-nil, got changed=%v nil=%v", got.Changed, got.Blocks == nil)
 	}
 
-	// Enough blocks to compress (12 > 10).
+	// Enough blocks to compress (12 > 2+6) and a budget that forces the drop.
 	blocks := make([]schemas.ContentBlock, 12)
 	for i := range blocks {
 		blocks[i] = schemas.ContentBlock{Text: fmt.Sprintf("block-%d", i)}
 	}
-	compressed := compressUserBlocks(blocks)
-	if compressed == nil {
-		t.Fatal("compressUserBlocks with 12 blocks: expected non-nil")
+	got := compressUserBlocksToBudget(blocks, 1) // 1 token: must drop the middle
+	if !got.Changed {
+		t.Fatalf("12 blocks with budget=1: expected compression, got reason=%q", got.Reason)
 	}
+	compressed := got.Blocks
 	// Should have: 2 (first) + 1 (marker) + 6 (last) = 9 blocks.
 	if len(compressed) != 9 {
 		t.Errorf("expected 9 compressed blocks, got %d", len(compressed))

@@ -30,7 +30,7 @@ import (
 func TestRequestPlanning_FlagOffSkips(t *testing.T) {
 	s, _ := newPlannerTestEngine(t)
 
-	steps, reason := s.RequestPlanning("task-x", "appworld_agent", "do the thing", 0, true)
+	steps, reason := s.RequestPlanning("task-x", "appworld_agent", "do the thing", 0, true, "")
 	if steps != nil {
 		t.Fatalf("flag off must not produce a plan, got %d steps", len(steps))
 	}
@@ -49,7 +49,7 @@ func TestRequestPlanning_RoleMissingSkips(t *testing.T) {
 	s, reg := newPlannerTestEngine(t)
 	reg.System.EnablePlannerFirst = true
 
-	steps, reason := s.RequestPlanning("task-x", "appworld_agent", "do the thing", 0, true)
+	steps, reason := s.RequestPlanning("task-x", "appworld_agent", "do the thing", 0, true, "")
 	if steps != nil {
 		t.Fatalf("missing role must not produce a plan, got %d steps", len(steps))
 	}
@@ -68,7 +68,7 @@ func TestRequestPlanning_EmptyTaskSkips(t *testing.T) {
 		Instruction: "plan the DAG",
 	}
 
-	steps, reason := s.RequestPlanning("task-x", "appworld_agent", "   ", 0, true)
+	steps, reason := s.RequestPlanning("task-x", "appworld_agent", "   ", 0, true, "")
 	if steps != nil {
 		t.Fatalf("empty task must not produce a plan")
 	}
@@ -89,7 +89,7 @@ func TestRequestPlanning_NoSpawnerDegrades(t *testing.T) {
 	s.registry = reg
 	s.spawner = nil
 
-	steps, reason := s.RequestPlanning("task-x", "appworld_agent", "do the thing", 0, true)
+	steps, reason := s.RequestPlanning("task-x", "appworld_agent", "do the thing", 0, true, "")
 	if steps != nil {
 		t.Fatalf("nil spawner must not produce a plan")
 	}

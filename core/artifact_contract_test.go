@@ -233,3 +233,52 @@ func TestPersistGraph_Debounce(t *testing.T) {
 		t.Errorf("debounced call should not update artifacts: expected 1, got %d", len(graf.Artifacts))
 	}
 }
+
+// TestPersistGraph_FailedHashNotCached is a regression test for audit L1
+// (2026-10-29): when io.Copy fails while hashing an artifact (e.g., the
+// path is a directory — os.Open succeeds but Read fails), the partial/empty
+// hash must NOT be set on the ArtifactContract and must NOT be written to
+// the hash cache. Before the fix, a partial hash was cached and silently
+// reused for all future lookups, poisoning artifact provenance.
+func TestPersistGraph_FailedHashNotCached(t *testing.T) {
+	tempDir := t.TempDir()
+	eng := &DirectedEngine{outputBase: tempDir}
+
+	// A directory path: os.Open succeeds, but io.Copy fails with
+	// "Incorrect function" (Windows) / EISDIR (Linux). This reliably
+	// triggers the hash-failure path cross-platform.
+	dirArtifact := filepath.Join(tempDir, "artifact_dir")
+	if err := os.Mkdir(dirArtifact, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	graf := &schemas.TaskGraph{
+		TaskID: "task_failed_hash",
+		Steps: map[string]*schemas.Step{
+			"s1": {ID: "s1", Status: schemas.StepOK},
+		},
+		OutputFiles: []schemas.OutputFile{
+			{StepID: "s1", Path: dirArtifact, Format: "md", IsPrimary: true, CreatedAt: time.Now()},
+		},
+	}
+
+	eng.persistGraph(graf)
+
+	if len(graf.Artifacts) != 1 {
+		t.Fatalf("expected 1 artifact even for unreadable file, got %d", len(graf.Artifacts))
+	}
+	ac := graf.Artifacts[0]
+	if ac.SHA256 != "" {
+		t.Errorf("audit L1: expected empty SHA-256 when hashing fails (partial hash must not be set), got %q", ac.SHA256)
+	}
+
+	// The critical assertion: the failed/partial hash must NOT be cached.
+	// Before the fix, recordHashCacheEntry was called unconditionally,
+	// poisoning the cache so future lookups returned the wrong hash.
+	eng.hashCacheMu.Lock()
+	cachedHash, cached := eng.hashCache[dirArtifact]
+	eng.hashCacheMu.Unlock()
+	if cached {
+		t.Errorf("audit L1: failed hash must not be cached, but found %q for %s — cache poisoning", cachedHash, dirArtifact)
+	}
+}

@@ -648,3 +648,31 @@ func TestFlow_ProbeNotApplied_SafeSkip(t *testing.T) {
 		t.Errorf("NeedsReviewCount = %d, want 0 (effect was not applied)", tracker.NeedsReviewCount())
 	}
 }
+
+// TestClearEffectTracker_Regression is a regression test for the effectTrackers
+// memory leak (audit HIGH 2026-10-28). The effectTrackers sync.Map had
+// LoadOrStore per taskID but no Delete, causing unbounded memory growth.
+// This test verifies that ClearEffectTracker properly removes the entry.
+func TestClearEffectTracker_Regression(t *testing.T) {
+	s := &Spawner{outputBase: t.TempDir()}
+	taskID := "test-task-leak-fix"
+
+	// Create an effect tracker for the task.
+	tracker := s.GetOrCreateEffectTracker(taskID)
+	if tracker == nil {
+		t.Fatal("GetOrCreateEffectTracker returned nil")
+	}
+
+	// Verify the tracker is in the map.
+	if _, ok := s.effectTrackers.Load(taskID); !ok {
+		t.Fatal("effectTrackers should contain the task after GetOrCreateEffectTracker")
+	}
+
+	// Clear the tracker — this is the fix.
+	s.ClearEffectTracker(taskID)
+
+	// Verify the tracker is gone.
+	if _, ok := s.effectTrackers.Load(taskID); ok {
+		t.Error("effectTrackers should NOT contain the task after ClearEffectTracker — memory leak regression")
+	}
+}

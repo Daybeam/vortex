@@ -191,7 +191,7 @@ func TestSpawnDecider_NilSpawnResult_NoPanic(t *testing.T) {
 
 	// Before the L-N10 fix, this would panic (nil deref on res.Output.Result).
 	// After the fix, it should return ("", false) safely.
-	choice, ok := s.spawnDecider("decider_role", "task1", "step1", schemas.DecisionLowConfidence, map[string]any{}, []string{"option_a", "option_b"}, false)
+	choice, ok := s.spawnDecider("decider_role", "task1", "step1", schemas.DecisionLowConfidence, map[string]any{}, []string{"option_a", "option_b"}, false, "")
 	if ok {
 		t.Fatalf("L-N10 regression: expected (\"\", false) for nil Spawn result, got (%q, true)", choice)
 	}

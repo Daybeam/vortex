@@ -9,11 +9,19 @@ import (
 )
 
 // TestFastPath_PartialIsNotSuccess is the regression test for the subagent
-// standard (2026-10-23). A single-step submission runs the inline fast path
-// (scheduler_submit.go). Before the fix, that path collapsed EVERY
-// non-delegation subagent status to StepOK + GraphCompleted, so a subagent
-// reporting `partial` was reported to the caller as success. Now partial must
-// surface as StepPartial and raise a decision (the caller verifies).
+// standard (2026-10-23 / fix 2026-10-29). A single-step submission runs the
+// inline fast path (scheduler_submit.go). Before the fix, that path collapsed
+// EVERY non-delegation subagent status to StepOK + GraphCompleted, so a
+// subagent reporting `partial` was reported to the caller as success.
+//
+// The 2026-10-29 fix (5ce167cd0) chose honest terminal reporting over raising
+// a decision: the fast path is loop-less (it never starts run(), so a
+// decision's Broadcast() has no consumer and deadlocks — see
+// docs/plan/FASTPATH_DECISION_DESIGN_ANALYSIS.md §3-§4). Instead, partial
+// surfaces as StepPartial + GraphFailed + EventTaskFailed, and the caller
+// decides at the call boundary. The canonical regression test is
+// TestSubmit_SingleStepPartialReachesTerminal in scheduler_submit_event_test.go;
+// this test pins the same invariant via the lifecycle harness.
 func TestFastPath_PartialIsNotSuccess(t *testing.T) {
 	engine := newLifecycleEngine(t)
 	// Turn 0 does real work; turn 1 declares a PARSEABLE partial (conf 0.9).
@@ -31,7 +39,7 @@ func TestFastPath_PartialIsNotSuccess(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	// WaitTask returns as soon as a decision is pending.
+	// WaitTask returns as soon as the task reaches a terminal state.
 	out, ok := engine.WaitTask(ctx, taskID, 10*time.Second, "full")
 	if !ok {
 		t.Fatal("task not found")
@@ -48,13 +56,17 @@ func TestFastPath_PartialIsNotSuccess(t *testing.T) {
 	if s1["status"] != schemas.StepPartial {
 		t.Fatalf("fast-path partial must surface as StepPartial, got %v", s1["status"])
 	}
-	if out["status"] == schemas.GraphCompleted {
-		t.Fatalf("a partial subagent result must not complete the task (status=%v)", out["status"])
+	if out["status"] != schemas.GraphFailed {
+		t.Fatalf("a partial subagent result must fail the task (honest terminal), got status=%v", out["status"])
 	}
 
+	// Invariant (FASTPATH_DECISION_DESIGN_ANALYSIS §4): a loop-less execution
+	// path must NOT raise a decision. The fast path never starts run(), so a
+	// decision's Broadcast() has no consumer and would deadlock. Honest
+	// terminal reporting replaces the decision detour.
 	decs, _ := out["pending_decisions"].([]map[string]any)
-	if len(decs) == 0 {
-		t.Fatalf("partial must raise a verification decision, got %#v", out["pending_decisions"])
+	if len(decs) != 0 {
+		t.Fatalf("fast-path partial must NOT raise a decision (loop-less path invariant), got %d decisions", len(decs))
 	}
 }
 
