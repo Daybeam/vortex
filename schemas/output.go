@@ -247,6 +247,55 @@ func isHollow(out SubagentOutput) bool {
 	return false
 }
 
+// parseWithFlexibleResult tries to parse JSON where the "result" field
+// can be a string, array, or object. Non-map values are wrapped in
+// {"raw": value}. Returns false if parsing fails or the result is hollow.
+// This handles LLMs that return "result": "text" instead of the expected
+// "result": {"key": "value"} format (live-test stall fix, 2026-10-29).
+func parseWithFlexibleResult(data, capability string) (SubagentOutput, bool) {
+	var flex struct {
+		Status               SubagentStatus `json:"status"`
+		Confidence           float64        `json:"confidence"`
+		Result               json.RawMessage `json:"result"`
+		Attachments          []Attachment   `json:"attachments"`
+		MissingContext       []string       `json:"missing_context"`
+		Assumptions          []string       `json:"assumptions"`
+		Warnings             []string       `json:"warnings"`
+		RequiredCapabilities []string       `json:"required_capabilities"`
+		Capability           string         `json:"capability"`
+		SkillIDs             []string       `json:"skill_ids"`
+	}
+	if err := json.Unmarshal([]byte(data), &flex); err != nil {
+		return SubagentOutput{}, false
+	}
+	out := SubagentOutput{
+		Status:               flex.Status,
+		Confidence:           flex.Confidence,
+		Attachments:          flex.Attachments,
+		MissingContext:       flex.MissingContext,
+		Assumptions:          flex.Assumptions,
+		Warnings:             flex.Warnings,
+		RequiredCapabilities: flex.RequiredCapabilities,
+		Capability:           capability,
+		SkillIDs:             flex.SkillIDs,
+	}
+	if len(flex.Result) > 0 {
+		var asMap map[string]any
+		if json.Unmarshal(flex.Result, &asMap) == nil {
+			out.Result = asMap
+		} else {
+			var asAny any
+			if json.Unmarshal(flex.Result, &asAny) == nil {
+				out.Result = map[string]any{"raw": asAny}
+			}
+		}
+	}
+	if isHollow(out) {
+		return SubagentOutput{}, false
+	}
+	return out, true
+}
+
 // ParseOutput attempts to parse raw LLM text into a SubagentOutput.
 // Never returns an error — falls back to a partial result instead.
 func ParseOutput(raw, capability string) SubagentOutput {
@@ -276,6 +325,15 @@ func ParseOutput(raw, capability string) SubagentOutput {
 		if err := json.Unmarshal([]byte(jsonPart), &out); err == nil && !isHollow(out) {
 			return out
 		}
+	}
+
+	// 3.5. Flexible Result: LLMs often return "result": "text" instead of
+	// "result": {"key": "value"}. The SubagentOutput.Result field is
+	// map[string]any, so json.Unmarshal fails on string results. Try
+	// parsing with Result as json.RawMessage and convert non-map values
+	// to {"raw": value}. (live-test stall fix, 2026-10-29)
+	if out, ok := parseWithFlexibleResult(trimmed, capability); ok {
+		return out
 	}
 
 	// 4. Final Fallback: The output is fundamentally not JSON

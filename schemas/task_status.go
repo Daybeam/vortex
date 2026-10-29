@@ -49,6 +49,7 @@ const (
 	DecisionRewriteDAG               DecisionType = "rewrite_dag"           // ADDED (2026-09-07): Dynamic DAG surgery
 	DecisionHumanApprovalRequired    DecisionType = "human_approval_required"
 	DecisionAutonomousAbortRequested DecisionType = "autonomous_abort_requested" // ADDED (2026-09-14): cost governance — Main Agent requests abort, user decides
+	DecisionGoalChangeRequested     DecisionType = "goal_change_requested"       // ADDED (2026-10-29): explicit goal/charter change request — see docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P2
 )
 
 // VerificationFailureType categorises why a verification failed.
