@@ -68,6 +68,7 @@ type Spawner struct {
 	watchdog          *GatewayWatchdog
 	healer            *Healer
 	pa                *PromptAssembler
+	memoryBank        *store.MemoryBankStore // DB-audit P1: wired in SetMemoryBankStore, embedding client set in init
 
 	assets                   *AssetManager
 	refBasedHandoffThreshold int
@@ -121,6 +122,14 @@ type Spawner struct {
 	// See docs/completed/2026-10-21/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
 	telemetry      *TelemetryRegistry
 	providerRouter *ProviderRouter
+
+	// upstreamSummarizer (ADDED 2026-10-28): compresses long upstream context
+	// into a key-facts summary before side-loading in applyRefBasedHandoff.
+	// Nil-safe: when nil or config disabled, existing placeholder behavior is
+	// preserved (zero behavior change).
+	// See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md.
+	upstreamSummarizer       UpstreamSummarizer
+	upstreamSummarizerConfig config.UpstreamSummarizerConfig
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
@@ -212,6 +221,11 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		if esStore, ok := es.(*store.ExperienceStore); ok {
 			esStore.SetEmbeddingClient(hub.GetEmbeddingClient())
 		}
+		// DB-audit P1 (VECTOR_EMPTY): wire embedding client into MemoryBankStore
+		// so Load() computes embeddings for semantic search (SearchItems).
+		if spawner.memoryBank != nil {
+			spawner.memoryBank.SetEmbeddingClient(hub.GetEmbeddingClient())
+		}
 
 		// Wire up embedding client for ToolRouter hybrid search.
 		spawner.toolRouter.SetEmbedClient(NewHubEmbeddingClient(hub))
@@ -239,6 +253,12 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 			spawner.toolRouter.RefreshToolEmbeddings(reloadCtx, reg)
 		})
 	}
+
+	// R7: clear remote MCP session cache on hot-reload so stale sessions
+	// from the old config are not reused (OAUTH §4 L2 R7).
+	reg.OnReload(func() {
+		spawner.mcpMgr.InvalidateSessionCache()
+	})
 
 	spawner.CaSKG.HookEventBus(DefaultBus)
 
@@ -362,10 +382,21 @@ func (s *Spawner) SetFoldEngine(fe *FoldEngine) {
 	}
 }
 
+// SetUpstreamSummarizer injects the UpstreamSummarizer and its config for
+// semantic compression of upstream context before side-loading.
+// Nil-safe: when summarizer is nil or config.Enabled is false, the existing
+// placeholder summary behavior in applyRefBasedHandoff is preserved.
+// See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §2.5.
+func (s *Spawner) SetUpstreamSummarizer(summarizer UpstreamSummarizer, cfg config.UpstreamSummarizerConfig) {
+	s.upstreamSummarizer = summarizer
+	s.upstreamSummarizerConfig = cfg
+}
+
 // SetMemoryBankStore wires the MemoryBankStore for UserProfile injection
 // into sub-agent prompts. ADDED 2026-10-17.
 // See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
 func (s *Spawner) SetMemoryBankStore(mb *store.MemoryBankStore) {
+	s.memoryBank = mb
 	if s.pa != nil {
 		s.pa.SetMemoryBankStore(mb)
 	}
@@ -386,6 +417,13 @@ func (s *Spawner) GetOrCreateEffectTracker(taskID string) *EffectTracker {
 		return actual.(*EffectTracker)
 	}
 	return tracker
+}
+
+// ClearEffectTracker removes the EffectTracker for a completed/failed task.
+// Called from DirectedEngine.finalize to prevent unbounded memory growth
+// (effectTrackers sync.Map had no Delete — audit HIGH 2026-10-28).
+func (s *Spawner) ClearEffectTracker(taskID string) {
+	s.effectTrackers.Delete(taskID)
 }
 
 // recordEffect is a convenience wrapper that records a tool call's effect
@@ -442,6 +480,16 @@ func (s *Spawner) Spawn(ctx context.Context, req *SpawnRequest) (*SpawnResult, e
 		req.SpanID = NewSpanID()
 	}
 	ctx = ContextWithTrace(ctx, req.TraceID, req.SpanID)
+
+	// ACP delegation (ADDED 2026-10-27): if the step's execution protocol is
+	// "acp", bypass the internal LLM loop and delegate to an external ACP-
+	// compliant worker via JSON-RPC. The interceptor chain (MCP setup, health
+	// checks, etc.) is skipped — the external agent has its own tools.
+	// Orchestrator's L1-L3 verification still runs on the returned diff.
+	// See docs/completed/2026-10-28/ACP_CLIENT_SPAWNER_INTEGRATION_DESIGN.md.
+	if req.ExecutionProtocol == "acp" && req.ACPConfig != nil {
+		return s.SpawnACP(ctx, req, req.ACPConfig)
+	}
 
 	// Step Plan Mode (ADDED 2026-10-10): if enabled, run a Planner Phase
 	// before the interceptor chain. The plan is injected into

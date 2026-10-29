@@ -60,6 +60,13 @@ func (s *Spawner) completeTurn(
 	noToolCallsYet := len(st.trace) == 0
 	selfReportedLowConfidence := output.Status == schemas.StatusPartial && output.Confidence < 0.4
 
+	// hasTools: whether any tools are available to this role. When false
+	// (e.g., a pure text chat role), the engine should not nudge for tool
+	// calls or downgrade status=ok to partial for missing tool calls.
+	// (live-test stall fix, 2026-10-29)
+	hasTools := len(role.BoundSkills) > 0 || len(role.BoundMCPBindings) > 0 ||
+		len(req.AdditionalSkills) > 0 || len(req.AdditionalMCPs) > 0
+
 	// P1 fix (2026-10-03, eval §0.5): Detect parse failures and track consecutive count.
 	// ParseOutput fallback sets Assumptions to "output not parseable" or
 	// "output parseable but semantically hollow". Use this to distinguish
@@ -116,6 +123,8 @@ func (s *Spawner) completeTurn(
 
 	// Nudges a model that has not called a tool yet (turn 0, or a
 	// self-reported low-confidence partial). Details in noToolNudge.
+	// Skip nudge when the model already returned status=ok with high
+	// confidence — no point nudging a good response (live-test stall fix).
 	if s.noToolNudge(req, turn, maxTurns, st, output, parseFailed, noToolCallsYet, selfReportedLowConfidence, cleanText) {
 		return turnOutcome{skip: true}
 	}
@@ -132,7 +141,7 @@ func (s *Spawner) completeTurn(
 		return turnOutcome{skip: true}
 	}
 
-	if noToolCallsYet && output.Status == schemas.StatusOK {
+	if hasTools && noToolCallsYet && output.Status == schemas.StatusOK {
 		output.Status = schemas.StatusPartial
 		if output.Confidence > 0.4 {
 			output.Confidence = 0.4
@@ -212,7 +221,7 @@ func (s *Spawner) noToolNudge(
 	req *SpawnRequest, turn, maxTurns int, st *spawnTurnState, output schemas.SubagentOutput,
 	parseFailed, noToolCallsYet, selfReportedLowConfidence bool, cleanText string,
 ) bool {
-	if !(turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || turn == 0)) {
+	if !(turn < maxTurns-1 && noToolCallsYet && (selfReportedLowConfidence || (turn == 0 && output.Status != schemas.StatusOK))) {
 		return false
 	}
 	if s.registry.System.FeatureFlags.EvalObs {

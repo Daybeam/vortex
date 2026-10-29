@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"strings"
 	"time"
 
@@ -285,6 +286,23 @@ func (s *Spawner) resolveCandidateConfig(hub *ContextHub, role *config.Role, pro
 	pc := hub.GetProviderConfig(pID)
 
 	if pc == nil {
+		// Model-name fallback: escalate_model:MODEL_NAME (e.g.
+		// "gpt-4o") passes the model name as providerID. If no
+		// provider with that ID exists, search for a provider whose
+		// Model field matches before falling back to the role default.
+		// Without this, the escalation silently reverts to the role's
+		// default provider (e.g. gemini) instead of the requested model.
+		// Bug: P0-2 escalate_model silent fallback (2026-10-28).
+		if pID != "" {
+			if found := hub.Registry.FindProviderByModel(pID); found != nil {
+				pc = found
+				log.Printf("[Spawner] providerID %q not found, resolved by model name to provider %q (model %q)",
+					pID, found.Provider, found.Model)
+			}
+		}
+	}
+
+	if pc == nil {
 		// If Registry is also empty, we return a virtual "host" provider
 		// to allow delegation back to the caller. ADDED (2026-07-25).
 		hub.Registry.Mu.RLock()
@@ -387,30 +405,200 @@ func isContextLimitError(err error) bool {
 		strings.Contains(s, "max_tokens")
 }
 
-// compressUserBlocks removes older conversation blocks from the middle of the
-// slice, keeping the first few (system prompt + task description) and the last
-// few (recent context). A compression marker is inserted where blocks were
-// removed so the model knows history was truncated.
-//
-// Strategy: keep first 2 + last 6 blocks. If total <= 8, can't compress —
-// return nil to signal "not compressible" so the caller falls through to
-// normal error handling.
-func compressUserBlocks(blocks []schemas.ContentBlock) []schemas.ContentBlock {
-	const keepFirst = 2 // system prompt + task description
-	const keepLast = 6  // recent turns (tool results + model reasoning)
-	const minToCompress = keepFirst + keepLast + 2
+// contextCompressResult reports what compressUserBlocksToBudget did, so the
+// caller can emit exactly one event whether or not anything was dropped.
+// A silent no-op is indistinguishable from "the guard never ran" — that is
+// precisely how three previous keyword fixes (eval §8.48.7 / §9.3) shipped
+// without ever being exercised (铁律 51-3).
+type contextCompressResult struct {
+	Blocks    []schemas.ContentBlock
+	Before    int
+	After     int
+	BeforeTok int
+	AfterTok  int
+	Dropped   int
+	Changed   bool
+	Reason    string // "" when Changed; otherwise why nothing was dropped
+}
 
-	if len(blocks) <= minToCompress {
-		return nil // not enough blocks to compress
+const (
+	contextCompressKeepFirst = 2
+	contextCompressKeepLast  = 6
+	// truncatePasses bounds the truncate-the-biggest-block loop. Each pass
+	// halves the block, so 6 passes is a 64x reduction — far beyond any real
+	// prompt, and a hard stop against an oscillating estimator.
+	truncatePasses = 6
+)
+
+// contextInputBudget returns the number of prompt tokens the history must fit
+// into before the next provider call: window minus the reply reserve minus this
+// call's max_tokens, with a safety margin.
+//
+// The margin is not decoration. providers.EstimateTokens is known to UNDERSTATE
+// JSON/schema-heavy prompts by >=17.6% (铁律 15), so a request trimmed to fit
+// "exactly" still 400s. 0.85 is the smallest margin that covers that measured
+// gap; tightening it needs a fresh measurement, not a guess.
+func (s *Spawner) contextInputBudget(pCfg *config.ProviderConfig, req *SpawnRequest) int {
+	if pCfg == nil {
+		return 0
+	}
+	win := pCfg.MaxContextWindow
+	if win <= 0 {
+		return 0
+	}
+	reserve := pCfg.GetReserveTokens()
+	if out := s.spawnOutputBudget(req); reserve < out {
+		reserve = out
+	}
+	budget := win - reserve
+	if budget <= 0 {
+		return 0
+	}
+	return budget * 85 / 100
+}
+
+// estimateBlocksTokens sums the provider-facing estimate for every block.
+// Uses providers.EstimateTokens (CJK-aware) rather than len(text)/4 so the
+// budget check shares one unit with the rest of the engine (铁律 15).
+func estimateBlocksTokens(blocks []schemas.ContentBlock) int {
+	total := 0
+	for i := range blocks {
+		total += providers.EstimateTokens(blocks[i].Text)
+	}
+	return total
+}
+
+// truncateBlockText keeps the head and the tail of text and replaces the
+// middle with the compression marker, cutting on rune (not byte) boundaries so
+// CJK payloads never produce invalid UTF-8.
+func truncateBlockText(text string, keepChars int) string {
+	r := []rune(text)
+	if len(r) <= keepChars {
+		return text
+	}
+	if keepChars < 0 {
+		keepChars = 0
+	}
+	head := keepChars * 6 / 10
+	tail := keepChars - head
+	return string(r[:head]) + "\n" + MarkerHistoryCompressed + "\n" + string(r[len(r)-tail:])
+}
+
+// compressUserBlocksToBudget shrinks the conversation history so that its
+// estimated token count fits budgetTokens. It always returns a usable slice.
+//
+// History (铁律 51, 2026-10-27): the previous compressUserBlocks keyed on BLOCK
+// COUNT — `len(blocks) <= 10 ⇒ return nil` — and the caller treated nil as
+// "nothing to do". Two failures followed, both observed on aw19:
+//   - Squeeze collapsed userBlocks to a single block, so len == 1 and this
+//     function returned nil on EVERY context-limit 400; the step then died
+//     with no event at all (EventContextCompressed count = 0 for 51 turns);
+//   - even when it did fire it dropped by position, not by size, so one huge
+//     tool-result block could survive and the retry 400'd again.
+//
+// The budget version fixes both: it never returns nil, it drops middle blocks
+// until the estimate fits, and if the retained set still does not fit it
+// truncates the largest retained block.
+func compressUserBlocksToBudget(blocks []schemas.ContentBlock, budgetTokens int) contextCompressResult {
+	if blocks == nil {
+		blocks = []schemas.ContentBlock{} // never hand the caller a nil slice
+	}
+	res := contextCompressResult{Blocks: blocks, Before: len(blocks), After: len(blocks)}
+	res.BeforeTok = estimateBlocksTokens(blocks)
+	res.AfterTok = res.BeforeTok
+
+	if len(blocks) == 0 {
+		res.Reason = "empty"
+		return res
 	}
 
-	compressed := make([]schemas.ContentBlock, 0, keepFirst+keepLast+1)
-	compressed = append(compressed, blocks[:keepFirst]...)
-	compressed = append(compressed, schemas.ContentBlock{
-		Text: MarkerHistoryCompressed,
-	})
-	compressed = append(compressed, blocks[len(blocks)-keepLast:]...)
-	return compressed
+	// No budget information (MaxContextWindow unset): fall back to the legacy
+	// positional rule so behaviour only ever loosens, never silently disables.
+	if budgetTokens <= 0 {
+		if len(blocks) <= contextCompressKeepFirst+contextCompressKeepLast {
+			res.Reason = "no_budget"
+			return res
+		}
+		out := make([]schemas.ContentBlock, 0, contextCompressKeepFirst+contextCompressKeepLast+1)
+		out = append(out, blocks[:contextCompressKeepFirst]...)
+		out = append(out, schemas.ContentBlock{Text: MarkerHistoryCompressed})
+		out = append(out, blocks[len(blocks)-contextCompressKeepLast:]...)
+		res.Blocks = out
+		res.After = len(out)
+		res.Dropped = len(blocks) - len(out) + 1 // +1: the marker is not history
+		res.AfterTok = estimateBlocksTokens(out)
+		res.Changed = true
+		return res
+	}
+
+	if res.BeforeTok <= budgetTokens {
+		res.Reason = "under_budget"
+		return res
+	}
+
+	// Drop the middle, keep the first (task framing) and last (recency) blocks.
+	if len(blocks) > contextCompressKeepFirst+contextCompressKeepLast {
+		out := make([]schemas.ContentBlock, 0, contextCompressKeepFirst+contextCompressKeepLast+1)
+		out = append(out, blocks[:contextCompressKeepFirst]...)
+		out = append(out, schemas.ContentBlock{Text: MarkerHistoryCompressed})
+		out = append(out, blocks[len(blocks)-contextCompressKeepLast:]...)
+		res.Dropped = len(blocks) - (contextCompressKeepFirst + contextCompressKeepLast)
+		res.Blocks = out
+		res.After = len(out)
+		res.AfterTok = estimateBlocksTokens(out)
+		res.Changed = true
+	}
+
+	// Still over budget: shrink the largest retained block. This is the case the
+	// positional rule could never handle — one fat tool result.
+	//
+	// The keep-length is found by binary search on the rune length rather than a
+	// single halving pass: truncateBlockText also inserts the marker (~18
+	// tokens), so a proportional cut can land just over the budget and the
+	// marker cost then makes "cut more" oscillate. Searching the largest length
+	// whose estimate still fits is exact and terminates.
+	for pass := 0; pass < truncatePasses && res.AfterTok > budgetTokens; pass++ {
+		idx, biggest := -1, 0
+		for i := range res.Blocks {
+			if res.Blocks[i].Text == MarkerHistoryCompressed {
+				continue
+			}
+			if n := providers.EstimateTokens(res.Blocks[i].Text); n > biggest {
+				idx, biggest = i, n
+			}
+		}
+		if idx < 0 || biggest == 0 {
+			break
+		}
+		others := res.AfterTok - biggest
+		allowed := budgetTokens - others // token budget left for this block
+		if allowed < 0 {
+			allowed = 0
+		}
+		orig := res.Blocks[idx].Text
+		runes := []rune(orig)
+		lo, hi := 0, len(runes)
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if providers.EstimateTokens(truncateBlockText(orig, mid)) <= allowed {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		newText := truncateBlockText(orig, lo)
+		if providers.EstimateTokens(newText) >= biggest {
+			break // no progress — stop rather than spin
+		}
+		res.Blocks[idx].Text = newText
+		res.Changed = true
+		res.AfterTok = estimateBlocksTokens(res.Blocks)
+	}
+
+	if !res.Changed {
+		res.Reason = "no_middle"
+	}
+	return res
 }
 
 // toolFailCircuitBreakerThreshold is the number of failures (step-level or
@@ -798,28 +986,72 @@ func (s *Spawner) applyRefBasedHandoff(ctx context.Context, req *SpawnRequest, r
 	effectiveThreshold := s.GetEffectiveHandoffThreshold(injectionPCfg)
 
 	if s.assets != nil && effectiveThreshold > 0 && ctxLen > effectiveThreshold {
+		// ★ Semantic compression before side-loading (ADDED 2026-10-28).
+		// See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §2.5.
+		summarizerEnabled := s.upstreamSummarizer != nil && s.upstreamSummarizerConfig.Enabled
+
+		var summary string
+		if summarizerEnabled {
+			budget := s.upstreamSummarizerConfig.BudgetChars
+			if budget <= 0 {
+				budget = 2000
+			}
+			if sm, err := s.upstreamSummarizer.Summarize(ctx, ctxBytes, budget); err == nil && sm != "" {
+				summary = sm
+			}
+			// Summarizer failure → summary stays "" → graceful degradation to placeholder.
+		}
+
 		file, err := s.assets.Handle(req.TaskID, req.StepID, ctxBytes, "json", "upstream_context")
 		if err == nil && file != nil {
-			refPointer := map[string]any{
-				"ref":     file.Path,
-				"size":    ctxLen,
-				"summary": "Upstream context side-loaded (adaptive model threshold); use read_file to inspect.",
-				"step":    req.StepID,
-				"task":    req.TaskID,
+			if summarizerEnabled && summary != "" {
+				// Semantic summary mode: inject key facts as a distinct block.
+				refPointer := map[string]any{
+					"ref":     file.Path,
+					"size":    ctxLen,
+					"summary": summary,
+					"step":    req.StepID,
+					"task":    req.TaskID,
+				}
+				ptrBytes, _ := json.Marshal(refPointer)
+				userText = fmt.Sprintf("%s\n\n### Upstream Context (ref-based)\n%s\n\n%s", userText, summary, string(ptrBytes))
+				s.logger.Log("EventUpstreamContextSemanticSummary", req.TaskID, req.StepID, map[string]any{
+					"path":          file.Path,
+					"bytes":         ctxLen,
+					"threshold":     effectiveThreshold,
+					"summary_chars": len(summary),
+					"summary_mode":  s.upstreamSummarizerConfig.Mode,
+					"model_max": func() int {
+						if injectionPCfg != nil {
+							return injectionPCfg.MaxContextWindow
+						}
+						return 0
+					}(),
+				})
+			} else {
+				// Original behavior: placeholder summary, no summary block.
+				// Used when summarizer is disabled, nil, or failed (graceful degradation).
+				refPointer := map[string]any{
+					"ref":     file.Path,
+					"size":    ctxLen,
+					"summary": "Upstream context side-loaded (adaptive model threshold); use read_file to inspect.",
+					"step":    req.StepID,
+					"task":    req.TaskID,
+				}
+				ptrBytes, _ := json.Marshal(refPointer)
+				userText = fmt.Sprintf("%s\n\n### Upstream Context (ref-based)\n%s", userText, string(ptrBytes))
+				s.logger.Log("EventUpstreamContextSideLoaded", req.TaskID, req.StepID, map[string]any{
+					"path":      file.Path,
+					"bytes":     ctxLen,
+					"threshold": effectiveThreshold,
+					"model_max": func() int {
+						if injectionPCfg != nil {
+							return injectionPCfg.MaxContextWindow
+						}
+						return 0
+					}(),
+				})
 			}
-			ptrBytes, _ := json.Marshal(refPointer)
-			userText = fmt.Sprintf("%s\n\n### Upstream Context (ref-based)\n%s", userText, string(ptrBytes))
-			s.logger.Log("EventUpstreamContextSideLoaded", req.TaskID, req.StepID, map[string]any{
-				"path":      file.Path,
-				"bytes":     ctxLen,
-				"threshold": effectiveThreshold,
-				"model_max": func() int {
-					if injectionPCfg != nil {
-						return injectionPCfg.MaxContextWindow
-					}
-					return 0
-				}(),
-			})
 		} else {
 			userText = fmt.Sprintf("%s\n\n### Upstream Context\n%s", userText, string(ctxBytes))
 		}

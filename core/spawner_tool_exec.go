@@ -183,12 +183,19 @@ func prependSticky(blocks []schemas.ContentBlock, stickyContext string) []schema
 // skipping empty strings and duplicates (by substring containment). Returns
 // the updated context string.
 func accumulateSticky(current string, newResults []string) string {
+	// audit fix P4: use strings.Builder instead of `+=` which was O(L²) due to
+	// copying the entire accumulated string on every append. The Builder
+	// amortizes growth; b.String() for the dedup check is O(current) per
+	// result, far cheaper than the quadratic copy chain.
+	var b strings.Builder
+	b.WriteString(current)
 	for _, sr := range newResults {
-		if sr != "" && !strings.Contains(current, sr) {
-			current += sr + "\n\n"
+		if sr != "" && !strings.Contains(b.String(), sr) {
+			b.WriteString(sr)
+			b.WriteString("\n\n")
 		}
 	}
-	return current
+	return b.String()
 }
 
 // logSERFFailureClass maps a SERF category to FailureClass and emits an
@@ -337,6 +344,30 @@ func (s *Spawner) processToolCalls(
 					"Use the role's own MCP tools, or state that the step cannot be completed "+
 					"with the capabilities you have.",
 				call.Name, req.RoleID))
+			continue
+		}
+
+		// SharedContext tools (ADDED 2026-10-27): shared_context_write/read
+		// are handled directly, like core tools, but require a SharedContext
+		// instance from the SpawnRequest. See docs/plan/TYPED_SHARED_CONTEXT_DESIGN.md.
+		if SharedContextToolNames[call.Name] && req.SharedContext != nil {
+			res, status := handleSharedContextTool(call, req.SharedContext, req.TaskID, req.StepID)
+			interaction := store.ToolInteraction{
+				ToolName:  call.Name,
+				Arguments: call.Arguments,
+				Result:    res,
+			}
+			state.trace = append(state.trace, interaction)
+			env := s.processor.Wrap(call.Name, res, status, "orchestrator", "")
+			md := env.ToMarkdown(call.Name)
+			if status != "error" {
+				noteToolResult(state, callKey, md)
+			}
+			state.toolResults = append(state.toolResults, md)
+			s.logger.Log("EventSharedContextToolCall", req.TaskID, req.StepID, map[string]any{
+				"tool":   call.Name,
+				"status": status,
+			})
 			continue
 		}
 
@@ -619,15 +650,15 @@ func (s *Spawner) processToolCalls(
 				if isToolError {
 					state.toolFailCount[call.Name]++
 					effCount := s.incrTaskToolFail(req.TaskID, call.Name, state.toolFailCount[call.Name])
-				recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
-				s.logSERFFailureClass(req.TaskID, req.StepID, call.Name, serf)
-				interaction.Result = recoveryMsg
-				env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
-				state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
-			} else {
-				state.toolFailCount[call.Name] = 0
-				interaction.Result = finalRes
-				interaction.Meta = extractMeta(finalRes) // Phase 2: extract structured metadata
+					recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
+					s.logSERFFailureClass(req.TaskID, req.StepID, call.Name, serf)
+					interaction.Result = recoveryMsg
+					env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
+					state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
+				} else {
+					state.toolFailCount[call.Name] = 0
+					interaction.Result = finalRes
+					interaction.Meta = extractMeta(finalRes) // Phase 2: extract structured metadata
 					if att, ok := finalRes.(schemas.SubagentOutput); ok {
 						state.turnAttachments = dedupAttachments(state.turnAttachments, att.Attachments)
 					}
@@ -666,7 +697,7 @@ func (s *Spawner) processToolCalls(
 			}
 		} else if mcpDef.URL != "" {
 			toolCtx, cancelTool := context.WithTimeout(ctx, 60*time.Second)
-			finalRes, execErr := s.mcpMgr.callRemoteMCPTool(toolCtx, mcpDef, call.Name, call.Arguments)
+			finalRes, execErr := s.mcpMgr.callRemoteMCPTool(toolCtx, mcpDef, call.Name, call.Arguments, req.OwnerID)
 			cancelTool()
 
 			if execErr != nil {
@@ -682,15 +713,15 @@ func (s *Spawner) processToolCalls(
 				if isToolError {
 					state.toolFailCount[call.Name]++
 					effCount := s.incrTaskToolFail(req.TaskID, call.Name, state.toolFailCount[call.Name])
-				recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
-				s.logSERFFailureClass(req.TaskID, req.StepID, call.Name, serf)
-				interaction.Result = recoveryMsg
-				env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
-				state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
-			} else {
-				state.toolFailCount[call.Name] = 0
-				interaction.Result = finalRes
-				status := "ok"
+					recoveryMsg := buildSERFRecovery(call.Name, serf, errMsg, effCount)
+					s.logSERFFailureClass(req.TaskID, req.StepID, call.Name, serf)
+					interaction.Result = recoveryMsg
+					env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
+					state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
+				} else {
+					state.toolFailCount[call.Name] = 0
+					interaction.Result = finalRes
+					status := "ok"
 					if m, ok := finalRes.(map[string]any); ok {
 						if s, ok := m["status"].(string); ok {
 							status = s

@@ -440,6 +440,7 @@ func (s *Spawner) buildMCPServers(
 	bindings []config.MCPBinding,
 	providerName string,
 	roleID string,
+	ownerID string,
 ) []providers.MCPServerDef {
 	var servers []providers.MCPServerDef
 
@@ -512,7 +513,7 @@ func (s *Spawner) buildMCPServers(
 			// non-Anthropic providers, using per-MCP auth config if present.
 			if mcp.URL != "" && providerName != "anthropic" && len(mcp.FullToolDefinitions) == 0 {
 				discCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-				tools, err := s.mcpMgr.discoverRemoteMCPTools(discCtx, mcp)
+				tools, err := s.mcpMgr.discoverRemoteMCPTools(discCtx, mcp, ownerID)
 				cancel()
 				if err == nil {
 					mcp.FullToolDefinitions = tools
@@ -597,7 +598,7 @@ func (s *Spawner) DirectExecute(ctx context.Context, mcpID, toolName string, arg
 			"arguments": args,
 		})
 	} else if mcpDef.URL != "" {
-		return s.mcpMgr.callRemoteMCPTool(ctx, mcpDef, toolName, args)
+		return s.mcpMgr.callRemoteMCPTool(ctx, mcpDef, toolName, args, "") // DirectExecute: operator credentials, shared session
 	}
 
 	return nil, fmt.Errorf("MCP %s has neither command nor URL", mcpID)
