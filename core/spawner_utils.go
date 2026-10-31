@@ -1083,7 +1083,6 @@ func (s *Spawner) tryDelegationMode(ctx context.Context, req *SpawnRequest, role
 		"action": "delegation_triggered",
 		"reason": "system_delegation_mode_enabled",
 	})
-	// Defect 1 fix: include tool definitions in delegation return
 	toolDefs := s.collectDelegationToolDefs(req.Hub, bindings)
 	return &SpawnResult{
 		Output: schemas.SubagentOutput{
@@ -1095,6 +1094,7 @@ func (s *Spawner) tryDelegationMode(ctx context.Context, req *SpawnRequest, role
 				"target_capability": role.BaseCapability,
 				"role_id":           req.RoleID,
 				"tool_definitions":  toolDefs,
+				"workspace":         delegationWorkspaceBlock(s.outputBase, req.TaskID, req.SessionRoot),
 			},
 			Capability: role.BaseCapability,
 		},

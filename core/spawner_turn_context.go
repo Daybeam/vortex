@@ -56,5 +56,10 @@ func (s *Spawner) appendTurnObservation(
 	healingAdvice := s.healer.Diagnose(observation)
 
 	resMD := fmt.Sprintf("%s\n%s%s%s", MarkerEnvObservation, observation, healingAdvice, vdaPrompt)
-	return append(userBlocks, schemas.ContentBlock{Text: resMD, CacheControl: "ephemeral"}) // Tool results turn
+	userBlocks = append(userBlocks, schemas.ContentBlock{Text: resMD, CacheControl: "ephemeral"}) // Tool results turn
+
+	// VCP Context Tiering §3 Bucket 2: compact old tool observations into
+	// one-line summaries to prevent context pollution in long-running
+	// heartbeat tasks. Only the latest MaxFullObservations are kept in full.
+	return CompactOldObservations(userBlocks, MaxFullObservations)
 }

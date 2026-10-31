@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -16,7 +17,7 @@ func FileSkeleton(data []byte, filename string) string {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".json":
-		return jsonSkeleton(data)
+		return safeJSONSkeleton(data)
 	case ".html", ".htm", ".xml", ".svg":
 		return tagSkeleton(data)
 	case ".go":
@@ -45,17 +46,60 @@ func byteToLine(data []byte, offset int) int {
 
 // --- JSON Skeleton ---
 
+// jsonFrame is one open container in jsonSkeleton.
+//
+// It is deliberately a single value instead of three parallel slices
+// (ctx []byte, arrayCount []int, arrayStartLine []int). The parallel-slice
+// version desynchronised whenever an opener was consumed by the printing
+// path and its matching closer by the "skip elements beyond the first"
+// path, and the resulting "-1 index" panic killed a whole chat turn
+// (see safeJSONSkeleton's doc comment for the observed impact). One frame
+// per opener makes that class of bug unrepresentable.
+type jsonFrame struct {
+	kind      byte // '{' or '['
+	count     int  // array elements seen (arrays only)
+	startLine int  // line of the opening bracket (arrays only)
+}
+
+// closerOf returns the delimiter that closes kind.
+func closerOf(kind byte) byte {
+	if kind == '{' {
+		return '}'
+	}
+	return ']'
+}
+
+// safeJSONSkeleton is jsonSkeleton with a panic containment boundary.
+//
+// The skeletonizer exists to SHORTEN a tool result; it is an optimisation,
+// never a correctness boundary, and it parses arbitrary model/tool output.
+// A bug in it must therefore degrade to the plain summariser, not take down
+// the caller. This is not hypothetical: on 2026-10-30 a 5804-byte, fully
+// valid JSON read_file result panicked here (index out of range [-1]), the
+// panic was recovered upstream and only logged, and because a recovered
+// panic emits no terminal SSE event the chat stream never closed — the turn
+// idled for 1137 s after the model had finished at t=22 s and then scored
+// model_error. Containment here + a terminal event upstream means the worst
+// case is a slightly uglier skeleton.
+func safeJSONSkeleton(data []byte) (out string) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[skeleton] WARN: jsonSkeleton panicked (%v); falling back to flat summary\n", r)
+			out = SummarizeOutput(data, "json")
+		}
+	}()
+	return jsonSkeleton(data)
+}
+
 func jsonSkeleton(data []byte) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("[JSON Skeleton: %d KB, %d lines]\n", len(data)/1024, bytes.Count(data, []byte("\n"))+1))
 
 	dec := json.NewDecoder(bytes.NewReader(data))
 	depth := 0
-	var ctx []byte // stack: 'o' = object, 'a' = array
-	arrayCount := []int{}
-	arrayStartLine := []int{}
+	stack := []jsonFrame{}
 	inKey := false  // next string token is a key
-	skipDepth := -1 // skip array elements beyond first at this depth
+	skipDepth := -1 // suppress output for containers deeper than this
 
 	for {
 		tok, err := dec.Token()
@@ -65,98 +109,85 @@ func jsonSkeleton(data []byte) string {
 		offset := int(dec.InputOffset())
 		line := byteToLine(data, offset)
 
-		if skipDepth >= 0 && depth > skipDepth {
-			// We're inside an array element we're skipping
-			if d, ok := tok.(json.Delim); ok {
-				switch d {
-				case '{', '[':
-					depth++
-				case '}', ']':
-					depth--
-					if depth == skipDepth {
-						skipDepth = -1
-					}
+		// skipping suppresses OUTPUT only. The container stack is maintained
+		// identically on both paths, so depth and stack can never disagree.
+		skipping := skipDepth >= 0 && depth > skipDepth
+
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{', '[':
+				// Record the array's own depth so the "first element" summary
+				// can print, then suppress anything deeper than one level.
+				if !skipping && d == '[' {
+					skipDepth = depth + 1
+				}
+				if !skipping && d == '{' && depth == 0 {
+					sb.WriteString(fmt.Sprintf("L%d: {\n", line))
+				}
+				depth++
+				stack = append(stack, jsonFrame{kind: byte(d), startLine: line})
+				if !skipping {
+					inKey = d == '{'
+				}
+			case '}', ']':
+				// audit fix F: only pop the frame this delimiter actually
+				// closes. A stray or mismatched closer in non-JSON tool output
+				// must be ignored, not silently corrupt the stack.
+				n := len(stack)
+				if n == 0 || closerOf(stack[n-1].kind) != byte(d) {
+					continue
+				}
+				f := stack[n-1]
+				stack = stack[:n-1]
+				if !skipping && d == ']' && f.count > 0 {
+					indent := strings.Repeat("  ", depth-1)
+					sb.WriteString(fmt.Sprintf("L%d-L%d: %s[array: %d elements]\n", f.startLine, line, indent, f.count))
+				}
+				depth--
+				if skipDepth >= 0 && depth <= skipDepth {
+					skipDepth = -1
+				}
+				if !skipping {
+					inKey = false
 				}
 			}
 			continue
 		}
 
+		if skipping || depth == 0 || len(stack) == 0 {
+			continue
+		}
+		top := &stack[len(stack)-1]
+		indent := strings.Repeat("  ", depth-1)
+
 		switch t := tok.(type) {
-		case json.Delim:
-			inKey = false
-			switch t {
-			case '{':
-				if depth == 0 {
-					sb.WriteString(fmt.Sprintf("L%d: {\n", line))
-				}
-				depth++
-				ctx = append(ctx, 'o')
-				inKey = true
-			case '}':
-				depth--
-				// audit fix F: guard against unmatched '}' in non-JSON output.
-				if len(ctx) > 0 {
-					ctx = ctx[:len(ctx)-1]
-				}
-				inKey = false
-			case '[':
-				depth++
-				ctx = append(ctx, 'a')
-				arrayCount = append(arrayCount, 0)
-				arrayStartLine = append(arrayStartLine, line)
-				skipDepth = depth // skip after first element
-			case ']':
-				// audit fix F: guard against unmatched ']' in non-JSON tool output.
-				// Without this, an empty arrayCount/arrayStartLine panics with
-				// index out of range. The skeletonizer processes arbitrary tool
-				// output which may contain stray brackets.
-				if len(arrayCount) == 0 {
-					// Unmatched ']' — skip to avoid panic; depth/ctx unchanged.
-					continue
-				}
-				count := arrayCount[len(arrayCount)-1]
-				startLine := arrayStartLine[len(arrayStartLine)-1]
-				indent := strings.Repeat("  ", depth-1)
-				if count > 0 {
-					sb.WriteString(fmt.Sprintf("L%d-L%d: %s[array: %d elements]\n", startLine, line, indent, count))
-				}
-				depth--
-				ctx = ctx[:len(ctx)-1]
-				arrayCount = arrayCount[:len(arrayCount)-1]
-				arrayStartLine = arrayStartLine[:len(arrayStartLine)-1]
-				if skipDepth == depth+1 {
-					skipDepth = -1
-				}
-			}
 		case string:
-			if depth > 0 && len(ctx) > 0 && ctx[len(ctx)-1] == 'o' {
+			if top.kind == '{' {
 				if inKey {
-					indent := strings.Repeat("  ", depth-1)
 					sb.WriteString(fmt.Sprintf("L%d: %s\"%s\":", line, indent, t))
 					inKey = false
 				} else {
 					sb.WriteString(" string\n")
 					inKey = true
 				}
-			} else if depth > 0 && len(ctx) > 0 && ctx[len(ctx)-1] == 'a' {
-				arrayCount[len(arrayCount)-1]++
-				if arrayCount[len(arrayCount)-1] == 1 {
-					indent := strings.Repeat("  ", depth-1)
+			} else {
+				top.count++
+				if top.count == 1 {
 					sb.WriteString(fmt.Sprintf("L%d: %s(first element)\n", line, indent))
 				}
 			}
 		case float64:
-			if depth > 0 && len(ctx) > 0 && ctx[len(ctx)-1] == 'o' && !inKey {
+			if top.kind == '{' && !inKey {
 				sb.WriteString(" number\n")
 				inKey = true
 			}
 		case bool:
-			if depth > 0 && len(ctx) > 0 && ctx[len(ctx)-1] == 'o' && !inKey {
+			if top.kind == '{' && !inKey {
 				sb.WriteString(" bool\n")
 				inKey = true
 			}
 		case nil:
-			if depth > 0 && len(ctx) > 0 && ctx[len(ctx)-1] == 'o' && !inKey {
+			if top.kind == '{' && !inKey {
 				sb.WriteString(" null\n")
 				inKey = true
 			}

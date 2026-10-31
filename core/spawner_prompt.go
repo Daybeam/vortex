@@ -105,6 +105,7 @@ func (s *Spawner) buildSystemPrompt(
 	if s.archive != nil {
 		s.pa.SetArchive(s.archive)
 	}
+	s.pa.SetOutputBase(s.outputBase) // D4: enable workspace path injection
 	s.pa.SetRecentInteractions(trace)
 	return s.pa.Build(ctx, hub, role, skillIDs, capability, providerCfg, toolConstraints, mergedContext, fewShots, isolation, precedents, taskText, latestError, taskID)
 }
