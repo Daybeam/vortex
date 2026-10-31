@@ -312,6 +312,13 @@ func (s *DirectedEngine) plannerFirstEnabled() bool {
 	}
 	s.registry.Mu.RLock()
 	defer s.registry.Mu.RUnlock()
+	// D5 fix (DELEGATION_HANDOVER_REDESIGN.md §4.5): planner-first self-locks
+	// in delegation mode — the planner spawn gets short-circuited by
+	// tryDelegationMode, returns a prompt envelope instead of a plan, and
+	// silently falls back to caller-provided steps after a wasted retry.
+	if s.registry.System.DelegationMode {
+		return false
+	}
 	return s.registry.System.EnablePlannerFirst
 }
 

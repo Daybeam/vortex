@@ -184,70 +184,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		s.Mu.RUnlock()
 
 		// Resolve InputMapping (ADDED 2026-08-17)
-		resolvedInputs := make(map[string]any)
-		if len(step.InputMapping) > 0 {
-			// Phase 1: Under RLock, collect needed step IDs for DB prefetch
-			s.Mu.RLock()
-			neededSteps := make(map[string]bool)
-			for _, path := range step.InputMapping {
-				parts := strings.SplitN(path, ".", 2)
-				if len(parts) == 2 {
-					neededSteps[parts[0]] = true
-				}
-			}
-			s.Mu.RUnlock()
-
-			// Phase 2: Outside lock, pre-fetch step results from DB
-			// (audit P-H1: was N+1 queries — now batched via GetBatch)
-			neededStepIDs := make([]string, 0, len(neededSteps))
-			for sid := range neededSteps {
-				neededStepIDs = append(neededStepIDs, sid)
-			}
-			stepResults, _ := s.taskStore.GetBatch(ctx, taskID, neededStepIDs) // audit P-H1: single batch query replaces N
-
-			// P-H7 fix: pre-compute payload sizes outside RLock to avoid
-			// json.Marshal allocations in the hot loop under lock.
-			type mappingEntry struct {
-				arg         string
-				val         any
-				sourceStep  string
-				edgeType    string
-				payloadSize int64
-			}
-			var mappings []mappingEntry
-			for arg, path := range step.InputMapping {
-				parts := strings.SplitN(path, ".", 2)
-				if len(parts) == 2 {
-					if res, ok := stepResults[parts[0]]; ok && res.Data != nil {
-						if m, ok := res.Data.(map[string]any); ok {
-							val := m[parts[1]]
-							payloadSize := estimateJSONSize(val) // audit H-4: no allocation
-							mappings = append(mappings, mappingEntry{arg, val, parts[0], "mapping", payloadSize})
-						}
-					}
-				}
-			}
-
-			// Phase 3: Under RLock, set resolvedInputs + record coordination edges
-			s.Mu.RLock()
-			for _, me := range mappings {
-				resolvedInputs[me.arg] = me.val
-				s.recordCoordinationEdge(graph, me.sourceStep, step.ID, me.edgeType, me.payloadSize)
-			}
-			// GlobalWorkspace reads need the lock; sizes computed here are
-			// for less-common shared-vfs edges (not the hot mapping path).
-			for arg, path := range step.InputMapping {
-				parts := strings.SplitN(path, ".", 2)
-				if len(parts) != 2 {
-					if val, ok := graph.GlobalWorkspace[path]; ok {
-						resolvedInputs[arg] = val
-						payloadSize := estimateJSONSize(val) // audit H-4: no allocation
-						s.recordCoordinationEdge(graph, "global_workspace", step.ID, "shared_vfs", payloadSize)
-					}
-				}
-			}
-			s.Mu.RUnlock()
-		}
+		resolvedInputs := s.resolveStepInputs(ctx, graph, step, taskID)
 
 		// ── Coordination Edge for ContextRefs (arXiv:2608.16801) ──
 		if len(step.ContextRefs) > 0 {
@@ -303,6 +240,38 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					taskText = fmt.Sprintf("%s\n\nUPSTREAM PARTIAL OUTPUT (step %s was intercepted by Sieve Guardian; verify or build on this):\n%s", taskText, depID, sanitized)
 				}
 				break
+			}
+		}
+		// Auto-inject upstream step results as text (Issue 2-B):
+		// Steps with DependsOn but no explicit InputMapping receive zero
+		// upstream results in their prompt — the model doesn't know what
+		// the predecessors produced and falls back to calling execute_code
+		// to fetch them, causing non-convergence. Inject completed upstream
+		// results as a text block so the model can use them directly.
+		if len(step.DependsOn) > 0 && len(step.InputMapping) == 0 {
+			upstreamIDs := make([]string, 0, len(step.DependsOn))
+			for _, depID := range step.DependsOn {
+				if dep, ok := graph.Steps[depID]; ok && dep.Status == schemas.StepOK {
+					upstreamIDs = append(upstreamIDs, depID)
+				}
+			}
+			if len(upstreamIDs) > 0 {
+				upResults, _ := s.taskStore.GetBatch(ctx, taskID, upstreamIDs)
+				var upstreamBlock string
+				for _, depID := range upstreamIDs {
+					res := upResults[depID]
+					if res == nil || res.Data == nil {
+						continue
+					}
+					summary := fmt.Sprintf("%v", res.Data)
+					if r := []rune(summary); len(r) > 4000 {
+						summary = string(r[:4000]) + "...(truncated)"
+					}
+					upstreamBlock += fmt.Sprintf("\n  %s: %s", depID, summary)
+				}
+				if upstreamBlock != "" {
+					taskText = fmt.Sprintf("%s\n\nUPSTREAM RESULTS (from completed predecessor steps — use these directly, do not re-fetch):%s", taskText, upstreamBlock)
+				}
 			}
 		}
 		// P-2.1 Step 2: GraphMu removed; DecisionHistory is now protected by
@@ -584,6 +553,13 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			}
 
 			step.RetryCount++
+			// Fix: check ctx cancellation BEFORE logging EventStepRetrying.
+			// Without this, cancel_task can produce a misleading step_retrying
+			// log entry even though the retry never executes (the select below
+			// would immediately fire ctx.Done and return).
+			if ctx.Err() != nil {
+				return
+			}
 			s.logger.Log(EventStepRetrying, taskID, step.ID, map[string]any{
 				"attempt": step.RetryCount, "error": err.Error(),
 			})
@@ -669,14 +645,17 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		if step.Status == schemas.StepOK && step.ExitCriteria != "" {
 			if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
 				if step.AutoRefineCount < step.MaxAutoRefine {
-					step.AutoRefineCount++
-					s.Mu.Lock()
-					step.Status = schemas.StepPending // audit C-3: protect 2-word string write
-					step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Retrying...", failType, reason))
-					s.Mu.Unlock()
-					s.logger.Log(EventStepRetrying, taskID, step.ID, map[string]any{
-						"reason": "exit_criteria_fail", "details": reason, "refine_attempt": step.AutoRefineCount, "fail_type": failType,
-					})
+				step.AutoRefineCount++
+				s.Mu.Lock()
+				step.Status = schemas.StepPending // audit C-3: protect 2-word string write
+				step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Retrying...", failType, reason))
+				s.Mu.Unlock()
+				if ctx.Err() != nil {
+					return
+				}
+				s.logger.Log(EventStepRetrying, taskID, step.ID, map[string]any{
+					"reason": "exit_criteria_fail", "details": reason, "refine_attempt": step.AutoRefineCount, "fail_type": failType,
+				})
 
 					// Specialized recovery prompts (Branching logic)
 					recoveryAdvice := ""
@@ -748,4 +727,78 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 	}
 
 	s.maybeBlock(graph, step)
+}
+
+// resolveStepInputs resolves step.InputMapping into the argument values handed
+// to the spawner and records a coordination edge per mapped value. Paths that
+// are not "<step>.<field>" pairs are read from graph.GlobalWorkspace instead.
+// DB reads happen outside s.Mu so the batch query cannot stall parallel steps;
+// only the coordination-edge bookkeeping runs under the read lock.
+func (s *DirectedEngine) resolveStepInputs(ctx context.Context, graph *schemas.TaskGraph, step *schemas.Step, taskID string) map[string]any {
+	resolvedInputs := make(map[string]any)
+	if len(step.InputMapping) == 0 {
+		return resolvedInputs
+	}
+	// Phase 1: Under RLock, collect needed step IDs for DB prefetch
+	s.Mu.RLock()
+	neededSteps := make(map[string]bool)
+	for _, path := range step.InputMapping {
+		parts := strings.SplitN(path, ".", 2)
+		if len(parts) == 2 {
+			neededSteps[parts[0]] = true
+		}
+	}
+	s.Mu.RUnlock()
+
+	// Phase 2: Outside lock, pre-fetch step results from DB
+	// (audit P-H1: was N+1 queries — now batched via GetBatch)
+	neededStepIDs := make([]string, 0, len(neededSteps))
+	for sid := range neededSteps {
+		neededStepIDs = append(neededStepIDs, sid)
+	}
+	stepResults, _ := s.taskStore.GetBatch(ctx, taskID, neededStepIDs) // audit P-H1: single batch query replaces N
+
+	// P-H7 fix: pre-compute payload sizes outside RLock to avoid
+	// json.Marshal allocations in the hot loop under lock.
+	type mappingEntry struct {
+		arg         string
+		val         any
+		sourceStep  string
+		edgeType    string
+		payloadSize int64
+	}
+	var mappings []mappingEntry
+	for arg, path := range step.InputMapping {
+		parts := strings.SplitN(path, ".", 2)
+		if len(parts) == 2 {
+			if res, ok := stepResults[parts[0]]; ok && res.Data != nil {
+				if m, ok := res.Data.(map[string]any); ok {
+					val := m[parts[1]]
+					payloadSize := estimateJSONSize(val) // audit H-4: no allocation
+					mappings = append(mappings, mappingEntry{arg, val, parts[0], "mapping", payloadSize})
+				}
+			}
+		}
+	}
+
+	// Phase 3: Under RLock, set resolvedInputs + record coordination edges
+	s.Mu.RLock()
+	for _, me := range mappings {
+		resolvedInputs[me.arg] = me.val
+		s.recordCoordinationEdge(graph, me.sourceStep, step.ID, me.edgeType, me.payloadSize)
+	}
+	// GlobalWorkspace reads need the lock; sizes computed here are
+	// for less-common shared-vfs edges (not the hot mapping path).
+	for arg, path := range step.InputMapping {
+		parts := strings.SplitN(path, ".", 2)
+		if len(parts) != 2 {
+			if val, ok := graph.GlobalWorkspace[path]; ok {
+				resolvedInputs[arg] = val
+				payloadSize := estimateJSONSize(val) // audit H-4: no allocation
+				s.recordCoordinationEdge(graph, "global_workspace", step.ID, "shared_vfs", payloadSize)
+			}
+		}
+	}
+	s.Mu.RUnlock()
+	return resolvedInputs
 }

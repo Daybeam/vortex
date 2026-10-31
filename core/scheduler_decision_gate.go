@@ -202,91 +202,114 @@ func (s *DirectedEngine) addDecision(
 		"type":        dtype,
 		"options":     options,
 	})
-	s.publishEvent(graph.TaskID, step.ID, EventDecisionRequired, map[string]any{
+	// D7 fix (DELEGATION_HANDOVER_REDESIGN.md §4.7): include prompt (truncated
+	// to 8KB) and workspace in the event payload so webhook receivers know
+	// WHAT to execute, not just THAT a decision exists.
+	eventPayload := map[string]any{
 		"decision_id": dec.ID,
 		"type":        string(dtype),
 		"options":     options,
-	})
+	}
+	if prompt, ok := ctx["prompt"]; ok {
+		if promptMap, ok := prompt.(map[string]any); ok {
+			// D7 §10.2: truncate field values before marshaling, not marshaled
+			// bytes, to avoid severing UTF-8 or cutting mid-JSON.
+			eventPayload["prompt"] = truncatePromptForEvent(promptMap, 8192)
+			if ws, ok := promptMap["workspace"]; ok {
+				eventPayload["workspace"] = ws
+			}
+		}
+	}
+	s.publishEvent(graph.TaskID, step.ID, EventDecisionRequired, eventPayload)
 
-	// E5 fix (2026-10-02): NonInteractive auto-resolution.
-	// In unattended mode (CI / batch eval), a decision that would block forever
-	// is auto-resolved, using the SAME SubmitDecision path an external caller
-	// uses (reuses pending-removal + run() restart). Runs in a goroutine so the
-	// current step goroutine can unwind first — SubmitDecision cancels the run
-	// ctx, which would otherwise abort this step mid-flight. Config-gated; default off.
-	//
-	// Two strategies:
-	//   delegate    — DecisionDeciderRole is set: spawn that role to evaluate
-	//                 the decision context and choose. Falls back to conservative
-	//                 if the decider errors or returns an invalid choice.
-	//   conservative — no decider role: use defaultNonInteractiveChoice (hardcoded
-	//                  safe defaults). Guaranteed to terminate.
-	//
-	// #14 (ADDED 2026-10-10): RiskTier-based rate limiting.
-	// - RiskTierCritical (browser/payment/deploy) → never auto-resolve.
-	// - Non-critical → 30s rate limit per step; if same step had a decision
-	//   within 30s, skip auto-resolution (let maxTurns exhaust naturally).
-	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.3.
-	if s.registry != nil && s.registry.System.NonInteractive {
-		// #14: Critical tier never auto-resolves — unless explicitly overridden.
-		tier, _ := schemas.DetermineRiskTier(step.Task, step.AdditionalMCPs)
-		if tier == schemas.RiskTierCritical && !s.registry.System.AllowCriticalAutoResolve {
-			s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
-				"decision_id": dec.ID,
-				"skipped":     "risk_tier_critical",
-			})
-			return
-		}
-		if tier == schemas.RiskTierCritical {
-			// Override is on — proceeding despite critical tier.
-			s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
-				"decision_id": dec.ID,
-				"override":    "allow_critical_auto_resolve",
-				"tier":        string(tier),
-			})
-		}
+	// E5 fix (2026-10-02): NonInteractive auto-resolution. The full strategy
+	// and risk-tier rationale lives on maybeAutoResolveNonInteractive, which
+	// this call defers to.
+	s.maybeAutoResolveNonInteractive(graph, step, dec, dtype, ctx, options)
+}
 
-		// #14: Rate limit non-critical decisions — 30s per step.
-		rlKey := graph.TaskID + ":" + step.ID
-		s.recentDecisionsMu.Lock()
-		if last, ok := s.recentDecisions[rlKey]; ok && time.Since(last) < 30*time.Second {
-			s.recentDecisionsMu.Unlock()
-			s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
-				"decision_id": dec.ID,
-				"skipped":     "rate_limited",
-			})
-			return
-		}
-		s.recentDecisions[rlKey] = time.Now()
-		s.recentDecisionsMu.Unlock()
-		taskID, decID := graph.TaskID, dec.ID
-		// Captured OUTSIDE the goroutine: the decider must run as the tier of the
-		// task that owns the decision. Reading graph.SubmitterIsAdmin inside the
-		// closure would let a later mutation change it mid-flight, and the whole
-		// point of this value is that the decider is an INTERNAL sub-spawn of
-		// this task — not a fresh public caller (2026-10-26 root cause).
-		deciderSubmitterIsAdmin := graph.SubmitterIsAdmin
-		deciderOwnerID := graph.OwnerID // inherit, do not default (2026-10-27 OAUTH §8.1)
-		deciderRole := s.registry.System.DecisionDeciderRole
-		s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
-			"decision_id":  decID,
-			"type":         string(dtype),
-			"options":      options,
-			"decider_role": deciderRole,
+// maybeAutoResolveNonInteractive implements E5: in unattended mode (CI / batch
+// eval), a decision that would block forever is auto-resolved, using the SAME
+// SubmitDecision path an external caller uses (reuses pending-removal + run()
+// restart). Runs in a goroutine so the current step goroutine can unwind first —
+// SubmitDecision cancels the run ctx, which would otherwise abort this step
+// mid-flight. Config-gated; default off.
+//
+// Two strategies:
+//   - delegate    — DecisionDeciderRole is set: spawn that role to evaluate
+//     the decision context and choose. Falls back to conservative
+//     if the decider errors or returns an invalid choice.
+//   - conservative — no decider role: use defaultNonInteractiveChoice (hardcoded
+//     safe defaults). Guaranteed to terminate.
+//
+// #14 (ADDED 2026-10-10): RiskTier-based rate limiting.
+//   - RiskTierCritical (browser/payment/deploy) → never auto-resolve.
+//   - Non-critical → 30s rate limit per step; if same step had a decision
+//     within 30s, skip auto-resolution (let maxTurns exhaust naturally).
+//
+// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.3.
+func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph, step *schemas.Step, dec *schemas.Decision, dtype schemas.DecisionType, ctx map[string]any, options []string) {
+	if s.registry == nil || !s.registry.System.NonInteractive {
+		return
+	}
+	// #14: Critical tier never auto-resolves — unless explicitly overridden.
+	tier, _ := schemas.DetermineRiskTier(step.Task, step.AdditionalMCPs)
+	if tier == schemas.RiskTierCritical && !s.registry.System.AllowCriticalAutoResolve {
+		s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+			"decision_id": dec.ID,
+			"skipped":     "risk_tier_critical",
 		})
-		s.goBackground(func() {
-			choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin, deciderOwnerID)
-			if choice == "" {
-				return // must not auto-resolve (e.g. human_approval_required)
-			}
-			if err := s.SubmitDecision(taskID, decID, choice); err != nil {
-				s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
-					"decision_id":        decID,
-					"auto_resolve_error": err.Error(),
-				})
-			}
+		return
+	}
+	if tier == schemas.RiskTierCritical {
+		// Override is on — proceeding despite critical tier.
+		s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+			"decision_id": dec.ID,
+			"override":    "allow_critical_auto_resolve",
+			"tier":        string(tier),
 		})
 	}
+
+	// #14: Rate limit non-critical decisions — 30s per step.
+	rlKey := graph.TaskID + ":" + step.ID
+	s.recentDecisionsMu.Lock()
+	if last, ok := s.recentDecisions[rlKey]; ok && time.Since(last) < 30*time.Second {
+		s.recentDecisionsMu.Unlock()
+		s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+			"decision_id": dec.ID,
+			"skipped":     "rate_limited",
+		})
+		return
+	}
+	s.recentDecisions[rlKey] = time.Now()
+	s.recentDecisionsMu.Unlock()
+	taskID, decID := graph.TaskID, dec.ID
+	// Captured OUTSIDE the goroutine: the decider must run as the tier of the
+	// task that owns the decision. Reading graph.SubmitterIsAdmin inside the
+	// closure would let a later mutation change it mid-flight, and the whole
+	// point of this value is that the decider is an INTERNAL sub-spawn of
+	// this task — not a fresh public caller (2026-10-26 root cause).
+	deciderSubmitterIsAdmin := graph.SubmitterIsAdmin
+	deciderOwnerID := graph.OwnerID // inherit, do not default (2026-10-27 OAUTH §8.1)
+	deciderRole := s.registry.System.DecisionDeciderRole
+	s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
+		"decision_id":  decID,
+		"type":         string(dtype),
+		"options":      options,
+		"decider_role": deciderRole,
+	})
+	s.goBackground(func() {
+		choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin, deciderOwnerID)
+		if choice == "" {
+			return // must not auto-resolve (e.g. human_approval_required)
+		}
+		if err := s.SubmitDecision(taskID, decID, choice); err != nil {
+			s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
+				"decision_id":        decID,
+				"auto_resolve_error": err.Error(),
+			})
+		}
+	})
 }
 
 // resolveNonInteractiveDecision picks a choice for a blocked decision in
@@ -770,4 +793,60 @@ func plannerResultText(res *SpawnResult) string {
 		}
 	}
 	return truncateForLog(fmt.Sprintf("%v", res.Output.Result), 20000)
+}
+
+// truncatePromptForEvent truncates a prompt map's string values so the
+// marshaled JSON fits within maxBytes. Unlike cutting the marshaled JSON
+// string by bytes (which can sever UTF-8 multi-byte characters and produce
+// invalid JSON), this truncates individual string values at rune boundaries
+// BEFORE marshaling, guaranteeing valid UTF-8 and valid JSON.
+//
+// D7 truncation fix (DELEGATION_HANDOVER_REDESIGN.md §10.2).
+func truncatePromptForEvent(m map[string]any, maxBytes int) string {
+	// Fast path: if the full marshal fits, no truncation needed.
+	if b, err := json.Marshal(m); err == nil && len(b) <= maxBytes {
+		return string(b)
+	}
+	// Truncate string values at rune boundaries, progressively reducing
+	// the per-field limit until the marshaled result fits.
+	for maxFieldRunes := 4096; maxFieldRunes >= 64; maxFieldRunes /= 2 {
+		truncated := truncateMapStrings(m, maxFieldRunes)
+		if b, err := json.Marshal(truncated); err == nil && len(b) <= maxBytes {
+			return string(b)
+		}
+	}
+	// Fallback: marshal a minimal summary so receivers always get valid JSON.
+	summary := map[string]any{"_truncated": true}
+	for k := range m {
+		summary[k] = "(truncated)"
+	}
+	b, _ := json.Marshal(summary)
+	return string(b)
+}
+
+// truncateMapStrings recursively walks a map/slice/string value and truncates
+// all string values to maxRunes runes. Non-string scalars are passed through.
+func truncateMapStrings(v any, maxRunes int) any {
+	switch val := v.(type) {
+	case string:
+		r := []rune(val)
+		if len(r) <= maxRunes {
+			return val
+		}
+		return string(r[:maxRunes]) + "...(truncated)"
+	case map[string]any:
+		result := make(map[string]any, len(val))
+		for k, v2 := range val {
+			result[k] = truncateMapStrings(v2, maxRunes)
+		}
+		return result
+	case []any:
+		result := make([]any, len(val))
+		for i, v2 := range val {
+			result[i] = truncateMapStrings(v2, maxRunes)
+		}
+		return result
+	default:
+		return v
+	}
 }

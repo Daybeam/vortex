@@ -113,12 +113,15 @@ func TestScheduler_ProactiveRateLimiting(t *testing.T) {
 	// actively executing. With step-level decision gate granularity,
 	// GraphRunning + pending decisions is equivalent to the old GraphBlocked.
 	isDone := func(status map[string]any) bool {
+		// F4 (2026-10-30): the status dict now carries a plain string. Comparing
+		// it to the NAMED constants (schemas.GraphCompleted …) compiles but is
+		// always false — that is what made this test time out after the conversion.
 		st := status["status"]
-		if st == schemas.GraphCompleted || st == schemas.GraphFailed {
+		if st == string(schemas.GraphCompleted) || st == string(schemas.GraphFailed) {
 			return true
 		}
 		// GraphRunning with pending decisions = blocked by decision gate
-		if st == schemas.GraphRunning || st == schemas.GraphBlocked {
+		if st == string(schemas.GraphRunning) || st == string(schemas.GraphBlocked) {
 			if pds, ok := status["pending_decisions"]; ok {
 				if pdList, ok := pds.([]map[string]any); ok && len(pdList) > 0 {
 					return true
@@ -127,7 +130,7 @@ func TestScheduler_ProactiveRateLimiting(t *testing.T) {
 			// GraphBlocked (legacy) or GraphRunning without visible
 			// pending decisions in summary view — treat as done if
 			// status hasn't changed for a while (checked by caller).
-			if st == schemas.GraphBlocked {
+			if st == string(schemas.GraphBlocked) {
 				return true
 			}
 		}
