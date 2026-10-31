@@ -516,7 +516,7 @@ func TestEnforceBudget_ProtectedNeverDropped(t *testing.T) {
 	e := NewPromptBudgetEnforcer(nil)
 	protectedText := strings.Repeat("p ", 10000) // very large
 	blocks := []schemas.ContentBlock{
-		MarkProtected(schemas.ContentBlock{Text: protectedText}),
+		TagBlock(schemas.ContentBlock{Text: protectedText}, GovTierProtected),
 	}
 	// Tiny budget — but protected blocks are never dropped.
 	got := e.EnforceBudget(blocks, 10)
@@ -534,7 +534,7 @@ func TestEnforceBudget_TieredPipeline(t *testing.T) {
 	tier2Text := strings.Repeat("t2 ", 500)
 	tier1Text := strings.Repeat("t1 ", 500)
 	blocks := []schemas.ContentBlock{
-		MarkProtected(schemas.ContentBlock{Text: "protected"}),
+		TagBlock(schemas.ContentBlock{Text: "protected"}, GovTierProtected),
 		TagBlock(schemas.ContentBlock{Text: tier1Text}, GovTier1),
 		TagBlock(schemas.ContentBlock{Text: tier2Text}, GovTier2),
 		TagBlock(schemas.ContentBlock{Text: tier3Text}, GovTier3),
@@ -569,7 +569,7 @@ func TestEnforceBudget_CompressesTier1(t *testing.T) {
 	tier1Text := strings.Join(paragraphs, "\n\n")
 
 	blocks := []schemas.ContentBlock{
-		MarkProtected(schemas.ContentBlock{Text: "protected"}),
+		TagBlock(schemas.ContentBlock{Text: "protected"}, GovTierProtected),
 		TagBlock(schemas.ContentBlock{Text: tier1Text}, GovTier1),
 	}
 	// Budget requires compressing Tier 1.
@@ -582,7 +582,7 @@ func TestEnforceBudget_CompressesTier1(t *testing.T) {
 	t.Error("Tier 1 should have been compressed")
 }
 
-// ─── TagBlock / MarkProtected ────────────────────────────────────────────
+// ─── TagBlock ───────────────────────────────────────────────────────────
 
 func TestTagBlock(t *testing.T) {
 	block := schemas.ContentBlock{Text: "test"}
@@ -593,18 +593,6 @@ func TestTagBlock(t *testing.T) {
 	}
 	if tier != GovTier1 {
 		t.Errorf("TagBlock tier = %q, want %q", tier, GovTier1)
-	}
-}
-
-func TestMarkProtected(t *testing.T) {
-	block := schemas.ContentBlock{Text: "test"}
-	protected := MarkProtected(block)
-	tier, ok := protected.Metadata[GovernanceMarker].(string)
-	if !ok {
-		t.Fatal("MarkProtected should set GovernanceMarker in Metadata")
-	}
-	if tier != GovTierProtected {
-		t.Errorf("MarkProtected tier = %q, want %q", tier, GovTierProtected)
 	}
 }
 

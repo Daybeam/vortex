@@ -149,7 +149,7 @@ func TestActivateTopSkills_FiltersAndActivates(t *testing.T) {
 		{ID: "ext_c", Type: CandidateRole, Confidence: 0.95}, // not a skill
 	}
 
-	result := ActivateTopSkills(reg, candidates, 3)
+	result, skillDir := ActivateTopSkills(reg, candidates, 3)
 
 	if !strings.Contains(result, "Active Skills") {
 		t.Error("result should contain 'Active Skills' header")
@@ -162,6 +162,9 @@ func TestActivateTopSkills_FiltersAndActivates(t *testing.T) {
 	}
 	if !strings.Contains(result, "references/a.md") {
 		t.Error("result should contain skill A's manifest")
+	}
+	if skillDir != "/tmp/a" {
+		t.Errorf("expected primary skill dir /tmp/a, got %q", skillDir)
 	}
 }
 
@@ -180,7 +183,7 @@ func TestActivateTopSkills_RespectsTopN(t *testing.T) {
 		{ID: "ext_c", Type: CandidateSkill, Confidence: 0.7},
 	}
 
-	result := ActivateTopSkills(reg, candidates, 2)
+	result, _ := ActivateTopSkills(reg, candidates, 2)
 
 	// Should contain A and B but not C
 	if !strings.Contains(result, "Desc A") {
@@ -203,9 +206,12 @@ func TestActivateTopSkills_NoSkills_ReturnsEmpty(t *testing.T) {
 		{ID: "ext_x", Type: CandidateRole, Confidence: 0.9},
 	}
 
-	result := ActivateTopSkills(reg, candidates, 3)
+	result, skillDir := ActivateTopSkills(reg, candidates, 3)
 	if result != "" {
 		t.Errorf("expected empty string for no skill candidates, got %q", result)
+	}
+	if skillDir != "" {
+		t.Errorf("expected empty skill dir for no skill candidates, got %q", skillDir)
 	}
 }
 

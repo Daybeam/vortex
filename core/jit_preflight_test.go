@@ -179,30 +179,6 @@ func TestPreflightCheck_SafeCodePasses(t *testing.T) {
 	}
 }
 
-func TestCapabilityPreflight(t *testing.T) {
-	t.Parallel()
-	// Role allows js + lua, not python.
-	allowed := []string{"js", "lua"}
-	if err := CapabilityPreflight("js", allowed); err != nil {
-		t.Errorf("js should be allowed: %v", err)
-	}
-	if err := CapabilityPreflight("lua", allowed); err != nil {
-		t.Errorf("lua should be allowed: %v", err)
-	}
-	err := CapabilityPreflight("python", allowed)
-	if err == nil || !errors.Is(err, ErrCapabilityDenied) {
-		t.Errorf("python should be denied with ErrCapabilityDenied, got: %v", err)
-	}
-	// Normalization: "javascript" should match "js" in the allowed set.
-	if err := CapabilityPreflight("javascript", allowed); err != nil {
-		t.Errorf("javascript should normalize to js and be allowed: %v", err)
-	}
-	// Empty allowed set denies everything.
-	if err := CapabilityPreflight("js", nil); err == nil {
-		t.Error("empty allowed set should deny js")
-	}
-}
-
 func TestListRuntimeCapabilities(t *testing.T) {
 	t.Parallel()
 	caps := ListRuntimeCapabilities()

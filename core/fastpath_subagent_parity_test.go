@@ -53,10 +53,10 @@ func TestFastPath_PartialIsNotSuccess(t *testing.T) {
 	if s1 == nil {
 		t.Fatalf("step s1 missing: %#v", steps)
 	}
-	if s1["status"] != schemas.StepPartial {
+	if s1["status"] != string(schemas.StepPartial) {
 		t.Fatalf("fast-path partial must surface as StepPartial, got %v", s1["status"])
 	}
-	if out["status"] != schemas.GraphFailed {
+	if out["status"] != string(schemas.GraphFailed) {
 		t.Fatalf("a partial subagent result must fail the task (honest terminal), got status=%v", out["status"])
 	}
 
@@ -91,7 +91,7 @@ func TestFastPath_FailedIsNotSuccess(t *testing.T) {
 	if !ok {
 		t.Fatal("task not found")
 	}
-	if out["status"] == schemas.GraphCompleted {
+	if out["status"] == string(schemas.GraphCompleted) {
 		t.Fatalf("a failed subagent result must not complete the task, got %v", out["status"])
 	}
 	steps, _ := out["steps"].(map[string]any)
@@ -99,7 +99,7 @@ func TestFastPath_FailedIsNotSuccess(t *testing.T) {
 	if s1 == nil {
 		t.Fatalf("step s1 missing: %#v", steps)
 	}
-	if s1["status"] != schemas.StepFailed {
+	if s1["status"] != string(schemas.StepFailed) {
 		t.Fatalf("fast-path failed must surface as StepFailed, got %v", s1["status"])
 	}
 }
