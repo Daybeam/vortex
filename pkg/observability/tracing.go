@@ -107,26 +107,76 @@ func isSensitiveKey(k string) bool {
 	return sensitiveKeys[strings.ToLower(k)]
 }
 
+// maskSecret keeps a short prefix for debugging and masks the rest.
+func maskSecret(s string) string {
+	if len(s) > 4 {
+		return s[:4] + "****"
+	}
+	return "****"
+}
+
+// RedactValue redacts a JSON-shaped value. Maps and slices are walked
+// recursively: a credential nested in a list or in a map[string]string used to
+// pass through untouched (G10, 2026-10-31). Values of other types are returned
+// unchanged, so callers holding typed structs must normalize them through
+// encoding/json first (see pkg/telemetry.Exporter.Sync).
+func RedactValue(v any) any {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case string:
+		return Redact(t)
+	case map[string]any:
+		return RedactMap(t)
+	case map[string]string:
+		out := make(map[string]string, len(t))
+		for k, s := range t {
+			if isSensitiveKey(k) {
+				out[k] = maskSecret(s)
+			} else {
+				out[k] = Redact(s)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = RedactValue(e)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, s := range t {
+			out[i] = Redact(s)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(t))
+		for i, m := range t {
+			out[i] = RedactMap(m)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // RedactMap recursively redacts sensitive values in a map.
 func RedactMap(m map[string]any) map[string]any {
 	if m == nil {
 		return nil
 	}
-	out := make(map[string]any)
+	out := make(map[string]any, len(m))
 	for k, v := range m {
 		if isSensitiveKey(k) {
-			if s, ok := v.(string); ok && len(s) > 4 {
-				out[k] = s[:4] + "****"
+			if s, ok := v.(string); ok {
+				out[k] = maskSecret(s)
 			} else {
 				out[k] = "****"
 			}
-		} else if nm, ok := v.(map[string]any); ok {
-			out[k] = RedactMap(nm)
-		} else if s, ok := v.(string); ok {
-			out[k] = Redact(s)
-		} else {
-			out[k] = v
+			continue
 		}
+		out[k] = RedactValue(v)
 	}
 	return out
 }

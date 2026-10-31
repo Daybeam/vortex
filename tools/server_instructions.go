@@ -42,7 +42,7 @@ Decision Rules:
 Capability Awareness:
 The orchestrator itself does not provide domain-specific capabilities. It relies on the configured roles and MCP servers in the current environment (see orchestrator_submit_task description for the active list). If a required capability is missing, adapt your execution plan instead of assuming unsupported functionality.
 
-After submitting, use orchestrator_wait_task / orchestrator_get_task_status to check progress. If status becomes "blocked" with pending_decisions, call orchestrator_submit_decision (skip|abort|retry, or admin-only retry_with_skill:ID|create_skill) to unblock it.`
+After submitting, use orchestrator_wait_task / orchestrator_get_task_status to check progress. If pending_decisions > 0 (the task is waiting for your input; status may show "running" not "blocked"), call orchestrator_submit_decision (fulfill|skip|abort|retry, or admin-only retry_with_skill:ID|create_skill) to unblock it. Use view="full" to see decision prompts.`
 
 // ServerInstructionsPublic is the variant surfaced on the public/Tier1 MCP
 // server instance (VORTEX_PUBLIC_KEY). It intentionally omits any
@@ -73,7 +73,7 @@ Decision Rules:
 Capability Awareness:
 The orchestrator relies on the configured roles and MCP servers in the current environment (see orchestrator_submit_task for the active list). If a required capability is missing, adapt your execution plan instead of assuming unsupported functionality.
 
-After submitting, use orchestrator_wait_task / orchestrator_get_task_status to check progress. If status becomes "blocked", call orchestrator_submit_decision with choice "skip", "abort", or "retry" to move forward.`
+After submitting, use orchestrator_wait_task / orchestrator_get_task_status to check progress. If pending_decisions > 0 (the task is waiting for your input; status may show "running" not "blocked"), call orchestrator_submit_decision with choice "fulfill", "skip", "abort", or "retry" to move forward. Use view="full" to see decision prompts.`
 
 // ResolveServerInstructions returns the text that should be passed to
 // server.WithInstructions(...) for either the admin/Tier2 server (public =

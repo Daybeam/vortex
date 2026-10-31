@@ -32,6 +32,7 @@ const (
 	GraphFailed             GraphStatus = "failed"
 	GraphCancelled          GraphStatus = "cancelled"
 	GraphSuspended          GraphStatus = "suspended" // Control plane: human-initiated pause, resumable
+	GraphOrphaned           GraphStatus = "orphaned"  // Engine restart: task was running/blocked but no active process exists
 )
 
 // DecisionType categorises why a step was blocked.

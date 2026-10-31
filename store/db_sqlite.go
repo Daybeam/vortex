@@ -37,6 +37,7 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	db.SetMaxIdleConns(5)
 
 	if err := db.Ping(); err != nil {
+		db.Close() // audit MEDIUM-007: release the pool opened by sql.Open on the error path
 		return nil, fmt.Errorf("failed to ping sqlite db: %w", err)
 	}
 
