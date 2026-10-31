@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -83,12 +84,32 @@ type PromptAssembler struct {
 	// endpoint may read it concurrently with a spawn-time write.
 	profileMu   sync.Mutex
 	lastProfile *ContextProfile
+
+	// outputBase (ADDED 2026-10-30, D4 fix): the engine's output base
+	// directory, used to construct the absolute task output path in
+	// delegation mode prompts. Empty = not set (non-delegation path
+	// or test); the SHARED-dir text omits the path suffix.
+	// See DELEGATION_HANDOVER_REDESIGN.md §4.4.
+	// §10.3 fix: guarded by outputBaseMu — SetOutputBase writes from the
+	// spawner goroutine while Build reads. The value is constant across
+	// calls (set once at engine init), so the race is memory-only; the
+	// mutex prevents -race reports.
+	outputBaseMu sync.Mutex
+	outputBase   string
 }
 
 // SetArchive injects the ContextArchive for Path D (Regular Step Warm layer).
 // Nil-safe: when nil, the Archive query is skipped (zero behavior change).
 func (s *PromptAssembler) SetArchive(a *ContextArchive) {
 	s.archive = a
+}
+
+// SetOutputBase sets the engine's output base directory for D4 (delegation
+// workspace path injection). Empty = skip path suffix in SHARED-dir text.
+func (s *PromptAssembler) SetOutputBase(dir string) {
+	s.outputBaseMu.Lock()
+	s.outputBase = dir
+	s.outputBaseMu.Unlock()
 }
 
 // SetFoldEngine injects the FoldEngine for segment-based incremental fold.
@@ -434,65 +455,9 @@ func (s *PromptAssembler) Build(
 		}
 	}
 
-	// Inject Skill Prompts.
-	// Per §4.4, when multiple skills are loaded, use Progressive Disclosure
-	// (Trigger + one-line Description only). A single skill keeps its full
-	// prompt (no information loss when there's no contention).
-	var skillPart strings.Builder
-	loadedSkills := make([]SkillSummary, 0, len(skillIDs))
-	for _, id := range skillIDs {
-		if skill := hub.GetSkill(id); skill != nil {
-			loadedSkills = append(loadedSkills, SkillSummary{
-				ID:          skill.ID,
-				Name:        skill.Name,
-				Description: skill.Description,
-				Capability:  skill.Capability,
-			})
-		}
-	}
-	if len(loadedSkills) > 1 {
-		// Progressive disclosure: index-only form.
-		skillPart.WriteString(s.budgetEnforcer.ProgressiveDisclosureSkills(loadedSkills))
-	} else {
-		// Single skill (or zero): full prompt, no information loss.
-		for _, id := range skillIDs {
-			if skill := hub.GetSkill(id); skill != nil {
-				if skill.ExecutionMode == config.ExecutionModeDirectory {
-					// DirectorySkill: inject lightweight metadata, not full prompt.
-					// expandSkillsIfNecessary already expanded the skill into sub-steps;
-					// the LLM executes each step as a separate task and does not need
-					// the full declarative spec in the system prompt (avoids context bloat).
-					skillPart.WriteString(fmt.Sprintf("# Skill: %s (%s)\n", skill.Name, skill.ID))
-					skillPart.WriteString(fmt.Sprintf("Description: %s\n", skill.Description))
-					skillPart.WriteString("Status: [Directory-Mode] Executing multi-step declarative DAG. Refer to the current step task for detailed instructions.\n\n")
-				} else {
-					prompt, err := skill.GetPrompt(providerCfg.Model, providerCfg.Family)
-					if err != nil {
-						skillPart.WriteString(fmt.Sprintf("# Skill %s\n%v\n\n", id, err))
-					} else {
-						// M2 (2026-10-25): wrap Trial skill prompts in an untrusted_data
-						// fence so the model treats the content as unverified (injection
-						// defense for pending skills used via session_skills).
-						if skill.Trial {
-							prompt = fmt.Sprintf("<untrusted_data from=\"trial_skill\" reason=\"pending_verification\">\n%s\n</untrusted_data>", prompt)
-						}
-						skillPart.WriteString(prompt + "\n\n")
-					}
-				}
-			}
-		}
-	}
-	if skillPart.Len() > 0 {
-		// Skills are protected when single (full prompt), Tier 2 when
-		// progressive-disclosed (already minimal, but tag for budget accounting).
-		tier := GovTierProtected
-		if len(loadedSkills) > 1 {
-			tier = GovTier2
-		}
-		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-			Text: skillPart.String(),
-		}, tier, CategorySkills))
-	}
+	// Inject Skill Prompts. See buildSkillPromptBlocks for the progressive
+	// disclosure rules.
+	blocks = append(blocks, s.buildSkillPromptBlocks(hub, skillIDs, providerCfg)...)
 
 	// Inject Few-Shot Examples for tool calls.
 	// Tier 3 (trim first): few-shots are valuable but expendable under budget pressure.
@@ -603,6 +568,18 @@ func (s *PromptAssembler) Build(
 			case hasWrite:
 				constraintsPart.WriteString("This output directory is SHARED by every step of this task, so a later step can read what you write here. When your result is large and a later step only needs the conclusion, write the distilled version here instead of passing the whole thing through your answer.\n")
 			}
+			// D4 fix (DELEGATION_HANDOVER_REDESIGN.md §4.4): in delegation mode,
+			// append the absolute path so the host knows WHERE the shared output
+			// directory is. Without this, the prompt says "shared output
+			// directory" but never gives the path — the host cannot write/read.
+			if s.registry.System.DelegationMode {
+				s.outputBaseMu.Lock()
+				ob := s.outputBase
+				s.outputBaseMu.Unlock()
+				if ob != "" {
+					constraintsPart.WriteString(fmt.Sprintf("The absolute path is %q; write deliverables there so later steps can read them.\n", filepath.Join(ob, taskID)))
+				}
+			}
 		} else if corePol.restricted {
 			// Restricted to nothing: say so once, without a heading, so the model
 			// does not spend a turn looking for tools that were deliberately
@@ -704,6 +681,69 @@ func (s *PromptAssembler) Build(
 	s.setLastProfile(s.ComputeContextProfile(blocks, budgetTokens, reserveTokens, model, provider))
 
 	return blocks, nil
+}
+
+// buildSkillPromptBlocks renders the skill section of the system prompt.
+// Per §4.4, when multiple skills are loaded, use Progressive Disclosure
+// (Trigger + one-line Description only). A single skill keeps its full
+// prompt (no information loss when there's no contention).
+func (s *PromptAssembler) buildSkillPromptBlocks(hub *ContextHub, skillIDs []string, providerCfg *config.ProviderConfig) []schemas.ContentBlock {
+	var skillPart strings.Builder
+	loadedSkills := make([]SkillSummary, 0, len(skillIDs))
+	for _, id := range skillIDs {
+		if skill := hub.GetSkill(id); skill != nil {
+			loadedSkills = append(loadedSkills, SkillSummary{
+				ID:          skill.ID,
+				Name:        skill.Name,
+				Description: skill.Description,
+				Capability:  skill.Capability,
+			})
+		}
+	}
+	if len(loadedSkills) > 1 {
+		// Progressive disclosure: index-only form.
+		skillPart.WriteString(s.budgetEnforcer.ProgressiveDisclosureSkills(loadedSkills))
+	} else {
+		// Single skill (or zero): full prompt, no information loss.
+		for _, id := range skillIDs {
+			if skill := hub.GetSkill(id); skill != nil {
+				if skill.ExecutionMode == config.ExecutionModeDirectory {
+					// DirectorySkill: inject lightweight metadata, not full prompt.
+					// expandSkillsIfNecessary already expanded the skill into sub-steps;
+					// the LLM executes each step as a separate task and does not need
+					// the full declarative spec in the system prompt (avoids context bloat).
+					skillPart.WriteString(fmt.Sprintf("# Skill: %s (%s)\n", skill.Name, skill.ID))
+					skillPart.WriteString(fmt.Sprintf("Description: %s\n", skill.Description))
+					skillPart.WriteString("Status: [Directory-Mode] Executing multi-step declarative DAG. Refer to the current step task for detailed instructions.\n\n")
+				} else {
+					prompt, err := skill.GetPrompt(providerCfg.Model, providerCfg.Family)
+					if err != nil {
+						skillPart.WriteString(fmt.Sprintf("# Skill %s\n%v\n\n", id, err))
+					} else {
+						// M2 (2026-10-25): wrap Trial skill prompts in an untrusted_data
+						// fence so the model treats the content as unverified (injection
+						// defense for pending skills used via session_skills).
+						if skill.Trial {
+							prompt = fmt.Sprintf("<untrusted_data from=\"trial_skill\" reason=\"pending_verification\">\n%s\n</untrusted_data>", prompt)
+						}
+						skillPart.WriteString(prompt + "\n\n")
+					}
+				}
+			}
+		}
+	}
+	if skillPart.Len() == 0 {
+		return nil
+	}
+	// Skills are protected when single (full prompt), Tier 2 when
+	// progressive-disclosed (already minimal, but tag for budget accounting).
+	tier := GovTierProtected
+	if len(loadedSkills) > 1 {
+		tier = GovTier2
+	}
+	return []schemas.ContentBlock{TagBlockWithCategory(schemas.ContentBlock{
+		Text: skillPart.String(),
+	}, tier, CategorySkills)}
 }
 
 // resolveAntiPatternWarnings queries the ExperienceStore for structural

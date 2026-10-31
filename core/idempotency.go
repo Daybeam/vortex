@@ -35,21 +35,6 @@ func NewTurnIdempotencyContext() *TurnIdempotencyContext {
 	return &TurnIdempotencyContext{executed: make(map[string]bool)}
 }
 
-// HasExecuted checks if a tool call with the given key has been executed
-// in this turn.
-func (c *TurnIdempotencyContext) HasExecuted(key string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.executed[key]
-}
-
-// MarkExecuted records a tool call as executed for this turn.
-func (c *TurnIdempotencyContext) MarkExecuted(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.executed[key] = true
-}
-
 // CheckAndMark is a combined check-and-mark: if the key has already been
 // executed, returns true (skip). Otherwise marks it as executed and
 // returns false (proceed). This is the common usage pattern.

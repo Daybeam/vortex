@@ -45,6 +45,14 @@ const (
 	MarkerRepetitiveOutput = "[REPETITIVE_OUTPUT detected. You are producing repetitive output. Stop and provide a direct, concise answer to the user.]"
 	// MarkerNoTextResponse is the steer message for tool-only turns.
 	MarkerNoTextResponse = "[You have been making tool calls without producing a response for 3 turns. Provide a direct answer to the user now.]"
+	// MarkerRepeatedWriteFmt is the steer message for rewriting the same file
+	// over and over inside one turn. Format: %d=write index, %s=path.
+	// ADDED (2026-10-30, D7). 026 rewrote review_findings.json 11 times in a
+	// single turn with different `content` each time, so every signature-based
+	// guard missed it; see T2-STALL-RESUME §16.3.
+	MarkerRepeatedWriteFmt = "[REPEATED WRITE #%d to %s] Each write replaces the previous version of this file, " +
+		"so another full rewrite cannot add information. Read it back with read_file if you need to verify it, " +
+		"or change only what is actually wrong. If the file is correct, stop writing and answer the user directly.]"
 	// MarkerCompressedPlaceholder replaces compressed instruction body.
 	MarkerCompressedPlaceholder = "[... instruction body compressed for brevity ...]"
 	// MarkerHistoryCompressed replaces compressed conversation history.
@@ -81,10 +89,40 @@ const (
 	ChatHarnessDefaultIdentity = "You are a concise, helpful assistant in a standalone chat harness.\n"
 
 	// ChatHarnessToolsetDesc describes the available tools.
-	ChatHarnessToolsetDesc = "You have a small toolset: write_file, read_file, execute_code, delegate_to_orchestrator.\n"
+	ChatHarnessToolsetDesc = "You have a small toolset: write_file, read_file, execute_code, " +
+		"delegate_to_orchestrator, orchestrator_task_status.\n"
 
 	// ChatHarnessUsageGuidance instructs on tool usage.
 	ChatHarnessUsageGuidance = "Use tools when they help; answer directly otherwise. Do not call tools you do not need.\n"
+
+	// ChatHarnessWhenToDelegate is the POSITIVE half of the delegation guidance.
+	//
+	// Why it exists: the delegation section used to contain only prohibitions
+	// ("verify … first", "NEVER blindly delegate"). Measured consequence: in a
+	// 104-task benchmark the model delegated 0 times, and the string
+	// "delegat|subagent|orchestrat" appeared 0 times in 73 final answers — the
+	// tool never even entered the candidate set. A rule that only says when not
+	// to act is read as "do not act"; the alternative (execute_code) returns its
+	// output inline, so with no benefit stated delegate is strictly dominated.
+	// Keep this section ahead of the gate below.
+	ChatHarnessWhenToDelegate = "\n## WHEN TO DELEGATE\n" +
+		"delegate_to_orchestrator runs a full role-based orchestrator task with its own " +
+		"planning loop and subagents. It is the right tool — not a last resort — when ANY " +
+		"of these holds:\n" +
+		"- The request spans several files, sources, or sub-questions that each need their " +
+		"own investigation (\"reconcile A against B and C\", \"audit these 12 files\").\n" +
+		"- Answering needs several independent tool rounds whose intermediate results you " +
+		"would otherwise have to carry in this conversation.\n" +
+		"- The work needs a specialized role (research, analysis, writing) rather than a " +
+		"single script.\n" +
+		"- The work is long enough that the user would rather get the task id now and follow " +
+		"up than wait for one turn.\n" +
+		"Prefer execute_code for anything one script can finish — counting, parsing, " +
+		"rewriting a file. Prefer answering directly when you already know the answer.\n" +
+		"After delegating, end your reply with the state you have: the session is resumed " +
+		"automatically when the background task finishes, and the result is delivered then. " +
+		"If the answer cannot wait, call orchestrator_task_status with the returned task_id — " +
+		"once or twice, never in a loop.\n"
 
 	// ChatHarnessDelegatePrefix introduces the delegation readiness gate.
 	ChatHarnessDelegatePrefix = "Before calling delegate_to_orchestrator, you MUST verify the task is fully specified:\n"

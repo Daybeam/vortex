@@ -256,6 +256,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		if path == "" {
 			return "", fmt.Errorf("path is required")
 		}
+		path = ResolveActiveSkillPath(ctx, path)
 		fullPath, err := resolvePath(path)
 		if err != nil {
 			return "", err
@@ -280,6 +281,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		if path == "" {
 			return "", fmt.Errorf("path is required")
 		}
+		path = ResolveActiveSkillPath(ctx, path)
 		fullPath, err := resolveExistingPath(path)
 		if err != nil {
 			return "", err
@@ -293,23 +295,8 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 			return skeleton.FileSkeleton(data, filepath.Base(path)), nil
 		}
 		// Line-range reading: extract specific lines for batch-reading large files.
-		startLine, _ := args["start_line"].(float64)
-		endLine, _ := args["end_line"].(float64)
-		if startLine > 0 || endLine > 0 {
-			lines := strings.Split(string(data), "\n")
-			s := int(startLine)
-			if s < 1 {
-				s = 1
-			}
-			e := int(endLine)
-			if e <= 0 || e > len(lines) {
-				e = len(lines)
-			}
-			if s > len(lines) {
-				return fmt.Sprintf("[Line %d is beyond file end (total %d lines)]", s, len(lines)), nil
-			}
-			selected := strings.Join(lines[s-1:e], "\n")
-			return fmt.Sprintf("[Lines %d-%d of %d]\n%s", s, e, len(lines), selected), nil
+		if out, handled := readFileLineRange(args, data); handled {
+			return out, nil
 		}
 		gated := skeleton.AdaptiveOutputResult(data, path, "orchestrator")
 		return string(gated), nil
@@ -350,6 +337,30 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 	default:
 		return "", fmt.Errorf("unknown core tool: %s", name)
 	}
+}
+
+// readFileLineRange handles the optional start_line/end_line arguments of
+// read_file. handled=false means no range was requested.
+func readFileLineRange(args map[string]any, data []byte) (out string, handled bool) {
+	startLine, _ := args["start_line"].(float64)
+	endLine, _ := args["end_line"].(float64)
+	if startLine <= 0 && endLine <= 0 {
+		return "", false
+	}
+	lines := strings.Split(string(data), "\n")
+	s := int(startLine)
+	if s < 1 {
+		s = 1
+	}
+	e := int(endLine)
+	if e <= 0 || e > len(lines) {
+		e = len(lines)
+	}
+	if s > len(lines) {
+		return fmt.Sprintf("[Line %d is beyond file end (total %d lines)]", s, len(lines)), true
+	}
+	selected := strings.Join(lines[s-1:e], "\n")
+	return fmt.Sprintf("[Lines %d-%d of %d]\n%s", s, e, len(lines), selected), true
 }
 
 func safeJoin(base, rel string) (string, error) {
