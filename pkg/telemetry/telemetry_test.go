@@ -3,8 +3,10 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -76,6 +78,62 @@ func TestExporter_Sync(t *testing.T) {
 	p = patterns["test_pattern"].(map[string]any)
 	if p["source_text"] != "Secret business logic" {
 		t.Errorf("expected SourceText to be preserved, got %v", p["source_text"])
+	}
+}
+
+// TestExporter_Sync_RedactsTypedSnapshotValues is the regression test for G10
+// (2026-10-31): the snapshot is made of concrete structs, so the previous
+// RedactMap(snapshot) call saw no nested strings and sent SourceText and
+// StepSequence values verbatim. Sync now normalizes through JSON before
+// redacting.
+func TestExporter_Sync_RedactsTypedSnapshotValues(t *testing.T) {
+	ts := &mockTaskStore{}
+	sys := &config.SystemSettings{ConfidenceThreshold: 0.7}
+	exp, err := store.NewExperienceStore(t.TempDir(), ts, sys, nil, nil)
+	if err != nil {
+		t.Fatalf("NewExperienceStore: %v", err)
+	}
+
+	exp.Mu.Lock()
+	exp.TaskPatterns["leaky"] = store.TaskPattern{
+		ID:         "leaky",
+		SourceText: "call it with api_key=supersecret12345",
+		StepSequence: []map[string]any{
+			{"role_id": "r1", "password": "hunter2secret"},
+		},
+	}
+	exp.Mu.Unlock()
+
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := new(strings.Builder)
+		if _, err := io.Copy(raw, r.Body); err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		body = raw.String()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	exporter := NewExporter(config.TelemetryConfig{
+		Enabled:          true,
+		Endpoint:         server.URL,
+		DetailedFeedback: true,
+	}, exp)
+	if err := exporter.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	for _, leaked := range []string{"supersecret12345", "hunter2secret"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("secret %q leaked to telemetry: %s", leaked, body)
+		}
+	}
+	if !strings.Contains(body, "supe****") {
+		t.Errorf("expected the source_text secret to be masked, got %s", body)
+	}
+	if !strings.Contains(body, "hunt****") {
+		t.Errorf("expected the step_sequence secret to be masked, got %s", body)
 	}
 }
 

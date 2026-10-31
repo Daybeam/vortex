@@ -16,14 +16,16 @@ import (
 // is deliberately pure-Go and side-effect-free so it can run in tests without
 // a host runtime installed.
 //
-// Three checks, in order, each producing a distinct error class so callers
+// Two checks, in order, each producing a distinct error class so callers
 // can render actionable guidance (e.g. "install python3" vs "remove os.system
 // call") instead of a raw interpreter stack trace:
 //   1. language support + runtime availability  (ErrRuntimeNotAvailable)
 //   2. static syntax + safety lint              (ErrSafetyViolation)
-//   3. capability/role authorization            (ErrCapabilityDenied) — wired
-//      by the caller via CapabilityPreflight, since role context lives in
-//      tools/subsystems.go, not core.
+//
+// Role-level authorization for execute_code is handled by Core Tool Policy
+// (core_tool_policy.go via Role.CoreTools), not by this gate. A finer-grained
+// per-JIT-language authorization (Role.AllowedJITLanguages) was designed but
+// never needed — no config expresses "execute_code yes, python no".
 
 // Sentinel error classes. Use errors.Is to detect; wrap with %w to attach
 // context. Kept as values (not typed errors) because the preflight contract
@@ -31,7 +33,6 @@ import (
 var (
 	ErrRuntimeNotAvailable = fmt.Errorf("preflight: runtime not available")
 	ErrSafetyViolation     = fmt.Errorf("preflight: safety violation")
-	ErrCapabilityDenied    = fmt.Errorf("preflight: capability denied")
 	ErrUnknownLanguage     = fmt.Errorf("preflight: unsupported language")
 )
 
@@ -96,23 +97,6 @@ func PreflightCheckDetailed(lang, code string) PreflightResult {
 	}
 
 	return PreflightResult{OK: true, Lang: canonical, Capability: cap}
-}
-
-// CapabilityPreflight is gate 3 (role authorization). It is invoked by the
-// tools/subsystems.go action handlers, which own role/tier context, NOT by
-// core/jit.go (which has no role). Returns ErrCapabilityDenied wrapped with
-// the missing capability when the role is not authorized for lang.
-//
-// allowedLangs is the set of JIT languages the current role permits (e.g.
-// {"js","lua"} for a sandboxed role). An empty set denies everything.
-func CapabilityPreflight(lang string, allowedLangs []string) error {
-	canonical := normalizeLang(lang)
-	for _, allowed := range allowedLangs {
-		if normalizeLang(allowed) == canonical {
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: role not authorized for JIT language %q", ErrCapabilityDenied, canonical)
 }
 
 // ---- staticSafetyLint -------------------------------------------------------

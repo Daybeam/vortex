@@ -544,16 +544,11 @@ func (s *DirectedEngine) buildArtifactsLocked(graph *schemas.TaskGraph) []schema
 		s.hashCacheMu.Unlock()
 		if cached {
 			ac.SHA256 = hash
-		} else if f, err := os.Open(of.Path); err == nil {
-			h := sha256.New()
-			_, hashErr := io.Copy(h, f)
-			f.Close()
-			if hashErr != nil {
-				log.Printf("WARN: persistGraph: failed to hash artifact %s: %v", of.Path, hashErr)
-			} else {
-				ac.SHA256 = fmt.Sprintf("%x", h.Sum(nil))
-				s.recordHashCacheEntry(of.Path, ac.SHA256)
-			}
+		} else if sum, hashErr := sha256File(of.Path); hashErr == nil {
+			ac.SHA256 = sum
+			s.recordHashCacheEntry(of.Path, sum)
+		} else {
+			log.Printf("WARN: persistGraph: failed to hash artifact %s: %v", of.Path, hashErr)
 		}
 		// Provenance: source steps that fed this step
 		if owner, ok := graph.Steps[of.StepID]; ok {
@@ -566,6 +561,22 @@ func (s *DirectedEngine) buildArtifactsLocked(graph *schemas.TaskGraph) []schema
 		artifacts = append(artifacts, ac)
 	}
 	return artifacts
+}
+
+// sha256File returns the hex SHA-256 of the file at path. It closes the handle
+// before returning, so callers looping over many artifacts do not accumulate
+// open handles.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 // persistGraphLocked does the actual persist work. Caller MUST hold s.Mu.Lock().

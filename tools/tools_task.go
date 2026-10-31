@@ -314,84 +314,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		//
 		// Notifications are surfaced in the SubmitTask response so Main Agent
 		// knows exactly which steps got which risk tier.
-		var augmentedInputs []schemas.StepInput
-		for i := range inputs {
-			orig := inputs[i]
-			tier, rating := schemas.DetermineRiskTier(orig.Task, orig.AdditionalMCPs)
-			orig.RiskRating = rating
-			notif := map[string]any{
-				"step_id":      orig.ID,
-				"role_id":      orig.RoleID,
-				"risk_tier":    string(tier),
-				"risk_rating":  rating,
-				"task_preview": orig.Task[:min(100, len(orig.Task))],
-			}
-			switch tier {
-			case schemas.RiskTierCritical:
-				auditID := orig.ID + "_audit"
-				notif["appended_audit_step"] = auditID
-				augmentedInputs = append(augmentedInputs, orig)
-
-				// Determine if this step is a terminal asset step or an intermediate setup step
-				taskLower := strings.ToLower(orig.Task)
-				isTerminalStep := strings.Contains(taskLower, "download") ||
-					strings.Contains(taskLower, "save") ||
-					strings.Contains(taskLower, "export") ||
-					strings.Contains(taskLower, "asset")
-				isBrowserTask := strings.Contains(taskLower, "browser") ||
-					strings.Contains(taskLower, "navigate") ||
-					strings.Contains(taskLower, "url") ||
-					strings.Contains(taskLower, "page")
-
-				var auditTask string
-				if isTerminalStep {
-					auditTask = fmt.Sprintf(
-						"Review the output of step %q.\n\nUPSTREAM STEP TASK:\n%s\n\nYou are the terminal exit-gate auditor. This step is expected to produce real file assets. Evaluate whether the output contains direct asset handles or valid absolute file paths produced by actual tool executions. Reject placeholder URLs and unexecuted steps. Respond ONLY with 'PASS' or 'FAIL: <category>: <reason>'. Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA.",
-						orig.ID, orig.Task,
-					)
-				} else if isBrowserTask {
-					auditTask = fmt.Sprintf(
-						"Review the output of step %q.\n\nUPSTREAM STEP TASK:\n%s\n\nYou are the intermediate checkpoint auditor. This is a setup/navigation step. Evaluate whether the browser connection or navigation succeeded (e.g. connection status connected, correct title/URL). Do NOT fail this step merely because no final image file was downloaded yet. Respond ONLY with 'PASS' or 'FAIL: <category>: <reason>'. Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA.",
-						orig.ID, orig.Task,
-					)
-				} else {
-					auditTask = fmt.Sprintf(
-						"Review the output of step %q.\n\nUPSTREAM STEP TASK:\n%s\n\nYou are the intermediate checkpoint auditor. This is a setup/preparatory step. Evaluate whether the step succeeded and its outputs are valid for downstream consumption (e.g. correct data structure, required fields present, no errors). Do NOT fail this step merely because it does not produce final deliverables. Respond ONLY with 'PASS' or 'FAIL: <category>: <reason>'. Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA.",
-						orig.ID, orig.Task,
-					)
-				}
-
-				// C5 fix: filter write tools + deep copy to avoid mutation leak.
-				auditMCPs, auditAllowlists := core.AuditorAllowedTools(orig.AdditionalMCPs, orig.AdditionalToolAllowlists)
-
-				augmentedInputs = append(augmentedInputs, schemas.StepInput{
-					ID:        auditID,
-					RoleID:    "auditor",
-					DependsOn: []string{orig.ID},
-					Task:      auditTask,
-					// U5 (2026-10-18): auditor inherits parent step's MCP
-					// bindings so it can verify against the same data sources.
-					// Universal: an auditor without fact-checking tools is
-					// structurally biased toward PASS. See eval §3.2b(4).
-					//
-					// C5 fix (2026-10-18): filter write tools from the
-					// inherited allowlists — the auditor should only have
-					// read-only tools (it's verifying, not acting). Also
-					// deep-copy to avoid mutation leak (shared map/slice
-					// reference would let auditor mutations affect parent).
-					AdditionalMCPs:           auditMCPs,
-					AdditionalToolAllowlists: auditAllowlists,
-				})
-			case schemas.RiskTierModerate:
-				notif["hint"] = "consider adding exit_criteria for structured verification"
-				augmentedInputs = append(augmentedInputs, orig)
-			default: // Light
-				augmentedInputs = append(augmentedInputs, orig)
-			}
-			policyNotifications = append(policyNotifications, notif)
-			app.Logger.Log("EventAdaptiveVerifierPolicy", "", orig.ID, notif)
-		}
-		inputs = augmentedInputs
+		inputs, policyNotifications = applyAdaptiveVerifierPolicy(app, inputs)
 
 		// Surface non-mandatory reference hints for single-step, unplanned tasks
 		if len(inputs) == 1 && inputs[0].RoleID == "" && inputs[0].Task != "" {
@@ -445,12 +368,15 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		if app.Navigator != nil && len(inputs) > 0 && inputs[0].Task != "" {
 			tags := app.Navigator.ClassifyIntent(ctx, inputs[0].Task)
 			candidates := app.Navigator.Pipeline.Execute(ctx, inputs[0].Task, tags)
-			skillHint := core.ActivateTopSkills(app.Registry, candidates, 3)
+			skillHint, skillDir := core.ActivateTopSkills(app.Registry, candidates, 3)
 			if skillHint != "" {
 				inputs[0].Task += skillHint
 				app.Logger.Log("EventSkillsActivated", "", "", map[string]any{
 					"candidate_count": len(candidates),
 				})
+			}
+			if skillDir != "" {
+				ctx = context.WithValue(ctx, core.ActiveSkillDirKey{}, skillDir)
 			}
 		}
 
@@ -503,7 +429,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			hint = "multi_role"
 		}
 
-		return jsonOK(map[string]any{
+		resp := map[string]any{
 			"task_id":              id,
 			"complexity_hint":      hint,
 			"submitted_step_count": submittedStepCount,
@@ -515,7 +441,30 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			"added_step_count":  stepCount - submittedStepCount,
 			"auto_matched":      autoMatched,
 			"adaptive_verifier": policyNotifications,
-		})
+		}
+
+		// D1 fix (DELEGATION_HANDOVER_REDESIGN.md §4.1): in delegation mode,
+		// synchronously return the first batch of delegation envelopes so the
+		// host can execute without an extra get_task_status poll. This reduces
+		// the N-step handshake from 2N round-trips to N+1. All fields are
+		// additive — old hosts ignore "delegations" and behave as before.
+		if app.Registry != nil && app.Registry.System.DelegationMode {
+			// D5 fix: signal that planner-first was skipped due to delegation mode.
+			if app.Registry.System.EnablePlannerFirst {
+				resp["planner_skipped"] = "delegation_mode"
+			}
+			delegations, found := app.Scheduler.FirstDelegations(ctx, id, 2*time.Second)
+			if found {
+				resp["delegations"] = delegations
+				resp["next_action"] = "submit_decision"
+				resp["pending_decision_count"] = len(delegations)
+			} else {
+				resp["next_action"] = "get_task_status"
+				resp["view_hint"] = "full"
+			}
+		}
+
+		return jsonOK(resp)
 	})
 
 	app.register(s, mcp.NewTool("orchestrator_wait_task",
@@ -531,6 +480,17 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		status, ok := app.Scheduler.WaitTask(ctx, id, timeout)
 		if !ok {
 			return errResult("not found")
+		}
+		// D2 fix (DELEGATION_HANDOVER_REDESIGN.md §4.1): when the task has
+		// pending delegation decisions, auto-switch to full view so the host
+		// receives decision envelopes (prompts, options) without a separate
+		// get_task_status(view="full") round-trip. In delegation mode the
+		// graph status stays "running" (never "blocked"), so the host would
+		// otherwise have no signal to switch views.
+		if pdc, _ := status["pending_decision_count"].(int); pdc > 0 {
+			if full, ok := app.Scheduler.GetStatus(id, "full"); ok {
+				status = full
+			}
 		}
 		return jsonOK(status)
 	})
@@ -704,10 +664,26 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				"evidence_ref":  evidenceRef,
 			})
 		}
-		return jsonOK(map[string]any{
-			"ok":             true,
-			"human_approval": hasApproval,
-		})
+	// Build response. §4.2 (DELEGATION_HANDOVER_REDESIGN.md): after FulfillStep
+	// succeeds in delegation mode, synchronously return the next batch of
+	// delegation envelopes so the host can continue without an extra
+	// wait_task poll. This reduces N-step round-trips from 1+2N to N+1.
+	resp := map[string]any{
+		"ok":             true,
+		"human_approval": hasApproval,
+	}
+	if shouldRouteToFulfill(choice, output) && app.Registry != nil && app.Registry.System.DelegationMode {
+		delegations, found := app.Scheduler.FirstDelegations(ctx, tid, 500*time.Millisecond)
+		if found {
+			resp["delegations"] = delegations
+			resp["next_action"] = "submit_decision"
+			resp["pending_decision_count"] = len(delegations)
+		} else {
+			resp["next_action"] = "get_task_status"
+			resp["view_hint"] = "full"
+		}
+	}
+	return jsonOK(resp)
 	})
 
 	app.register(s, mcp.NewTool("orchestrator_get_logs",
@@ -732,4 +708,90 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		}
 		return jsonOK(events)
 	})
+}
+
+// applyAdaptiveVerifierPolicy appends an "auditor" step after every
+// Critical-tier step and returns the augmented inputs plus one notification per
+// submitted step. Extracted from registerTaskList so the tool registration body
+// stays within the size ratchet; behavior is unchanged.
+func applyAdaptiveVerifierPolicy(app *App, inputs []schemas.StepInput) ([]schemas.StepInput, []map[string]any) {
+	var augmentedInputs []schemas.StepInput
+	var policyNotifications []map[string]any
+	for i := range inputs {
+		orig := inputs[i]
+		tier, rating := schemas.DetermineRiskTier(orig.Task, orig.AdditionalMCPs)
+		orig.RiskRating = rating
+		notif := map[string]any{
+			"step_id":      orig.ID,
+			"role_id":      orig.RoleID,
+			"risk_tier":    string(tier),
+			"risk_rating":  rating,
+			"task_preview": orig.Task[:min(100, len(orig.Task))],
+		}
+		switch tier {
+		case schemas.RiskTierCritical:
+			auditID := orig.ID + "_audit"
+			notif["appended_audit_step"] = auditID
+			augmentedInputs = append(augmentedInputs, orig)
+
+			// Determine if this step is a terminal asset step or an intermediate setup step
+			taskLower := strings.ToLower(orig.Task)
+			isTerminalStep := strings.Contains(taskLower, "download") ||
+				strings.Contains(taskLower, "save") ||
+				strings.Contains(taskLower, "export") ||
+				strings.Contains(taskLower, "asset")
+			isBrowserTask := strings.Contains(taskLower, "browser") ||
+				strings.Contains(taskLower, "navigate") ||
+				strings.Contains(taskLower, "url") ||
+				strings.Contains(taskLower, "page")
+
+			var auditTask string
+			if isTerminalStep {
+				auditTask = fmt.Sprintf(
+					"Review the output of step %q.\n\nUPSTREAM STEP TASK:\n%s\n\nYou are the terminal exit-gate auditor. This step is expected to produce real file assets. Evaluate whether the output contains direct asset handles or valid absolute file paths produced by actual tool executions. Reject placeholder URLs and unexecuted steps. Respond ONLY with 'PASS' or 'FAIL: <category>: <reason>'. Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA.",
+					orig.ID, orig.Task,
+				)
+			} else if isBrowserTask {
+				auditTask = fmt.Sprintf(
+					"Review the output of step %q.\n\nUPSTREAM STEP TASK:\n%s\n\nYou are the intermediate checkpoint auditor. This is a setup/navigation step. Evaluate whether the browser connection or navigation succeeded (e.g. connection status connected, correct title/URL). Do NOT fail this step merely because no final image file was downloaded yet. Respond ONLY with 'PASS' or 'FAIL: <category>: <reason>'. Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA.",
+					orig.ID, orig.Task,
+				)
+			} else {
+				auditTask = fmt.Sprintf(
+					"Review the output of step %q.\n\nUPSTREAM STEP TASK:\n%s\n\nYou are the intermediate checkpoint auditor. This is a setup/preparatory step. Evaluate whether the step succeeded and its outputs are valid for downstream consumption (e.g. correct data structure, required fields present, no errors). Do NOT fail this step merely because it does not produce final deliverables. Respond ONLY with 'PASS' or 'FAIL: <category>: <reason>'. Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA.",
+					orig.ID, orig.Task,
+				)
+			}
+
+			// C5 fix: filter write tools + deep copy to avoid mutation leak.
+			auditMCPs, auditAllowlists := core.AuditorAllowedTools(orig.AdditionalMCPs, orig.AdditionalToolAllowlists)
+
+			augmentedInputs = append(augmentedInputs, schemas.StepInput{
+				ID:        auditID,
+				RoleID:    "auditor",
+				DependsOn: []string{orig.ID},
+				Task:      auditTask,
+				// U5 (2026-10-18): auditor inherits parent step's MCP
+				// bindings so it can verify against the same data sources.
+				// Universal: an auditor without fact-checking tools is
+				// structurally biased toward PASS. See eval §3.2b(4).
+				//
+				// C5 fix (2026-10-18): filter write tools from the
+				// inherited allowlists — the auditor should only have
+				// read-only tools (it's verifying, not acting). Also
+				// deep-copy to avoid mutation leak (shared map/slice
+				// reference would let auditor mutations affect parent).
+				AdditionalMCPs:           auditMCPs,
+				AdditionalToolAllowlists: auditAllowlists,
+			})
+		case schemas.RiskTierModerate:
+			notif["hint"] = "consider adding exit_criteria for structured verification"
+			augmentedInputs = append(augmentedInputs, orig)
+		default: // Light
+			augmentedInputs = append(augmentedInputs, orig)
+		}
+		policyNotifications = append(policyNotifications, notif)
+		app.Logger.Log("EventAdaptiveVerifierPolicy", "", orig.ID, notif)
+	}
+	return augmentedInputs, policyNotifications
 }

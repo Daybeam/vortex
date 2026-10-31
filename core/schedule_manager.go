@@ -294,8 +294,21 @@ func (sm *ScheduleManager) monitorTask(ctx context.Context, taskID string, sched
 		if !ok {
 			return
 		}
-		graphStatus, ok := result["status"].(schemas.GraphStatus)
-		if !ok {
+		// F4 (2026-10-30): ToStatusDictView now puts a plain string in the map.
+		// It used to store the NAMED type schemas.GraphStatus, so callers wrote
+		// `result["status"].(schemas.GraphStatus)` and it worked — but every
+		// `.(string)` assertion in the API/monitor layer silently failed, which
+		// is what made completed tasks report an empty status over the callback.
+		// Accepting both shapes keeps this monitor working whichever side of the
+		// conversion a caller sits on. Do not narrow it back to one type: the
+		// mismatch is a silent `ok == false`, not a compile error.
+		var graphStatus schemas.GraphStatus
+		switch v := result["status"].(type) {
+		case string:
+			graphStatus = schemas.GraphStatus(v)
+		case schemas.GraphStatus:
+			graphStatus = v
+		default:
 			// Status missing or wrong type — skip this iteration safely
 			// audit P-8-sibling: use NewTimer + Stop instead of time.After to avoid timer leak.
 			timer := time.NewTimer(5 * time.Second)

@@ -20,4 +20,5 @@ paths = [
   '''store/fmc_batch_scrub_test\.go''',
   '''core/sanitizer_scrub_test\.go''',
   '''core/input_normalization_test\.go''',
+  '''pkg/observability/redact_nested_test\.go''',
 ]

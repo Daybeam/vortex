@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -71,5 +72,26 @@ func TestInitDB_SetsConnectionPool(t *testing.T) {
 	stats := db.Stats()
 	if stats.MaxOpenConnections != 10 {
 		t.Errorf("expected MaxOpenConnections == 10, got %d", stats.MaxOpenConnections)
+	}
+}
+
+// TestInitDB_FailureReturnsNilDB pins the error-path contract for audit
+// MEDIUM-007: when the DSN is unopenable, InitDB must return (nil, error) so
+// callers skip db.Close() on a pool InitDB has already released.
+// See QUALITY_AUDIT_REPORT.md MEDIUM-007.
+func TestInitDB_FailureReturnsNilDB(t *testing.T) {
+	dir := t.TempDir()
+	badPath := filepath.Join(dir, "not_a_db.db")
+	if err := os.WriteFile(badPath, []byte("this is not a sqlite database"), 0o644); err != nil {
+		t.Fatalf("write corrupt db: %v", err)
+	}
+
+	db, err := InitDB(badPath)
+	if err == nil {
+		db.Close()
+		t.Fatal("expected InitDB to fail on a corrupt database file")
+	}
+	if db != nil {
+		t.Fatalf("expected nil *sql.DB on error, got %v", db)
 	}
 }

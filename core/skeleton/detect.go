@@ -29,7 +29,10 @@ func DetectAndSkeletonize(data []byte, toolName string) string {
 	// JSON: starts with { or [
 	if trimmed[0] == '{' || trimmed[0] == '[' {
 		if json.Valid(data) {
-			return jsonSkeleton(data)
+			// safeJSONSkeleton contains panic bugs here: this function runs on
+			// arbitrary tool output inside a chat turn, where a panic costs the
+			// whole turn (see safeJSONSkeleton's doc comment).
+			return safeJSONSkeleton(data)
 		}
 	}
 

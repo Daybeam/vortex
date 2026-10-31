@@ -25,7 +25,7 @@ func TestToStatusDictView_SummaryReportsPendingDecisionCount(t *testing.T) {
 	if got != 0 {
 		t.Fatalf("expected pending_decision_count=0, got %v", got)
 	}
-	if out["status"] != GraphRunning {
+	if out["status"] != string(GraphRunning) {
 		t.Fatalf("status must stay running while awaiting a decision, got %v", out["status"])
 	}
 

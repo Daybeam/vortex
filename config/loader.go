@@ -198,6 +198,11 @@ func (r *Registry) loadLocked() error {
 	data, err := os.ReadFile(r.configPath)
 	if err != nil {
 		r.bootstrapDefaultsLocked()
+		// D6 fix: apply env overrides (e.g. VORTEX_DELEGATION_MODE) even when
+		// no config file exists. Without this, a fresh install with only env vars
+		// set silently ignores them. applySystemDefaults is idempotent (fills
+		// zeros + applies env), safe to call after bootstrap.
+		r.applySystemDefaults()
 		return nil
 	}
 
@@ -295,54 +300,19 @@ func (r *Registry) loadLocked() error {
 	// with no safety net.
 	if len(r.Providers) == 0 {
 		r.bootstrapDefaultsLocked()
+		// D6 fix: bootstrapDefaultsLocked reassigns r.System wholesale
+		// (loader.go:639), wiping env overrides applied at :240. Re-apply so
+		// VORTEX_DELEGATION_MODE and other env vars survive the bootstrap.
+		// Config.json System fields are still lost here (deferred — would need
+		// bootstrap to fill-zeros instead of overwrite); env overrides are the
+		// critical path since delegation users typically have no provider/API key.
+		r.applySystemDefaults()
+		log.Printf("[warn] config: providers empty → bootstrap defaults applied; " +
+			"env system settings (e.g. VORTEX_DELEGATION_MODE) re-applied")
 	}
 
 	// Skills
-	skillsDir := cfg.SkillsDir
-	if skillsDir == "" {
-		skillsDir = filepath.Join(ConfigDir(r.configPath), "workspace/skills/")
-	}
-	keepSkills := make(map[string]bool)
-	if AllowExternalAssets() {
-		files, _ := os.ReadDir(skillsDir)
-		for _, file := range files {
-			if !file.IsDir() && strings.HasSuffix(file.Name(), ".json") {
-				skillData, err := os.ReadFile(filepath.Join(skillsDir, file.Name()))
-				if err == nil {
-					var s Skill
-					if err := json.Unmarshal(skillData, &s); err == nil {
-						s.InitFilter()
-						r.Skills[s.ID] = &s
-						keepSkills[s.ID] = true
-					}
-				}
-			}
-		}
-	}
-	for i := range cfg.Skills {
-		s := cfg.Skills[i]
-		s.InitFilter()
-		// Detect skill version drift (boundary audit 2026-09-15):
-		// if this skill was already loaded from workspace/skills/ with
-		// different implementations, log a warning. Config wins (preserving
-		// existing last-writer-wins behavior), but the warning makes the
-		// conflict visible so the operator can reconcile.
-		if existing, ok := r.Skills[s.ID]; ok && existing != nil {
-			if !reflect.DeepEqual(existing.Implementations, s.Implementations) {
-				log.Printf("[warn] skill %q version drift: workspace/skills/ and config.json provide different implementations; config.json wins", s.ID)
-			}
-		}
-		r.Skills[s.ID] = &s
-		keepSkills[s.ID] = true
-	}
-	pruneStale(r.Skills, keepSkills)
-
-	// Skill version drift detection (2026-10-20): compare loaded skills
-	// against the manifest from the previous load. Logs warnings for any
-	// skill whose content hash changed or was removed. Writes the current
-	// manifest so the next load can detect drift against this baseline.
-	// See docs/plan/RESIDUAL_ISSUES_FIX.md §3.
-	CheckSkillDrift(r, skillsDir)
+	r.loadSkillsLocked(&cfg)
 
 	// SOPs
 	keepSOPs := make(map[string]bool)
@@ -457,6 +427,57 @@ func (r *Registry) loadLocked() error {
 	InvalidateAllEnvAPIKeys()
 
 	return nil
+}
+
+// loadSkillsLocked loads skills from workspace/skills/*.json and cfg.Skills,
+// config winning on ID conflicts, then prunes stale entries and checks drift
+// against the previous manifest. Extracted from loadLocked (size ratchet).
+func (r *Registry) loadSkillsLocked(cfg *Config) {
+	skillsDir := cfg.SkillsDir
+	if skillsDir == "" {
+		skillsDir = filepath.Join(ConfigDir(r.configPath), "workspace/skills/")
+	}
+	keepSkills := make(map[string]bool)
+	if AllowExternalAssets() {
+		files, _ := os.ReadDir(skillsDir)
+		for _, file := range files {
+			if !file.IsDir() && strings.HasSuffix(file.Name(), ".json") {
+				skillData, err := os.ReadFile(filepath.Join(skillsDir, file.Name()))
+				if err == nil {
+					var s Skill
+					if err := json.Unmarshal(skillData, &s); err == nil {
+						s.InitFilter()
+						r.Skills[s.ID] = &s
+						keepSkills[s.ID] = true
+					}
+				}
+			}
+		}
+	}
+	for i := range cfg.Skills {
+		s := cfg.Skills[i]
+		s.InitFilter()
+		// Detect skill version drift (boundary audit 2026-09-15):
+		// if this skill was already loaded from workspace/skills/ with
+		// different implementations, log a warning. Config wins (preserving
+		// existing last-writer-wins behavior), but the warning makes the
+		// conflict visible so the operator can reconcile.
+		if existing, ok := r.Skills[s.ID]; ok && existing != nil {
+			if !reflect.DeepEqual(existing.Implementations, s.Implementations) {
+				log.Printf("[warn] skill %q version drift: workspace/skills/ and config.json provide different implementations; config.json wins", s.ID)
+			}
+		}
+		r.Skills[s.ID] = &s
+		keepSkills[s.ID] = true
+	}
+	pruneStale(r.Skills, keepSkills)
+
+	// Skill version drift detection (2026-10-20): compare loaded skills
+	// against the manifest from the previous load. Logs warnings for any
+	// skill whose content hash changed or was removed. Writes the current
+	// manifest so the next load can detect drift against this baseline.
+	// See docs/plan/RESIDUAL_ISSUES_FIX.md §3.
+	CheckSkillDrift(r, skillsDir)
 }
 
 func (r *Registry) StartCompactor(ctx context.Context) {
@@ -636,16 +657,37 @@ func (r *Registry) bootstrapDefaultsLocked() {
 		APIKeyEnv: "ANTHROPIC_API_KEY",
 		PoolID:    "default",
 	}
-	r.System = SystemSettings{
-		ConfidenceThreshold:    0.7,
-		MaxDecisionOutcomes:    2000,
-		MaxContextKeep:         100,
-		DefaultJITTTL:          3600,
-		SandboxedMemoryMB:      256,
-		SandboxedCPUSecs:       30,
-		MaxLogSizeMB:           100,
-		DefaultTaskTokenBudget: 200000,
-		MemoryBankEnabled:      true,
+	// D6 fix (DELEGATION_HANDOVER_REDESIGN.md §10.2): fill zero-value fields
+	// instead of full struct reassignment. The old code did
+	// `r.System = SystemSettings{...}` which wiped config.json values (e.g.,
+	// delegation_mode) that were already set before bootstrap was called.
+	// This preserves any non-zero values already in r.System.
+	if r.System.ConfidenceThreshold == 0 {
+		r.System.ConfidenceThreshold = 0.7
+	}
+	if r.System.MaxDecisionOutcomes == 0 {
+		r.System.MaxDecisionOutcomes = 2000
+	}
+	if r.System.MaxContextKeep == 0 {
+		r.System.MaxContextKeep = 100
+	}
+	if r.System.DefaultJITTTL == 0 {
+		r.System.DefaultJITTTL = 3600
+	}
+	if r.System.SandboxedMemoryMB == 0 {
+		r.System.SandboxedMemoryMB = 256
+	}
+	if r.System.SandboxedCPUSecs == 0 {
+		r.System.SandboxedCPUSecs = 30
+	}
+	if r.System.MaxLogSizeMB == 0 {
+		r.System.MaxLogSizeMB = 100
+	}
+	if r.System.DefaultTaskTokenBudget == 0 {
+		r.System.DefaultTaskTokenBudget = 200000
+	}
+	if !r.System.MemoryBankEnabled {
+		r.System.MemoryBankEnabled = true
 	}
 	r.EnableDynamicRoleGen = true
 	r.EnableEphemeralRoleGen = true

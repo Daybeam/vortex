@@ -1,11 +1,13 @@
 package core
 
 import (
-	"github.com/daybeam/vortex/core/skeleton"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/daybeam/vortex/core/skeleton"
 )
 
 // TestSanitizeToolName verifies that non-alphanumeric characters are replaced
@@ -220,5 +222,75 @@ func TestExternalizeArtifact_NilArchive(t *testing.T) {
 func TestArtifactThreshold(t *testing.T) {
 	if artifactThreshold != 2*1024 {
 		t.Errorf("artifactThreshold = %d, want %d", artifactThreshold, 2*1024)
+	}
+}
+
+// TestExternalizeArtifact_JSONArrayOfObjects covers the integration point of
+// the 2026-10-30 hang. externalizeArtifact is the ONLY caller of
+// skeleton.DetectAndSkeletonize in production, and every case above feeds it
+// plain text, so the JSON branch was never exercised through this entry point.
+//
+// The payload shape is the one that panicked: an array whose first element is
+// an object, followed by a sibling key ("findings" then "summary"). Repeated
+// to clear artifactThreshold.
+func TestExternalizeArtifact_JSONArrayOfObjects(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &ChatHarness{OutputBase: tmpDir}
+
+	var b strings.Builder
+	b.WriteString(`{"findings":[`)
+	for i := 0; i < 40; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"id":"f","severity":"high","risk":"cross-tenant token leak"}`)
+	}
+	b.WriteString(`],"summary":"review summary"}`)
+	content := b.String()
+
+	if len(content) <= artifactThreshold {
+		t.Fatalf("payload %d bytes does not clear artifactThreshold %d", len(content), artifactThreshold)
+	}
+	if !json.Valid([]byte(content)) {
+		t.Fatalf("payload is not valid JSON")
+	}
+
+	var result string
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("externalizeArtifact panicked on valid JSON (%d bytes): %v", len(content), r)
+			}
+		}()
+		result = h.externalizeArtifact(content, "read_file", "task-json")
+	}()
+
+	if !strings.Contains(result, "[Artifact externalized:") {
+		t.Errorf("result missing externalization header: %q", result[:100])
+	}
+	// The in-context replacement must never cost more than the content it
+	// replaces — that is the whole point of externalizing. For a dense array
+	// of objects jsonSkeleton prints more bytes than the payload (all keys, no
+	// long values to elide), so externalizeArtifact must fall back instead of
+	// bloating. Routing to jsonSkeleton itself is covered by
+	// TestDetectAndSkeletonize_JSON above.
+	if len(result) >= len(content) {
+		t.Errorf("externalized result did not shrink payload: %d >= %d", len(result), len(content))
+	}
+	// The full payload must still be recoverable from disk.
+	artDir := filepath.Join(tmpDir, "task-json", "artifacts")
+	entries, err := os.ReadDir(artDir)
+	if err != nil {
+		t.Fatalf("ReadDir(artDir): %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	saved, err := os.ReadFile(filepath.Join(artDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	if string(saved) != content {
+		t.Errorf("artifact content does not match input (%d vs %d bytes)", len(saved), len(content))
 	}
 }

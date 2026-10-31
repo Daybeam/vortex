@@ -1,0 +1,65 @@
+{
+  "findings": [
+    {
+      "id": "cross-tenant-token-leak",
+      "severity": "critical",
+      "file": "app/export_repo.py",
+      "line_hint": "57",
+      "risk": "The `find_by_token` method was changed to remove the `tenant_id` filter. Since `request_token` is only unique within a tenant (per contract), a tenant can now hijack or receive the results of another tenant's export by guessing or reusing their request token.",
+      "recommendation": "Restore the `tenant_id` filter in `find_by_token` and the calling code in `export_api.py` to ensure idempotency is scoped to the authenticated tenant.",
+      "test": "Create an export in Tenant A with token 'T1'. Attempt to create an export in Tenant B with the same token 'T1'. Outcome: Tenant B must receive a new job ID, not Tenant A's existing job.",
+      "evidence": "- existing = repo.find_by_token(actor.tenant_id, body[\"request_token\"])\n+ existing = repo.find_by_token(body[\"request_token\"])"
+    },
+    {
+      "id": "broken-pii-authz",
+      "severity": "critical",
+      "file": "app/export_api.py",
+      "line_hint": "21",
+      "risk": "The explicit check for `customers:pii` scope when `include_pii` is true has been removed. This allows any user with only `exports:read` to export sensitive PII, violating the security contract.",
+      "recommendation": "Re-instantiate the `require_scope(actor, \"customers:pii\")` check when `include_pii` is truthy.",
+      "test": "Submit a request with `include_pii: true` using an actor that has `exports:read` but lacks `customers:pii`. Outcome: The request must be rejected with an unauthorized error.",
+      "evidence": "-    if include_pii:\n-        require_scope(actor, \"customers:pii\")"
+    },
+    {
+      "id": "non-atomic-job-claim",
+      "severity": "high",
+      "file": "app/export_worker.py",
+      "line_hint": "12",
+      "risk": "The atomic `claim_next` (using `UPDATE...RETURNING`) was replaced with a separate `next_queued` (SELECT) and `mark_running` (UPDATE). This creates a race condition where multiple workers can select the same job and attempt to process it simultaneously.",
+      "recommendation": "Revert to a single atomic update statement using `SKIP LOCKED` or the previous `UPDATE...RETURNING` pattern to ensure a job is leased by exactly one worker.",
+      "test": "Run two worker threads simultaneously with one job in 'queued' state. Outcome: Only one worker should successfully transition the job to 'running' and process it.",
+      "evidence": "+    job = repo.next_queued()\n     if not job:\n         return False\n+    repo.mark_running(job.id, worker_id, now)"
+    },
+    {
+      "id": "bearer-secret-logging",
+      "severity": "high",
+      "file": "app/downloads.py",
+      "line_hint": "36",
+      "risk": "The signed download URL, which is a bearer secret, is now being written to the application logs. This violates the contract which explicitly forbids logging these URLs.",
+      "recommendation": "Remove `download_url` from the log extra fields; only log safe metadata like `job_id` and expiry.",
+      "test": "Trigger a download and inspect application logs. Outcome: The log entry for 'export download issued' must not contain the 'download_url' string.",
+      "evidence": "+        extra={\"job_id\": job.id, \"download_url\": signed_url},"
+    },
+    {
+      "id": "false-completion-on-failure",
+      "severity": "high",
+      "file": "app/export_worker.py",
+      "line_hint": "24",
+      "risk": "If a `TransientUploadError` occurs, the code now logs a warning and sets `uploaded = None`, but then proceeds to call `mark_complete`. This marks the job as finished even though the upload failed, violating the requirement that a failure must leave the job retryable.",
+      "recommendation": "The worker should return or raise after the upload failure instead of proceeding to `mark_complete`. Ensure `mark_complete` is only called on success.",
+      "test": "Mock `object_store.put` to raise `TransientUploadError`. Outcome: The job state in the database must remain 'running' (or 'queued' if requeued) and not transition to 'complete'.",
+      "evidence": "+    repo.mark_complete(\n+        job.id,\n+        etag=uploaded.etag if uploaded else None,\n+        checksum=checksum,\n+    )"
+    },
+    {
+      "id": "snapshot-pagination-corruption",
+      "severity": "medium",
+      "file": "app/customer_snapshot.py",
+      "line_hint": "33",
+      "risk": "The pagination logic was changed from `(updated_at > ? or (updated_at = ? and id > ?))` to `(updated_at > ? or id > ?)`. If multiple records have the same `updated_at`, the new logic will skip any records where the `id` is less than or equal to the cursor's `id`, even if they haven't been processed yet, because the `updated_at` condition is no longer tied to the equality case.",
+      "recommendation": "Restore the tuple-based comparison logic to ensure records with identical timestamps are correctly paginated.",
+      "test": "Create two records with the same `updated_at` timestamp. Request a page with a limit of 1. Use the returned cursor to fetch the next page. Outcome: The second record must be returned, not skipped.",
+      "evidence": "-              and (updated_at > ? or (updated_at = ? and id > ?))\n+              and (updated_at > ? or id > ?)"
+    }
+  ],
+  "summary": "The review identified several critical and high-severity violations of the export contract. Key issues include a cross-tenant data leak due to insecure token lookups, unauthorized PII access via removed scope checks, race conditions in job processing, and the exposure of bearer secrets in logs. Additionally, the update to the worker logic causes jobs to be incorrectly marked as complete upon failure, and the pagination logic is now prone to skipping records."
+}

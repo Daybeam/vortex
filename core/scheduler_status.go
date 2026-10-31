@@ -251,6 +251,14 @@ func (s *DirectedEngine) ListGraphs() []map[string]any {
 		}
 		var g schemas.TaskGraph
 		if json.Unmarshal(data, &g) == nil {
+			// Fix: tasks not in s.graphs have no active goroutine. If the
+			// manifest says running/blocked, the task was interrupted by an
+			// engine restart and will never complete. Override to orphaned
+			// so the status reflects reality instead of showing "running"
+			// forever.
+			if g.Status == schemas.GraphRunning || g.Status == schemas.GraphBlocked {
+				g.Status = schemas.GraphOrphaned
+			}
 			out = append(out, g.ToStatusDict())
 		}
 	}
@@ -288,6 +296,18 @@ func (s *DirectedEngine) getOrReloadGraphLocked(taskID string) *schemas.TaskGrap
 	return &g
 }
 
+// findPendingDecisionLocked returns the decision with the given ID and its
+// index in graph.PendingDecisions, or (nil, -1) if not found. Caller must
+// hold s.Mu.
+func findPendingDecisionLocked(graph *schemas.TaskGraph, decisionID string) (*schemas.Decision, int) {
+	for i, d := range graph.PendingDecisions {
+		if d.ID == decisionID {
+			return d, i
+		}
+	}
+	return nil, -1
+}
+
 func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) error {
 	// Phase 1: read under lock, collect DB write params.
 	s.Mu.Lock()
@@ -297,15 +317,7 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 		return fmt.Errorf("task %q not found", taskID)
 	}
 
-	var dec *schemas.Decision
-	var decIdx int = -1
-	for i, d := range graph.PendingDecisions {
-		if d.ID == decisionID {
-			dec = d
-			decIdx = i
-			break
-		}
-	}
+	dec, decIdx := findPendingDecisionLocked(graph, decisionID)
 	if dec == nil {
 		s.Mu.Unlock()
 		return fmt.Errorf("decision %q not found", decisionID)
@@ -357,14 +369,7 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 	}
 
 	// Re-find the decision (it might have been removed by another goroutine).
-	decIdx = -1
-	for i, d := range graph.PendingDecisions {
-		if d.ID == decisionID {
-			dec = d
-			decIdx = i
-			break
-		}
-	}
+	dec, decIdx = findPendingDecisionLocked(graph, decisionID)
 	if dec == nil {
 		s.Mu.Unlock()
 		return fmt.Errorf("decision %q was removed by another operation", decisionID)
@@ -376,11 +381,25 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 		return fmt.Errorf("step %q not found after DB write", dec.StepID)
 	}
 
-	// Update step status
-	step.Status = schemas.StepOK
+	// D3 fix (DELEGATION_HANDOVER_REDESIGN.md §4.3): step status (StepOK /
+	// LastError / ResultRef), EventStepCompleted, and the full post-success
+	// pipeline (GlobalWorkspace merge, AutoDepositResult→artifacts, archiveStep,
+	// SignalField, output_files) are now applied by handleStepSuccess below —
+	// reusing the same code path as normal spawn completion. Previously
+	// FulfillStep only wrote taskStore + set StepOK manually, silently dropping
+	// all side-effects (merge_strategy, artifacts, archive, output_files, events).
 	step.Confidence = &output.Confidence
-	step.LastError = ""
 	step.LastWorkedOn = time.Now()
+
+	// R1 fix (DELEGATION_HANDOVER_REDESIGN.md §10.1): set StepOK inside the
+	// lock to close the transient illegal-state window. Without this, there
+	// is a gap between clearing PendingDecisions and handleStepSuccess (which
+	// runs lock-free below) where step=blocked + pendingDecs==0. run() can be
+	// woken by any task's Broadcast (notifyChan is engine-global) and would
+	// see the step as "upstream terminated non-OK" → spurious decision or
+	// premature finalize. handleStepSuccess sets these again (idempotent).
+	step.Status = schemas.StepOK
+	step.LastError = ""
 
 	// Clear the decision
 	graph.PendingDecisions = append(graph.PendingDecisions[:decIdx], graph.PendingDecisions[decIdx+1:]...)
@@ -406,6 +425,25 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 	}
 
 	s.Mu.Unlock()
+
+	// D3 fix: reuse the full step-success pipeline. We call handleStepSuccess
+	// directly (not handleOutput) to skip the confidence threshold gate — the
+	// host's self-reported confidence must not turn a fulfilled step into a
+	// retry decision. State is determined by the fulfill action (always OK);
+	// post-processing (workspace/artifacts/archive/signal/output_files) is
+	// reused from the normal spawn path.
+	s.handleStepSuccess(graph, step, &SpawnResult{
+		Output: schemas.SubagentOutput{
+			Status:         schemas.StatusOK,
+			Confidence:     output.Confidence,
+			Result:         output.Result,
+			Capability:     output.Capability,
+			MissingContext: output.MissingContext,
+			Attachments:    output.Attachments,
+		},
+		Ref: fmt.Sprintf("%s:%s", taskID, stepID),
+	})
+
 	s.persistGraph(graph)
 	// Wake the run() loop to check for newly-ready steps after decision resolution.
 	s.Broadcast()

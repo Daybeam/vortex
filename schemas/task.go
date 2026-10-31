@@ -342,8 +342,8 @@ type DecisionNode struct {
 	// Source classifies whether this decision is user-confirmed, model-guessed,
 	// or verifier-audited — so retrieval can rank trusted decisions above
 	// speculative ones. Confidence is the 0.0-1.0 certainty at decision time.
-	Source     string  `json:"source,omitempty"`      // "user" | "model" | "verifier"
-	Confidence float64 `json:"confidence,omitempty"`  // 0.0-1.0
+	Source     string  `json:"source,omitempty"`     // "user" | "model" | "verifier"
+	Confidence float64 `json:"confidence,omitempty"` // 0.0-1.0
 }
 
 // ─── OutputFile ───────────────────────────────────────────────────────────
@@ -779,7 +779,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 
 		return map[string]any{
 			"task_id":        g.TaskID,
-			"status":         g.Status,
+			"status":         string(g.Status),
 			"progress":       fmt.Sprintf("%d/%d", completed, len(g.Steps)),
 			"active_step_id": activeStepID,
 			"last_error":     lastError,
@@ -812,7 +812,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 			"depends_on":        s.DependsOn,
 			"read_deps":         s.ReadDeps,
 			"additional_skills": s.AdditionalSkills,
-			"status":            s.Status,
+			"status":            string(s.Status),
 			"confidence":        s.Confidence,
 			"retry_count":       s.RetryCount,
 			"result_ref":        s.ResultRef,
@@ -906,7 +906,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 			"parent_id": node.ParentID,
 			"intent":    node.Intent,
 			"goal":      node.Goal,
-			"status":    node.Status,
+			"status":    string(node.Status),
 			"summary":   node.Summary,
 			"step_ids":  node.StepIDs,
 			"metadata":  safeMeta,
@@ -950,7 +950,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 
 	res := map[string]any{
 		"task_id":             g.TaskID,
-		"status":              g.Status,
+		"status":              string(g.Status),
 		"overall_confidence":  g.OverallConfidence,
 		"skipped_steps_count": skippedStepsCount,
 		"steps":               steps,
@@ -960,12 +960,17 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 		"global_workspace":    sanitizedWorkspace,
 		"created_at":          g.CreatedAt.Format(time.RFC3339),
 		"session_id":          g.SessionID,
-		"session_roles":       g.SessionRoles,
-		"session_skills":      g.SessionSkills,
-		"coordination_edges":  g.CoordinationEdges,
-		"decision_history":    sanitizedHistory,
-		"context_tree":        sanitizedTree,
-		"current_node_id":     g.CurrentNodeID,
+		// WorkspaceRoot is where the step agents' core tools resolved relative
+		// paths. Callers that want to read a task's deliverables need it: the
+		// files land under this root, not under outputs/<taskID>. Empty means
+		// the task ran with the legacy per-task directory.
+		"workspace_root":     g.WorkspaceRoot,
+		"session_roles":      g.SessionRoles,
+		"session_skills":     g.SessionSkills,
+		"coordination_edges": g.CoordinationEdges,
+		"decision_history":   sanitizedHistory,
+		"context_tree":       sanitizedTree,
+		"current_node_id":    g.CurrentNodeID,
 		// Substitution ledger: every instance where actual execution diverged
 		// from the request. See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
 		"substitutions": g.GetSubstitutions(),

@@ -40,6 +40,9 @@ func TestFulfillStep_RestartsRunGoroutine(t *testing.T) {
 		notifyChan:  make(chan struct{}, 1),
 		taskStore:   taskStore,
 		registry:    &config.Registry{},
+		// D3 fix: FulfillStep now calls handleStepSuccess which invokes
+		// s.assets.Handle — initialize a minimal AssetManager to avoid nil-panic.
+		assets: NewAssetManager(t.TempDir(), 0, &config.Registry{}),
 	}
 	s.lifecycleCtx = lifecycleCtx
 	s.lifecycleCancel = lifecycleCancel
@@ -155,7 +158,7 @@ func TestFulfillDelegation_RestartsRunGoroutine(t *testing.T) {
 // audit L-N1: ResumeSuspendedTask only started run() when !UseSwarm. In
 // swarm mode, no swarmWatchdog was restarted — the task stalled forever.
 func TestResumeSuspendedTask_SwarmModeRestartsWatchdog(t *testing.T) {
-	t.Skip("swarm mode is not available in the open core")
+	t.Skip("swarm mode not available in open core")
 	logger := mustNewLogger(t, t.TempDir(), nil)
 	t.Cleanup(func() { logger.Close() })
 

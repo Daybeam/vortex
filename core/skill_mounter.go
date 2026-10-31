@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -118,15 +119,28 @@ func (m *SkillMounter) ResolvePath(p string) string {
 	return filepath.Join(m.ActiveSkillDir, p)
 }
 
+// ResolveActiveSkillPath rewrites a relative path against the active skill
+// directory carried in ctx. Returns p unchanged when no skill dir is set.
+func ResolveActiveSkillPath(ctx context.Context, p string) string {
+	if sd, ok := ctx.Value(ActiveSkillDirKey{}).(string); ok && sd != "" {
+		return (&SkillMounter{ActiveSkillDir: sd}).ResolvePath(p)
+	}
+	return p
+}
+
 // ActivateTopSkills runs the SkillMounter over the top-N skill candidates
-// from discovery results and returns the concatenated prompt fragment.
-// It looks up skills from the registry by candidate ID.
-func ActivateTopSkills(reg *config.Registry, candidates []DiscoveryCandidate, topN int) string {
+// from discovery results and returns the concatenated prompt fragment and
+// the primary (first activated) skill's directory. The skill directory can
+// be threaded via ActiveSkillDirKey context to resolve relative paths in
+// file-based tools (read_file, terminal). Returns ("", "") if no skills
+// activated.
+func ActivateTopSkills(reg *config.Registry, candidates []DiscoveryCandidate, topN int) (string, string) {
 	reg.Mu.RLock()
 	defer reg.Mu.RUnlock()
 
 	var sb strings.Builder
 	count := 0
+	primarySkillDir := ""
 	for _, c := range candidates {
 		if c.Type != CandidateSkill || count >= topN {
 			continue
@@ -140,6 +154,9 @@ func ActivateTopSkills(reg *config.Registry, candidates []DiscoveryCandidate, to
 		if fragment == "" {
 			continue
 		}
+		if count == 0 {
+			primarySkillDir = mounter.ActiveSkillDir
+		}
 		if count > 0 {
 			sb.WriteString("\n---\n")
 		}
@@ -148,7 +165,7 @@ func ActivateTopSkills(reg *config.Registry, candidates []DiscoveryCandidate, to
 	}
 
 	if count == 0 {
-		return ""
+		return "", ""
 	}
-	return "\n\n## Active Skills\n" + sb.String()
+	return "\n\n## Active Skills\n" + sb.String(), primarySkillDir
 }

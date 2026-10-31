@@ -20,6 +20,24 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	// MutateGraphTopology (which adds steps under Mu.Lock) and persistGraph
 	// (which marshals the graph under Mu.Lock).
 	s.Mu.Lock()
+
+	// C5DD (2026-10-30): finalize is not idempotent, and two producers can run
+	// concurrently. A smart-routed graph is finalized inline by
+	// finalizeSmartRoutedAfterDecision (scheduler_status.go), which closes the
+	// done channel but deliberately does not broadcast; a run() loop still parked
+	// on the notify channel therefore wakes on its 5 s safety timer, sees a
+	// terminal graph with nothing ready and calls finalize a second time. The
+	// second call re-published task_completed, rewrote manifest.json and re-ran
+	// reflect()/deliverArtifacts(), i.e. duplicate experience records and
+	// duplicate webhook deliveries. Guard on the graph status, not on
+	// IsTerminal(): the latter is computed from the STEPS, so it is already true
+	// on the first legitimate finalize and would suppress every real one.
+	switch graph.Status {
+	case schemas.GraphCompleted, schemas.GraphCompletedWithSkips, schemas.GraphFailed:
+		s.Mu.Unlock()
+		return
+	}
+
 	conf := graph.ComputeConfidence()
 	graph.OverallConfidence = &conf // audit C-8
 	now := time.Now()
@@ -34,8 +52,19 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	}
 	// Determine final status, then atomically set it via setGraphStatus
 	// (prevents data race with run()'s reader).
+	//
+	// C5DD (2026-10-28): a pending decision means "waiting for an answer", not
+	// "finished". The run loop already guards this at the call site
+	// (scheduler_dag.go: isTerminal && pendingDecs == 0 → finalize), so this
+	// branch is currently unreachable — it is a defensive guard so the
+	// invariant lives in the function, not only in its caller. Without it,
+	// any future caller that forgets the check would publish completed for a
+	// task that is still blocked, and the retry submitted later would have no
+	// loop to pick it up.
 	var finalStatus schemas.GraphStatus
-	if !allOK {
+	if len(graph.PendingDecisions) > 0 {
+		finalStatus = schemas.GraphBlocked
+	} else if !allOK {
 		finalStatus = schemas.GraphFailed
 	} else {
 		allSkipped := true
@@ -56,8 +85,11 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 
 	s.persistGraph(graph)
 
-	// Publish graph-level terminal event for consumers
-	if allOK {
+	// Publish graph-level terminal event for consumers.
+	// C5DD: drive this from finalStatus, not from allOK — a graph parked on a
+	// pending decision must not announce task_completed just because every
+	// step it currently has is non-failed.
+	if finalStatus == schemas.GraphCompleted || finalStatus == schemas.GraphCompletedWithSkips {
 		s.publishEvent(graph.TaskID, "", EventTaskCompleted, map[string]any{"confidence": conf})
 	} else {
 		s.publishEvent(graph.TaskID, "", EventTaskFailed, map[string]any{"confidence": conf})
@@ -93,7 +125,7 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	}
 
 	event := EventTaskCompleted
-	if graph.Status == schemas.GraphFailed {
+	if graph.Status == schemas.GraphFailed || graph.Status == schemas.GraphBlocked {
 		event = EventTaskFailed
 	}
 	s.logger.LogWithConfidence(event, graph.TaskID, "", conf, map[string]any{

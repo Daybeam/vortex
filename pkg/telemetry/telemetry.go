@@ -38,12 +38,18 @@ func (e *Exporter) Sync(ctx context.Context) error {
 
 	snapshot := e.exp.GetTelemetrySnapshot(e.config.DetailedFeedback)
 
-	// Redact sensitive info before sending (ADDED 2026-08-28)
-	if e.config.DetailedFeedback {
-		snapshot = observability.RedactMap(snapshot)
+	// Redact sensitive info before sending (ADDED 2026-08-28).
+	// G10 (2026-10-31): GetTelemetrySnapshot returns concrete structs
+	// (TaskPattern, RoleProfile, GeneratedSkill) that map-walking redaction
+	// cannot see, and TaskPattern.StepSequence is a typed []map[string]any.
+	// Normalize through JSON so every string that will be sent is visible to
+	// RedactValue, then redact unconditionally — a payload that is not
+	// "detailed" can still carry key-shaped strings in profile/skill fields.
+	payload, err := jsonGeneric(snapshot)
+	if err != nil {
+		return fmt.Errorf("normalize telemetry snapshot: %w", err)
 	}
-
-	data, err := json.Marshal(snapshot)
+	data, err := json.Marshal(observability.RedactValue(payload))
 	if err != nil {
 		return fmt.Errorf("marshal telemetry snapshot: %w", err)
 	}
@@ -67,6 +73,20 @@ func (e *Exporter) Sync(ctx context.Context) error {
 
 	log.Printf("[telemetry] Experience sync successful: %d bytes sent", len(data))
 	return nil
+}
+
+// jsonGeneric converts typed values into JSON-shaped containers
+// (map[string]any / []any / scalars) so observability.RedactValue can walk them.
+func jsonGeneric(v any) (any, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // StartBackgroundSync runs a ticker that periodically syncs experience data.

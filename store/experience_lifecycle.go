@@ -815,9 +815,8 @@ func (es *ExperienceStore) getMaxPromotionAuditLogs() int {
 // wrongly punishing a skill for a rate limit or a network blip it had no
 // way to avoid.
 //
-// As of 2026-09-06, GetTelemetrySnapshot has zero call sites in core/
-// or tools/. It remains in the interface for a future admin telemetry
-// tool or dashboard endpoint.
+// Live caller: pkg/telemetry.Exporter.Sync (constructed in runHub, main.go),
+// gated by telemetry.enabled + telemetry.endpoint.
 func (es *ExperienceStore) GetTelemetrySnapshot(detailed bool) map[string]any {
 	es.Mu.RLock()
 	defer es.Mu.RUnlock()
@@ -861,8 +860,7 @@ func (es *ExperienceStore) GetTelemetrySnapshot(detailed bool) map[string]any {
 }
 
 // GetRoleProfilesSnapshot returns a shallow copy of all role profiles.
-// As of 2026-09-06, called only by GetTelemetrySnapshot (which is itself
-// an orphan). It remains in the interface for the same future admin tool.
+// Live caller: tools/subsystems_experience.go (experience subsystem).
 func (es *ExperienceStore) GetRoleProfilesSnapshot() map[string]*RoleProfile {
 	es.Mu.RLock()
 	defer es.Mu.RUnlock()
@@ -876,8 +874,7 @@ func (es *ExperienceStore) GetRoleProfilesSnapshot() map[string]*RoleProfile {
 }
 
 // GetTaskPatternsSnapshot returns a shallow copy of all task patterns.
-// As of 2026-09-06, called only by GetTelemetrySnapshot (which is itself
-// an orphan). It remains in the interface for the same future admin tool.
+// Live callers: core/policy_signals.go and tools/subsystems_experience.go.
 func (es *ExperienceStore) GetTaskPatternsSnapshot() map[string]TaskPattern {
 	es.Mu.RLock()
 	defer es.Mu.RUnlock()

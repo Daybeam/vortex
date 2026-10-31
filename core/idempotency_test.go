@@ -39,26 +39,13 @@ func TestTurnIdempotencyContext_DifferentKeys_BothProceed(t *testing.T) {
 	}
 }
 
-func TestTurnIdempotencyContext_HasExecuted(t *testing.T) {
-	ctx := NewTurnIdempotencyContext()
-	key := "read_file:67890"
-
-	if ctx.HasExecuted(key) {
-		t.Error("key should not be executed before MarkExecuted")
-	}
-	ctx.MarkExecuted(key)
-	if !ctx.HasExecuted(key) {
-		t.Error("key should be executed after MarkExecuted")
-	}
-}
-
 func TestTurnIdempotencyContext_NewContext_EmptyState(t *testing.T) {
 	ctx1 := NewTurnIdempotencyContext()
 	ctx1.CheckAndMark("write_file:aaa")
 
 	// New context should not share state with old context.
 	ctx2 := NewTurnIdempotencyContext()
-	if ctx2.HasExecuted("write_file:aaa") {
+	if ctx2.CheckAndMark("write_file:aaa") {
 		t.Error("new context should not have any executed keys")
 	}
 }
@@ -81,7 +68,7 @@ func TestTurnIdempotencyContext_ConcurrentAccess(t *testing.T) {
 	<-done
 
 	// After concurrent access, the key should be marked.
-	if !ctx.HasExecuted(key) {
+	if !ctx.CheckAndMark(key) {
 		t.Error("key should be executed after concurrent access")
 	}
 }

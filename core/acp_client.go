@@ -64,6 +64,8 @@ type ACPClient struct {
 	quit     chan struct{}          // closed by Close to unblock readLoop send (audit R-28-1)
 	quitOnce sync.Once              // guards quit from double-close panic
 	readErr  error                  // set by reader goroutine before close(done)
+	waitWg   sync.WaitGroup         // audit CRITICAL-005: tracks in-flight goroutines to prevent leaks
+
 }
 
 // NewACPClient starts an external ACP worker process and returns a client
@@ -289,7 +291,11 @@ func (c *ACPClient) Close() error {
 	// in a goroutine so the timeout can trigger a kill; StdoutPipe uses an
 	// *os.File so Wait does not race with readLoop's reads.
 	waitErr := make(chan error, 1)
-	go func() { waitErr <- c.cmd.Wait() }()
+	c.waitWg.Add(1) // audit CRITICAL-005: track goroutine to prevent leak
+	go func() {
+		defer c.waitWg.Done()
+		waitErr <- c.cmd.Wait()
+	}()
 	var err error
 	select {
 	case err = <-waitErr:
@@ -302,6 +308,10 @@ func (c *ACPClient) Close() error {
 	// child has exited (stdout closed → Scan returns false) or readLoop
 	// exited via quit; either way done is closed.
 	<-c.done
+
+	// audit CRITICAL-005: wait for all tracked goroutines to complete
+	// before returning, ensuring no goroutine leak.
+	c.waitWg.Wait()
 
 	return err
 }

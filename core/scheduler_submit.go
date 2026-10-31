@@ -119,6 +119,23 @@ func (s *DirectedEngine) SubmitWithSession(inputs []schemas.StepInput, sessionID
 	return s.SubmitWithSessionIR(inputs, nil, nil, nil, "", sessionID, "", 0, 0, "")
 }
 
+// SubmitWithWorkspace is SubmitWithSession plus the workspace root.
+//
+// SubmitWithSession hardcodes workspaceRoot="" — right for MCP callers that
+// never had one, wrong for the chat gateway, which *does* know the workspace
+// (ChatHarness.SessionRoot, sourced from HARNESSBENCH_WORKSPACE) but used to
+// drop it at this exact call. The consequence was not an error anywhere: the
+// graph got WorkspaceRoot="", scheduler_dag_exec passed that to SpawnRequest,
+// and every step agent's core tools resolved against outputs/<taskID> — a
+// directory containing only manifest.json. The delegated agent could still
+// write files ("it worked"), it just wrote them where nobody would look and
+// could not read the documents it was asked to analyse.
+//
+// harness-bench D3, 2026-10-30. See T2-STALL-RESUME-2026-10-30.md §12.7.
+func (s *DirectedEngine) SubmitWithWorkspace(inputs []schemas.StepInput, sessionID, workspaceRoot string) (string, error) {
+	return s.SubmitWithSessionIR(inputs, nil, nil, nil, "", sessionID, workspaceRoot, 0, 0, "")
+}
+
 func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles []*config.Role, skills []*config.Skill, providers []*config.ProviderConfig, mainProviderID string, sessionID string, workspaceRoot string, timeoutSecs int, tokenBudget int64, ownerID string) (taskID string, err error) {
 	// C4: capture original inputs before any modification (expandSkills,
 	// planner-first). The defer must store the caller's original input,
@@ -318,10 +335,13 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			EnableStepPlan:   inp.EnableStepPlan,
 			SpawnDepth:       inp.SpawnDepth,
 			MaxSpawnDepth:    inp.MaxSpawnDepth,
-			AutoRefineCount:  0,
-			LastWorkedOn:     time.Now(),
-			InputDir:         inp.InputDir,
-		}
+		AutoRefineCount:  0,
+		LastWorkedOn:     time.Now(),
+		InputDir:         inp.InputDir,
+		// D3 §10.2: copy these so overlay merge fires for single-step tasks.
+		MergeStrategy: inp.MergeStrategy,
+		TargetKey:     inp.TargetKey,
+	}
 		if step.AdditionalSkills == nil {
 			step.AdditionalSkills = []string{}
 		}
@@ -584,6 +604,15 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 					"role_id": step.RoleID,
 				}, []string{"fulfill", "skip", "abort"})
 				s.Broadcast()
+				// C5DD (2026-10-29): this fast path never called startGraphExecutor,
+				// so there is no run() loop to receive the Broadcast above. SubmitDecision
+				// flips the step back to StepPending and only broadcasts: with nothing
+				// waiting, that retry is never dispatched and the task sits in `running`
+				// forever (the aw20 stall). Starting the executor is safe here because
+				// ReadySteps() only returns StepPending steps -- s1 is StepPartial and a
+				// decision is pending, so run() parks on the notify channel and wakes when
+				// the answer arrives.
+				s.startGraphExecutor(ctx, taskID)
 				return
 			}
 			s.persistGraph(graph)
@@ -719,26 +748,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		graph.LocalMCPs = s.jit.SnapshotJITTools(allMCPs)
 	}
 
-	for _, r := range roles {
-		if r != nil {
-			graph.SessionRoles[r.ID] = r
-		}
-	}
-	for _, sk := range skills {
-		if sk != nil {
-			graph.SessionSkills[sk.ID] = sk
-		}
-	}
-	for _, p := range providers {
-		if p != nil {
-			// Use PoolID or provider name as session-provider key
-			id := p.PoolID
-			if id == "" {
-				id = p.Provider
-			}
-			graph.SessionProviders[id] = p
-		}
-	}
+	applySessionAssets(graph, roles, skills, providers)
 
 	s.Mu.RLock()
 	rr := s.registry.RequirePlanReview
@@ -787,6 +797,32 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	}
 
 	return taskID, nil
+}
+
+// applySessionAssets records the caller-supplied roles, skills and provider
+// configs on the graph so later steps resolve them without re-reading config.
+// Nil entries are skipped.
+func applySessionAssets(graph *schemas.TaskGraph, roles []*config.Role, skills []*config.Skill, providers []*config.ProviderConfig) {
+	for _, r := range roles {
+		if r != nil {
+			graph.SessionRoles[r.ID] = r
+		}
+	}
+	for _, sk := range skills {
+		if sk != nil {
+			graph.SessionSkills[sk.ID] = sk
+		}
+	}
+	for _, p := range providers {
+		if p != nil {
+			// Use PoolID or provider name as session-provider key
+			id := p.PoolID
+			if id == "" {
+				id = p.Provider
+			}
+			graph.SessionProviders[id] = p
+		}
+	}
 }
 
 // isDeterministicContract checks if a step has a deterministic OutputContract

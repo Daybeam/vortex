@@ -32,9 +32,10 @@ type CostRecord struct {
 	OutputTokens int
 }
 
-// NewCostTracker opens (or creates) a SQLite database at dbPath and
-// ensures the cost_records table exists. Nil-safe: returns nil if dbPath
-// is empty (cost tracking disabled).
+// NewCostTracker creates a new CostTracker with SQLite backend.
+// An empty dbPath disables cost tracking (returns a nil tracker, nil error).
+// Otherwise the caller MUST call Close() when done to release the database
+// connection.
 func NewCostTracker(dbPath string) (*CostTracker, error) {
 	if dbPath == "" {
 		return nil, nil

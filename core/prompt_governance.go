@@ -623,11 +623,6 @@ func TagBlock(block schemas.ContentBlock, tier string) schemas.ContentBlock {
 	return block
 }
 
-// MarkProtected tags a block as a protected zone (never trimmed).
-func MarkProtected(block schemas.ContentBlock) schemas.ContentBlock {
-	return TagBlock(block, GovTierProtected)
-}
-
 // TagBlockWithCategory is like TagBlock but also stamps the block's semantic
 // category (for token-proportion observability). It sets both the struct
 // field ContentBlock.Category and a Metadata mirror.
