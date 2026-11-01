@@ -55,10 +55,12 @@ exit 1
 	}
 	defer cli.Close()
 
-	// Wait for the script to crash
-	time.Sleep(500 * time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// The script writes to stderr then exits(1) without responding.
+	// SendRequest will block until readLoop detects the closed stdout
+	// and returns the stored readErr (which includes stderr content).
+	// Use a generous timeout: under full-suite load, PowerShell startup
+	// can take several seconds before the script even begins running.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	_, err = cli.SendRequest(ctx, "list_tools", map[string]any{})
