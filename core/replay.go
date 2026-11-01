@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // Replayer handles log-based state reconstruction for auditing and forking.
@@ -18,17 +20,17 @@ func NewReplayer(logPath string) *Replayer {
 }
 
 // LoadHistory retrieves all events for a specific task from the log.
-func (r *Replayer) LoadHistory(taskID string) ([]AgentEvent, error) {
+func (r *Replayer) LoadHistory(taskID string) ([]obs.AgentEvent, error) {
 	f, err := os.Open(r.LogPath)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	var history []AgentEvent
+	var history []obs.AgentEvent
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		var ev AgentEvent
+		var ev obs.AgentEvent
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			continue
 		}
@@ -46,13 +48,13 @@ func (r *Replayer) LoadHistory(taskID string) ([]AgentEvent, error) {
 
 // ForkTask filters events up to a specific step and prepares them for a new task execution.
 // This is useful for counterfactual testing: "What if at step X we used a different tool?"
-func (r *Replayer) ForkTask(taskID string, atStepID string) ([]AgentEvent, error) {
+func (r *Replayer) ForkTask(taskID string, atStepID string) ([]obs.AgentEvent, error) {
 	history, err := r.LoadHistory(taskID)
 	if err != nil {
 		return nil, err
 	}
 
-	var forkHistory []AgentEvent
+	var forkHistory []obs.AgentEvent
 	found := false
 	for _, ev := range history {
 		forkHistory = append(forkHistory, ev)

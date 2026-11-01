@@ -16,6 +16,7 @@ import (
 
 	"github.com/daybeam/vortex/client"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/core/sandbox"
 	"github.com/daybeam/vortex/pkg/safelimits"
 	"github.com/daybeam/vortex/schemas"
@@ -74,7 +75,7 @@ type MCPConnectionManager struct {
 	handshakeLocks     sync.Map // mcpID -> *sync.Mutex; per-ID handshake serialization (audit H4)
 	discoveryLocks     sync.Map // mcpID -> *sync.Mutex; per-ID FullToolDefinitions serialization (audit H8)
 	registry           *config.Registry
-	logger             *Logger
+	logger             *obs.Logger
 	httpClient         *http.Client // shared for connection pooling (audit H4)
 }
 
@@ -98,7 +99,7 @@ func mcpSessionCacheKey(mcpID, ownerID string) string {
 	return mcpID + "\x00" + ownerID
 }
 
-func NewMCPConnectionManager(registry *config.Registry, logger *Logger) *MCPConnectionManager {
+func NewMCPConnectionManager(registry *config.Registry, logger *obs.Logger) *MCPConnectionManager {
 	return &MCPConnectionManager{
 		processCache:       make(map[string]*client.MCPClient),
 		remoteSessionCache: make(map[string]string),

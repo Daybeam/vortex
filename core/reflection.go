@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/env"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -27,7 +28,7 @@ type ReflectionEngine struct {
 	taskStore store.ITaskStore
 	registry  *config.Registry
 	jit       *JITManager
-	logger    *Logger
+	logger    *obs.Logger
 	mbStore   *store.MemoryBankStore // optional: for user profile extraction
 	wg        sync.WaitGroup         // audit M7: track inner goroutines
 }
@@ -51,7 +52,7 @@ func NewReflectionEngine(
 	ts store.ITaskStore,
 	reg *config.Registry,
 	jit *JITManager,
-	logger *Logger,
+	logger *obs.Logger,
 ) *ReflectionEngine {
 	return &ReflectionEngine{
 		expStore:  es,
@@ -358,7 +359,7 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 
 	// 6. Extract user profile signals (heuristic, no LLM call).
 	// Gated by MemoryBankEnabled (ADDED 2026-10-17).
-	if re.mbStore != nil && re.registry != nil && re.registry.System.MemoryBankEnabled {
+	if re.mbStore != nil && re.registry != nil && re.registry.System.MemoryBankEnabledEffective() {
 		re.extractUserProfile(ctx, graph)
 	}
 }

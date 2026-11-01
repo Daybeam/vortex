@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/store"
 )
@@ -43,7 +44,7 @@ type ReplayMutationRecord struct {
 // scan → fork → mutate → verify → write-back.
 type ReplayScheduler interface {
 	ScanFailedTasks(ctx context.Context, since time.Time) ([]string, error)
-	Mutate(history []AgentEvent, atStepID string) ([]MutationVariant, error)
+	Mutate(history []obs.AgentEvent, atStepID string) ([]MutationVariant, error)
 	RunReplayCycle(ctx context.Context) error
 }
 
@@ -91,7 +92,7 @@ func (rs *replayScheduler) SetCrossFamilyVerifier(resolver func() string, spawne
 // Looks for tool_call events whose args contain a task/prompt/query/content
 // field — these are the fields that carry the user's original task text
 // through the orchestrator's tool-call pipeline.
-func extractTaskText(history []AgentEvent) string {
+func extractTaskText(history []obs.AgentEvent) string {
 	for _, ev := range history {
 		if ev.EventType != "tool_call" {
 			continue
@@ -250,7 +251,7 @@ func (rs *replayScheduler) ScanFailedTasks(ctx context.Context, since time.Time)
 // Mutate generates mutation variants for a forked history using three
 // deterministic strategies: RewriteStrategy, AlternativeToolchain, and
 // ParamPerturbation. See OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md §decision 2.
-func (rs *replayScheduler) Mutate(history []AgentEvent, atStepID string) ([]MutationVariant, error) {
+func (rs *replayScheduler) Mutate(history []obs.AgentEvent, atStepID string) ([]MutationVariant, error) {
 	variants := make([]MutationVariant, 0, rs.maxVariants)
 
 	for _, ev := range history {
@@ -372,9 +373,9 @@ func perturbParams(args map[string]any) map[string]any {
 // extractRootCause reads the root_cause field from the last step_failed
 // event in the task history. Returns "" if not found (e.g. older tasks
 // logged before root_cause was added to event payloads).
-func extractRootCause(history []AgentEvent) string {
+func extractRootCause(history []obs.AgentEvent) string {
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].EventType == "step_failed" || history[i].EventType == string(EventStepFailed) {
+		if history[i].EventType == "step_failed" || history[i].EventType == string(obs.EventStepFailed) {
 			if cause, ok := history[i].Payload["root_cause"].(string); ok && cause != "" {
 				return cause
 			}
@@ -694,7 +695,7 @@ func (rs *replayScheduler) persistRecord(ctx context.Context, record ReplayMutat
 	}
 }
 
-func findFailedStep(history []AgentEvent) string {
+func findFailedStep(history []obs.AgentEvent) string {
 	for i := len(history) - 1; i >= 0; i-- {
 		if history[i].EventType == "step_failed" || history[i].EventType == "tool_error" {
 			return history[i].StepID

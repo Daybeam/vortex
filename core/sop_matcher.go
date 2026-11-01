@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -16,7 +17,7 @@ import (
 // so that low real-world adoption of a given SOP is visible in the logs
 // rather than silently invisible, which is the main tool for diagnosing
 // "this SOP's keywords are too narrow / too specific" over time.
-const EventSOPCandidatesOffered EventType = "sop_candidates_offered"
+const EventSOPCandidatesOffered obs.EventType = "sop_candidates_offered"
 
 // SOPCandidate pairs a matched SOP with its raw keyword-hit count, used only
 // for ranking candidates before truncating to maxCandidates. The hit count

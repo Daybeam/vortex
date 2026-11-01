@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/jsonrepair"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -21,10 +22,10 @@ import (
 type RoleGenerator struct {
 	registry       *config.Registry
 	resourceLoader *ResourceLoader
-	logger         *Logger
+	logger         *obs.Logger
 }
 
-func NewRoleGenerator(registry *config.Registry, loader *ResourceLoader, logger *Logger) *RoleGenerator {
+func NewRoleGenerator(registry *config.Registry, loader *ResourceLoader, logger *obs.Logger) *RoleGenerator {
 	return &RoleGenerator{
 		registry:       registry,
 		resourceLoader: loader,
@@ -40,7 +41,7 @@ func (g *RoleGenerator) GetOrCreateRole(ctx context.Context, taskID string, step
 	hash := g.computeHash(taskDescription, capability)
 	for _, r := range g.registry.Roles {
 		if r.Metadata["hash"] == hash {
-			g.logger.Log(EventRoleSynthesisSuppressed, taskID, stepID, map[string]any{
+			g.logger.Log(obs.EventRoleSynthesisSuppressed, taskID, stepID, map[string]any{
 				"reason":           "HashConflict",
 				"existing_role_id": r.ID,
 				"hash":             hash,

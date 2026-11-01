@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/core/cron"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -20,7 +21,7 @@ type ScheduleManager struct {
 	scheduler     OrchestrationEngine
 	expStore      store.IExperienceStore
 	scheduleStore *store.ScheduleStore
-	logger        *Logger
+	logger        *obs.Logger
 	stopChan      chan struct{}
 	stopOnce      sync.Once
 	lastLoaded    time.Time
@@ -31,7 +32,7 @@ func NewScheduleManager(
 	s OrchestrationEngine,
 	es store.IExperienceStore,
 	ss *store.ScheduleStore,
-	logger *Logger,
+	logger *obs.Logger,
 ) *ScheduleManager {
 	return &ScheduleManager{
 		scheduler:     s,
@@ -211,7 +212,7 @@ func (sm *ScheduleManager) RunNow(id string) (string, error) {
 // callers can distinguish automatic (schedule_triggered) from manual
 // (schedule_manual_trigger) runs.
 func (sm *ScheduleManager) submitAndTrack(s *schemas.Schedule, event string) (string, error) {
-	sm.logger.Log(EventType(event), "", "", map[string]any{
+	sm.logger.Log(obs.EventType(event), "", "", map[string]any{
 		"schedule_id":   s.ID,
 		"schedule_name": s.Name,
 	})
