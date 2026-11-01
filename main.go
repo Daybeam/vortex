@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -19,7 +20,12 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/obs"
+	"github.com/daybeam/vortex/pkg/acp"
+	"github.com/daybeam/vortex/pkg/featureflags"
 	"github.com/daybeam/vortex/pkg/registry"
+	"github.com/daybeam/vortex/pkg/runenv"
+	"github.com/daybeam/vortex/pkg/shutdown"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/store"
 	"github.com/daybeam/vortex/tools"
@@ -39,11 +45,16 @@ func main() {
 	flag.Parse()
 
 	// ── Resolve paths ──────────────────────────────────────────────────────
-	exe, _ := os.Executable()
-	root := filepath.Dir(exe)
-	if _, err := os.Stat(filepath.Join(root, "config.json")); err != nil {
-		root, _ = os.Getwd()
-	}
+	// VORTEX_ROOT pins the data root for multi-tenant deployment (§13.6);
+	// unset → exe-dir heuristic with cwd fallback (backward compatible).
+	root := runenv.ResolveDataRoot(func() string {
+		exe, _ := os.Executable()
+		r := filepath.Dir(exe)
+		if _, err := os.Stat(filepath.Join(r, "config.json")); err != nil {
+			r, _ = os.Getwd()
+		}
+		return r
+	})
 
 	configPath := filepath.Join(root, "config.json")
 	if *configFlag != "" {
@@ -58,7 +69,7 @@ func main() {
 	}
 	outputBase := filepath.Join(root, "outputs")
 	tmpBase := filepath.Join(root, "tmp")
-	logDir := filepath.Join(root, "logs")
+	logDir := runenv.LogsDir(root)
 	expDir := filepath.Join(root, "experience")
 	schedulePath := filepath.Join(expDir, "schedules.json")
 
@@ -73,15 +84,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
-	reg.StartWatcher(rootCtx)
-	reg.StartCompactor(rootCtx)
 
 	// Register .env hot-reload hook before StartWatcher.
+	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 5.
 	envPath := filepath.Join(root, ".env")
 	reg.SetEnvReloadHook(func() { loadDotEnvForReload(envPath) })
 
+	reg.StartWatcher(rootCtx)
+	reg.StartCompactor(rootCtx)
+
 	// Push feature flags to package-level atomics + register hot-reload callback.
-	syncFeatureFlags(reg)
+	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
+	featureflags.Sync(reg)
 	bootstrapRuntime(reg)
 
 	// Override outputBase from config if specified (LE-2 fix)
@@ -98,7 +112,7 @@ func main() {
 	})
 
 	// ── Logger ────────────────────────────────────────────────────────────
-	logger, err := core.NewLogger(logDir, &reg.System)
+	logger, err := obs.NewLogger(logDir, &reg.System)
 	if err != nil {
 		log.Fatalf("failed to init logger: %v", err)
 	}
@@ -172,17 +186,19 @@ func main() {
 		}
 		runExec(reg, logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath, *execTool, argsJSON, s)
 	} else {
-		runHub(reg, logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath, s, rootCtx, rootCancel)
+		runHub(reg, logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath, s, db, rootCtx, rootCancel)
 	}
 }
 
 // bootstrapRuntime registers post-registry startup wiring: the config
-// hot-reload callback and the agentskills.io standard discovery-path import
-// (project-level CWD/.agents/skills/ + user-level ~/.agents/skills/). Imported
-// skills land in PendingSkills staging — discoverable only after promote_skill.
+// hot-reload callback (see docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md) and
+// the agentskills.io standard discovery-path import (G4, project-level
+// CWD/.agents/skills/ + user-level ~/.agents/skills/). Imported skills land
+// in PendingSkills staging — discoverable only after promote_skill.
+// See docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md.
 func bootstrapRuntime(reg *config.Registry) {
 	reg.OnReload(func() {
-		syncFeatureFlags(reg)
+		featureflags.Sync(reg)
 		core.InvalidateMCPEnvCache()
 	})
 
@@ -194,7 +210,7 @@ func bootstrapRuntime(reg *config.Registry) {
 	}
 }
 
-func runExec(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath string, toolName, argsJSON string, s *store.Store) {
+func runExec(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath string, toolName, argsJSON string, s *store.Store) {
 	ts := s.Tasks
 	es := s.Experience
 	ss := s.Schedules
@@ -284,7 +300,7 @@ func runExec(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBas
 	fmt.Println(string(data))
 }
 
-func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath string, s *store.Store, rootCtx context.Context, rootCancel context.CancelFunc) {
+func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase, logDir, expDir, schedulePath, configPath string, s *store.Store, db *sql.DB, rootCtx context.Context, rootCancel context.CancelFunc) {
 	fmt.Fprintln(os.Stderr, "[orchestrator] Starting in Hub mode...")
 	for _, dir := range []string{outputBase, tmpBase, logDir, expDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -350,6 +366,14 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	// ── Scheduler ─────────────────────────────────────────────────────────
 	scheduler := core.NewDirectedEngine(reg, ts, es, jitMgr, logger, sf, outputBase, tmpBase, loader)
 	scheduler.SetMemoryBankStore(mbStore)
+	scheduler.SetAuditLogger(core.NewAuditLogger(runenv.AuditChainPath(logDir)))
+	ct, ctErr := core.NewCostTracker(runenv.CostDBPath(logDir))
+	if ctErr != nil {
+		log.Printf("[warning] cost tracker init failed: %v", ctErr)
+	} else {
+		defer ct.Close()
+	}
+	scheduler.SetCostTracker(ct)
 	scheduler.JITSessions = core.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.TaskRegistry = s.TaskRegistry
 	if s.DB != nil {
@@ -357,14 +381,28 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	}
 	scheduler.Sessions = core.NewSessionManager(reg.System.Sandbox.AllowedWorkspaces, 0)
 
-	scheduler.SetAuditLogger(core.NewAuditLogger(filepath.Join(logDir, "audit_chain.json")))
-	ct, ctErr := core.NewCostTracker(filepath.Join(logDir, "cost_records.db"))
-	if ctErr != nil {
-		log.Printf("[warning] cost tracker init failed: %v", ctErr)
-	} else {
-		defer ct.Close()
+	// ── System One Decision Model (config-driven, hot-reload safe) ─────────
+	wireSystemOne := func() {
+		reg.Mu.RLock()
+		sc := reg.System.SystemOne
+		reg.Mu.RUnlock()
+		if sc.BaseURL != "" && (sc.EnableDecisionGate || sc.EnableToolRouter || sc.EnableFailureClassify || sc.EnableSieve) {
+			sysOneP := providers.NewSystemOneProvider(&config.ProviderConfig{
+				Provider: "systemone",
+				Model:    sc.Model,
+				BaseURL:  sc.BaseURL,
+				APIKey:   sc.APIKey,
+			})
+			scheduler.SetSystemOneProvider(sysOneP, sc)
+			log.Printf("[systemone] enabled (endpoint=%s, model=%s, gate=%v, router=%v, classify=%v, sieve=%v)",
+				sc.BaseURL, sc.Model, sc.EnableDecisionGate, sc.EnableToolRouter, sc.EnableFailureClassify, sc.EnableSieve)
+		} else {
+			scheduler.SetSystemOneProvider(nil, sc)
+			log.Printf("[systemone] disabled (no base_url or no enable flags)")
+		}
 	}
-	scheduler.SetCostTracker(ct)
+	wireSystemOne()
+	reg.OnReload(wireSystemOne)
 
 	// audit H10: wait for fire-and-forget DB saves to drain before db.Close.
 	// Must be deferred BEFORE scheduler.Stop so LIFO order runs it AFTER
@@ -377,17 +415,17 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	// ── Global Event Logger (trajectory capture) ─────────────────────────
 	// Writes all EventBus events to global_trajectory.jsonl. Passive
 	// subscriber — zero risk, immediate value for replay/audit.
-	gel, gelErr := core.NewGlobalEventLogger(logDir)
+	gel, gelErr := obs.NewGlobalEventLogger(logDir)
 	if gelErr != nil {
 		log.Printf("[event-log] failed to init GlobalEventLogger: %v (continuing without)", gelErr)
 	} else {
-		gel.HookEventBus(core.DefaultBus)
+		gel.HookEventBus(obs.DefaultBus)
 		defer gel.Close()
 	}
 
 	// ── Offline Replay Scheduler (self-optimization) ──────────────────────
 	if s.DB != nil && getenv("VORTEX_REPLAY_ENABLED", "1") != "" {
-		replayer := core.NewReplayer(filepath.Join(logDir, "global_trajectory.jsonl"))
+		replayer := core.NewReplayer(runenv.TrajectoryPath(logDir))
 		if expStore, ok := s.Experience.(*store.ExperienceStore); ok {
 			replaySched := core.NewReplayScheduler(replayer, nil, expStore, s.DB, nil)
 			replaySched.SetCrossFamilyVerifier(
@@ -443,15 +481,17 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 	}
 	app.InitArchive(outputBase)
 	defer app.StopArchive() // audit M12: stop pruning goroutine on shutdown
-	defer app.WireQualityTracker()() // quality trend observability
 
 	// Budget Gate: auto-suspend tasks when token usage exceeds configured
 	// thresholds. No-op unless budget_gate.enabled is set in config.json.
-	if bg := core.NewBudgetGate(reg.System.BudgetGate, scheduler); bg != nil {
+	bg := core.NewBudgetGate(reg.System.BudgetGate, scheduler)
+	if bg != nil {
 		defer bg.Wire()()
 		fmt.Fprintln(os.Stderr, "[orchestrator] budget gate enabled")
 	}
-
+	app.BudgetGate = bg
+	app.CostTracker = ct
+	defer app.WireQualityTracker()() // design §2.4 方案 D: quality trend observability
 	if err := app.SetupSubsystems(mcpServer); err != nil {
 		log.Fatalf("failed to init subsystems: %v", err)
 	}
@@ -474,24 +514,19 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 
 	// ── Transport ─────────────────────────────────────────────────────────
 	transport := getenv("VORTEX_TRANSPORT", "stdio")
-
 	switch transport {
 	case "sse":
 		serveSSE(mcpServer, rootCancel) // audit L4: pass rootCancel so background goroutines stop on shutdown
 	case "acp":
 		fmt.Fprintln(os.Stderr, "[orchestrator] ACP transport mode (Agent Client Protocol over stdio)")
-		if err := serveACP(scheduler, os.Stdin, os.Stdout); err != nil {
+		if err := acp.ServeACP(scheduler, os.Stdin, os.Stdout); err != nil {
 			log.Printf("[acp] server error: %v", err)
 		}
 	default:
 		fmt.Fprintln(os.Stderr, "[orchestrator] stdio mode (Claude Desktop)")
 		// Graceful shutdown on SIGINT/SIGTERM: run ServeStdio in a goroutine,
-		// wait for either the server to finish or a signal. On signal, cancel
-		// the root context (stops background goroutines) and close stdin to
-		// unblock ServeStdio, then return normally so deferred cleanup runs
-		// (scheduler.Stop, logger.Close, JIT CloseAll, MCP Close, etc.).
-		// Without this, SIGINT kills the process immediately and all deferred
-		// cleanup is skipped (audit finding H7).
+		// wait for server done or signal. On signal, rootCancel stops bg goroutines
+		// and we return normally so deferred cleanup runs (audit H7).
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 		defer signal.Stop(sigCh)
@@ -501,7 +536,7 @@ func runHub(reg *config.Registry, logger *core.Logger, root, outputBase, tmpBase
 			serverDone <- server.ServeStdio(mcpServer)
 		}()
 
-		if err := waitForServerOrSignal(serverDone, sigCh, rootCancel, os.Stdin); err != nil {
+		if err := shutdown.WaitForServerOrSignal(serverDone, sigCh, rootCancel, os.Stdin); err != nil {
 			// audit L7: don't use log.Fatalf — os.Exit skips deferred cleanup
 			// (CloseMCPConnections, JITSessions.CloseAll, scheduler.Stop, etc.).
 			// Log and return normally so defers run.

@@ -10,7 +10,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -81,13 +81,13 @@ func serveACP(engine acpEngine, stdin io.Reader, stdout io.Writer) error {
 	}
 
 	// Event bridge: forward task terminal events as ACP notifications.
-	unsub1 := core.DefaultBus.SubscribeWithCancel(string(core.EventTaskCompleted), func(ev core.AgentEvent) error {
+	unsub1 := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), func(ev obs.AgentEvent) error {
 		writeJSON(acpNotification{JSONRPC: "2.0", Method: "task_completed", Params: map[string]any{
 			"task_id": ev.TaskID, "payload": ev.Payload,
 		}})
 		return nil
 	})
-	unsub2 := core.DefaultBus.SubscribeWithCancel(string(core.EventTaskFailed), func(ev core.AgentEvent) error {
+	unsub2 := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskFailed), func(ev obs.AgentEvent) error {
 		writeJSON(acpNotification{JSONRPC: "2.0", Method: "task_failed", Params: map[string]any{
 			"task_id": ev.TaskID, "payload": ev.Payload,
 		}})
