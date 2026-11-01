@@ -1,4 +1,4 @@
-package core
+package sieve
 
 import (
 	"encoding/json"
@@ -29,15 +29,19 @@ func (s *Sieve) InspectToolCalls(taskID, stepID string, calls []store.ToolIntera
 		// `_decision_id`) are stripped before the payload is sent, so letting
 		// them vary the key would hand the model a free bypass for every check
 		// below — and the model discovers `_reason` from the block message.
-		argData, _ := json.Marshal(canonicalToolArgs(call.Arguments))
+		argData, _ := json.Marshal(CanonicalToolArgs(call.Arguments))
 		hash := fmt.Sprintf("%s:%s", call.ToolName, string(argData))
 
 		history := s.toolHistory[histKey]
 
-		// Poller tools (poll/progress/health/wait) are exempt from all
-		// repetition checks — they legitimately repeat with the same args
-		// while waiting for external state to change.
-		if !isPollerTool(call.ToolName) {
+		// Polling calls are exempt from all repetition checks — they
+		// legitimately repeat with the same args while waiting for external
+		// state to change. This is judged per call (name signals, a blocking
+		// `wait_seconds`, or a task-status query), not per tool name alone:
+		// `orchestrator_task_status(task_id=X, wait_seconds=20)` is the
+		// documented way to wait for a delegated task, and it used to be
+		// counted as an infinite loop.
+		if !IsPollingCall(call.ToolName, call.Arguments) {
 			consecutiveCount := 0
 			for i := len(history) - 1; i >= 0; i-- {
 				if history[i] == hash {
@@ -97,7 +101,7 @@ func (s *Sieve) InspectToolCalls(taskID, stepID string, calls []store.ToolIntera
 		// period 2-4 cycles slip through consecutive/window/total checks.
 		// e.g., A,B,C,D,A,B,C,D,A,B,C,D — each hash appears only 3 times
 		// total (< threshold*2=6), and < 3 in any 6-window (< 50% density).
-		if !isPollerTool(call.ToolName) && detectCycle(s.toolHistory[histKey], s.ToolRepetitionThreshold) {
+		if !IsPollingCall(call.ToolName, call.Arguments) && detectCycle(s.toolHistory[histKey], s.ToolRepetitionThreshold) {
 			s.recordInterceptLocked(taskID, hash)
 			return false, "InfiniteLoopDetected"
 		}

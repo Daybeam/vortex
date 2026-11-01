@@ -1,4 +1,4 @@
-package core
+package sieve
 
 import (
 	"fmt"
@@ -63,7 +63,7 @@ func (s *Sieve) DetectPlanDrift(taskID string, tc schemas.ToolCall) string {
 	toolName := strings.ToLower(tc.Name)
 
 	// Read-only tools never drift — reading is always within scope.
-	if isReadTool(toolName) || isPollerTool(toolName) {
+	if IsReadTool(toolName) || IsPollerTool(toolName) {
 		return ""
 	}
 

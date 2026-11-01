@@ -1,4 +1,4 @@
-package core
+package sieve
 
 import (
 	"fmt"
@@ -106,7 +106,7 @@ func NewSieve(maxKeep int) *Sieve {
 	}
 }
 
-func newSieveFromConfig(sys config.SystemSettings) *Sieve {
+func NewSieveFromConfig(sys config.SystemSettings) *Sieve {
 	s := NewSieve(sys.MaxContextKeep)
 	if sys.ToolRepetitionThreshold > 0 {
 		s.ToolRepetitionThreshold = sys.ToolRepetitionThreshold

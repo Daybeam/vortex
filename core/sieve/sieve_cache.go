@@ -1,4 +1,4 @@
-package core
+package sieve
 
 import (
 	"crypto/sha256"
@@ -90,7 +90,7 @@ func (s *Sieve) CheckResultRepetition(taskID, result string) bool {
 }
 
 func toolCallHash(toolName string, args map[string]any) string {
-	argData, _ := json.Marshal(canonicalToolArgs(args))
+	argData, _ := json.Marshal(CanonicalToolArgs(args))
 	return fmt.Sprintf("%s:%s", toolName, string(argData))
 }
 
@@ -130,7 +130,7 @@ func (s *Sieve) ObserveResult(taskID, stepID, tool, content string) int {
 	return s.resultSeen[key]
 }
 
-// isReadTool returns true for tool names that are read-only (no state side
+// IsReadTool returns true for tool names that are read-only (no state side
 // effects). Uses a prefix heuristic on the tool's *method* name.
 // Everything else is treated as a potential write → clears the read cache.
 //
@@ -146,10 +146,10 @@ func (s *Sieve) ObserveResult(taskID, stepID, tool, content string) int {
 // no guard firing once, step dead at MAX_TURNS_EXHAUSTED after 40 turns.
 //
 // So: strip the namespace, then match the verb. Unprefixed names are unchanged.
-func isReadTool(name string) bool {
+func IsReadTool(name string) bool {
 	n := strings.ToLower(name)
-	if i := strings.LastIndex(n, toolNamespaceSeparator); i >= 0 {
-		n = n[i+len(toolNamespaceSeparator):]
+	if i := strings.LastIndex(n, ToolNamespaceSeparator); i >= 0 {
+		n = n[i+len(ToolNamespaceSeparator):]
 	}
 	for _, p := range readToolPrefixes {
 		if strings.HasPrefix(n, p) {
@@ -159,9 +159,9 @@ func isReadTool(name string) bool {
 	return false
 }
 
-// toolNamespaceSeparator splits "<server>__<method>". AppWorld, tau2 and the
+// ToolNamespaceSeparator splits "<server>__<method>". AppWorld, tau2 and the
 // built-in servers all follow it.
-const toolNamespaceSeparator = "__"
+const ToolNamespaceSeparator = "__"
 
 // readToolPrefixes are method-name verbs that imply no state change. "show" and
 // "view" cover AppWorld's API naming; "describe"/"inspect"/"retrieve"/"find"/
@@ -171,10 +171,10 @@ var readToolPrefixes = []string{
 	"show", "view", "describe", "inspect", "retrieve", "find", "lookup", "count",
 }
 
-// isPollerTool returns true for tools that return time-varying results with
+// IsPollerTool returns true for tools that return time-varying results with
 // the same args (polling, progress, health). These are exempt from loop
 // detection and never cached — they must always execute fresh.
-func isPollerTool(name string) bool {
+func IsPollerTool(name string) bool {
 	n := strings.ToLower(name)
 	for _, s := range pollerSignals {
 		if strings.Contains(n, s) {
@@ -185,6 +185,68 @@ func isPollerTool(name string) bool {
 }
 
 var pollerSignals = []string{"poll", "progress", "health", "wait"}
+
+// IsPollingCall reports whether this particular call is a poll, i.e. one that
+// asks for the current state of something that changes on its own.
+//
+// It is a property of the CALL, not only of the tool name. `IsPollerTool`
+// matches names containing poll/progress/health/wait, and
+// `orchestrator_task_status` contains none of them — so it was classified as a
+// write: its result was prefixed "[ACTION COMPLETED]", every poll called
+// ClearResultCache (discarding cached reads), and five legitimate polls with
+// the same (task_id, wait_seconds=20) were counted by InspectToolCalls as
+// InfiniteLoopDetected. Observed on 026/v65: the status receipt really did
+// carry the "[ACTION COMPLETED]" prefix.
+//
+// Two signals, either suffices:
+//
+//   - the caller asked to block until something changes (`wait_seconds > 0`),
+//     which is the definition of polling regardless of the tool's name;
+//   - the tool is one of the built-in delegation status queries, which are
+//     volatile even with wait_seconds=0 (the answer is "running" now and
+//     "completed" a second later).
+//
+// Deliberately NOT a `contains "status"` match: that would also capture
+// writes such as `update_status`, and treating a write as a poll skips the
+// cache invalidation it owes.
+func IsPollingCall(name string, args map[string]any) bool {
+	if IsPollerTool(name) {
+		return true
+	}
+	if positiveSecondsArg(args, "wait_seconds") > 0 {
+		return true
+	}
+	n := strings.ToLower(name)
+	if i := strings.LastIndex(n, ToolNamespaceSeparator); i >= 0 {
+		n = n[i+len(ToolNamespaceSeparator):]
+	}
+	return n == "task_status" || strings.HasSuffix(n, "_task_status")
+}
+
+// positiveSecondsArg reads a numeric argument that may arrive as float64
+// (JSON), int (tests, internal callers) or json.Number (streaming decoders).
+func positiveSecondsArg(args map[string]any, key string) float64 {
+	if args == nil {
+		return 0
+	}
+	switch v := args[key].(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0
+		}
+		return f
+	}
+	return 0
+}
 
 // SetSystemOneProvider injects the System One decision model for the Sieve's
 // Noul/Score safety check (M5). Nil-safe: when provider is nil or EnableSieve

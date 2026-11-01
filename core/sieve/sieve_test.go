@@ -1,4 +1,4 @@
-package core
+package sieve
 
 import (
 	"testing"
@@ -162,13 +162,13 @@ func TestSieve_CacheReplay_ClearHistoryAlsoClearsCache(t *testing.T) {
 func TestSieve_isReadTool(t *testing.T) {
 	readTools := []string{"get_reservation_details", "get_flight_status", "list_users", "check_status", "query_orders", "search_flights", "read_file", "fetch_data", "is_valid", "has_permission"}
 	for _, name := range readTools {
-		if !isReadTool(name) {
+		if !IsReadTool(name) {
 			t.Errorf("Expected %q to be classified as read tool", name)
 		}
 	}
 	writeTools := []string{"cancel_reservation", "book_flight", "update_booking", "create_order", "delete_user", "submit_form", "modify_record", "transfer_call", "rebook_flight", "reschedule_flight"}
 	for _, name := range writeTools {
-		if isReadTool(name) {
+		if IsReadTool(name) {
 			t.Errorf("Expected %q to be classified as write tool", name)
 		}
 	}
@@ -181,13 +181,13 @@ func TestSieve_isReadTool(t *testing.T) {
 func TestSieve_isPollerTool(t *testing.T) {
 	pollers := []string{"poll_job", "get_progress", "check_health", "wait_for_completion", "poll_result", "query_progress"}
 	for _, name := range pollers {
-		if !isPollerTool(name) {
+		if !IsPollerTool(name) {
 			t.Errorf("Expected %q to be classified as poller", name)
 		}
 	}
 	nonPollers := []string{"get_reservation_details", "cancel_reservation", "check_status", "get_flight_status"}
 	for _, name := range nonPollers {
-		if isPollerTool(name) {
+		if IsPollerTool(name) {
 			t.Errorf("Expected %q to NOT be classified as poller", name)
 		}
 	}
