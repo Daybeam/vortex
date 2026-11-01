@@ -85,7 +85,7 @@ func TestSearchWithOptions_DecayWeightRanking(t *testing.T) {
 		t.Fatalf("Append stale: %v", err)
 	}
 
-	results := archive.Search("searchable", nil, 10, "", "")
+	results := archive.Search("searchable", nil, 10, "", "", "")
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 results, got %d", len(results))
 	}
@@ -129,7 +129,7 @@ func TestSearchWithOptions_ZeroTimestampNoDecay(t *testing.T) {
 		t.Fatalf("Append recent: %v", err)
 	}
 
-	results := archive.Search("legacy", nil, 10, "", "")
+	results := archive.Search("legacy", nil, 10, "", "", "")
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 results, got %d", len(results))
 	}

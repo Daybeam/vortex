@@ -378,36 +378,6 @@ func TestSegmentManager_GetSegmentLinks_NilWhenNoLinks(t *testing.T) {
 	}
 }
 
-// ── P1-8: ChatHarness SegmentManager Wiring ────────────────────────────────
-
-func TestChatHarness_SegmentManager_AddItemCalled(t *testing.T) {
-	tmpDir := t.TempDir()
-	sm := NewSegmentManager(filepath.Join(tmpDir, "segments.jsonl"))
-
-	// Create a chat harness with SegmentManager set.
-	// We can't easily test the full flow without a provider, but we can
-	// verify the SegmentManager field is properly set and AddItem works.
-	harness := &ChatHarness{
-		Segments: sm,
-	}
-
-	if harness.Segments == nil {
-		t.Fatal("SegmentManager should be set")
-	}
-
-	// Verify AddItem works through the harness.
-	seg := harness.Segments.AddItem(MemoryItem{
-		NodeID:    "test-item",
-		Intent:    "test intent",
-		Summary:   "test summary",
-		Timestamp: time.Now(),
-	}, "test-scope")
-
-	if seg == nil {
-		t.Error("AddItem should return a non-nil segment")
-	}
-}
-
 // ── ArchiveQuery Methods ──────────────────────────────────────────────────
 
 func TestArchiveQuery_SearchRecentStepSummaries(t *testing.T) {
@@ -426,7 +396,7 @@ func TestArchiveQuery_SearchRecentStepSummaries(t *testing.T) {
 	}
 
 	// Query top 3.
-	results := archive.SearchRecentStepSummaries(taskID, 3)
+	results := archive.SearchRecentStepSummaries(taskID, "", 3)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
@@ -454,7 +424,7 @@ func TestArchiveQuery_SearchRecentStepSummaries_FiltersByTask(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	results := archive.SearchRecentStepSummaries("task-A", 10)
+	results := archive.SearchRecentStepSummaries("task-A", "", 10)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result for task-A, got %d", len(results))
 	}
@@ -480,7 +450,7 @@ func TestArchiveQuery_SearchRecentStepSummaries_OnlyWithSummary(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	results := archive.SearchRecentStepSummaries("task-X", 10)
+	results := archive.SearchRecentStepSummaries("task-X", "", 10)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result (only items with summaries), got %d", len(results))
 	}
@@ -501,7 +471,7 @@ func TestArchiveQuery_SearchAllStepSummaries(t *testing.T) {
 		})
 	}
 
-	results := archive.SearchAllStepSummaries(taskID, "step", 10)
+	results := archive.SearchAllStepSummaries(taskID, "", "step", 10)
 	// audit T-HIGH-1: was _ = results (gatekeeping bypass — discarded results, verified nothing).
 	// Assert the search actually returns matching items with the correct task scope.
 	if len(results) == 0 {
@@ -528,7 +498,7 @@ func TestArchiveQuery_SearchSegments(t *testing.T) {
 		})
 	}
 
-	results := archive.SearchSegments(taskID, 2)
+	results := archive.SearchSegments(taskID, "", 2)
 	if len(results) > 2 {
 		t.Fatalf("expected at most 2 results, got %d", len(results))
 	}
@@ -538,13 +508,13 @@ func TestArchiveQuery_NilSafe(t *testing.T) {
 	var archive *ContextArchive
 
 	// All methods should be nil-safe.
-	if r := archive.SearchRecentStepSummaries("task", 3); r != nil {
+	if r := archive.SearchRecentStepSummaries("task", "", 3); r != nil {
 		t.Error("SearchRecentStepSummaries should return nil for nil archive")
 	}
-	if r := archive.SearchAllStepSummaries("task", "query", 3); r != nil {
+	if r := archive.SearchAllStepSummaries("task", "", "query", 3); r != nil {
 		t.Error("SearchAllStepSummaries should return nil for nil archive")
 	}
-	if r := archive.SearchSegments("task", 3); r != nil {
+	if r := archive.SearchSegments("task", "", 3); r != nil {
 		t.Error("SearchSegments should return nil for nil archive")
 	}
 }

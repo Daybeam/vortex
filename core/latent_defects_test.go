@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/jit"
 )
 
 // Sieve-only coverage (history, threshold, loop detection) moved with the
@@ -17,7 +18,7 @@ func TestJIT_RestoreLocalMCPs_SkipsMissingScript(t *testing.T) {
 		MCPs:        make(map[string]*config.MCPDef),
 		DynamicMCPs: make(map[string]*config.MCPDef),
 	}
-	jit := NewJITManager(reg, tempDir)
+	jit := jit.NewJITManager(reg, tempDir)
 
 	id := "jit_test_missing"
 	missingPath := filepath.Join(tempDir, "nonexistent.lua")
@@ -52,7 +53,7 @@ func TestJIT_RestoreLocalMCPs_RestoresWhenScriptExists(t *testing.T) {
 		MCPs:        make(map[string]*config.MCPDef),
 		DynamicMCPs: make(map[string]*config.MCPDef),
 	}
-	jit := NewJITManager(reg, tempDir)
+	jit := jit.NewJITManager(reg, tempDir)
 
 	id := "jit_test_exists"
 	scriptPath := filepath.Join(tempDir, "test.lua")
@@ -91,7 +92,7 @@ func TestJIT_RestoreLocalMCPs_EmptyArgs_RestoresWithoutCheck(t *testing.T) {
 		MCPs:        make(map[string]*config.MCPDef),
 		DynamicMCPs: make(map[string]*config.MCPDef),
 	}
-	jit := NewJITManager(reg, tempDir)
+	jit := jit.NewJITManager(reg, tempDir)
 
 	id := "jit_no_args"
 	mcpDef := config.MCPDef{

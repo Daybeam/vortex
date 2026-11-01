@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -59,7 +60,7 @@ func TestReflectionEngine_ScanForHybridMerge(t *testing.T) {
 	t.Cleanup(func() { providers.GlobalRouter.Deregister("default") })
 
 	logger := mustNewLogger(t, logDir, nil)
-	jit := NewJITManager(reg, tmpDir)
+	jit := jit.NewJITManager(reg, tmpDir)
 
 	// Experience store
 	es := mustNewExperienceStore(t, tmpDir, nil, nil, nil, nil)
@@ -121,7 +122,7 @@ func TestReflectionEngine_CrystallizeStepToSkill_Additive(t *testing.T) {
 	t.Cleanup(func() { providers.GlobalRouter.Deregister("default") })
 
 	logger := mustNewLogger(t, logDir, nil)
-	jit := NewJITManager(reg, tmpDir)
+	jit := jit.NewJITManager(reg, tmpDir)
 	es := mustNewExperienceStore(t, tmpDir, nil, nil, nil, nil)
 
 	// Mock TaskStore

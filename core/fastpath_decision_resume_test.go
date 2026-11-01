@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -117,7 +118,7 @@ func newFastPathHarness(t *testing.T, maxTurns int) *fastPathHarness {
 			ConfidenceThreshold: 0.7,
 			MaxToolTurns:        maxTurns,
 			FeatureFlags: config.FeatureFlags{
-				EvalObs:           true,
+				EvalObs:            true,
 				DisablePatternKill: true,
 			},
 		},
@@ -126,7 +127,7 @@ func newFastPathHarness(t *testing.T, maxTurns int) *fastPathHarness {
 	logger := mustNewLogger(t, logDir, &reg.System)
 	ts := store.NewTaskStore(&mockBackend{data: make(map[string][]byte)})
 	expStore := mustNewExperienceStore(t, t.TempDir(), ts, &reg.System, nil, nil)
-	jit := NewJITManager(reg, t.TempDir())
+	jit := jit.NewJITManager(reg, t.TempDir())
 
 	engine := NewDirectedEngine(reg, ts, expStore, jit, logger, nil, outDir, outDir, nil)
 	t.Cleanup(func() { engine.Stop() })

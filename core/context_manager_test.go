@@ -274,7 +274,7 @@ func TestApplySemanticPruning(t *testing.T) {
 	// Input has no blank lines → line-level fallback. Duplicate lines ("Line 2",
 	// "Line 3") should be deduped by sha256 hash.
 	input := "User: Task 1\nLine 2\nLine 3\nAssistant: OK\nUser: Task 2\nLine 2\nLine 3\nUser: Task 3\nAssistant: OK 3\nUser: Task 4\nAssistant: OK 4\nUser: Task 5\nAssistant: Final result."
-	got := applySemanticPruning(input)
+	got := ApplySemanticPruning(input)
 	if !strings.Contains(got, "Task 1") {
 		t.Error("Head (Task 1) lost")
 	}
@@ -306,7 +306,7 @@ func TestApplySemanticPruning_ParagraphLevel(t *testing.T) {
 		"Conclusion: ready for review",
 	}
 	input := strings.Join(paragraphs, "\n\n")
-	got := applySemanticPruning(input)
+	got := ApplySemanticPruning(input)
 
 	// Head preserved.
 	if !strings.Contains(got, "Goal: analyze") {
@@ -339,7 +339,7 @@ func TestApplySemanticPruning_DedupByHash(t *testing.T) {
 		"Tail paragraph",
 	}
 	input := strings.Join(paragraphs, "\n\n")
-	got := applySemanticPruning(input)
+	got := ApplySemanticPruning(input)
 
 	count := strings.Count(got, "Repeated block")
 	if count != 1 {
@@ -350,7 +350,7 @@ func TestApplySemanticPruning_DedupByHash(t *testing.T) {
 func TestApplySemanticPruning_TooShortToPrune(t *testing.T) {
 	// <= 5 paragraphs → return unchanged.
 	input := "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"
-	got := applySemanticPruning(input)
+	got := ApplySemanticPruning(input)
 	if got != input {
 		t.Errorf("expected unchanged for short input; got %q", got)
 	}
@@ -369,7 +369,7 @@ func TestApplySemanticPruning_LowDensityDropped(t *testing.T) {
 		"Tail paragraph with content",
 	}
 	input := strings.Join(paragraphs, "\n\n")
-	got := applySemanticPruning(input)
+	got := ApplySemanticPruning(input)
 
 	// The low-density paragraph should be dropped.
 	if strings.Contains(got, "   \n   \n") {
