@@ -80,7 +80,7 @@ func (s *Spawner) runPlannerPhase(ctx context.Context, req *SpawnRequest) (strin
 	// have already produced, enabling better step-level planning.
 	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.3.
 	if s.archive != nil && req.TaskID != "" {
-		upstreamSummaries := s.archive.SearchRecentStepSummaries(req.TaskID, 3)
+		upstreamSummaries := s.archive.SearchRecentStepSummaries(req.TaskID, s.ProjectOf(req.TaskID), 3)
 		if len(upstreamSummaries) > 0 {
 			system += "\n\n## Upstream Step Summaries\n"
 			system += "The following summaries are from previously completed steps in this task. Use them to understand what has already been done and plan accordingly:\n\n"

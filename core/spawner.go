@@ -86,6 +86,11 @@ type Spawner struct {
 	// Nil-safe: when nil or sanitizer is nil, call is a no-op.
 	ClearSanitizer func(taskID string)
 
+	// projectResolver resolves a taskID to its project space identifier.
+	// Injected by DirectedEngine via SetProjectResolver. Nil-safe: returns
+	// "default" when nil (Phase 3, Project Space & Memory Tiering design).
+	projectResolver func(taskID string) string
+
 	// signalCollector and policyDecider decouple data collection from policy
 	// computation in calculateMaxTurns. See core/policy_signals.go and
 	// core/policy_decider.go. Nil-safe: initialized in NewSpawner.
@@ -371,6 +376,25 @@ func (s *Spawner) SetArchive(a *ContextArchive) {
 	if s.pa != nil {
 		s.pa.SetArchive(a)
 	}
+}
+
+// SetProjectResolver injects the taskID→projectID resolver from the
+// DirectedEngine. Nil-safe: when nil, ProjectOf returns "default".
+// Propagates to the PromptAssembler if it has been initialized.
+func (s *Spawner) SetProjectResolver(r func(taskID string) string) {
+	s.projectResolver = r
+	if s.pa != nil {
+		s.pa.SetProjectResolver(r)
+	}
+}
+
+// ProjectOf returns the project space identifier for the given task.
+// Returns "default" when no resolver is wired or the task is unknown.
+func (s *Spawner) ProjectOf(taskID string) string {
+	if s.projectResolver == nil {
+		return "default"
+	}
+	return s.projectResolver(taskID)
 }
 
 // SetFoldEngine injects the FoldEngine for segment-based incremental fold.

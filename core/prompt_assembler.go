@@ -40,6 +40,11 @@ type PromptAssembler struct {
 	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
 	archive *ContextArchive
 
+	// projectResolver resolves a taskID to its project space identifier.
+	// Injected by Spawner via SetProjectResolver. Nil-safe: returns
+	// "default" when nil (Phase 3, Project Space & Memory Tiering design).
+	projectResolver func(taskID string) string
+
 	// foldEngine (ADDED 2026-10-13): Segment-Based Incremental Fold engine.
 	// Performs reversible compression of sealed segments before budget enforcement.
 	// Nil-safe: when nil, fold is skipped (zero behavior change).
@@ -103,6 +108,21 @@ type PromptAssembler struct {
 // Nil-safe: when nil, the Archive query is skipped (zero behavior change).
 func (s *PromptAssembler) SetArchive(a *ContextArchive) {
 	s.archive = a
+}
+
+// SetProjectResolver injects the taskID→projectID resolver.
+// Nil-safe: when nil, ProjectOf returns "default".
+func (s *PromptAssembler) SetProjectResolver(r func(taskID string) string) {
+	s.projectResolver = r
+}
+
+// ProjectOf returns the project space identifier for the given task.
+// Returns "default" when no resolver is wired.
+func (s *PromptAssembler) ProjectOf(taskID string) string {
+	if s.projectResolver == nil {
+		return "default"
+	}
+	return s.projectResolver(taskID)
 }
 
 // SetOutputBase sets the engine's output base directory for D4 (delegation
@@ -639,7 +659,7 @@ func (s *PromptAssembler) Build(
 	// placing it after the stable blocks prevents it from invalidating the
 	// cacheable prefix.
 	if s.archive != nil && taskID != "" {
-		stepSummaries := s.archive.SearchRecentStepSummaries(taskID, 3)
+		stepSummaries := s.archive.SearchRecentStepSummaries(taskID, s.ProjectOf(taskID), 3)
 		if len(stepSummaries) > 0 {
 			var archivePart strings.Builder
 			archivePart.WriteString("# Recent Step Summaries (Same Task)\n")

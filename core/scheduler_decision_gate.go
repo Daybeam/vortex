@@ -642,7 +642,7 @@ func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string, submitt
 	// Query Archive for all step summaries in this task (Path B).
 	var summariesText string
 	if s.Archive != nil {
-		summaries := s.Archive.SearchAllStepSummaries(taskID, reason, 10)
+		summaries := s.Archive.SearchAllStepSummaries(taskID, s.ProjectOf(taskID), reason, 10)
 		if len(summaries) > 0 {
 			var sb strings.Builder
 			sb.WriteString("\n\n## Completed Step Summaries\n")
