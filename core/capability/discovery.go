@@ -1,4 +1,4 @@
-package core
+package capability
 
 import (
 	"fmt"
@@ -67,14 +67,14 @@ type MCPSummary struct {
 
 // ── Scope Enforcement ─────────────────────────────────────────────────────
 
-// enforceScope validates the scope and returns the set of MCP IDs visible
+// EnforceScope validates the scope and returns the set of MCP IDs visible
 // within that scope. This is the permission gate — all discovery goes
 // through here.
 //
 // Returns:
 //   - mcpIDs: the set of MCP IDs the caller is allowed to see
 //   - err: if scope is invalid or pool access is denied
-func enforceScope(reg *config.Registry, scope DiscoveryScope) (mcpIDs []string, err error) {
+func EnforceScope(reg *config.Registry, scope DiscoveryScope) (mcpIDs []string, err error) {
 	reg.Mu.RLock()
 	defer reg.Mu.RUnlock()
 
@@ -168,7 +168,7 @@ func DiscoverImpl(reg *config.Registry, scope DiscoveryScope, dtype, query strin
 
 // discoverTools returns tool definitions within the scope.
 func discoverTools(reg *config.Registry, scope DiscoveryScope, queryLower string, page, pageSize int) (*DiscoveryResult, error) {
-	mcpIDs, err := enforceScope(reg, scope)
+	mcpIDs, err := EnforceScope(reg, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +276,7 @@ func discoverRoles(reg *config.Registry, scope DiscoveryScope, queryLower string
 		matched = append(matched, roleToSummary(reg, role))
 
 	case "pool":
-		// All roles — requires admin permission (matches enforceScope pattern).
+		// All roles — requires admin permission (matches EnforceScope pattern).
 		// Regression: audit L-20-2 — discoverRoles was missing this check,
 		// allowing public-tier callers to enumerate all roles.
 		if !scope.AllowPool {
@@ -317,7 +317,7 @@ func discoverRoles(reg *config.Registry, scope DiscoveryScope, queryLower string
 
 // discoverMCPs returns MCP summaries within the scope.
 func discoverMCPs(reg *config.Registry, scope DiscoveryScope, queryLower string, page, pageSize int) (*DiscoveryResult, error) {
-	mcpIDs, err := enforceScope(reg, scope)
+	mcpIDs, err := EnforceScope(reg, scope)
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-package core
+package capability
 
 import (
 	"testing"
@@ -25,7 +25,7 @@ func TestParseScope(t *testing.T) {
 		{"role allowed for admin", "role:target", "caller", true, "role", "target", false},
 		{"role empty ID", "role:", "caller", false, "", "", true},
 		{"pool allowed", "pool", "", true, "pool", "", false},
-		{"pool denied at parse", "pool", "", false, "pool", "", false}, // ParseScope doesn't enforce; enforceScope does
+		{"pool denied at parse", "pool", "", false, "pool", "", false}, // ParseScope doesn't enforce; EnforceScope does
 		{"invalid", "invalid", "", false, "", "", true},
 	}
 
@@ -77,7 +77,7 @@ func TestEnforceScope(t *testing.T) {
 	}
 
 	t.Run("self scope returns role's MCPs", func(t *testing.T) {
-		ids, err := enforceScope(reg, DiscoveryScope{Mode: "self", RoleID: "role_a"})
+		ids, err := EnforceScope(reg, DiscoveryScope{Mode: "self", RoleID: "role_a"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,7 +87,7 @@ func TestEnforceScope(t *testing.T) {
 	})
 
 	t.Run("role scope returns target role's MCPs", func(t *testing.T) {
-		ids, err := enforceScope(reg, DiscoveryScope{Mode: "role", RoleID: "role_b"})
+		ids, err := EnforceScope(reg, DiscoveryScope{Mode: "role", RoleID: "role_b"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,14 +97,14 @@ func TestEnforceScope(t *testing.T) {
 	})
 
 	t.Run("pool scope denied without permission", func(t *testing.T) {
-		_, err := enforceScope(reg, DiscoveryScope{Mode: "pool", AllowPool: false})
+		_, err := EnforceScope(reg, DiscoveryScope{Mode: "pool", AllowPool: false})
 		if err == nil {
 			t.Fatal("expected error for pool without permission")
 		}
 	})
 
 	t.Run("pool scope allowed with permission", func(t *testing.T) {
-		ids, err := enforceScope(reg, DiscoveryScope{Mode: "pool", AllowPool: true})
+		ids, err := EnforceScope(reg, DiscoveryScope{Mode: "pool", AllowPool: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,7 +114,7 @@ func TestEnforceScope(t *testing.T) {
 	})
 
 	t.Run("self scope with unknown role errors", func(t *testing.T) {
-		_, err := enforceScope(reg, DiscoveryScope{Mode: "self", RoleID: "nonexistent"})
+		_, err := EnforceScope(reg, DiscoveryScope{Mode: "self", RoleID: "nonexistent"})
 		if err == nil {
 			t.Fatal("expected error for unknown role")
 		}

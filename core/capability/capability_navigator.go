@@ -1,4 +1,4 @@
-package core
+package capability
 
 import (
 	"context"
@@ -7,10 +7,14 @@ import (
 	"strings"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/redact"
 	"github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
+
+// SysPromptIntentClassifier is the system prompt for capability classification.
+const SysPromptIntentClassifier = "You are an intent classifier for an autonomous agent orchestrator."
 
 // CapabilityNavigator provides a semantic view of what the orchestrator can do.
 // It helps LLMs understand high-level capabilities and workflows instead of just
@@ -123,7 +127,7 @@ func (n *CapabilityNavigator) ClassifyIntent(ctx context.Context, query string) 
 			strings.Join(knownTags, ", "), query)
 
 		// C6.4: scrub secrets from the user query before sending to the LLM.
-		prompt = ScrubSecrets(prompt)
+		prompt = redact.ScrubSecrets(prompt)
 
 		resp, err := provider.Complete(ctx, providers.CompleteRequest{
 			System:  SysPromptIntentClassifier,
