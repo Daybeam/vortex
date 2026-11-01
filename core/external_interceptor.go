@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/env"
 	lua "github.com/yuin/gopher-lua"
 )
@@ -19,7 +20,7 @@ import (
 // ExternalInterceptor executes an external script (Lua, Python, Node) as a middleware.
 // pc.Script is the path; pc.SHA256 is verified at creation time if non-empty;
 // pc.Permissions controls env var filtering and sandbox wrapping.
-func NewExternalInterceptor(pc config.PluginConfig, runtimes config.ExternalRuntimes, logger *Logger) Interceptor {
+func NewExternalInterceptor(pc config.PluginConfig, runtimes config.ExternalRuntimes, logger *obs.Logger) Interceptor {
 	scriptPath := pc.Script
 
 	// Verify script integrity at creation time (Change 2).
@@ -68,7 +69,7 @@ func NewExternalInterceptor(pc config.PluginConfig, runtimes config.ExternalRunt
 	}
 }
 
-func luaInterceptor(scriptPath string, logger *Logger) Interceptor {
+func luaInterceptor(scriptPath string, logger *obs.Logger) Interceptor {
 	return func(ctx context.Context, req *SpawnRequest, next SpawnerHandler) (*SpawnResult, error) {
 		L := lua.NewState()
 		defer L.Close()
@@ -115,7 +116,7 @@ func luaInterceptor(scriptPath string, logger *Logger) Interceptor {
 	}
 }
 
-func subprocessInterceptor(scriptPath string, runtimes config.ExternalRuntimes, logger *Logger, perms config.PluginPermissions) Interceptor {
+func subprocessInterceptor(scriptPath string, runtimes config.ExternalRuntimes, logger *obs.Logger, perms config.PluginPermissions) Interceptor {
 	ext := strings.ToLower(filepath.Ext(scriptPath))
 	var exe string
 	if ext == ".py" {
@@ -137,7 +138,7 @@ func subprocessInterceptor(scriptPath string, runtimes config.ExternalRuntimes, 
 // extension registered in config.ExternalRuntimes.Runtimes (not just the
 // built-in .py/.js) can be used as an interceptor.
 // perms controls env var filtering (Change 3b: permission enforcement).
-func subprocessInterceptorWithCommand(scriptPath, exe string, extraArgs []string, logger *Logger, perms config.PluginPermissions) Interceptor {
+func subprocessInterceptorWithCommand(scriptPath, exe string, extraArgs []string, logger *obs.Logger, perms config.PluginPermissions) Interceptor {
 	return func(ctx context.Context, req *SpawnRequest, next SpawnerHandler) (*SpawnResult, error) {
 		runtime := exe
 

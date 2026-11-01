@@ -45,6 +45,21 @@ func NewIntentRouter(embedClient EmbeddingClient) *IntentRouter {
 	}
 }
 
+// embeddingWorkers bounds concurrent warm-up requests so a cold cache fills in
+// parallel without flooding the embedding provider.
+const embeddingWorkers = 4
+
+// RefreshEmbeddingsAsync warms the SOP vector cache in the background. Startup
+// must not block on provider latency: each cold SOP costs up to the 3s embed
+// timeout, and Route already degrades to keyword matching while the cache is
+// empty.
+func (r *IntentRouter) RefreshEmbeddingsAsync(reg *config.Registry) {
+	if r.embedClient == nil || reg == nil {
+		return
+	}
+	go r.RefreshEmbeddings(context.Background(), reg)
+}
+
 // RefreshEmbeddings updates SOP vector cache incrementally on reload.
 // Network I/O (embedding generation) is performed outside the lock to avoid
 // blocking concurrent Route callers.
@@ -103,20 +118,35 @@ func (r *IntentRouter) RefreshEmbeddings(ctx context.Context, reg *config.Regist
 	}
 	r.mu.RUnlock()
 
-	// Step 2: Compute embeddings outside any lock (network I/O).
+	// Step 2: Compute embeddings outside any lock (network I/O). A cold cache
+	// can hold dozens of SOPs; run a bounded worker pool so one slow provider
+	// call does not serialize the whole warm-up.
 	type embedResult struct {
 		id         string
 		versionKey string
 		vec        []float32
 	}
 	var results []embedResult
-
-	for _, p := range pending {
-		embedCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		if vec, err := r.embedClient.Embed(embedCtx, p.text); err == nil && len(vec) > 0 {
-			results = append(results, embedResult{id: p.id, versionKey: p.versionKey, vec: vec})
+	if len(pending) > 0 {
+		var resultsMu sync.Mutex
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, embeddingWorkers)
+		for _, p := range pending {
+			wg.Add(1)
+			go func(p pendingEmbed) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				embedCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				defer cancel()
+				if vec, err := r.embedClient.Embed(embedCtx, p.text); err == nil && len(vec) > 0 {
+					resultsMu.Lock()
+					results = append(results, embedResult{id: p.id, versionKey: p.versionKey, vec: vec})
+					resultsMu.Unlock()
+				}
+			}(p)
 		}
-		cancel()
+		wg.Wait()
 	}
 
 	// Step 3: Batch-update maps under a short write lock.

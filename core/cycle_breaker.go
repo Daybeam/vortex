@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -172,11 +173,11 @@ func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.St
 	}
 
 	s.logger.Log("EventCycleFuse", graph.TaskID, step.ID, map[string]any{
-		"cycle_id":    cycleID,
-		"max_rounds":  step.MaxLoopRounds,
+		"cycle_id":     cycleID,
+		"max_rounds":   step.MaxLoopRounds,
 		"stale_marked": staleCount,
 	})
-	s.publishEvent(graph.TaskID, step.ID, EventStepFailed, map[string]any{"cycle_fuse": cycleID, "suspended": true})
+	s.publishEvent(graph.TaskID, step.ID, obs.EventStepFailed, map[string]any{"cycle_fuse": cycleID, "suspended": true})
 	s.Mu.Unlock()
 
 	// addDecision calls broadcastDone which takes s.Mu.Lock — must NOT

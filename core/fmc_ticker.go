@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/store"
 )
@@ -37,7 +38,7 @@ type FMCBatchTicker struct {
 	reg      *config.Registry
 	runtimes config.ExternalRuntimes
 	expStore store.IExperienceStore
-	logger   *Logger
+	logger   *obs.Logger
 	interval time.Duration
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -48,7 +49,7 @@ type FMCBatchTicker struct {
 // NewFMCBatchTicker constructs a ticker. interval defaults to 6 hours if
 // registry.System.FMCBatchIntervalHours is unset/zero, matching the design
 // doc's guidance.
-func NewFMCBatchTicker(reg *config.Registry, runtimes config.ExternalRuntimes, expStore store.IExperienceStore, logger *Logger) *FMCBatchTicker {
+func NewFMCBatchTicker(reg *config.Registry, runtimes config.ExternalRuntimes, expStore store.IExperienceStore, logger *obs.Logger) *FMCBatchTicker {
 	interval := 6 * time.Hour
 	reg.Mu.RLock()
 	if reg.System.FMCBatchIntervalHours > 0 {

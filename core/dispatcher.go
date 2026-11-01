@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -29,7 +30,7 @@ var webhookTransport = &http.Transport{
 // with no backpressure. The semaphore caps in-flight dispatches.
 var webhookSem = make(chan struct{}, 16) // max 16 concurrent webhook dispatches
 
-func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventType EventType) {
+func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventType obs.EventType) {
 	// audit L-1.4: snapshot graph.Status + GlobalWorkspace and determine
 	// matching routes under RLock to prevent concurrent map iteration race
 	// with MutateGraphTopology and field reads racing with handleStepSuccess.
@@ -91,7 +92,7 @@ func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventTy
 	}
 }
 
-func matchesTrigger(route config.NotificationRoute, eventType EventType, graph *schemas.TaskGraph) bool {
+func matchesTrigger(route config.NotificationRoute, eventType obs.EventType, graph *schemas.TaskGraph) bool {
 	matched := false
 	for _, t := range route.TriggerOn {
 		if t == string(eventType) {

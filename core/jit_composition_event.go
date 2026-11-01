@@ -1,5 +1,7 @@
 package core
 
+import "github.com/daybeam/vortex/core/obs"
+
 // EventJITCompositionSuggested records that one or more historically-repeated
 // task patterns were surfaced to the planning LLM as candidates for
 // compilation into a reusable JIT tool (see
@@ -10,4 +12,4 @@ package core
 // jit.create call follows. This event exists purely so low real-world uptake
 // is visible in the logs rather than silently invisible.
 // ADDED (2026-07-28).
-const EventJITCompositionSuggested EventType = "jit_composition_suggested"
+const EventJITCompositionSuggested obs.EventType = "jit_composition_suggested"

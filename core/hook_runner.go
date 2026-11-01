@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/env"
 	lua "github.com/yuin/gopher-lua"
 )
@@ -63,11 +64,11 @@ type HookAnnotation struct {
 type HookRunner struct {
 	hooks    []config.HookConfig
 	runtimes config.ExternalRuntimes
-	logger   *Logger
+	logger   *obs.Logger
 }
 
 // NewHookRunner creates a HookRunner from config.
-func NewHookRunner(hooks []config.HookConfig, runtimes config.ExternalRuntimes, logger *Logger) *HookRunner {
+func NewHookRunner(hooks []config.HookConfig, runtimes config.ExternalRuntimes, logger *obs.Logger) *HookRunner {
 	return &HookRunner{hooks: hooks, runtimes: runtimes, logger: logger}
 }
 

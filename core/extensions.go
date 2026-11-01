@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // ─── Plug-and-Play Extension Points ─────────────────────────────────────────
@@ -74,26 +76,26 @@ func (s *LocalWorkspaceStore) ListFiles(taskID string) ([]string, error) {
 // Local impl: LocalEventPublisher (wraps Logger).
 // Future impl: NATSStreamPublisher, RedisStreamPublisher, etc.
 type EventPublisher interface {
-	Publish(topic string, event LogEvent) error
-	Subscribe(topic string) (<-chan LogEvent, error)
+	Publish(topic string, event obs.LogEvent) error
+	Subscribe(topic string) (<-chan obs.LogEvent, error)
 }
 
 // LocalEventPublisher implements EventPublisher via the in-memory Logger + EventBus.
 type LocalEventPublisher struct {
-	logger *Logger
-	bus    *EventBus
+	logger *obs.Logger
+	bus    *obs.EventBus
 }
 
-func NewLocalEventPublisher(logger *Logger, bus *EventBus) *LocalEventPublisher {
+func NewLocalEventPublisher(logger *obs.Logger, bus *obs.EventBus) *LocalEventPublisher {
 	return &LocalEventPublisher{logger: logger, bus: bus}
 }
 
-func (p *LocalEventPublisher) Publish(topic string, event LogEvent) error {
+func (p *LocalEventPublisher) Publish(topic string, event obs.LogEvent) error {
 	if p.logger != nil {
 		p.logger.Log(event.Event, event.TaskID, event.StepID, event.Detail)
 	}
 	if p.bus != nil {
-		p.bus.Publish(AgentEvent{
+		p.bus.Publish(obs.AgentEvent{
 			EventType: topic,
 			TaskID:    event.TaskID,
 			StepID:    event.StepID,
@@ -103,15 +105,15 @@ func (p *LocalEventPublisher) Publish(topic string, event LogEvent) error {
 	return nil
 }
 
-func (p *LocalEventPublisher) Subscribe(topic string) (<-chan LogEvent, error) {
-	ch := make(chan LogEvent, 64)
-	handler := func(e AgentEvent) error {
+func (p *LocalEventPublisher) Subscribe(topic string) (<-chan obs.LogEvent, error) {
+	ch := make(chan obs.LogEvent, 64)
+	handler := func(e obs.AgentEvent) error {
 		if topic != "*" && e.EventType != topic {
 			return nil
 		}
 		select {
-		case ch <- LogEvent{
-			Event:  EventType(e.EventType),
+		case ch <- obs.LogEvent{
+			Event:  obs.EventType(e.EventType),
 			TaskID: e.TaskID,
 			StepID: e.StepID,
 			Detail: e.Payload,
@@ -175,11 +177,6 @@ func (l *LocalPathLocker) AcquireWriteLock(ctx context.Context, path string) (io
 var _ WorkspaceStore = (*LocalWorkspaceStore)(nil)
 var _ EventPublisher = (*LocalEventPublisher)(nil)
 var _ PathLocker = (*LocalPathLocker)(nil)
-
-// formatPath ensures consistent path joining for workspace operations.
-func formatPath(base, taskID, relPath string) string {
-	return filepath.Join(base, taskID, relPath)
-}
 
 // Ensure fmt is used (avoid unused import if interface checks evolve).
 var _ = fmt.Sprintf
