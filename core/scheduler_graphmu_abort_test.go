@@ -19,7 +19,7 @@ import (
 //
 // Reproduction: verify concurrent DecisionHistory writes via RecordDecision
 // do not panic.
-func TestC2_GraphMu_SetAndProtectsDecisionHistory(t *testing.T) {
+func TestGraphMu_SetAndProtectsDecisionHistory(t *testing.T) {
 	s, _ := newAbortTestEngine(t)
 	defer s.Stop()
 
@@ -73,7 +73,7 @@ func TestC2_GraphMu_SetAndProtectsDecisionHistory(t *testing.T) {
 // After the fix, the map read is inside RLock.
 //
 // Reproduction: call RequestAutonomousAbort concurrently and verify no panic.
-func TestC4_RequestAutonomousAbort_ConcurrentNoPanic(t *testing.T) {
+func TestRequestAutonomousAbort_ConcurrentNoPanic(t *testing.T) {
 	s, _ := newAbortTestEngine(t)
 	defer s.Stop()
 

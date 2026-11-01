@@ -20,7 +20,7 @@ import (
 // Reproduction: simulate the pattern — a goroutine with defer cancel() and
 // a cancel-propagator waiting on ctx.Done(). When the first goroutine exits,
 // the propagator should unblock.
-func TestR1_DeferCancel_UnblocksCancelPropagator(t *testing.T) {
+func TestDeferCancel_UnblocksCancelPropagator(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	propagatorExited := make(chan struct{})

@@ -90,7 +90,7 @@ func TestSearchWithOptions_TemporalFilter(t *testing.T) {
 	archive.BuildIndex()
 
 	// Search with CreatedAfter filter — should only return "recent" and "newest".
-	results := archive.SearchWithOptions("intent", nil, 10, "", "", QueryOptions{
+	results := archive.SearchWithOptions("intent", nil, 10, "", "", "", QueryOptions{
 		CreatedAfter: now.Add(-1 * time.Hour),
 	})
 	nodeIDs := make(map[string]bool)
@@ -184,7 +184,7 @@ func TestSearchWithOptions_StatusFilter(t *testing.T) {
 	}
 	archive.BuildIndex()
 
-	results := archive.SearchWithOptions("api contract", nil, 10, "", "", QueryOptions{})
+	results := archive.SearchWithOptions("api contract", nil, 10, "", "", "", QueryOptions{})
 	nodeIDs := make(map[string]bool)
 	for _, r := range results {
 		nodeIDs[r.NodeID] = true

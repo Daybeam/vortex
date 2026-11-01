@@ -17,7 +17,7 @@ import (
 // fixes audit T-C03: the original test compared two identical local literals
 // and never referenced production code. Now it checks the production constant
 // ToolCallReasonLLMInitiated, so it will FAIL if the constant reverts to mojibake.
-func TestC15_SpawnerReasonString_NoMojibake(t *testing.T) {
+func TestSpawnerReasonString_NoMojibake(t *testing.T) {
 	reason := ToolCallReasonLLMInitiated // reference production, not a local literal
 
 	// Must be valid UTF-8.

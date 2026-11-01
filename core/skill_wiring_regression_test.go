@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core/verify"
@@ -67,28 +66,9 @@ func TestExpandSkillsIfNecessary_WiresDirectorySkill(t *testing.T) {
 	}
 }
 
-// TestChatSessionStore_SetLifecycleContext_PropagatesToDBCtx is a regression
-// guard for audit C-12. Commit 3fcf97bcf added SetLifecycleContext and made
-// dbCtx() derive from it, but never wired the call site, so lifecycleCtx
-// stayed nil and dbCtx() silently fell back to context.Background() — leaving
-// shutdown unable to cancel chat-session DB ops. This pins the contract that
-// a set lifecycle ctx actually propagates to dbCtx().
-func TestChatSessionStore_SetLifecycleContext_PropagatesToDBCtx(t *testing.T) {
-	st := NewChatSessionStore(t.TempDir(), nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	st.SetLifecycleContext(ctx)
-	cancel() // simulate shutdown
-
-	dbCtx, dbCancel := st.dbCtx()
-	defer dbCancel()
-	select {
-	case <-dbCtx.Done():
-		// expected: dbCtx inherits the cancelled lifecycleCtx
-	case <-time.After(time.Second):
-		t.Fatal("dbCtx() did not inherit the cancelled lifecycleCtx (C-12 wiring missing)")
-	}
-}
+// TestChatSessionStore_SetLifecycleContext_PropagatesToDBCtx moved to
+// pkg/chat/skill_wiring_regression_test.go during pkg/chat extraction
+// (needs unexported dbCtx() method on ChatSessionStore).
 
 // TestPromptAssembler_DirectorySkillInjectsLightweightMetadata is a regression
 // guard for B1 (buildSkillMetadata wiring). A DirectorySkill must get a

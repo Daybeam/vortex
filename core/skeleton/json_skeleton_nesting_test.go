@@ -14,7 +14,7 @@ import (
 //	panic: runtime error: index out of range [-1]
 //	  core/skeleton.jsonSkeleton        file_skeleton.go:142
 //	  core/skeleton.DetectAndSkeletonize detect.go:32
-//	  core.ChatHarness.externalizeArtifact
+//	  chat.ChatHarness.externalizeArtifact
 //
 // The input was a 5804-byte, fully valid JSON read_file result. Root cause:
 // the tree structure was tracked in three parallel slices (ctx, arrayCount,

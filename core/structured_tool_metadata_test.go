@@ -54,7 +54,7 @@ func TestToolInteraction_NilMetaByDefault(t *testing.T) {
 	}
 }
 
-// ── Phase 2: extractMeta helper ─────────────────────────────────────────────
+// ── Phase 2: ExtractMeta helper ─────────────────────────────────────────────
 
 func TestExtractMeta_FromMapWithMeta(t *testing.T) {
 	result := map[string]any{
@@ -67,7 +67,7 @@ func TestExtractMeta_FromMapWithMeta(t *testing.T) {
 			"data_shape": "daily_bars",
 		},
 	}
-	meta := extractMeta(result)
+	meta := ExtractMeta(result)
 	if meta == nil {
 		t.Fatal("expected non-nil meta")
 	}
@@ -90,18 +90,18 @@ func TestExtractMeta_FromMapWithMeta(t *testing.T) {
 
 func TestExtractMeta_FromMapWithoutMeta(t *testing.T) {
 	result := map[string]any{"data": "some data"}
-	meta := extractMeta(result)
+	meta := ExtractMeta(result)
 	if meta != nil {
 		t.Error("expected nil meta when no 'meta' key present")
 	}
 }
 
 func TestExtractMeta_FromNonMap(t *testing.T) {
-	meta := extractMeta("just a string")
+	meta := ExtractMeta("just a string")
 	if meta != nil {
 		t.Error("expected nil meta for non-map result")
 	}
-	meta = extractMeta(42)
+	meta = ExtractMeta(42)
 	if meta != nil {
 		t.Error("expected nil meta for non-map result")
 	}
@@ -109,7 +109,7 @@ func TestExtractMeta_FromNonMap(t *testing.T) {
 
 func TestExtractMeta_MetaNotAMap(t *testing.T) {
 	result := map[string]any{"meta": "not a map"}
-	meta := extractMeta(result)
+	meta := ExtractMeta(result)
 	if meta != nil {
 		t.Error("expected nil meta when meta value is not a map")
 	}
