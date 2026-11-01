@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -102,4 +103,56 @@ func TestSubstitutionLedger_StatusDictView(t *testing.T) {
 	if subsList[0].Kind != "role_fallback" {
 		t.Errorf("subs[0].Kind = %q, want %q", subsList[0].Kind, "role_fallback")
 	}
+}
+
+// TestSubstitutionLedger_ConcurrentCountNoRace verifies that reading
+// substitution_count via ToStatusDictView("summary") does not race with
+// concurrent RecordSubstitution calls. Before the fix (SubstitutionCount()
+// accessor), the summary view read len(g.Substitutions) without the
+// substitutionMu lock, which is a data race detectable by `go test -race`.
+//
+// Regression: issue #7a — substitution_count unlocked read in summary view.
+func TestSubstitutionLedger_ConcurrentCountNoRace(t *testing.T) {
+	g := &TaskGraph{
+		TaskID:    "race_test",
+		Status:    "running",
+		Steps:     map[string]*Step{},
+		CreatedAt: time.Now(),
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Writer: continuously record substitutions
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			g.RecordSubstitution("test", "a", "b", "c", "d")
+		}
+	}()
+
+	// Reader: continuously read summary view (reads substitution_count)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = g.ToStatusDictView("summary")
+		}
+	}()
+
+	// Let them race for 50ms — enough for -race to detect any data race
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }

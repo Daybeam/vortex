@@ -13,6 +13,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/obs"
+	"github.com/daybeam/vortex/pkg/bootmetrics"
 	ci "github.com/daybeam/vortex/pkg/codeintel/tools"
 	"github.com/daybeam/vortex/store"
 )
@@ -144,7 +146,7 @@ type App struct {
 	Schedule          *core.ScheduleManager
 	SStore            *store.ScheduleStore
 	JIT               *core.JITManager
-	Logger            *core.Logger
+	Logger            *obs.Logger
 	CodeIntel         *ci.Handler
 	Navigator         *core.CapabilityNavigator
 	ConfigPath        string
@@ -226,6 +228,23 @@ func jsonOK(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(data)), nil
 }
 
+// jsonOKRedacted marshals v to JSON, then strips known secret patterns from
+// the serialized text before it enters the LLM/host context. Used for tool
+// outputs whose values are arbitrary structured data (e.g. get_logs events)
+// where redacting individual string fields would require a recursive walk.
+//
+// L2 fix (DELEGATION_HANDOVER_REDESIGN.md §12.6): the redaction patterns
+// (sk-…, AKIA…, Bearer …, api_key=…, emails, JWTs) never match JSON structural
+// tokens, so running them over the whole JSON text is safe and covers every
+// string field uniformly. Toggled by VORTEX_DISABLE_EGRESS_REDACTION.
+func jsonOKRedacted(v any) (*mcp.CallToolResult, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(core.RedactEgress(string(data))), nil
+}
+
 // loggedHandler wraps an MCP tool handler with structured logging for observability.
 func (app *App) loggedHandler(name string, handler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -256,7 +275,7 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 
 		effectiveTier := EffectiveTier(ctx, app)
 
-		app.Logger.Log(core.EventToolCall, taskID, "", map[string]any{
+		app.Logger.Log(obs.EventToolCall, taskID, "", map[string]any{
 			"tool":  name,
 			"args":  req.Params.Arguments,
 			"tier":  effectiveTier,
@@ -279,7 +298,7 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 			detail["error"] = "tool execution failed"
 		}
 
-		app.Logger.Log(core.EventToolCall, taskID, "", detail)
+		app.Logger.Log(obs.EventToolCall, taskID, "", detail)
 		return res, err
 	}
 }
@@ -373,6 +392,7 @@ func int64Arg(rawArgs any, key string, def int64) int64 {
 func RegisterAll(s *server.MCPServer, app *App) {
 	RegisterTier1(s, app)
 	RegisterTier2(s, app)
+	bootmetrics.Mark("tools")
 }
 
 // RegisterTier1 registers public-safe tools.

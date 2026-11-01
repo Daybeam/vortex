@@ -8,7 +8,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // Promoter watches invoke traffic and hot-promotes frequently-used subsystem
@@ -134,7 +134,7 @@ func (p *Promoter) Record(subsystem, action string, act Action) {
 	p.server.AddTool(promotedTool, p.app.loggedHandler(toolName, handler))
 
 	if p.app.Logger != nil {
-		p.app.Logger.Log(core.EventToolPromoted, "system", "", map[string]any{
+		p.app.Logger.Log(obs.EventToolPromoted, "system", "", map[string]any{
 			"tool_name": toolName,
 			"subsystem": subsystem,
 			"action":    action,

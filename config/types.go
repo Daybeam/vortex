@@ -643,7 +643,12 @@ type SystemSettings struct {
 	// system prompt) and auto-extraction (ReflectionEngine) are active.
 	// Default true (backward compatible). Set to false to disable.
 	// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md.
-	MemoryBankEnabled bool `json:"memory_bank_enabled"`
+	//
+	// N4 fix (DELEGATION_HANDOVER_REDESIGN.md §11.1): *bool distinguishes
+	// "omitted" (nil → default true) from "explicit false" (&false →
+	// preserved). encoding/json handles *bool natively: absent key → nil,
+	// false → &false, true → &true. Backward compatible.
+	MemoryBankEnabled *bool `json:"memory_bank_enabled,omitempty"`
 	// DecisionDeciderRole: when NonInteractive is on and this is set, the engine
 	// spawns this role to evaluate each blocked decision and choose an option,
 	// instead of falling back to hardcoded conservative defaults. The decider
@@ -1027,4 +1032,16 @@ func (s *SystemSettings) OutputDirOrDefault() string {
 		return s.OutputDir
 	}
 	return "outputs"
+}
+
+// MemoryBankEnabledEffective returns the effective MemoryBankEnabled value.
+// nil (omitted in config) → true (backward-compatible default);
+// &false (explicit false) → false (preserved, not overridden by loader);
+// &true (explicit true) → true.
+// N4 fix (DELEGATION_HANDOVER_REDESIGN.md §11.1).
+func (s *SystemSettings) MemoryBankEnabledEffective() bool {
+	if s == nil || s.MemoryBankEnabled == nil {
+		return true
+	}
+	return *s.MemoryBankEnabled
 }

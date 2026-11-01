@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/daybeam/vortex/pkg/bootmetrics"
 	_ "modernc.org/sqlite"
 )
 
@@ -52,6 +53,7 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	_, _ = db.Exec(`ALTER TABLE chat_messages ADD COLUMN forked_from TEXT`)
 	_, _ = db.Exec(`ALTER TABLE chat_messages ADD COLUMN client_id TEXT`)
 
+	bootmetrics.Mark("db")
 	return db, nil
 }
 

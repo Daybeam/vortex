@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/pkg/bootmetrics"
 	"github.com/daybeam/vortex/pkg/env"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -69,6 +70,7 @@ func NewRegistry(configPath string) (*Registry, error) {
 	if hint := r.MountPolicyHint(); hint != "" {
 		log.Print(hint)
 	}
+	bootmetrics.Mark("config")
 	return r, nil
 }
 
@@ -686,8 +688,12 @@ func (r *Registry) bootstrapDefaultsLocked() {
 	if r.System.DefaultTaskTokenBudget == 0 {
 		r.System.DefaultTaskTokenBudget = 200000
 	}
-	if !r.System.MemoryBankEnabled {
-		r.System.MemoryBankEnabled = true
+	// N4 fix: only default to true when unset (nil). Explicit false from
+	// user config is preserved — the *bool pointer distinguishes "omitted"
+	// from "explicit false". See DELEGATION_HANDOVER_REDESIGN.md §11.1.
+	if r.System.MemoryBankEnabled == nil {
+		t := true
+		r.System.MemoryBankEnabled = &t
 	}
 	r.EnableDynamicRoleGen = true
 	r.EnableEphemeralRoleGen = true
@@ -758,7 +764,8 @@ func (r *Registry) applySystemDefaults() {
 	// MemoryBankEnabled env override (ADDED 2026-10-17).
 	// Env var takes precedence over config.json. Unset = use config value.
 	if v := os.Getenv("VORTEX_MEMORY_BANK_ENABLED"); v != "" {
-		r.System.MemoryBankEnabled = (v == "true" || v == "1")
+		b := (v == "true" || v == "1")
+		r.System.MemoryBankEnabled = &b
 	}
 
 	// ── Feature Flag Env Overrides ───────────────────────────────────

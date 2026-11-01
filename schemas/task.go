@@ -569,6 +569,15 @@ func (g *TaskGraph) GetSubstitutions() []Substitution {
 	return cp
 }
 
+// SubstitutionCount returns the number of recorded substitutions. Thread-safe.
+// Use this instead of len(g.Substitutions) in read-only contexts (e.g. status
+// summary views) to avoid racing with RecordSubstitution's append.
+func (g *TaskGraph) SubstitutionCount() int {
+	g.substitutionMu.Lock()
+	defer g.substitutionMu.Unlock()
+	return len(g.Substitutions)
+}
+
 // GetSessionRole returns the raw stored value for a session-scoped role (either
 // an already-typed *config.Role or a map[string]any, depending on whether the
 // graph was freshly created or restored from a persisted manifest), and
@@ -796,7 +805,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 			// Substitution count: non-zero means actual execution diverged from
 			// the request (role fallback, MCP degradation, etc.). See
 			// docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
-			"substitution_count": len(g.Substitutions),
+			"substitution_count": g.SubstitutionCount(),
 			// Charter present: non-nil means the task has an explicit intent /
 			// non-goals / constraints charter. See §P1.
 			"has_charter": g.Charter != nil,

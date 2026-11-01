@@ -11,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -73,6 +74,54 @@ func validateTierChoice(tier, choice, output string) error {
 	return fmt.Errorf("choice %q requires admin tier (public tier allows skip|abort|retry|refine_and_retry|fulfill|resume_more_turns|replan|create_role)", choice)
 }
 
+// delegationTierError reports whether the caller's tier may use delegation
+// mode. Delegation returns the step's prompt for the CALLER to execute; a tier
+// with no execution path cannot fulfil it, and the task would then block
+// forever (graph.TimeoutSecs is stored but never consumed, so there is no
+// task-level timeout). Admin (local stdio / admin key) always passes.
+//
+// See DELEGATION_HANDOVER_REDESIGN.md §12.3 (P0-3).
+func delegationTierError(tier string) error {
+	if tier != TierPublic {
+		return nil
+	}
+	return fmt.Errorf("delegation mode is not available to public-tier callers: " +
+		"it returns the step's prompt for the caller to execute, but the public tier has no " +
+		"execution capability (orchestrator_run_command is admin-only and there is no access to " +
+		"the task workspace). Use an admin key, or disable delegation mode for this deployment")
+}
+
+// enrichDelegationViews fills in ExecutionHint on each DelegationView based on
+// the caller's tier. See DELEGATION_HANDOVER_REDESIGN.md §12.3 (P1).
+//
+// Public tier is rejected at submit_task (delegationTierError), so only
+// admin/local callers reach here — they get "local_fs" (use
+// orchestrator_run_command with cwd = workspace.task_output_dir).
+func enrichDelegationViews(views []core.DelegationView, tier string) {
+	hint := executionHintForTier(tier)
+	for i := range views {
+		views[i].ExecutionHint = hint
+	}
+}
+
+func executionHintForTier(tier string) *core.ExecutionHint {
+	switch tier {
+	case TierAdmin:
+		return &core.ExecutionHint{
+			Mode: "local_fs",
+			Note: "Use orchestrator_run_command with cwd set to workspace.task_output_dir",
+		}
+	default:
+		// Defensive: public tier is rejected at submit_task, so this
+		// should not be reached. Return "none" rather than nil so the
+		// host gets an explicit signal instead of a missing field.
+		return &core.ExecutionHint{
+			Mode: "none",
+			Note: "No execution path available for this tier",
+		}
+	}
+}
+
 func registerTaskList(s *server.MCPServer, app *App) {
 	submitDesc := `Delegates complex or specialized tasks to a supervised execution engine.
 Plans multi-step work and coordinates across specialized professional roles.
@@ -106,6 +155,23 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithAny("charter", mcp.Description("Optional Task Charter: {\"intent\": \"why\", \"non_goals\": [\"what not to do\"], \"constraints\": [\"what must hold\"]}. See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, _ := req.Params.Arguments.(map[string]any)
+
+		// P0-3 (DELEGATION_HANDOVER_REDESIGN.md §12.3): delegation mode hands the
+		// step's execution to the CALLER. The public tier has no execution path —
+		// orchestrator_run_command is admin-only and a remote caller has no access
+		// to the task workspace — so the envelope would be unusable. Worse, the
+		// task would block forever: graph.TimeoutSecs is stored but never consumed
+		// (no task-level timeout exists). Reject up front instead of creating a
+		// task nobody can finish.
+		//
+		// TODO(§12.3 D-2): relax to "allow when a sandbox backend is configured"
+		// once system.remote_execution lands.
+		if app.Registry != nil && app.Registry.System.DelegationMode {
+			if err := delegationTierError(EffectiveTier(ctx, app)); err != nil {
+				return errResult(err.Error())
+			}
+		}
+
 		sessionRoles := parseSessionRoles(args["session_roles"])
 		sessionSkills := parseSessionSkills(args["session_skills"])
 		sessionID := strArg(args, "session_id")
@@ -455,6 +521,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			}
 			delegations, found := app.Scheduler.FirstDelegations(ctx, id, 2*time.Second)
 			if found {
+				enrichDelegationViews(delegations, EffectiveTier(ctx, app))
 				resp["delegations"] = delegations
 				resp["next_action"] = "submit_decision"
 				resp["pending_decision_count"] = len(delegations)
@@ -656,7 +723,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			evidenceText, _ := humanApproval["evidence_text"].(string)
 			evidenceRef, _ := humanApproval["evidence_ref"].(string)
 			enabled, _ := humanApproval["enabled"].(bool)
-			app.Logger.Log(core.EventHumanApprovalAttached, tid, "", map[string]any{
+			app.Logger.Log(obs.EventHumanApprovalAttached, tid, "", map[string]any{
 				"decision_id":   did,
 				"choice":        choice,
 				"enabled":       enabled,
@@ -664,26 +731,27 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				"evidence_ref":  evidenceRef,
 			})
 		}
-	// Build response. §4.2 (DELEGATION_HANDOVER_REDESIGN.md): after FulfillStep
-	// succeeds in delegation mode, synchronously return the next batch of
-	// delegation envelopes so the host can continue without an extra
-	// wait_task poll. This reduces N-step round-trips from 1+2N to N+1.
-	resp := map[string]any{
-		"ok":             true,
-		"human_approval": hasApproval,
-	}
-	if shouldRouteToFulfill(choice, output) && app.Registry != nil && app.Registry.System.DelegationMode {
-		delegations, found := app.Scheduler.FirstDelegations(ctx, tid, 500*time.Millisecond)
-		if found {
-			resp["delegations"] = delegations
-			resp["next_action"] = "submit_decision"
-			resp["pending_decision_count"] = len(delegations)
-		} else {
-			resp["next_action"] = "get_task_status"
-			resp["view_hint"] = "full"
+		// Build response. §4.2 (DELEGATION_HANDOVER_REDESIGN.md): after FulfillStep
+		// succeeds in delegation mode, synchronously return the next batch of
+		// delegation envelopes so the host can continue without an extra
+		// wait_task poll. This reduces N-step round-trips from 1+2N to N+1.
+		resp := map[string]any{
+			"ok":             true,
+			"human_approval": hasApproval,
 		}
-	}
-	return jsonOK(resp)
+		if shouldRouteToFulfill(choice, output) && app.Registry != nil && app.Registry.System.DelegationMode {
+			delegations, found := app.Scheduler.FirstDelegations(ctx, tid, 500*time.Millisecond)
+			if found {
+				enrichDelegationViews(delegations, EffectiveTier(ctx, app))
+				resp["delegations"] = delegations
+				resp["next_action"] = "submit_decision"
+				resp["pending_decision_count"] = len(delegations)
+			} else {
+				resp["next_action"] = "get_task_status"
+				resp["view_hint"] = "full"
+			}
+		}
+		return jsonOK(resp)
 	})
 
 	app.register(s, mcp.NewTool("orchestrator_get_logs",
@@ -706,7 +774,10 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		if len(events) > limit {
 			events = events[len(events)-limit:]
 		}
-		return jsonOK(events)
+		// L2 fix (DELEGATION_HANDOVER_REDESIGN.md §12.6): log events may carry
+		// command output or args that contained secrets (e.g. a logged `cat .env`
+		// stdout). Redact before returning so secrets don't reach the host model.
+		return jsonOKRedacted(events)
 	})
 }
 
