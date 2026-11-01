@@ -658,7 +658,7 @@ func (s *Spawner) processToolCalls(
 				} else {
 					state.toolFailCount[call.Name] = 0
 					interaction.Result = finalRes
-					interaction.Meta = extractMeta(finalRes) // Phase 2: extract structured metadata
+					interaction.Meta = ExtractMeta(finalRes) // Phase 2: extract structured metadata
 					if att, ok := finalRes.(schemas.SubagentOutput); ok {
 						state.turnAttachments = dedupAttachments(state.turnAttachments, att.Attachments)
 					}

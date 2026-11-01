@@ -395,7 +395,7 @@ turnLoop:
 			// 51 turns). The decision is now budget-based and EITHER branch emits
 			// exactly one event, so "did not fire" is observable instead of
 			// invisible — the whole point of 铁律 51-3.
-			if err != nil && isContextLimitError(err) {
+			if err != nil && IsContextLimitError(err) {
 				budget := s.contextInputBudget(pCfg, req)
 				cres := compressUserBlocksToBudget(userBlocks, budget)
 				if cres.Changed {
