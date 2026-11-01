@@ -1,0 +1,85 @@
+package shutdown
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/daybeam/vortex/pkg/bootmetrics"
+)
+
+// WaitForServerOrSignal waits for either the MCP stdio server to finish or a
+// shutdown signal. On signal, it calls rootCancel to stop background
+// goroutines and closes stdin to unblock the server's stdin reader,
+// then waits for the server to return cleanly. This allows deferred
+// cleanup functions (scheduler.Stop, logger.Close, JIT CloseAll, etc.)
+// to run before the process exits.
+//
+// Returns the server's error (nil if the server returned cleanly after
+// a signal-driven shutdown).
+//
+// audit H7/C6: without this, SIGINT/SIGTERM kills the process immediately
+// and all deferred cleanup is skipped, leaking goroutines, subprocesses,
+// and unflushed log buffers.
+func WaitForServerOrSignal(serverDone <-chan error, sigCh <-chan os.Signal, rootCancel context.CancelFunc, stdin io.Closer) error {
+	select {
+	case <-sigCh:
+		fmt.Fprintln(os.Stderr, "[orchestrator] shutdown signal received, cleaning up...")
+		rootCancel()
+		stdin.Close() // unblock ServeStdio's stdin reader
+		return <-serverDone
+	case err := <-serverDone:
+		return err
+	}
+}
+
+// WaitForHTTPSignal starts an HTTP server in a goroutine and waits for
+// either the server to fail or a shutdown signal. On signal, it calls
+// rootCancel and gracefully shuts down the HTTP server (draining
+// in-flight requests with a 10s timeout), then returns.
+//
+// audit C6: without this, SIGINT/SIGTERM kills the process immediately
+// and all deferred cleanup is skipped.
+// audit fix B: the optional shutdown channel lets a caller (e.g. the
+// desktop window-quit path) trigger graceful shutdown without relying on
+// OS signals. A nil shutdown channel is a no-op (never selected).
+func WaitForHTTPSignal(srv *http.Server, rootCancel context.CancelFunc, shutdown <-chan struct{}) {
+	bootmetrics.Mark("listen")
+	log.Printf("[startup] %s", bootmetrics.Summary())
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	gracefulShutdown := func() {
+		rootCancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx) // gracefully drain in-flight requests
+	}
+
+	select {
+	case <-sigCh:
+		fmt.Fprintln(os.Stderr, "[orchestrator] shutdown signal received, cleaning up...")
+		gracefulShutdown()
+	case <-shutdown:
+		fmt.Fprintln(os.Stderr, "[orchestrator] external shutdown requested, cleaning up...")
+		gracefulShutdown()
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "[orchestrator] HTTP server error: %v\n", err)
+		}
+		rootCancel()
+	}
+}
