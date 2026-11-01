@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/env"
 	"github.com/daybeam/vortex/providers"
@@ -27,7 +28,7 @@ type ReflectionEngine struct {
 	expStore  store.IExperienceStore
 	taskStore store.ITaskStore
 	registry  *config.Registry
-	jit       *JITManager
+	jit       *jit.JITManager
 	logger    *obs.Logger
 	mbStore   *store.MemoryBankStore // optional: for user profile extraction
 	wg        sync.WaitGroup         // audit M7: track inner goroutines
@@ -51,7 +52,7 @@ func NewReflectionEngine(
 	es store.IExperienceStore,
 	ts store.ITaskStore,
 	reg *config.Registry,
-	jit *JITManager,
+	jit *jit.JITManager,
 	logger *obs.Logger,
 ) *ReflectionEngine {
 	return &ReflectionEngine{

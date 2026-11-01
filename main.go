@@ -20,6 +20,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/acp"
 	"github.com/daybeam/vortex/pkg/featureflags"
@@ -215,7 +216,7 @@ func runExec(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase
 	es := s.Experience
 	ss := s.Schedules
 	mbStore := s.MemoryBank
-	jitMgr := core.NewJITManager(reg, root)
+	jitMgr := jit.NewJITManager(reg, root)
 
 	loader := core.NewResourceLoader()
 	cookbookDir := filepath.Join(root, "store", "cookbooks")
@@ -235,7 +236,7 @@ func runExec(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase
 	scheduler.WireCapabilityRouting(capProfileStore, modelRegistry)
 	scheduler.WireHooks(reg.System.Hooks, reg.ExternalRuntimes)
 
-	scheduler.JITSessions = core.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
+	scheduler.JITSessions = jit.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.TaskRegistry = s.TaskRegistry
 	if s.DB != nil {
 		scheduler.BaselineStore = store.NewBaselineStore(s.DB)
@@ -346,7 +347,7 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 	go telemetryExporter.StartBackgroundSync(rootCtx)
 
 	// ── JIT Manager ───────────────────────────────────────────────────────
-	jitMgr := core.NewJITManager(reg, root)
+	jitMgr := jit.NewJITManager(reg, root)
 
 	// ── Resource Loader (ADDED 2026-07-14) ────────────────────────────────
 	loader := core.NewResourceLoader()
@@ -374,7 +375,7 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 		defer ct.Close()
 	}
 	scheduler.SetCostTracker(ct)
-	scheduler.JITSessions = core.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
+	scheduler.JITSessions = jit.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.TaskRegistry = s.TaskRegistry
 	if s.DB != nil {
 		scheduler.BaselineStore = store.NewBaselineStore(s.DB)

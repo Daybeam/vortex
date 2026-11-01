@@ -11,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -423,7 +424,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				for i, p := range jitCandidates {
 					ids[i] = p.ID
 				}
-				app.Logger.Log(core.EventJITCompositionSuggested, "", "", map[string]any{"pattern_ids": ids})
+				app.Logger.Log(jit.EventJITCompositionSuggested, "", "", map[string]any{"pattern_ids": ids})
 				inputs[0].Task += store.FormatJITCompositionHints(jitCandidates)
 			}
 		}
@@ -648,7 +649,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				return errResult("task_scope does not match any known task — cross-task search is not allowed")
 			}
 
-			items := app.Archive.Search(query, app.EmbedClient, 24, taskScope, taskScope)
+			items := app.Archive.Search(query, app.EmbedClient, 24, taskScope, app.Scheduler.ProjectOf(taskScope), taskScope)
 			if mode == "rrf" || len(items) == 0 {
 				if len(items) > k {
 					items = items[:k]
@@ -656,7 +657,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 				return jsonOK(items)
 			}
 			// Forest mode — delegate to core layer
-			result, err := app.Archive.SearchForest(query, app.EmbedClient, k, redundancy, taskScope, taskScope)
+			result, err := app.Archive.SearchForest(query, app.EmbedClient, k, redundancy, taskScope, app.Scheduler.ProjectOf(taskScope), taskScope)
 			if err != nil {
 				return errResult("SearchForest: " + err.Error())
 			}

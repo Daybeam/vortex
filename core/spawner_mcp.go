@@ -11,6 +11,7 @@ import (
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core/obs"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -581,7 +582,7 @@ func (s *Spawner) DirectExecute(ctx context.Context, mcpID, toolName string, arg
 	// of spawning a host binary. The marker is set by JITManager.
 	// RegisterEmbeddedTool; the script path is in Args[0]. This is the
 	// zero-dependency execution path for js/lua JIT tools.
-	if strings.HasPrefix(mcpDef.Command, EmbeddedCommandPrefix) {
+	if strings.HasPrefix(mcpDef.Command, jit.EmbeddedCommandPrefix) {
 		return executeEmbeddedMCP(ctx, mcpDef, toolName, args)
 	}
 
@@ -612,7 +613,7 @@ func (s *Spawner) DirectExecute(ctx context.Context, mcpID, toolName string, arg
 // whole script is executed.
 // Moved from spawner.go during god-class split.
 func executeEmbeddedMCP(ctx context.Context, mcpDef *config.MCPDef, toolName string, args map[string]any) (any, error) {
-	lang := strings.TrimPrefix(mcpDef.Command, EmbeddedCommandPrefix)
+	lang := strings.TrimPrefix(mcpDef.Command, jit.EmbeddedCommandPrefix)
 	if len(mcpDef.Args) == 0 {
 		return nil, fmt.Errorf("embedded MCP %s has no script path", mcpDef.ID)
 	}
@@ -620,7 +621,7 @@ func executeEmbeddedMCP(ctx context.Context, mcpDef *config.MCPDef, toolName str
 	if err != nil {
 		return nil, fmt.Errorf("embedded MCP %s: read script: %w", mcpDef.ID, err)
 	}
-	res, err := EmbeddedRunner(ctx, lang, string(scriptBytes))
+	res, err := jit.EmbeddedRunner(ctx, lang, string(scriptBytes))
 	if err != nil {
 		return nil, err
 	}

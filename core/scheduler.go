@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/bootmetrics"
 	"github.com/daybeam/vortex/pkg/interfaces"
@@ -70,7 +71,7 @@ type DirectedEngine struct {
 	lastPersistAt sync.Map
 
 	spawner        *Spawner
-	jit            *JITManager
+	jit            *jit.JITManager
 	taskStore      store.ITaskStore
 	expStore       store.IExperienceStore
 	reflection     *ReflectionEngine
@@ -92,7 +93,7 @@ type DirectedEngine struct {
 	// threaded through the constructor, to avoid breaking the 4 existing
 	// test call sites that construct a DirectedEngine directly. executeStep
 	// checks for nil before use.
-	JITSessions *JITSessionManager
+	JITSessions *jit.JITSessionManager
 
 	// TaskRegistry persists task-level lifecycle state so GetStatus() can answer
 	// for graphs that are absent from the in-process map — which happens under the
@@ -205,7 +206,7 @@ func NewDirectedEngine(
 	reg *config.Registry,
 	ts store.ITaskStore,
 	es store.IExperienceStore,
-	jit *JITManager,
+	jit *jit.JITManager,
 	logger *obs.Logger,
 	sf *SignalField,
 	outputBase, tmpBase string,
@@ -376,10 +377,25 @@ func (s *DirectedEngine) WireHooks(hooks []config.HookConfig, runtimes config.Ex
 			})
 			return nil
 		})
-	}
+  }
 }
 
-// Stop shuts down background monitors and agents.
+// ProjectOf returns the project space identifier for the given task.
+// If the task is unknown or has no project set, it returns "default".
+func (s *DirectedEngine) ProjectOf(taskID string) string {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	return projectOfGraph(s.graphs[taskID])
+}
+
+// projectOfGraph is the lock-free form of ProjectOf, for callers that already
+// hold a *TaskGraph and therefore need no lookup at all.
+func projectOfGraph(graph *schemas.TaskGraph) string {
+	if graph == nil || graph.ProjectID == "" {
+		return "default"
+	}
+	return graph.ProjectID
+}
 
 // Stop shuts down background monitors and agents.
 func (s *DirectedEngine) Stop() {
@@ -452,6 +468,7 @@ func (s *DirectedEngine) SetArchive(a *ContextArchive) {
 	s.Archive = a
 	if s.spawner != nil {
 		s.spawner.SetArchive(a)
+		s.spawner.SetProjectResolver(s.ProjectOf)
 	}
 }
 

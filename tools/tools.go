@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/bootmetrics"
 	ci "github.com/daybeam/vortex/pkg/codeintel/tools"
@@ -145,7 +146,7 @@ type App struct {
 	ExpStore          store.IExperienceStore
 	Schedule          *core.ScheduleManager
 	SStore            *store.ScheduleStore
-	JIT               *core.JITManager
+	JIT               *jit.JITManager
 	Logger            *obs.Logger
 	CodeIntel         *ci.Handler
 	Navigator         *core.CapabilityNavigator
