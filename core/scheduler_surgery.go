@@ -2,8 +2,10 @@ package core
 
 import (
 	"fmt"
-	"github.com/daybeam/vortex/schemas"
 	"time"
+
+	"github.com/daybeam/vortex/core/obs"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // SurgeryData contains parameters for dynamic topology mutation.
@@ -36,7 +38,7 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 	// 1. Mark target step as deprecated (Dead-end reference)
 	// Specification 2.1: status = deprecated
 	depStep.Status = schemas.StepDeprecated
-	s.logger.Log(EventStepDeprecated, taskID, data.DeprecatedStepID, map[string]any{
+	s.logger.Log(obs.EventStepDeprecated, taskID, data.DeprecatedStepID, map[string]any{
 		"last_error": depStep.LastError,
 	})
 
@@ -167,7 +169,7 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 		}
 
 		// Ensure the new step appears in the execution flow
-		s.logger.Log(EventStepInjected, taskID, inp.ID, map[string]any{
+		s.logger.Log(obs.EventStepInjected, taskID, inp.ID, map[string]any{
 			"replaces": data.DeprecatedStepID,
 			"task":     inp.Task,
 		})

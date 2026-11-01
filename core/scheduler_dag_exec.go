@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/types"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -99,7 +101,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				predictedPct = pct * totalSteps / doneSteps
 			}
 			if tier := s.budgetSentinel.Observe(taskID, pct, predictedPct); tier > 0 {
-				s.logger.Log(EventBudgetPredictExceed, taskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventBudgetPredictExceed, taskID, step.ID, map[string]any{
 					"tier":          tier,
 					"pct_used":      pct,
 					"predicted_pct": predictedPct,
@@ -263,7 +265,14 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					if res == nil || res.Data == nil {
 						continue
 					}
-					summary := fmt.Sprintf("%v", res.Data)
+					// N2 fix (DELEGATION_HANDOVER_REDESIGN.md §11.1): render upstream
+					// data as JSON for machine consumers, not Go %v syntax.
+					var summary string
+					if b, err := json.Marshal(res.Data); err == nil {
+						summary = string(b)
+					} else {
+						summary = fmt.Sprintf("%v", res.Data) // fallback
+					}
 					if r := []rune(summary); len(r) > 4000 {
 						summary = string(r[:4000]) + "...(truncated)"
 					}
@@ -341,7 +350,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		if err != nil {
 			// Check for Dynamic Escalation (Fork) signal
 			if strings.Contains(err.Error(), "DYNAMIC_ESCALATION_REQUIRED") {
-				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 					"error":      "Dynamic Escalation Required",
 					"reason":     err.Error(),
 					"root_cause": string(s.classifyErrorWithSystemOne(err, step.ID, step.RoleID, step.Task)),
@@ -368,7 +377,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write (max-turns block)
 				step.LastError = err.Error()
 				s.Mu.Unlock()
-				s.logger.Log(EventDecisionRequired, taskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventDecisionRequired, taskID, step.ID, map[string]any{
 					"reason":      "max_tool_turns_exhausted",
 					"error":       err.Error(),
 					"retry_count": step.RetryCount,
@@ -405,7 +414,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					}
 					usedServerHint = true
 				}
-				s.logger.Log(EventRateLimited, taskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventRateLimited, taskID, step.ID, map[string]any{
 					"attempt": step.RetryCount, "wait_seconds": wait, "used_server_retry_after": usedServerHint,
 					"provider_id": step.ProviderID, // ADDED (2026-08-16)
 				})
@@ -433,7 +442,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 
 			var br *providers.BadRequestError
 			if errors.As(err, &br) {
-				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 					"error":      "Bad Request - triggering graceful degradation",
 					"details":    br.Msg,
 					"root_cause": string(FailureClassBadRequest),
@@ -452,7 +461,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 
 			// Circuit Breaker: Fail fast on authentication/permission errors
 			if strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), "PERMISSION_DENIED") || strings.Contains(err.Error(), "HTTP 401") {
-				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 					"error":      "Circuit Breaker triggered: Auth failure",
 					"details":    err.Error(),
 					"root_cause": string(FailureClassAuthPermission),
@@ -462,7 +471,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 
 			// Pre-flight health check circuit breaker
 			if strings.Contains(err.Error(), "missing dependency:") {
-				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 					"error":      "Environment check failed",
 					"details":    err.Error(),
 					"root_cause": string(FailureClassMissingDependency),
@@ -486,7 +495,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 
 			// Permanent Error Check: Role Not Found
 			if strings.Contains(err.Error(), "role \"") && (strings.Contains(err.Error(), "\" not found") || strings.Contains(err.Error(), "generation failed") || strings.Contains(err.Error(), "generation is disabled")) {
-				s.logger.Log(EventRoleMissing, taskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventRoleMissing, taskID, step.ID, map[string]any{
 					"error": err.Error(),
 					"role":  step.RoleID,
 				})
@@ -534,7 +543,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 
 			// Permanent Error Check: Skill Not Found
 			if strings.Contains(err.Error(), "skill \"") && strings.Contains(err.Error(), "\" not found") {
-				s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 					"error":      err.Error(),
 					"role":       step.RoleID,
 					"root_cause": string(FailureClassRoleMissing),
@@ -560,7 +569,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			if ctx.Err() != nil {
 				return
 			}
-			s.logger.Log(EventStepRetrying, taskID, step.ID, map[string]any{
+			s.logger.Log(obs.EventStepRetrying, taskID, step.ID, map[string]any{
 				"attempt": step.RetryCount, "error": err.Error(),
 			})
 			if step.RetryCount > step.MaxRetries {
@@ -588,7 +597,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		}
 
 		if valid, reason := s.sieve.InspectWithSystemOne(s.lifecycleCtx, outputText, requiredSchema); !valid {
-			s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
+			s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 				"error":      "Sieve Guardian intercepted",
 				"reason":     reason,
 				"root_cause": string(FailureClassContractViolation),
@@ -645,17 +654,17 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 		if step.Status == schemas.StepOK && step.ExitCriteria != "" {
 			if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
 				if step.AutoRefineCount < step.MaxAutoRefine {
-				step.AutoRefineCount++
-				s.Mu.Lock()
-				step.Status = schemas.StepPending // audit C-3: protect 2-word string write
-				step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Retrying...", failType, reason))
-				s.Mu.Unlock()
-				if ctx.Err() != nil {
-					return
-				}
-				s.logger.Log(EventStepRetrying, taskID, step.ID, map[string]any{
-					"reason": "exit_criteria_fail", "details": reason, "refine_attempt": step.AutoRefineCount, "fail_type": failType,
-				})
+					step.AutoRefineCount++
+					s.Mu.Lock()
+					step.Status = schemas.StepPending // audit C-3: protect 2-word string write
+					step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Retrying...", failType, reason))
+					s.Mu.Unlock()
+					if ctx.Err() != nil {
+						return
+					}
+					s.logger.Log(obs.EventStepRetrying, taskID, step.ID, map[string]any{
+						"reason": "exit_criteria_fail", "details": reason, "refine_attempt": step.AutoRefineCount, "fail_type": failType,
+					})
 
 					// Specialized recovery prompts (Branching logic)
 					recoveryAdvice := ""
@@ -696,7 +705,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 	s.Mu.Lock()
 	step.Status = schemas.StepFailed // audit C-3: protect 2-word string write
 	s.Mu.Unlock()
-	s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
+	s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 		"last_error": step.LastError,
 		"root_cause": string(s.classifyErrorWithSystemOne(errors.New(step.LastError), step.ID, step.RoleID, step.Task)),
 	})

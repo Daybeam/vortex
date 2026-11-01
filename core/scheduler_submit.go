@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -335,13 +336,13 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			EnableStepPlan:   inp.EnableStepPlan,
 			SpawnDepth:       inp.SpawnDepth,
 			MaxSpawnDepth:    inp.MaxSpawnDepth,
-		AutoRefineCount:  0,
-		LastWorkedOn:     time.Now(),
-		InputDir:         inp.InputDir,
-		// D3 §10.2: copy these so overlay merge fires for single-step tasks.
-		MergeStrategy: inp.MergeStrategy,
-		TargetKey:     inp.TargetKey,
-	}
+			AutoRefineCount:  0,
+			LastWorkedOn:     time.Now(),
+			InputDir:         inp.InputDir,
+			// D3 §10.2: copy these so overlay merge fires for single-step tasks.
+			MergeStrategy: inp.MergeStrategy,
+			TargetKey:     inp.TargetKey,
+		}
 		if step.AdditionalSkills == nil {
 			step.AdditionalSkills = []string{}
 		}
@@ -402,11 +403,42 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		}
 		s.cancelFuncs[taskID] = taskCancel
 		s.doneChans[taskID] = make(chan struct{})
+
+		// D5 P1b (DELEGATION_HANDOVER_REDESIGN.md §4.5): in delegation mode
+		// with planner-first enabled, delegate the PLANNER's prompt to the
+		// host instead of skipping the planner (P1a) or running it locally.
+		// The host produces a plan; FulfillStep injects it via surgery.
+		planDelegated := false
+		if s.registry != nil && s.registry.System.DelegationMode && s.registry.System.EnablePlannerFirst {
+			step.Status = schemas.StepBlocked
+			planPrompt := buildPlanDelegationPrompt(inp.Task, inp.RoleID)
+			graph.PendingDecisions = append(graph.PendingDecisions, &schemas.Decision{
+				ID:     schemas.NewDecisionID(),
+				StepID: stepID,
+				Type:   schemas.DecisionDelegationRequired,
+				Context: map[string]any{
+					"kind":    DelegationKindPlan,
+					"prompt":  planPrompt,
+					"role_id": inp.RoleID,
+				},
+				Options: []string{"fulfill", "skip", "abort"},
+			})
+			planDelegated = true
+		}
+
 		s.Mu.Unlock()
 
 		s.persistGraph(graph) // Re-enabled: needed for task visibility after restart (loadGraphs)
 		s.pinBaseline(taskID, inputs)
 		s.Broadcast()
+
+		if planDelegated {
+			// The step is blocked waiting for the host's plan. Don't spawn.
+			s.logger.Log("plan_delegation_created", taskID, stepID, map[string]any{
+				"kind": DelegationKindPlan,
+			})
+			return taskID, nil
+		}
 
 		hub := NewContextHub(s.registry, graph, s.expStore)
 
@@ -625,9 +657,9 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			isFailed := graph.Status == schemas.GraphFailed
 			s.Mu.Unlock()
 			if isFailed {
-				s.publishEvent(taskID, "", EventTaskFailed, map[string]any{"confidence": conf})
+				s.publishEvent(taskID, "", obs.EventTaskFailed, map[string]any{"confidence": conf})
 			} else {
-				s.publishEvent(taskID, "", EventTaskCompleted, map[string]any{"confidence": conf})
+				s.publishEvent(taskID, "", obs.EventTaskCompleted, map[string]any{"confidence": conf})
 			}
 			s.Broadcast()
 		}) // audit C1: goBackground closing
@@ -786,10 +818,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	s.pinBaseline(taskID, inputs)
 	s.Broadcast()
 
-	s.logger.Log(EventTaskSubmitted, taskID, "", map[string]any{
-		"step_count":     len(steps),
-		"require_review": requireReview,
-	})
+	s.logger.Log(obs.EventTaskSubmitted, taskID, "", taskSubmittedDetail(len(steps), requireReview, graph))
 
 	if !requireReview {
 		// audit C1: startGraphExecutor handles UseSwarm branching.
@@ -797,6 +826,36 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	}
 
 	return taskID, nil
+}
+
+// taskSubmittedDetail is the task_submitted log payload. It carries a compact
+// dependency snapshot so replay viewers can redraw the execution DAG without
+// reading the (much larger) persisted manifest.
+func taskSubmittedDetail(stepCount int, requireReview bool, graph *schemas.TaskGraph) map[string]any {
+	detail := map[string]any{
+		"step_count":     stepCount,
+		"require_review": requireReview,
+	}
+	if deps := stepDependencySnapshot(graph); len(deps) > 0 {
+		detail["deps"] = deps
+	}
+	return detail
+}
+
+// stepDependencySnapshot keeps only steps that actually declare upstream
+// dependencies; fully parallel plans would otherwise log an empty map.
+func stepDependencySnapshot(graph *schemas.TaskGraph) map[string][]string {
+	var deps map[string][]string
+	for id, step := range graph.Steps {
+		if step == nil || len(step.DependsOn) == 0 {
+			continue
+		}
+		if deps == nil {
+			deps = make(map[string][]string, len(graph.Steps))
+		}
+		deps[id] = append([]string(nil), step.DependsOn...)
+	}
+	return deps
 }
 
 // applySessionAssets records the caller-supplied roles, skills and provider

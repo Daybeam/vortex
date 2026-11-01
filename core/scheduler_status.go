@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -334,6 +335,43 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 		return fmt.Errorf("step %q not found", dec.StepID)
 	}
 
+	// D5 P1b (DELEGATION_HANDOVER_REDESIGN.md §4.5): when the delegation
+	// kind is "plan", the host has produced a plan. Parse it via ParsePlanDAG
+	// and inject the steps via graph surgery (mutateGraphTopologyLocked).
+	if kind, _ := dec.Context["kind"].(string); kind == DelegationKindPlan {
+		planned, err := schemas.ParsePlanDAG(outputJSON, schemas.PlanParseOptions{})
+		if err != nil {
+			s.Mu.Unlock()
+			return fmt.Errorf("plan delegation: failed to parse plan: %w", err)
+		}
+		if len(planned) == 0 {
+			s.Mu.Unlock()
+			return fmt.Errorf("plan delegation: parsed plan has zero steps")
+		}
+		// Inject: deprecate the planning step, add the planned steps.
+		if err := s.mutateGraphTopologyLocked(graph, SurgeryData{
+			DeprecatedStepID: dec.StepID,
+			ReplacementSteps: planned,
+		}); err != nil {
+			s.Mu.Unlock()
+			return fmt.Errorf("plan delegation: graph surgery failed: %w", err)
+		}
+		// Clear the decision.
+		graph.PendingDecisions = append(graph.PendingDecisions[:decIdx], graph.PendingDecisions[decIdx+1:]...)
+		// The graph is now a real DAG, not smart-routed.
+		graph.IsSmartRouted = false
+		graph.Status = schemas.GraphRunning
+		taskID := graph.TaskID
+		s.Mu.Unlock()
+		s.persistGraph(graph)
+		s.logger.Log("plan_delegation_fulfilled", taskID, dec.StepID, map[string]any{
+			"steps_injected": len(planned),
+		})
+		// Start the executor so the new steps run.
+		s.startGraphExecutor(s.lifecycleCtx, taskID)
+		return nil
+	}
+
 	// Parse the output as a SubagentOutput
 	output := schemas.ParseOutput(outputJSON, step.RoleID)
 	if output.Status == schemas.StatusFailed {
@@ -535,7 +573,11 @@ func (s *DirectedEngine) SubmitDecision(taskID, decisionID, choice string) error
 func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, payload string) error {
 	s.Mu.Lock()
 	unlocked := false
-	defer func() { if !unlocked { s.Mu.Unlock() } }()
+	defer func() {
+		if !unlocked {
+			s.Mu.Unlock()
+		}
+	}()
 
 	graph := s.getOrReloadGraphLocked(taskID)
 	if graph == nil {
@@ -887,7 +929,7 @@ func (s *DirectedEngine) SubmitDecisionWithPayload(taskID, decisionID, choice, p
 		s.doneChans[taskID] = make(chan struct{})
 	}
 
-	s.logger.Log(EventDecisionSubmitted, taskID, dec.StepID, map[string]any{
+	s.logger.Log(obs.EventDecisionSubmitted, taskID, dec.StepID, map[string]any{
 		"decision_id": decisionID,
 		"choice":      choice,
 	})

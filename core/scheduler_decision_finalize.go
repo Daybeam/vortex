@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -90,9 +91,9 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	// pending decision must not announce task_completed just because every
 	// step it currently has is non-failed.
 	if finalStatus == schemas.GraphCompleted || finalStatus == schemas.GraphCompletedWithSkips {
-		s.publishEvent(graph.TaskID, "", EventTaskCompleted, map[string]any{"confidence": conf})
+		s.publishEvent(graph.TaskID, "", obs.EventTaskCompleted, map[string]any{"confidence": conf})
 	} else {
-		s.publishEvent(graph.TaskID, "", EventTaskFailed, map[string]any{"confidence": conf})
+		s.publishEvent(graph.TaskID, "", obs.EventTaskFailed, map[string]any{"confidence": conf})
 	}
 
 	// Notify waiters
@@ -124,9 +125,9 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 		}
 	}
 
-	event := EventTaskCompleted
+	event := obs.EventTaskCompleted
 	if graph.Status == schemas.GraphFailed || graph.Status == schemas.GraphBlocked {
-		event = EventTaskFailed
+		event = obs.EventTaskFailed
 	}
 	s.logger.LogWithConfidence(event, graph.TaskID, "", conf, map[string]any{
 		"output_files": len(graph.OutputFiles),

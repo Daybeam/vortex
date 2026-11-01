@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/pkg/jsonrepair"
 	"github.com/daybeam/vortex/schemas"
@@ -129,7 +130,7 @@ func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schem
 	if result.Output.Result == nil {
 		result.Output.Result = make(map[string]any)
 	}
-	s.logger.Log(EventDebateStarted, graph.TaskID, step.ID, map[string]any{
+	s.logger.Log(obs.EventDebateStarted, graph.TaskID, step.ID, map[string]any{
 		"proposer": step.ProviderOverride,
 		"critic":   step.VerifierModel,
 	})
@@ -151,14 +152,14 @@ func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schem
 		lastCritique = critique
 		lastFailType = failType
 
-		s.logger.Log(EventDebateCritiqueReceived, graph.TaskID, step.ID, map[string]any{
+		s.logger.Log(obs.EventDebateCritiqueReceived, graph.TaskID, step.ID, map[string]any{
 			"round":    r,
 			"passed":   passed,
 			"critique": critique,
 		})
 
 		if passed {
-			s.logger.Log(EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
+			s.logger.Log(obs.EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
 				"consensus_round": r,
 				"outcome":         "pass",
 			})
@@ -169,7 +170,7 @@ func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schem
 		if r < rounds {
 			revised, err := s.runProposerSynthesize(ctx, graph, step, currentContent, critique)
 			if err != nil {
-				s.logger.Log(EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
+				s.logger.Log(obs.EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
 					"outcome": "synthesize_error",
 					"error":   err.Error(),
 				})
@@ -179,7 +180,7 @@ func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schem
 		}
 	}
 
-	s.logger.Log(EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
+	s.logger.Log(obs.EventDebateConcluded, graph.TaskID, step.ID, map[string]any{
 		"outcome":       "fail",
 		"rounds":        rounds,
 		"last_critique": lastCritique,

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -34,6 +35,12 @@ import (
 const (
 	DelegationKindExternalSubagent = "external_subagent"
 	DelegationKindDAGSurgery       = "dag_surgery"
+	// DelegationKindPlan (D5 P1b, DELEGATION_HANDOVER_REDESIGN.md §4.5):
+	// the planner's prompt is delegated to the host. The host produces a
+	// plan ({"steps":[...]}), and the orchestrator injects it via
+	// ParsePlanDAG + mutateGraphTopologyLocked. This is the "multi-step
+	// prompt" correct form: plan by host, DAG by orchestrator.
+	DelegationKindPlan = "plan"
 )
 
 func (s *DirectedEngine) handleDelegationRequired(graph *schemas.TaskGraph, step *schemas.Step, output schemas.SubagentOutput) {
@@ -197,7 +204,7 @@ func (s *DirectedEngine) addDecision(
 	// available). WaitTask's fast path checks len(PendingDecisions) > 0.
 	s.broadcastDone(graph.TaskID)
 
-	s.logger.Log(EventDecisionRequired, graph.TaskID, step.ID, map[string]any{
+	s.logger.Log(obs.EventDecisionRequired, graph.TaskID, step.ID, map[string]any{
 		"decision_id": dec.ID,
 		"type":        dtype,
 		"options":     options,
@@ -220,7 +227,7 @@ func (s *DirectedEngine) addDecision(
 			}
 		}
 	}
-	s.publishEvent(graph.TaskID, step.ID, EventDecisionRequired, eventPayload)
+	s.publishEvent(graph.TaskID, step.ID, obs.EventDecisionRequired, eventPayload)
 
 	// E5 fix (2026-10-02): NonInteractive auto-resolution. The full strategy
 	// and risk-tier rationale lives on maybeAutoResolveNonInteractive, which
@@ -255,7 +262,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	// #14: Critical tier never auto-resolves — unless explicitly overridden.
 	tier, _ := schemas.DetermineRiskTier(step.Task, step.AdditionalMCPs)
 	if tier == schemas.RiskTierCritical && !s.registry.System.AllowCriticalAutoResolve {
-		s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+		s.logger.Log(obs.EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
 			"decision_id": dec.ID,
 			"skipped":     "risk_tier_critical",
 		})
@@ -263,7 +270,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	}
 	if tier == schemas.RiskTierCritical {
 		// Override is on — proceeding despite critical tier.
-		s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+		s.logger.Log(obs.EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
 			"decision_id": dec.ID,
 			"override":    "allow_critical_auto_resolve",
 			"tier":        string(tier),
@@ -275,7 +282,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	s.recentDecisionsMu.Lock()
 	if last, ok := s.recentDecisions[rlKey]; ok && time.Since(last) < 30*time.Second {
 		s.recentDecisionsMu.Unlock()
-		s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+		s.logger.Log(obs.EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
 			"decision_id": dec.ID,
 			"skipped":     "rate_limited",
 		})
@@ -292,7 +299,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	deciderSubmitterIsAdmin := graph.SubmitterIsAdmin
 	deciderOwnerID := graph.OwnerID // inherit, do not default (2026-10-27 OAUTH §8.1)
 	deciderRole := s.registry.System.DecisionDeciderRole
-	s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
+	s.logger.Log(obs.EventDecisionAutoResolved, taskID, step.ID, map[string]any{
 		"decision_id":  decID,
 		"type":         string(dtype),
 		"options":      options,
@@ -304,7 +311,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 			return // must not auto-resolve (e.g. human_approval_required)
 		}
 		if err := s.SubmitDecision(taskID, decID, choice); err != nil {
-			s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
+			s.logger.Log(obs.EventDecisionAutoResolved, taskID, step.ID, map[string]any{
 				"decision_id":        decID,
 				"auto_resolve_error": err.Error(),
 			})
@@ -337,7 +344,7 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 			return choice
 		}
 		// Decider failed or returned invalid choice — fall through to conservative.
-		s.logger.Log(EventDecisionAutoResolved, taskID, stepID, map[string]any{
+		s.logger.Log(obs.EventDecisionAutoResolved, taskID, stepID, map[string]any{
 			"decision_id": decID,
 			"fallback":    "decider_failed_or_invalid",
 		})
@@ -411,8 +418,11 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 	return "", false
 }
 
+// askSystemOneForDecision uses the System One decision model to pick an option
+// for a blocked decision. Returns (choice, true) if the model picked a valid
+// option with sufficient confidence, or ("", false) on any error or low
 // askSystemOneForDecision is stubbed in the open core (System One is not
-// available in the open-source build).
+// available in the open core build).
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,
