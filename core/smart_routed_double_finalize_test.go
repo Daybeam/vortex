@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -78,7 +79,7 @@ func TestSmartRouted_DecisionResolvedFinalizesExactlyOnce(t *testing.T) {
 
 	var mu sync.Mutex
 	terminals := 0
-	unsub := DefaultBus.SubscribeWithCancel(string(EventTaskCompleted), func(ev AgentEvent) error {
+	unsub := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), func(ev obs.AgentEvent) error {
 		if ev.TaskID != taskID {
 			return nil
 		}
@@ -159,7 +160,7 @@ func TestFinalize_IsIdempotent(t *testing.T) {
 
 	var mu sync.Mutex
 	terminals := 0
-	unsub := DefaultBus.SubscribeWithCancel(string(EventTaskCompleted), func(ev AgentEvent) error {
+	unsub := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), func(ev obs.AgentEvent) error {
 		if ev.TaskID != taskID {
 			return nil
 		}

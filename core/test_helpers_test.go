@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -31,9 +32,9 @@ func mustTempDir(t *testing.T, prefix string) string {
 //
 //	logger := mustNewLogger(t, dir, &config.SystemSettings{})
 //	defer logger.Close()
-func mustNewLogger(t *testing.T, dir string, cfg *config.SystemSettings) *Logger {
+func mustNewLogger(t *testing.T, dir string, cfg *config.SystemSettings) *obs.Logger {
 	t.Helper()
-	logger, err := NewLogger(dir, cfg)
+	logger, err := obs.NewLogger(dir, cfg)
 	if err != nil {
 		t.Fatalf("NewLogger(%q, ...) failed: %v", dir, err)
 	}
