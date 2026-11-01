@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -67,7 +68,7 @@ func TestScanFailedTasks_EmptyWhenNoDB(t *testing.T) {
 }
 
 func TestMutate_RewriteStrategy_GeneratesVariants(t *testing.T) {
-	history := []AgentEvent{
+	history := []obs.AgentEvent{
 		{TaskID: "T", StepID: "S1", EventType: "step_start"},
 		{TaskID: "T", StepID: "S1", EventType: "tool_call", Payload: map[string]any{
 			"tool": "custom_tool",
@@ -103,7 +104,7 @@ func TestMutate_RewriteStrategy_GeneratesVariants(t *testing.T) {
 }
 
 func TestMutate_NoToolCall_ReturnsEmpty(t *testing.T) {
-	history := []AgentEvent{
+	history := []obs.AgentEvent{
 		{TaskID: "T", StepID: "S1", EventType: "step_start"},
 	}
 
@@ -118,7 +119,7 @@ func TestMutate_NoToolCall_ReturnsEmpty(t *testing.T) {
 }
 
 func TestFindFailedStep_FindsErrorEvent(t *testing.T) {
-	history := []AgentEvent{
+	history := []obs.AgentEvent{
 		{StepID: "S1", EventType: "step_start"},
 		{StepID: "S1", EventType: "tool_call"},
 		{StepID: "S2", EventType: "step_start"},
@@ -132,7 +133,7 @@ func TestFindFailedStep_FindsErrorEvent(t *testing.T) {
 }
 
 func TestFindFailedStep_FindsStepFailedEvent(t *testing.T) {
-	history := []AgentEvent{
+	history := []obs.AgentEvent{
 		{StepID: "S1", EventType: "step_start"},
 		{StepID: "S1", EventType: "step_failed"},
 	}
@@ -156,7 +157,7 @@ func TestRunReplayCycle_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	events := []AgentEvent{
+	events := []obs.AgentEvent{
 		{TaskID: "replay_task_1", StepID: "S1", EventType: "step_start"},
 		{TaskID: "replay_task_1", StepID: "S1", EventType: "tool_call", Payload: map[string]any{
 			"tool": "exec_command",
@@ -215,7 +216,7 @@ func TestRunReplayCycle_NoFailedTasks_NoOp(t *testing.T) {
 }
 
 func TestMutate_AlternativeToolchain(t *testing.T) {
-	history := []AgentEvent{
+	history := []obs.AgentEvent{
 		{TaskID: "T", StepID: "S1", EventType: "tool_call", Payload: map[string]any{
 			"tool": "exec_command",
 			"args": map[string]any{"command": "ls"},
@@ -244,7 +245,7 @@ func TestMutate_AlternativeToolchain(t *testing.T) {
 }
 
 func TestMutate_ParamPerturbation(t *testing.T) {
-	history := []AgentEvent{
+	history := []obs.AgentEvent{
 		{TaskID: "T", StepID: "S1", EventType: "tool_call", Payload: map[string]any{
 			"tool": "exec_command",
 			"args": map[string]any{"retries": 3, "timeout": 30},
@@ -447,7 +448,7 @@ func TestMapCauseToMutation(t *testing.T) {
 
 func TestExtractRootCause(t *testing.T) {
 	// No step_failed event → empty
-	history := []AgentEvent{
+	history := []obs.AgentEvent{
 		{EventType: "step_start", Payload: map[string]any{}},
 		{EventType: "tool_call", Payload: map[string]any{}},
 	}
@@ -456,7 +457,7 @@ func TestExtractRootCause(t *testing.T) {
 	}
 
 	// step_failed with root_cause → extracted
-	history = []AgentEvent{
+	history = []obs.AgentEvent{
 		{EventType: "step_start", Payload: map[string]any{}},
 		{EventType: "step_failed", Payload: map[string]any{"root_cause": "context_deficit"}},
 	}
@@ -465,7 +466,7 @@ func TestExtractRootCause(t *testing.T) {
 	}
 
 	// Multiple step_failed → last one wins
-	history = []AgentEvent{
+	history = []obs.AgentEvent{
 		{EventType: "step_failed", Payload: map[string]any{"root_cause": "rate_limit"}},
 		{EventType: "step_failed", Payload: map[string]any{"root_cause": "capability_required"}},
 	}

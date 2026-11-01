@@ -9,6 +9,8 @@ import (
 	"github.com/daybeam/vortex/store"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 func TestPromptAssembler_UserProfileInjection_Enabled(t *testing.T) {
 	// Set up MemoryBankStore with UserProfile data.
 	mbDir := t.TempDir()
@@ -24,7 +26,7 @@ func TestPromptAssembler_UserProfileInjection_Enabled(t *testing.T) {
 	reg := &config.Registry{
 		Roles: make(map[string]*config.Role),
 	}
-	reg.System.MemoryBankEnabled = true
+	reg.System.MemoryBankEnabled = boolPtr(true)
 
 	pa := NewPromptAssembler(nil, nil, reg, nil)
 	pa.SetMemoryBankStore(mbStore)
@@ -69,7 +71,7 @@ func TestPromptAssembler_UserProfileInjection_Disabled(t *testing.T) {
 	reg := &config.Registry{
 		Roles: make(map[string]*config.Role),
 	}
-	reg.System.MemoryBankEnabled = false // disabled
+	reg.System.MemoryBankEnabled = boolPtr(false) // disabled
 
 	pa := NewPromptAssembler(nil, nil, reg, nil)
 	pa.SetMemoryBankStore(mbStore)
@@ -91,7 +93,7 @@ func TestPromptAssembler_UserProfileInjection_NilStore(t *testing.T) {
 	reg := &config.Registry{
 		Roles: make(map[string]*config.Role),
 	}
-	reg.System.MemoryBankEnabled = true
+	reg.System.MemoryBankEnabled = boolPtr(true)
 
 	pa := NewPromptAssembler(nil, nil, reg, nil)
 	// memoryBankStore is nil — no injection
@@ -117,7 +119,7 @@ func TestPromptAssembler_UserProfileInjection_EmptyProfile(t *testing.T) {
 	reg := &config.Registry{
 		Roles: make(map[string]*config.Role),
 	}
-	reg.System.MemoryBankEnabled = true
+	reg.System.MemoryBankEnabled = boolPtr(true)
 
 	pa := NewPromptAssembler(nil, nil, reg, nil)
 	pa.SetMemoryBankStore(mbStore)
@@ -135,13 +137,58 @@ func TestPromptAssembler_UserProfileInjection_EmptyProfile(t *testing.T) {
 	}
 }
 
+// --- L1: UserProfile must not leak into delegation envelopes ---
+//
+// Regression for DELEGATION_HANDOVER_REDESIGN.md §12.6 L1 (P0):
+// UserProfile injection at prompt_assembler.go:291 checked only
+// MemoryBankEnabled, not DelegationMode. The MemoryBank is a process-global
+// singleton (Load() has no owner parameter), so in delegation mode the
+// assembled prompt — which becomes the external subagent's envelope — carried
+// the operator's (or a prior user's) expertise/preferences/communication-style
+// to every SaaS caller. Before fix: "User Context" block present in delegation
+// mode. After fix: absent.
+func TestPromptAssembler_UserProfileInjection_DelegationMode_Skipped(t *testing.T) {
+	mbDir := t.TempDir()
+	mbStore := store.NewMemoryBankStore(mbDir, nil)
+	if err := mbStore.SaveUserProfile(store.UserProfile{
+		Expertise:          []string{"backend"},
+		Preferences:        []string{"prefers Go"},
+		CommunicationStyle: "concise",
+	}); err != nil {
+		t.Fatalf("SaveUserProfile failed: %v", err)
+	}
+
+	reg := &config.Registry{
+		Roles: make(map[string]*config.Role),
+	}
+	reg.System.MemoryBankEnabled = boolPtr(true)
+	reg.System.DelegationMode = true // ← the bug: this was ignored
+
+	pa := NewPromptAssembler(nil, nil, reg, nil)
+	pa.SetMemoryBankStore(mbStore)
+
+	blocks, _ := pa.Build(
+		context.Background(), nil, nil, nil, "coding",
+		&config.ProviderConfig{}, nil, nil, nil, false, nil,
+		"test task", "", "task-1",
+	)
+
+	for _, b := range blocks {
+		if strings.Contains(b.Text, "User Context") {
+			t.Fatal("expected NO User Context block in delegation mode — " +
+				"UserProfile must not leak into the external subagent envelope " +
+				"(DELEGATION_HANDOVER_REDESIGN.md §12.6 L1)")
+		}
+	}
+}
+
 // --- Epistemic Grounding Rule (Self-Healing §2) ---
 
 func TestPromptAssembler_EpistemicGroundingRule_Enabled(t *testing.T) {
 	reg := &config.Registry{
 		Roles: make(map[string]*config.Role),
 	}
-	reg.System.MemoryBankEnabled = true
+	reg.System.MemoryBankEnabled = boolPtr(true)
 
 	pa := NewPromptAssembler(nil, nil, reg, nil)
 
@@ -176,7 +223,7 @@ func TestPromptAssembler_EpistemicGroundingRule_Disabled(t *testing.T) {
 	reg := &config.Registry{
 		Roles: make(map[string]*config.Role),
 	}
-	reg.System.MemoryBankEnabled = false
+	reg.System.MemoryBankEnabled = boolPtr(false)
 
 	pa := NewPromptAssembler(nil, nil, reg, nil)
 

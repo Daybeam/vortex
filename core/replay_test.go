@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/daybeam/vortex/core/obs"
 )
 
 func TestReplayer_LoadHistory(t *testing.T) {
@@ -20,11 +22,11 @@ func TestReplayer_LoadHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := []AgentEvent{
-		NewAgentEvent("task-1", "step-1", "step_start", nil),
-		NewAgentEvent("task-1", "step-1", "tool_call", map[string]any{"tool": "ls"}),
-		NewAgentEvent("task-2", "step-A", "step_start", nil),
-		NewAgentEvent("task-1", "step-1", "tool_result", map[string]any{"status": "ok"}),
+	events := []obs.AgentEvent{
+		obs.NewAgentEvent("task-1", "step-1", "step_start", nil),
+		obs.NewAgentEvent("task-1", "step-1", "tool_call", map[string]any{"tool": "ls"}),
+		obs.NewAgentEvent("task-2", "step-A", "step_start", nil),
+		obs.NewAgentEvent("task-1", "step-1", "tool_result", map[string]any{"status": "ok"}),
 	}
 
 	for _, ev := range events {
@@ -58,7 +60,7 @@ func TestReplayer_Fork(t *testing.T) {
 	}
 	defer f.Close()
 
-	events := []AgentEvent{
+	events := []obs.AgentEvent{
 		{TaskID: "T", StepID: "S1", EventType: "step_start"},
 		{TaskID: "T", StepID: "S1", EventType: "tool_call"},
 		{TaskID: "T", StepID: "S1", EventType: "tool_result"},

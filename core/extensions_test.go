@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 func TestLocalWorkspaceStore_WriteReadDelete(t *testing.T) {
@@ -78,7 +79,7 @@ func TestLocalWorkspaceStore_ListFiles_EmptyDir(t *testing.T) {
 func TestLocalEventPublisher_PublishSubscribe(t *testing.T) {
 	logDir := mkdirTemp(t)
 	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
-	bus := NewEventBus()
+	bus := obs.NewEventBus()
 	pub := NewLocalEventPublisher(logger, bus)
 
 	ch, err := pub.Subscribe("test_topic")
@@ -86,8 +87,8 @@ func TestLocalEventPublisher_PublishSubscribe(t *testing.T) {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
-	err = pub.Publish("test_topic", LogEvent{
-		Event:  EventType("test_topic"),
+	err = pub.Publish("test_topic", obs.LogEvent{
+		Event:  obs.EventType("test_topic"),
 		TaskID: "task-1",
 		StepID: "step-1",
 		Detail: map[string]any{"key": "value"},
@@ -112,8 +113,8 @@ func TestLocalEventPublisher_NilBus(t *testing.T) {
 	var err error
 	pub := NewLocalEventPublisher(logger, nil)
 
-	err = pub.Publish("topic", LogEvent{
-		Event:  EventType("topic"),
+	err = pub.Publish("topic", obs.LogEvent{
+		Event:  obs.EventType("topic"),
 		TaskID: "task-1",
 	})
 	if err != nil {
