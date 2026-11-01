@@ -379,7 +379,7 @@ func (cm *ContextManager) Squeeze(ctx context.Context, provider providers.Provid
 	}
 	// L2: Aggressive Compression — only on Volatile
 	if level >= LevelAggressive {
-		volatileUser = applySemanticPruning(volatileUser)
+		volatileUser = ApplySemanticPruning(volatileUser)
 	}
 
 	// Preserve protected verbatim inside System (concatenated, prepended so it
@@ -411,7 +411,7 @@ func (cm *ContextManager) Squeeze(ctx context.Context, provider providers.Provid
 			s = applyCodeCompress(s)
 		}
 		if level >= LevelAggressive {
-			s = applySemanticPruning(s)
+			s = ApplySemanticPruning(s)
 		}
 		return s
 	}
@@ -586,7 +586,7 @@ func applyRTK(text string) string {
 	return applyLogCompress(text)
 }
 
-func applySemanticPruning(text string) string {
+func ApplySemanticPruning(text string) string {
 	// Phase 4: Paragraph-level dedup + head/tail preservation.
 	// Replaces the old hardcoded turn-marker approach (User:, Assistant:, etc.)
 	// with a marker-agnostic algorithm that works on any text structure.

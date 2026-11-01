@@ -360,7 +360,7 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-// isContextLimitError detects provider errors caused by the prompt exceeding
+// IsContextLimitError detects provider errors caused by the prompt exceeding
 // the model's maximum context window. Different providers phrase this differently:
 //   - OpenAI:    "context_length_exceeded" / "This model's maximum context length is"
 //   - Anthropic: "prompt is too long" / "context too long"
@@ -388,7 +388,7 @@ func isRetryableError(err error) bool {
 // 400 cascade death chain survived the §8.48.7 fix. Added "n_ctx" /
 // "n_prompt_tokens" (both formats always carry the n_ctx JSON field, and the
 // engine's SanitizeError stars the message but keeps the fields).
-func isContextLimitError(err error) bool {
+func IsContextLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
