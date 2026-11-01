@@ -174,36 +174,80 @@ func TestChatHarnessLoopGuard(t *testing.T) {
 	}
 }
 
-type steerMockProvider struct {
+// failingToolProvider keeps calling a tool that cannot succeed and never
+// produces any text. After D8 this is the ONLY shape the no-text nudge is
+// still allowed to fire on: no prose AND no usable tool result ⇒ the model
+// really is spinning with nothing to show.
+type failingToolProvider struct {
 	calls int
 }
 
-func (m *steerMockProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+func (m *failingToolProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
 	return m.StreamComplete(ctx, req, func(string) error { return nil })
 }
 
-func (m *steerMockProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
+func (m *failingToolProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
 	m.calls++
-	if m.calls <= 3 {
-		return &schemas.ProviderResponse{
-			ToolCalls: []schemas.ToolCall{
-				{Name: "write_file", Arguments: map[string]any{"path": fmt.Sprintf("f%d.txt", m.calls), "content": "x"}},
-			},
-		}, nil
-	}
-	onChunk("Here is the answer.")
-	return &schemas.ProviderResponse{Text: "Here is the answer."}, nil
+	return &schemas.ProviderResponse{
+		ToolCalls: []schemas.ToolCall{
+			{Name: "read_file", Arguments: map[string]any{"path": "does-not-exist.txt"}},
+		},
+	}, nil
 }
 
-func (m *steerMockProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+func (m *failingToolProvider) Embed(ctx context.Context, text string) ([]float32, error) {
 	return nil, nil
 }
-func (m *steerMockProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
-func (m *steerMockProvider) Name() string                                              { return "steermock" }
+func (m *failingToolProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
+func (m *failingToolProvider) Name() string                                              { return "failingmock" }
+
+// writeOnlyProvider succeeds on every turn and never writes prose. This is the
+// p22 shape: 108 tool calls, zero text, artifacts actually being produced.
+type writeOnlyProvider struct {
+	calls int
+}
+
+func (m *writeOnlyProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+	return m.StreamComplete(ctx, req, func(string) error { return nil })
+}
+
+func (m *writeOnlyProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
+	m.calls++
+	return &schemas.ProviderResponse{
+		ToolCalls: []schemas.ToolCall{
+			{Name: "write_file", Arguments: map[string]any{
+				"path":    fmt.Sprintf("out%d.txt", m.calls),
+				"content": "x",
+			}},
+		},
+	}, nil
+}
+
+func (m *writeOnlyProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	return nil, nil
+}
+func (m *writeOnlyProvider) CountTokens(ctx context.Context, text string) (int, error) { return 0, nil }
+func (m *writeOnlyProvider) Name() string                                              { return "writeonlymock" }
+
+// countNoTextSteers returns (no-text steer count, tool_error count, tool_result count).
+func countNoTextSteers(events []ChatEvent) (int, int, int) {
+	steers, toolErrs, results := 0, 0, 0
+	for _, ev := range events {
+		switch {
+		case ev.Type == "steer" && strings.Contains(ev.Data, "no text output"):
+			steers++
+		case ev.Type == "tool_error":
+			toolErrs++
+		case ev.Type == "tool_result":
+			results++
+		}
+	}
+	return steers, toolErrs, results
+}
 
 func TestChatHarnessSteerNoTextLoop(t *testing.T) {
 	h := &ChatHarness{
-		Provider:   &steerMockProvider{},
+		Provider:   &failingToolProvider{},
 		Model:      "mock",
 		OutputBase: t.TempDir(),
 		MaxTurns:   6,
@@ -214,14 +258,62 @@ func TestChatHarnessSteerNoTextLoop(t *testing.T) {
 		[]ChatMessage{{Role: "user", Content: "test"}},
 		func(ev ChatEvent) error { events = append(events, ev); return nil })
 
-	var sawSteer bool
-	for _, ev := range events {
-		if ev.Type == "steer" {
-			sawSteer = true
-		}
+	steers, toolErrs, _ := countNoTextSteers(events)
+	if toolErrs == 0 {
+		t.Fatalf("precondition: the tool must actually fail, otherwise D8 suppresses the nudge by design; events=%v", events)
 	}
-	if !sawSteer {
-		t.Fatalf("expected steer event for no-text loop; got %v", events)
+	// D8: latched to once per run. Non-latching it fired every 3 turns, which
+	// is how p22 accumulated 36 byte-identical nudges.
+	if steers != 1 {
+		t.Fatalf("expected exactly 1 no-text steer (latched once per run); got %d", steers)
+	}
+}
+
+func TestChatHarnessNoTextSteerLatchesOnce(t *testing.T) {
+	h := &ChatHarness{
+		Provider:   &failingToolProvider{},
+		Model:      "mock",
+		OutputBase: t.TempDir(),
+		MaxTurns:   20, // long enough for the old code to fire 6 times
+		Sieve:      NewSieve(100),
+	}
+	var events []ChatEvent
+	h.Run(context.Background(), "task1",
+		[]ChatMessage{{Role: "user", Content: "test"}},
+		func(ev ChatEvent) error { events = append(events, ev); return nil })
+
+	if steers, _, _ := countNoTextSteers(events); steers != 1 {
+		t.Fatalf("expected 1 no-text steer over 20 turns; got %d (pre-D8 behaviour: 6)", steers)
+	}
+}
+
+// TestChatHarnessNoTextSteerSuppressedWhenToolsSucceed is the p22 regression:
+// a tool-only trajectory that is actually making progress must NOT be nudged.
+// Measured 2026-11-01: 108 execute_code calls, all successful, 36 identical
+// "no text output" nudges, zero behaviour change.
+func TestChatHarnessNoTextSteerSuppressedWhenToolsSucceed(t *testing.T) {
+	outBase := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outBase, "task1"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	h := &ChatHarness{
+		Provider:   &writeOnlyProvider{},
+		Model:      "mock",
+		OutputBase: outBase,
+		MaxTurns:   12,
+		Sieve:      NewSieve(100),
+	}
+	var events []ChatEvent
+	h.Run(context.Background(), "task1",
+		[]ChatMessage{{Role: "user", Content: "test"}},
+		func(ev ChatEvent) error { events = append(events, ev); return nil })
+
+	steers, toolErrs, results := countNoTextSteers(events)
+	if toolErrs != 0 || results == 0 {
+		t.Fatalf("precondition: writes must succeed (tool_error=%d tool_result=%d)", toolErrs, results)
+	}
+	if steers != 0 {
+		t.Fatalf("no-text nudge must stay silent while tools land results; got %d", steers)
 	}
 }
 
@@ -387,7 +479,7 @@ func TestChatHarness_WriteToolActionResultHasActionCompleted(t *testing.T) {
 func TestChatHarness_ReadinessGateSoft_ChangesPromptLanguage(t *testing.T) {
 	h := &ChatHarness{Model: "test", OutputBase: t.TempDir()}
 
-	strict := h.buildSystem("do something", "task1")
+	strict := h.buildSystem()
 	if !strings.Contains(strict, "NEVER blindly delegate") {
 		t.Error("strict mode should contain 'NEVER blindly delegate'")
 	}
@@ -396,7 +488,7 @@ func TestChatHarness_ReadinessGateSoft_ChangesPromptLanguage(t *testing.T) {
 	}
 
 	h.ReadinessGateSoft = true
-	soft := h.buildSystem("do something", "task1")
+	soft := h.buildSystem()
 	if !strings.Contains(soft, "consider asking the user for clarification") {
 		t.Error("soft mode should contain 'consider asking the user for clarification'")
 	}

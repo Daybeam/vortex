@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/core/skeleton"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -42,7 +43,7 @@ func (s *Spawner) checkSieveGuardian(taskID, stepID string, turn int, toolCalls 
 			}
 			loopDetail = append(loopDetail, entry)
 		}
-		s.logger.Log(EventTaskFailed, taskID, stepID, map[string]any{
+		s.logger.Log(obs.EventTaskFailed, taskID, stepID, map[string]any{
 			"error":       "Sieve Guardian intercepted",
 			"reason":      reason,
 			"turn":        turn,

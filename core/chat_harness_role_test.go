@@ -15,7 +15,7 @@ func TestChatHarness_BuildSystem_WithRole(t *testing.T) {
 		},
 	}
 
-	sys := h.buildSystem("test query", "test_task")
+	sys := h.buildSystem()
 
 	if !strings.Contains(sys, "# Role: Market Analyst") {
 		t.Error("expected role header in system prompt")
@@ -31,7 +31,7 @@ func TestChatHarness_BuildSystem_WithRole(t *testing.T) {
 func TestChatHarness_BuildSystem_WithoutRole(t *testing.T) {
 	h := &ChatHarness{}
 
-	sys := h.buildSystem("test query", "test_task")
+	sys := h.buildSystem()
 
 	if strings.Contains(sys, "# Role:") {
 		t.Error("expected no role header when Role is nil")
@@ -49,7 +49,7 @@ func TestChatHarness_BuildSystem_EmptyInstruction(t *testing.T) {
 		},
 	}
 
-	sys := h.buildSystem("test query", "test_task")
+	sys := h.buildSystem()
 
 	if strings.Contains(sys, "# Role:") {
 		t.Error("expected no role header when Instruction is empty")

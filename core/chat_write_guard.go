@@ -38,7 +38,7 @@ var writeToolArgKeys = []string{"path", "file_path", "target_path", "filename", 
 // pollers and code execution all touch the filesystem without naming a single
 // output file, and counting them would fire the guard during normal work.
 func (h *ChatHarness) writeTargetOf(toolName string, args map[string]any) string {
-	if args == nil || isReadTool(toolName) || isPollerTool(toolName) {
+	if args == nil || isReadTool(toolName) || isPollingCall(toolName, args) {
 		return ""
 	}
 	raw := ""

@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/pkg/gateway"
 	"github.com/daybeam/vortex/pkg/registry"
 	"github.com/daybeam/vortex/providers"
+	"github.com/daybeam/vortex/providers/routing"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -48,7 +50,7 @@ type Spawner struct {
 	registry          *config.Registry
 	taskStore         store.ITaskStore
 	expStore          store.IExperienceStore
-	logger            *Logger
+	logger            *obs.Logger
 	mcpMgr            *MCPConnectionManager
 	Mu                sync.Mutex
 	refreshWg         sync.WaitGroup // F3: tracks startup embedding-refresh goroutine
@@ -120,8 +122,8 @@ type Spawner struct {
 	// telemetry and providerRouter (ADDED 2026-10-21): provider routing telemetry
 	// and strategy-based selection. Nil-safe: initialized in NewSpawner from config.
 	// See docs/completed/2026-10-21/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
-	telemetry      *TelemetryRegistry
-	providerRouter *ProviderRouter
+	telemetry      *routing.TelemetryRegistry
+	providerRouter *routing.ProviderRouter
 
 	// upstreamSummarizer (ADDED 2026-10-28): compresses long upstream context
 	// into a key-facts summary before side-loading in applyRefBasedHandoff.
@@ -132,7 +134,7 @@ type Spawner struct {
 	upstreamSummarizerConfig config.UpstreamSummarizerConfig
 }
 
-func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
+func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *obs.Logger, loader *ResourceLoader, outputBase string) *Spawner {
 	interceptors := []Interceptor{
 		AuditInterceptor(logger), // FIRST: wrap everything in audit
 		HealthCheckInterceptor(reg, logger),
@@ -146,7 +148,7 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 	}
 
 	caskg := NewCaSKGManager(filepath.Join("data", "causal_skill_graph.json"))
-	caskg.HookEventBus(DefaultBus)
+	caskg.HookEventBus(obs.DefaultBus)
 
 	spawner := &Spawner{
 		registry:         reg,
@@ -260,13 +262,13 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		spawner.mcpMgr.InvalidateSessionCache()
 	})
 
-	spawner.CaSKG.HookEventBus(DefaultBus)
+	spawner.CaSKG.HookEventBus(obs.DefaultBus)
 
 	// Initialize provider routing telemetry (ADDED 2026-10-21).
 	// Nil-safe: if config is zero-value, defaults are applied in NewTelemetryRegistry.
 	routingCfg := reg.System.ProviderRouting
-	spawner.telemetry = NewTelemetryRegistry(routingCfg)
-	spawner.providerRouter = NewProviderRouter(spawner.telemetry, routingCfg.Strategy)
+	spawner.telemetry = routing.NewTelemetryRegistry(routingCfg)
+	spawner.providerRouter = routing.NewProviderRouter(spawner.telemetry, routingCfg.Strategy)
 
 	return spawner
 }

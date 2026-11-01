@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/gateway"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/providers"
@@ -196,10 +197,10 @@ turnLoop:
 			if req.Hub != nil && req.Hub.Registry != nil {
 				pid := providers.PoolIDFor(pCfg)
 				if cooling, remaining := req.Hub.Registry.IsCoolingDown(pid); cooling && candIdx < len(candidateConfigs)-1 {
-					s.logger.Log(EventProviderCooldownSkip, req.TaskID, req.StepID, map[string]any{"pool_id": pid, "remaining_sec": remaining.Seconds(), "candidate_idx": candIdx})
+					s.logger.Log(obs.EventProviderCooldownSkip, req.TaskID, req.StepID, map[string]any{"pool_id": pid, "remaining_sec": remaining.Seconds(), "candidate_idx": candIdx})
 					continue
 				} else if req.Hub.Registry.CheckRecovery(pid) {
-					s.logger.Log(EventProviderRecovered, req.TaskID, req.StepID, map[string]any{"pool_id": pid})
+					s.logger.Log(obs.EventProviderRecovered, req.TaskID, req.StepID, map[string]any{"pool_id": pid})
 				}
 			}
 
@@ -261,7 +262,7 @@ turnLoop:
 			var patternWindow []byte
 			ctxWithTimeout, cancel := context.WithTimeout(ctx, 180*time.Second)
 
-			s.logger.Log(EventProviderCallStarted, req.TaskID, req.StepID, map[string]any{
+			s.logger.Log(obs.EventProviderCallStarted, req.TaskID, req.StepID, map[string]any{
 				"turn":              turn,
 				"provider":          pCfg.Provider,
 				"model":             pCfg.Model,
@@ -287,10 +288,10 @@ turnLoop:
 
 			// --- Sieve Context Management (SOP 3.0) ---
 			reqSieve := &schemas.CompleteRequest{
-				SystemBlocks:    systemBlocks,
-				UserBlocks:      userBlocks,
-				Model:           pCfg.Model,
-				MaxTokens:       s.spawnOutputBudget(req), // 铁律 51-4: the audit needs
+				SystemBlocks: systemBlocks,
+				UserBlocks:   userBlocks,
+				Model:        pCfg.Model,
+				MaxTokens:    s.spawnOutputBudget(req), // 铁律 51-4: the audit needs
 				// the output reserve to see `prompt + max_tokens > window`.
 				CompressionHint: req.CompressionHint,
 			}
@@ -399,7 +400,7 @@ turnLoop:
 				cres := compressUserBlocksToBudget(userBlocks, budget)
 				if cres.Changed {
 					observability.GetGlobalMetrics().Inc("orchestrator.context.compressed", 1)
-					s.logger.Log(EventContextCompressed, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventContextCompressed, req.TaskID, req.StepID, map[string]any{
 						"turn":          turn,
 						"provider":      pCfg.Provider,
 						"model":         pCfg.Model,
@@ -437,7 +438,7 @@ turnLoop:
 
 					if err == nil {
 						observability.GetGlobalMetrics().Inc("orchestrator.context.compress_retry_success", 1)
-						s.logger.Log(EventContextCompressRetrySuccess, req.TaskID, req.StepID, map[string]any{
+						s.logger.Log(obs.EventContextCompressRetrySuccess, req.TaskID, req.StepID, map[string]any{
 							"turn":     turn,
 							"provider": pCfg.Provider,
 							"model":    pCfg.Model,
@@ -447,7 +448,7 @@ turnLoop:
 						break // Turn succeeded with compressed context
 					}
 					// Retry also failed — fall through to normal error handling.
-					s.logger.Log(EventContextCompressRetryFailed, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventContextCompressRetryFailed, req.TaskID, req.StepID, map[string]any{
 						"turn":     turn,
 						"provider": pCfg.Provider,
 						"model":    pCfg.Model,
@@ -456,7 +457,7 @@ turnLoop:
 				} else {
 					// Nothing compressible: say so. Retrying the identical request
 					// would 400 again, so fall through instead of burning a call.
-					s.logger.Log(EventContextCompressSkipped, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventContextCompressSkipped, req.TaskID, req.StepID, map[string]any{
 						"turn":     turn,
 						"provider": pCfg.Provider,
 						"model":    pCfg.Model,
@@ -478,7 +479,7 @@ turnLoop:
 				// nothing, burning wall-clock time until orchestrator_wait_task
 				// timeout (90s) kills the step as "partial".
 				if resp.CompletionTokens == 0 && len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Text) == "" {
-					s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventProviderFallback, req.TaskID, req.StepID, map[string]any{
 						"turn":            turn,
 						"failed_provider": pCfg.Provider,
 						"failed_model":    pCfg.Model,
@@ -498,7 +499,7 @@ turnLoop:
 					// server-side empty responses, e.g. Xunfei MaaS §10.4).
 					retry, exhaustErr := shouldRetryEmptyResponse(&emptyRespRetries, maxEmptyRespRetries)
 					if retry {
-						s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+						s.logger.Log(obs.EventProviderFallback, req.TaskID, req.StepID, map[string]any{
 							"error": "empty_response_zero_tokens",
 							"retry": emptyRespRetries,
 							"max":   maxEmptyRespRetries,
@@ -506,7 +507,7 @@ turnLoop:
 						continue turnLoop
 					}
 					// Retries exhausted: fast-fail
-					s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventStepFailed, req.TaskID, req.StepID, map[string]any{
 						"error":   "empty_response_zero_tokens",
 						"details": fmt.Sprintf("all candidates returned 0 completion tokens after %d retries; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter, provider intermittent empty response", maxEmptyRespRetries),
 					})
@@ -522,7 +523,7 @@ turnLoop:
 			// Handle Error & Fallback
 			if isRetryableError(err) {
 				if candIdx < len(candidateConfigs)-1 {
-					s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventProviderFallback, req.TaskID, req.StepID, map[string]any{
 						"turn":            turn,
 						"failed_provider": pCfg.Provider,
 						"failed_model":    pCfg.Model,
@@ -543,7 +544,7 @@ turnLoop:
 			}
 
 			// Final failure
-			s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+			s.logger.Log(obs.EventStepFailed, req.TaskID, req.StepID, map[string]any{
 				"error":   "Provider call failed (all candidates exhausted)",
 				"details": err.Error(),
 			})
@@ -587,7 +588,7 @@ turnLoop:
 				detail["visible_output_empty"] = true
 				detail["likely_reasoning_dominated"] = true
 			}
-			s.logger.Log(EventOutputTruncated, req.TaskID, req.StepID, detail)
+			s.logger.Log(obs.EventOutputTruncated, req.TaskID, req.StepID, detail)
 		}
 
 		// Outer-ring accounting (ADDED 2026-10-12): the system-prompt profile is
@@ -605,7 +606,7 @@ turnLoop:
 		// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 1.
 		// Pure observer: never mutates execution flow. Alerting ≠ blocking.
 		if alert, n := s.cacheSentinel.Observe(req.TaskID, req.StepID, resp.PromptTokens, resp.CacheReadTokens); alert {
-			s.logger.Log(EventCacheInefficiency, req.TaskID, req.StepID, map[string]any{
+			s.logger.Log(obs.EventCacheInefficiency, req.TaskID, req.StepID, map[string]any{
 				"consecutive_zero_rounds": n,
 				"prompt_tokens":           resp.PromptTokens,
 				"cache_read_tokens":       resp.CacheReadTokens,
@@ -720,7 +721,7 @@ turnLoop:
 		}
 		if hb.Action == HeartbeatSleep {
 			s.logger.Log("EventHeartbeatSleep", req.TaskID, req.StepID, map[string]any{
-				"turn":         turn,
+				"turn":          turn,
 				"sleep_seconds": hb.SleepSeconds,
 			})
 			// audit LOW (2026-10-28): use NewTimer + Stop instead of time.After

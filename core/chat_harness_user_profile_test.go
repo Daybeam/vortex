@@ -25,7 +25,7 @@ func TestBuildSystem_UserProfileInjected(t *testing.T) {
 		MemoryBank: mbStore,
 	}
 
-	system := h.buildSystem("test query", "task-1")
+	system := h.buildSystem()
 
 	// Verify user profile is injected.
 	if !strings.Contains(system, "## User Profile") {
@@ -50,7 +50,7 @@ func TestBuildSystem_NoUserProfile_NoSection(t *testing.T) {
 		MemoryBank: mbStore,
 	}
 
-	system := h.buildSystem("test query", "task-1")
+	system := h.buildSystem()
 
 	// When no user profile is set, the section should not appear.
 	if strings.Contains(system, "## User Profile") {

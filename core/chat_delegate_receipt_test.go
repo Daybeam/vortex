@@ -119,7 +119,7 @@ func TestTaskStatus_ClampsWait(t *testing.T) {
 // and the word "delegat*" in 0 of 73 final answers.
 func TestSystemPrompt_StatesWhenToDelegate(t *testing.T) {
 	h := &ChatHarness{}
-	sys := h.buildSystem("reconcile three invoices", "task_t")
+	sys := h.buildSystem()
 	if !strings.Contains(sys, "WHEN TO DELEGATE") {
 		t.Fatalf("system prompt has no positive delegation trigger:\n%s", sys)
 	}
@@ -155,7 +155,7 @@ func TestSystemPromptMarkers(t *testing.T) {
 		"DELEGATION READINESS GATE",
 		"orchestrator_task_status",
 	}
-	sys := (&ChatHarness{}).buildSystem("reconcile three invoices", "task_t")
+	sys := (&ChatHarness{}).buildSystem()
 	for _, m := range markers {
 		if !strings.Contains(sys, m) {
 			t.Errorf("system prompt no longer contains %q. Update "+

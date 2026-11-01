@@ -62,9 +62,6 @@ const (
 // ── System Prompt Templates ───────────────────────────────────────────
 
 const (
-	// SysPromptIntentClassifier is the system prompt for capability classification.
-	SysPromptIntentClassifier = "You are an intent classifier for an autonomous agent orchestrator."
-
 	// SysPromptChatSummary is the system prompt for conversation summarization.
 	SysPromptChatSummary = "Summarize the following conversation concisely, preserving key decisions, file paths, and constraints."
 

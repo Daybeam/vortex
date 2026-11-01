@@ -77,6 +77,13 @@ func isSafeEnvKey(key string) bool {
 	return false
 }
 
+// Deprecated: FulfillDelegation is superseded by FulfillStep (scheduler_status.go),
+// which routes the result through the full post-success pipeline (GlobalWorkspace
+// merge, AutoDepositResult→artifacts, archiveStep, SignalField, output_files).
+// FulfillDelegation has no production caller and is not registered as an MCP tool.
+// It is retained only for existing test coverage; new code must use FulfillStep.
+// See DELEGATION_HANDOVER_REDESIGN.md §4.3 (step 3: merge/delete).
+//
 // FulfillDelegation allows an external gateway to submit the result of a
 // delegated step, unblocking the DAG and resuming execution.
 // This fixes the Async State Machine Dead-End defect
