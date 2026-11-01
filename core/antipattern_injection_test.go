@@ -153,7 +153,7 @@ func TestComposeRecoveryPrompt_PriorContextPreservedAcrossRefine(t *testing.T) {
 
 func TestChatHarnessSystemPrompt_ContainsReadinessGate(t *testing.T) {
 	h := &ChatHarness{}
-	system := h.buildSystem("test query", "task1")
+	system := h.buildSystem()
 	if !strings.Contains(system, "DELEGATION READINESS GATE") {
 		t.Error("system prompt must contain the Readiness Gate header")
 	}

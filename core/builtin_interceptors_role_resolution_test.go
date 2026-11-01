@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -20,7 +21,7 @@ import (
 //
 // The registry is seeded with the built-in "orchestrator_default" role,
 // matching production behavior (config/loader.go seeds it at init).
-func newTestLogInterceptorDeps(t *testing.T, enableEphemeral, enableDynamic bool) (*config.Registry, *Logger, *RoleGenerator) {
+func newTestLogInterceptorDeps(t *testing.T, enableEphemeral, enableDynamic bool) (*config.Registry, *obs.Logger, *RoleGenerator) {
 	t.Helper()
 	reg := &config.Registry{
 		Roles:                  map[string]*config.Role{},

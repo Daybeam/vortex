@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -138,7 +139,7 @@ func TestBudgetGate_PerTaskThresholdSuspends(t *testing.T) {
 	defer g.Wire()()
 
 	// Step 1: 600 tokens → under threshold, no suspend.
-	DefaultBus.Publish(NewAgentEvent(taskID, "s1", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "s1", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 600},
 		"role_id": "invest",
 	}))
@@ -150,7 +151,7 @@ func TestBudgetGate_PerTaskThresholdSuspends(t *testing.T) {
 	}
 
 	// Step 2: 500 tokens → cumulative 1100 > 1000 → suspend.
-	DefaultBus.Publish(NewAgentEvent(taskID, "s2", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "s2", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 500},
 		"role_id": "invest",
 	}))
@@ -182,7 +183,7 @@ func TestBudgetGate_PerRoleThresholdSuspends(t *testing.T) {
 	defer g.Wire()()
 
 	// Step 1: 500 tokens for role "invest" → under threshold.
-	DefaultBus.Publish(NewAgentEvent(taskID, "s1", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "s1", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 500},
 		"role_id": "invest",
 	}))
@@ -191,7 +192,7 @@ func TestBudgetGate_PerRoleThresholdSuspends(t *testing.T) {
 	}
 
 	// Step 2: 400 tokens for same role → cumulative 900 > 800 → suspend.
-	DefaultBus.Publish(NewAgentEvent(taskID, "s2", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "s2", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 400},
 		"role_id": "invest",
 	}))
@@ -219,7 +220,7 @@ func TestBudgetGate_WithinBudgetNoSuspend(t *testing.T) {
 
 	// Multiple steps, all within budget.
 	for i := 0; i < 5; i++ {
-		DefaultBus.Publish(NewAgentEvent(taskID, "s1", string(EventStepCompleted), map[string]any{
+		obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "s1", string(obs.EventStepCompleted), map[string]any{
 			"usage":   map[string]any{"total_tokens": 100},
 			"role_id": "invest",
 		}))
@@ -247,7 +248,7 @@ func TestBudgetGate_NoDoubleSuspend(t *testing.T) {
 	defer g.Wire()()
 
 	// First event exceeds threshold → suspend.
-	DefaultBus.Publish(NewAgentEvent(taskID, "s1", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "s1", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 200},
 		"role_id": "invest",
 	}))
@@ -258,7 +259,7 @@ func TestBudgetGate_NoDoubleSuspend(t *testing.T) {
 	// Second event also exceeds → should NOT try to suspend again
 	// (SuspendTask would error since status is already GraphSuspended).
 	// The BudgetGate should handle this gracefully.
-	DefaultBus.Publish(NewAgentEvent(taskID, "s2", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "s2", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 300},
 		"role_id": "invest",
 	}))
@@ -288,7 +289,7 @@ func TestBudgetGate_MultipleTasksIsolated(t *testing.T) {
 	defer g.Wire()()
 
 	// task1 uses 1200 tokens → suspended.
-	DefaultBus.Publish(NewAgentEvent(task1, "s1", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(task1, "s1", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 1200},
 		"role_id": "invest",
 	}))
@@ -297,7 +298,7 @@ func TestBudgetGate_MultipleTasksIsolated(t *testing.T) {
 	}
 
 	// task2 uses 500 tokens → NOT suspended (separate budget).
-	DefaultBus.Publish(NewAgentEvent(task2, "s1", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(task2, "s1", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 500},
 		"role_id": "research",
 	}))
@@ -327,7 +328,7 @@ func TestBudgetGate_ZeroTokensSkipped(t *testing.T) {
 	defer g.Wire()()
 
 	// Event with no usage data → should be skipped (0 tokens).
-	DefaultBus.Publish(NewAgentEvent(taskID, "s1", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "s1", string(obs.EventStepCompleted), map[string]any{
 		"confidence": 0.9,
 	}))
 	if got := g.GetTaskUsage(taskID); got != 0 {
@@ -358,7 +359,7 @@ func TestBudgetGate_TerminalEventPrunesTaskEntry(t *testing.T) {
 	defer g.Wire()()
 
 	// Accumulate usage for the task.
-	DefaultBus.Publish(NewAgentEvent(taskID, "s1", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "s1", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 500},
 		"role_id": "worker",
 	}))
@@ -367,7 +368,7 @@ func TestBudgetGate_TerminalEventPrunesTaskEntry(t *testing.T) {
 	}
 
 	// Fire task_completed — should prune the per-task entry.
-	DefaultBus.Publish(NewAgentEvent(taskID, "", string(EventTaskCompleted), nil))
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "", string(obs.EventTaskCompleted), nil))
 
 	if got := g.GetTaskUsage(taskID); got != 0 {
 		t.Fatalf("F2 regression: usage for %s should be pruned after task_completed, got %d", taskID, got)
@@ -379,14 +380,14 @@ func TestBudgetGate_TerminalEventPrunesTaskEntry(t *testing.T) {
 	// Same for task_failed on a second task.
 	taskID2 := "budget-prune-task-fail"
 	setupRunningTask(t, s, taskID2)
-	DefaultBus.Publish(NewAgentEvent(taskID2, "s1", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID2, "s1", string(obs.EventStepCompleted), map[string]any{
 		"usage":   map[string]any{"total_tokens": 300},
 		"role_id": "worker",
 	}))
 	if got := g.GetTaskUsage(taskID2); got != 300 {
 		t.Fatalf("expected 300 usage, got %d", got)
 	}
-	DefaultBus.Publish(NewAgentEvent(taskID2, "", string(EventTaskFailed), nil))
+	obs.DefaultBus.Publish(obs.NewAgentEvent(taskID2, "", string(obs.EventTaskFailed), nil))
 	if got := g.GetTaskUsage(taskID2); got != 0 {
 		t.Fatalf("F2 regression: usage for %s should be pruned after task_failed, got %d", taskID2, got)
 	}

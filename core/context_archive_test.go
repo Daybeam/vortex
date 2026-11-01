@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -219,7 +220,7 @@ func TestArchiveStepIngestion(t *testing.T) {
 
 	s := &DirectedEngine{
 		Archive: archive,
-		logger:  &Logger{},
+		logger:  &obs.Logger{},
 	}
 
 	graph := &schemas.TaskGraph{
