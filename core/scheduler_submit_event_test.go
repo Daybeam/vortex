@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -78,7 +79,7 @@ func TestSubmit_SingleStepPublishesTerminalEvent(t *testing.T) {
 
 	// Subscribe to EventTaskCompleted on DefaultBus.
 	completedCh := make(chan string, 4)
-	unsub := DefaultBus.SubscribeWithCancel(string(EventTaskCompleted), func(e AgentEvent) error {
+	unsub := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), func(e obs.AgentEvent) error {
 		select {
 		case completedCh <- e.TaskID:
 		default:
@@ -181,7 +182,7 @@ func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 
 	// Subscribe to EventTaskFailed — the honest terminal signal for partial.
 	failedCh := make(chan string, 4)
-	unsub := DefaultBus.SubscribeWithCancel(string(EventTaskFailed), func(e AgentEvent) error {
+	unsub := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskFailed), func(e obs.AgentEvent) error {
 		select {
 		case failedCh <- e.TaskID:
 		default:
@@ -301,7 +302,7 @@ func TestSubmitDecision_SmartRoutedSkipReachesTerminal(t *testing.T) {
 
 	// Subscribe to EventTaskCompleted to know when the initial task completes.
 	completedCh := make(chan string, 4)
-	unsubCompleted := DefaultBus.SubscribeWithCancel(string(EventTaskCompleted), func(e AgentEvent) error {
+	unsubCompleted := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), func(e obs.AgentEvent) error {
 		select {
 		case completedCh <- e.TaskID:
 		default:

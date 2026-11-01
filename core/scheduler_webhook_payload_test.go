@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -21,10 +22,10 @@ import (
 // delegation decision is created.
 func TestDelegationEvent_PayloadIncludesPromptAndWorkspace(t *testing.T) {
 	var mu sync.Mutex
-	var gotEvent AgentEvent
+	var gotEvent obs.AgentEvent
 	var eventReceived bool
 
-	unsub := DefaultBus.SubscribeWithCancel(string(EventDecisionRequired), func(ev AgentEvent) error {
+	unsub := obs.DefaultBus.SubscribeWithCancel(string(obs.EventDecisionRequired), func(ev obs.AgentEvent) error {
 		mu.Lock()
 		defer mu.Unlock()
 		gotEvent = ev

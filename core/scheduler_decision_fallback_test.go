@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	pkg_interfaces "github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -184,7 +185,7 @@ func TestHandleOutput_FallbackFor_ActivatesBeforeDecisionBlock(t *testing.T) {
 	}
 	found := false
 	for _, ev := range events {
-		if ev["event"] == string(EventFallbackActivated) {
+		if ev["event"] == string(obs.EventFallbackActivated) {
 			found = true
 			detail, _ := ev["detail"].(map[string]any)
 			if detail["fallback_step"] != "s2" {

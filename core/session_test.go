@@ -7,16 +7,17 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
-func newSessionTestLogger(t *testing.T) *Logger {
+func newSessionTestLogger(t *testing.T) *obs.Logger {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "session_test_log_*")
 	if err != nil {
 		t.Fatalf("os.MkdirTemp failed: %v", err)
 	}
-	logger, err := NewLogger(dir, &config.SystemSettings{})
+	logger, err := obs.NewLogger(dir, &config.SystemSettings{})
 	if err != nil {
 		t.Fatalf("NewLogger failed: %v", err)
 	}
