@@ -1,4 +1,4 @@
-package core
+package obs
 
 import (
 	"compress/gzip"
@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/pkg/bootmetrics"
+	"github.com/daybeam/vortex/pkg/observability"
 )
 
 type EventType string
@@ -68,11 +70,11 @@ const (
 	// rule (铁律 29). The three legacy names keep their original PascalCase wire
 	// values so existing dashboards / judges do not silently break (铁律 24);
 	// the new skipped event uses snake_case, which is the table convention.
-	EventContextCompressed            EventType = "EventContextCompressed"
-	EventContextCompressRetrySuccess  EventType = "EventContextCompressRetrySuccess"
-	EventContextCompressRetryFailed   EventType = "EventContextCompressRetryFailed"
-	EventContextCompressSkipped       EventType = "context_compress_skipped"
-	EventMCPDegraded             EventType = "mcp_degraded"
+	EventContextCompressed           EventType = "EventContextCompressed"
+	EventContextCompressRetrySuccess EventType = "EventContextCompressRetrySuccess"
+	EventContextCompressRetryFailed  EventType = "EventContextCompressRetryFailed"
+	EventContextCompressSkipped      EventType = "context_compress_skipped"
+	EventMCPDegraded                 EventType = "mcp_degraded"
 	// MCP lifecycle (up/down). Emitted via logger.Log, which also publishes to
 	// DefaultBus, so an admin NotificationRoute can trigger on these names.
 	// Normalized from raw string literals (2026-10-23); previously the bus
@@ -161,6 +163,7 @@ func NewLogger(logDir string, sys *config.SystemSettings) (*Logger, error) {
 
 	l.wg.Add(1)
 	go l.writer()
+	bootmetrics.Mark("logger")
 	return l, nil
 }
 
@@ -185,8 +188,8 @@ func (l *Logger) Log(event EventType, taskID, stepID string, detail map[string]a
 	// Audit L7 / observability: also broadcast to the global EventBus so
 	// fire-and-forget subscribers (webhook_notifier, chat callback, audit
 	// sinks) see every state transition, not just the handful that the
-	// scheduler calls s.publishEvent for explicitly. Logger is in package
-	// core, so DefaultBus is directly reachable. Publish is called after
+	// scheduler calls s.publishEvent for explicitly. DefaultBus lives in this
+	// package, so it is directly reachable. Publish is called after
 	// releasing closedMu to avoid holding the logger's read lock during
 	// subscriber callbacks (which could call logger.Close and deadlock).
 	// Events without a TaskID are skipped to avoid noise for internal
@@ -207,8 +210,8 @@ func (l *Logger) LogCtx(ctx context.Context, event EventType, taskID, stepID str
 		Event:   event,
 		TaskID:  taskID,
 		StepID:  stepID,
-		TraceID: GetTraceID(ctx),
-		SpanID:  GetSpanID(ctx),
+		TraceID: observability.GetTraceID(ctx),
+		SpanID:  observability.GetSpanID(ctx),
 		Detail:  detail,
 		TS:      float64(time.Now().UnixNano()) / 1e9,
 	}:
@@ -358,7 +361,7 @@ func (l *Logger) write(ev LogEvent) {
 	}
 
 	// Redact sensitive info before writing (ADDED 2026-08-28)
-	ev.Detail = RedactMap(ev.Detail)
+	ev.Detail = observability.RedactMap(ev.Detail)
 
 	data, err := json.Marshal(ev)
 	if err != nil {
@@ -474,7 +477,7 @@ func (l *Logger) ReadTaskLogs(taskID string, args ...int) ([]map[string]any, err
 	}
 
 	var events []map[string]any
-	lines := splitLines(data)
+	lines := SplitLines(data)
 
 	// Apply offset
 	if offset > 0 {
@@ -529,7 +532,7 @@ func (l *Logger) ReadAllLogs(date, eventType, taskID string, limit, offset int) 
 		if err != nil {
 			continue
 		}
-		for _, line := range splitLines(data) {
+		for _, line := range SplitLines(data) {
 			if len(line) == 0 {
 				continue
 			}
@@ -576,7 +579,8 @@ func (l *Logger) ReadAllLogs(date, eventType, taskID string, limit, offset int) 
 	return allEvents, nil
 }
 
-func splitLines(data []byte) [][]byte {
+// SplitLines splits data on '\n' without allocating a copy of each line.
+func SplitLines(data []byte) [][]byte {
 	var lines [][]byte
 	start := 0
 	for i, b := range data {
