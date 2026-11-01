@@ -39,6 +39,7 @@ type StepInput struct {
 	OwnerID                  string              `json:"-"` // set by entry handler from AuthOwnerKey; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
 	FallbackFor              string              `json:"fallback_for,omitempty"`
 	MaxRetries               int                 `json:"max_retries"`
+	ProjectID                string              `json:"project_id,omitempty"`
 
 	// ProviderOverride allows a step to use a different named provider than the role default.
 	// Must match a key in config.json "providers". Leave empty to use role/system default.
@@ -419,9 +420,10 @@ type ContextNode struct {
 // ─── TaskGraph ────────────────────────────────────────────────────────────
 
 type TaskGraph struct {
-	TaskID  string           `json:"task_id"`
-	TraceID string           `json:"trace_id,omitempty"`
-	Steps   map[string]*Step `json:"steps"`
+	TaskID   string           `json:"task_id"`
+	TraceID  string           `json:"trace_id,omitempty"`
+	ProjectID string          `json:"project_id,omitempty"`
+	Steps    map[string]*Step `json:"steps"`
 	Status  GraphStatus      `json:"status"`
 	// SubmitterIsAdmin is the authoritative mount-gate source: read via
 	// core/mount_gate.go's effectiveSubmitterIsAdmin, enforced in

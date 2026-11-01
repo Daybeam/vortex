@@ -53,6 +53,10 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	_, _ = db.Exec(`ALTER TABLE chat_messages ADD COLUMN forked_from TEXT`)
 	_, _ = db.Exec(`ALTER TABLE chat_messages ADD COLUMN client_id TEXT`)
 
+	// Migration (2026-11-01): add project_id to tasks for project space support.
+	_, _ = db.Exec(`ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT 'default'`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)`)
+
 	bootmetrics.Mark("db")
 	return db, nil
 }
@@ -99,6 +103,16 @@ func runMigrations(db *sql.DB) error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+
+	-- Project spaces (1-to-many with tasks). Enables cross-task knowledge
+	-- sharing via ScopeProject memory items.
+	CREATE TABLE IF NOT EXISTS projects (
+		project_id TEXT PRIMARY KEY,
+		name       TEXT NOT NULL,
+		root_path  TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 
 	-- P1 ExperienceStore Tables
 	CREATE TABLE IF NOT EXISTS task_patterns (
