@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -43,7 +44,7 @@ func AutoDepositResult(graph *schemas.TaskGraph, stepID string, result map[strin
 
 // AutoDepositResultSafe is a logging wrapper that never panics.
 // Useful for deferred/recover patterns or goroutines.
-func AutoDepositResultSafe(graph *schemas.TaskGraph, stepID string, result map[string]any, logger *Logger) {
+func AutoDepositResultSafe(graph *schemas.TaskGraph, stepID string, result map[string]any, logger *obs.Logger) {
 	defer func() {
 		if r := recover(); r != nil {
 			if logger != nil {

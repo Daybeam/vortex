@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -22,12 +23,12 @@ func (s *Spawner) persistAttachments(taskID, stepID string, attachments []schema
 
 	dir := filepath.Join(s.outputBase, taskID, stepID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		s.logger.Log(EventStepFailed, taskID, stepID, map[string]any{"error": "failed to create attachments dir", "details": err.Error()})
+		s.logger.Log(obs.EventStepFailed, taskID, stepID, map[string]any{"error": "failed to create attachments dir", "details": err.Error()})
 		return
 	}
 
 	for _, att := range attachments {
-		s.logger.Log(EventStepStarted, taskID, stepID, map[string]any{
+		s.logger.Log(obs.EventStepStarted, taskID, stepID, map[string]any{
 			"action": "persist_attachment",
 			"label":  att.Label,
 			"path":   att.Path,

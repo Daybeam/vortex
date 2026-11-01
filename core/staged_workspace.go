@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // StagingFileMeta records a tracked file's identity within a StagedWorkspace
@@ -355,7 +357,7 @@ func (sw *StagedWorkspace) loadJournalLocked() ([]StagingJournalEntry, error) {
 	}
 	// New format: JSONL (one JSON object per line)
 	var entries []StagingJournalEntry
-	for _, line := range splitLines(data) {
+	for _, line := range obs.SplitLines(data) {
 		if len(line) == 0 {
 			continue
 		}

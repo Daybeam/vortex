@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -88,7 +89,7 @@ func (s *Spawner) logMountPolicyRejection(req *SpawnRequest, err error) {
 	if !errors.As(err, &rej) {
 		return
 	}
-	s.logger.Log(EventMountPolicyRejected, req.TaskID, req.StepID, map[string]any{
+	s.logger.Log(obs.EventMountPolicyRejected, req.TaskID, req.StepID, map[string]any{
 		"role":               rej.RoleID,
 		"mcp":                rej.MCPID,
 		"policy":             rej.Policy,
@@ -278,7 +279,7 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 	var userBlocks []schemas.ContentBlock
 	userBlocks = append(userBlocks, schemas.ContentBlock{Text: userText, CacheControl: "ephemeral"})
 
-	s.logger.Log(EventStepStarted, req.TaskID, req.StepID, map[string]any{
+	s.logger.Log(obs.EventStepStarted, req.TaskID, req.StepID, map[string]any{
 		"role":   req.RoleID,
 		"skills": finalSkills,
 		"mcp_bindings": func() []map[string]any {

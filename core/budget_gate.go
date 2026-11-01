@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // BudgetGate monitors token usage and suspends tasks when budgets are exceeded.
@@ -57,9 +58,9 @@ func (g *BudgetGate) Wire() func() {
 		return func() {}
 	}
 	g.unsubscribes = append(g.unsubscribes,
-		DefaultBus.SubscribeWithCancel(string(EventStepCompleted), g.OnStepCompleted),
-		DefaultBus.SubscribeWithCancel(string(EventTaskCompleted), g.onTaskTerminal),
-		DefaultBus.SubscribeWithCancel(string(EventTaskFailed), g.onTaskTerminal),
+		obs.DefaultBus.SubscribeWithCancel(string(obs.EventStepCompleted), g.OnStepCompleted),
+		obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), g.onTaskTerminal),
+		obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskFailed), g.onTaskTerminal),
 	)
 	return g.Unwire
 }
@@ -78,7 +79,7 @@ func (g *BudgetGate) Unwire() {
 // OnStepCompleted is the EventBus callback. It extracts token usage from the
 // event payload, accumulates per-task and per-role totals, and suspends the
 // task if a threshold is exceeded.
-func (g *BudgetGate) OnStepCompleted(ev AgentEvent) error {
+func (g *BudgetGate) OnStepCompleted(ev obs.AgentEvent) error {
 	if !g.cfg.Enabled || ev.TaskID == "" {
 		return nil
 	}
@@ -175,7 +176,7 @@ func (g *BudgetGate) Reset(taskID string) {
 
 // onTaskTerminal is the EventBus callback for EventTaskCompleted/EventTaskFailed.
 // It prunes the per-task entry so the maps don't grow without bound.
-func (g *BudgetGate) onTaskTerminal(ev AgentEvent) error {
+func (g *BudgetGate) onTaskTerminal(ev obs.AgentEvent) error {
 	if g == nil || ev.TaskID == "" {
 		return nil
 	}

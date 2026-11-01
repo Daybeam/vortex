@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // SkillCausalEdge records the transition success rates between skills.
@@ -91,9 +93,9 @@ func (m *CaSKGManager) Save() error {
 }
 
 // HookEventBus registers the manager to listen for execution lifecycle events.
-func (m *CaSKGManager) HookEventBus(bus *EventBus) {
+func (m *CaSKGManager) HookEventBus(bus *obs.EventBus) {
 	// Track steps as they complete
-	bus.Subscribe(string(EventStepCompleted), func(ev AgentEvent) error {
+	bus.Subscribe(string(obs.EventStepCompleted), func(ev obs.AgentEvent) error {
 		skillID, _ := ev.Payload["role"].(string) // Often RoleID represents the skill
 		if skillID == "" {
 			skillID, _ = ev.Payload["skill"].(string)
@@ -122,7 +124,7 @@ func (m *CaSKGManager) HookEventBus(bus *EventBus) {
 	})
 
 	// Finalize and record transitions on task success
-	bus.Subscribe(string(EventTaskCompleted), func(ev AgentEvent) error {
+	bus.Subscribe(string(obs.EventTaskCompleted), func(ev obs.AgentEvent) error {
 		m.mu.Lock()
 		history := m.taskTracking[ev.TaskID]
 		delete(m.taskTracking, ev.TaskID)
@@ -143,7 +145,7 @@ func (m *CaSKGManager) HookEventBus(bus *EventBus) {
 	})
 
 	// Record failed transitions (penalty)
-	bus.Subscribe(string(EventTaskFailed), func(ev AgentEvent) error {
+	bus.Subscribe(string(obs.EventTaskFailed), func(ev obs.AgentEvent) error {
 		m.mu.Lock()
 		history := m.taskTracking[ev.TaskID]
 		delete(m.taskTracking, ev.TaskID)

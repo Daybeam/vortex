@@ -1,6 +1,10 @@
 package core
 
-import "context"
+import (
+	"context"
+
+	cappkg "github.com/daybeam/vortex/core/capability"
+)
 
 // spawner_capability_resolve.go — capability-gap resolution helpers
 // extracted from spawner_utils.go to keep that file under its size budget.
@@ -50,7 +54,7 @@ func (s *Spawner) tryFindSkillsForMissing(ctx context.Context, req *SpawnRequest
 // missing capability, affinity-ordered: experience-library recommendations
 // first (ranked best-first by the store), then remaining registry hits.
 func (s *Spawner) skillCandidatesForCapability(ctx context.Context, req *SpawnRequest, capability string) []string {
-	result, _ := FindSkillsImpl(req.Hub.Registry, "", capability, "", 1, 10)
+	result, _ := cappkg.FindSkillsImpl(req.Hub.Registry, "", capability, "", 1, 10)
 	var registryHits []string
 	if result != nil {
 		for _, sk := range result.Skills {

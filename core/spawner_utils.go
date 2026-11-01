@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -862,7 +863,7 @@ func (s *Spawner) fetchDynamicContext(ctx context.Context, taskID, stepID string
 		if c, err := cp.FetchContext(ctx); err == nil {
 			envContext[cp.Name()] = c
 		} else {
-			s.logger.Log(EventStepFailed, taskID, stepID, map[string]any{
+			s.logger.Log(obs.EventStepFailed, taskID, stepID, map[string]any{
 				"error":   fmt.Sprintf("Failed to fetch context from %s", cp.Name()),
 				"details": err.Error(),
 			})
@@ -910,7 +911,7 @@ func (s *Spawner) validateCapabilities(ctx context.Context, req *SpawnRequest, r
 	}
 
 	// No dynamic expansion available.
-	s.logger.LogCtx(ctx, EventTaskFailed, req.TaskID, req.StepID, map[string]any{
+	s.logger.LogCtx(ctx, obs.EventTaskFailed, req.TaskID, req.StepID, map[string]any{
 		"role":    req.RoleID,
 		"missing": missing,
 		"error":   "Missing required capabilities",
@@ -943,7 +944,7 @@ func (s *Spawner) retrieveDynamicSkills(ctx context.Context, req *SpawnRequest, 
 		relevant := s.expStore.QueryRelevantSkills(ctx, req.Task, 2)
 		if len(relevant) > 0 {
 			additionalSkills = append(additionalSkills, relevant...)
-			s.logger.Log(EventStepStarted, req.TaskID, req.StepID, map[string]any{
+			s.logger.Log(obs.EventStepStarted, req.TaskID, req.StepID, map[string]any{
 				"action": "auto_retrieved_skills",
 				"skills": relevant,
 			})
@@ -1079,7 +1080,7 @@ func (s *Spawner) tryDelegationMode(ctx context.Context, req *SpawnRequest, role
 	if err != nil {
 		return nil, false
 	}
-	s.logger.Log(EventStepStarted, req.TaskID, req.StepID, map[string]any{
+	s.logger.Log(obs.EventStepStarted, req.TaskID, req.StepID, map[string]any{
 		"action": "delegation_triggered",
 		"reason": "system_delegation_mode_enabled",
 	})

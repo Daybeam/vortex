@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -258,7 +259,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 	cli, err := s.mcpMgr.ensureMCPClient(ctx, mcp, taskID)
 	if err != nil {
 		// FIX (2026-08-30): Log and continue with cached tools if available.
-		s.logger.Log(EventMCPOffline, taskID, "", map[string]any{
+		s.logger.Log(obs.EventMCPOffline, taskID, "", map[string]any{
 			"mcp":          mcp.ID,
 			"error":        err.Error(),
 			"cached_tools": len(mcp.FullToolDefinitions),
@@ -284,7 +285,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 			"mcp", mcp.ID,
 			"error", err.Error(),
 			"task", taskID)
-		s.logger.Log(EventMCPDiscoveryFailed, taskID, "", map[string]any{
+		s.logger.Log(obs.EventMCPDiscoveryFailed, taskID, "", map[string]any{
 			"mcp":   mcp.ID,
 			"error": err.Error(),
 		})
@@ -334,7 +335,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 	if s.toolRouter != nil {
 		s.toolRouter.RefreshToolEmbeddings(ctx, s.registry)
 	}
-	s.logger.Log(EventMCPOnline, taskID, "", map[string]any{
+	s.logger.Log(obs.EventMCPOnline, taskID, "", map[string]any{
 		"mcp":   mcp.ID,
 		"count": len(mcp.FullToolDefinitions),
 	})
@@ -518,7 +519,7 @@ func (s *Spawner) buildMCPServers(
 				if err == nil {
 					mcp.FullToolDefinitions = tools
 					mcp.DiscoveryStatus = config.DiscoveryOK
-					s.logger.Log(EventMCPOnline, taskID, "", map[string]any{
+					s.logger.Log(obs.EventMCPOnline, taskID, "", map[string]any{
 						"mcp":   mcp.ID,
 						"count": len(tools),
 					})
@@ -539,7 +540,7 @@ func (s *Spawner) buildMCPServers(
 						"status", status,
 						"error", errStr,
 						"task", taskID)
-					s.logger.Log(EventMCPDiscoveryFailed, taskID, "", map[string]any{
+					s.logger.Log(obs.EventMCPDiscoveryFailed, taskID, "", map[string]any{
 						"mcp":    mcp.ID,
 						"status": status,
 						"error":  errStr,

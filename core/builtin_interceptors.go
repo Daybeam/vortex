@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
 // LogInterceptor is a simple interceptor that logs the start and end of a task.
-func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGenerator) Interceptor {
+func LogInterceptor(registry *config.Registry, logger *obs.Logger, generator *RoleGenerator) Interceptor {
 	return func(ctx context.Context, req *SpawnRequest, next SpawnerHandler) (*SpawnResult, error) {
 		// Resolve role existence via the tiered Hub (session-scoped ephemeral roles
 		// first, then the global registry) rather than indexing registry.Roles
@@ -70,33 +71,33 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 				// the task manifest, and a name-matching heuristic. Roles decide
 				// HOW to think (instruction, synthesised from the cookbook);
 				// steps decide WHAT to use. See docs 52 §12.3.
-			// FIX (2026-10-27): when the caller supplied RoleID == "" (the
-			// "let the system pick a role from the task" flow),
-			// GenerateRoleObjects derives a real effectiveRoleID internally
-			// (role_generator.go:372) but only exposes it on the returned
-			// role object. Storing under the empty key and leaving
-			// req.RoleID == "" made GetRole("") return nil unconditionally
-			// (hub.go:103), so every empty-RoleID spawn died with
-			// `role "" not found` right after generation "succeeded" —
-			// observed 2026-10-27 in task_68d6fe80 / task_7e8d85f3 (both
-			// reached EventEphemeralRoleGenerated then step_failed).
-			// Mirror the E16.10-B1 fix already in tryDefaultRoleFallback:
-			// rewrite req.RoleID to the generated role's own ID and cache
-			// under that ID so both lookup paths agree.
-			if req.RoleID == "" && role.ID != "" {
-				req.RoleID = role.ID
-			}
-			req.Hub.Graph.SetSessionRole(req.RoleID, role)
-			if skill != nil {
-				req.Hub.Graph.SetSessionSkill(skill.ID, skill)
-			}
-			logger.Log("EventEphemeralRoleGenerated", req.TaskID, req.StepID, map[string]any{
-				"role_id": req.RoleID,
-			})
-			// Record substitution: ephemeral role generated instead of requested role
-			if req.Hub != nil && req.Hub.Graph != nil {
-				req.Hub.Graph.RecordSubstitution("ephemeral_role", "", req.RoleID, "role not found, ephemeral generation used", req.StepID)
-			}
+				// FIX (2026-10-27): when the caller supplied RoleID == "" (the
+				// "let the system pick a role from the task" flow),
+				// GenerateRoleObjects derives a real effectiveRoleID internally
+				// (role_generator.go:372) but only exposes it on the returned
+				// role object. Storing under the empty key and leaving
+				// req.RoleID == "" made GetRole("") return nil unconditionally
+				// (hub.go:103), so every empty-RoleID spawn died with
+				// `role "" not found` right after generation "succeeded" —
+				// observed 2026-10-27 in task_68d6fe80 / task_7e8d85f3 (both
+				// reached EventEphemeralRoleGenerated then step_failed).
+				// Mirror the E16.10-B1 fix already in tryDefaultRoleFallback:
+				// rewrite req.RoleID to the generated role's own ID and cache
+				// under that ID so both lookup paths agree.
+				if req.RoleID == "" && role.ID != "" {
+					req.RoleID = role.ID
+				}
+				req.Hub.Graph.SetSessionRole(req.RoleID, role)
+				if skill != nil {
+					req.Hub.Graph.SetSessionSkill(skill.ID, skill)
+				}
+				logger.Log("EventEphemeralRoleGenerated", req.TaskID, req.StepID, map[string]any{
+					"role_id": req.RoleID,
+				})
+				// Record substitution: ephemeral role generated instead of requested role
+				if req.Hub != nil && req.Hub.Graph != nil {
+					req.Hub.Graph.RecordSubstitution("ephemeral_role", "", req.RoleID, "role not found, ephemeral generation used", req.StepID)
+				}
 			case registry.EnableDynamicRoleGen:
 				logger.Log("EventAutoRoleGeneration", req.TaskID, req.StepID, map[string]any{
 					"message": fmt.Sprintf("Role %s not found, attempting dynamic generation", req.RoleID),
@@ -119,7 +120,7 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 			}
 		}
 
-		logger.Log(EventStepStarted, req.TaskID, req.StepID, map[string]any{
+		logger.Log(obs.EventStepStarted, req.TaskID, req.StepID, map[string]any{
 			"message": fmt.Sprintf("Interceptor: Optimizing prompt and preparing context for role %s (Step %s)", req.RoleID, req.StepID),
 			"role":    req.RoleID,
 		})
@@ -128,7 +129,7 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 		res, err := next(ctx, req)
 
 		if err != nil {
-			logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+			logger.Log(obs.EventStepFailed, req.TaskID, req.StepID, map[string]any{
 				"message": fmt.Sprintf("Interceptor: Execution failed for role %s", req.RoleID),
 				"error":   err.Error(),
 			})
@@ -160,7 +161,7 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 				failedDetail["assumptions"] = res.Output.Assumptions
 			}
 		}
-		logger.Log(EventStepCompleted, req.TaskID, req.StepID, failedDetail)
+		logger.Log(obs.EventStepCompleted, req.TaskID, req.StepID, failedDetail)
 
 		return res, err
 	}
@@ -175,7 +176,7 @@ func LogInterceptor(registry *config.Registry, logger *Logger, generator *RoleGe
 //
 // Returns true if the fallback succeeded (caller should break/continue),
 // false if no default role is available (caller should return the error).
-func tryDefaultRoleFallback(registry *config.Registry, logger *Logger, req *SpawnRequest, genErr error) bool {
+func tryDefaultRoleFallback(registry *config.Registry, logger *obs.Logger, req *SpawnRequest, genErr error) bool {
 	registry.Mu.RLock()
 	defaultRole := registry.Roles["orchestrator_default"]
 	registry.Mu.RUnlock()
@@ -219,7 +220,7 @@ func tryDefaultRoleFallback(registry *config.Registry, logger *Logger, req *Spaw
 // Missing MCP dependencies are degraded (skipped) rather than blocking the entire step.
 // This allows a role with multiple MCP bindings to continue functioning even when
 // one MCP's binary is unavailable (e.g. pyright/lsmcp not installed on Linux).
-func HealthCheckInterceptor(registry *config.Registry, logger *Logger) Interceptor {
+func HealthCheckInterceptor(registry *config.Registry, logger *obs.Logger) Interceptor {
 	return func(ctx context.Context, req *SpawnRequest, next SpawnerHandler) (*SpawnResult, error) {
 		registry.Mu.RLock()
 		role := registry.Roles[req.RoleID]
@@ -288,16 +289,16 @@ func HealthCheckInterceptor(registry *config.Registry, logger *Logger) Intercept
 
 						// Degrade: skip this MCP instead of blocking the entire step.
 						// The role can still function with its remaining MCPs and skills.
-					logger.Log("EventMCPDegraded", req.TaskID, req.StepID, map[string]any{
-						"mcp_id":  mcpID,
-						"command": cmdName,
-						"action":  "skipped",
-					})
-					// Record substitution: MCP degraded (dependency missing)
-					if req.Hub != nil && req.Hub.Graph != nil {
-						req.Hub.Graph.RecordSubstitution("mcp_degraded", mcpID, "", "dependency "+cmdName+" not found, MCP skipped", req.StepID)
-					}
-					degradedMCPs = append(degradedMCPs, mcpID)
+						logger.Log("EventMCPDegraded", req.TaskID, req.StepID, map[string]any{
+							"mcp_id":  mcpID,
+							"command": cmdName,
+							"action":  "skipped",
+						})
+						// Record substitution: MCP degraded (dependency missing)
+						if req.Hub != nil && req.Hub.Graph != nil {
+							req.Hub.Graph.RecordSubstitution("mcp_degraded", mcpID, "", "dependency "+cmdName+" not found, MCP skipped", req.StepID)
+						}
+						degradedMCPs = append(degradedMCPs, mcpID)
 						continue
 					}
 				}

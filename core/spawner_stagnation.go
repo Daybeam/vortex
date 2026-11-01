@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -31,7 +32,7 @@ func (s *Spawner) handleStagnationTurn(
 		return "System: You have produced identical tool results multiple times. You appear to be stuck re-fetching the same data. Summarize what you have found so far and proceed to complete the task. Do not repeat the same tool calls.", nil
 
 	case stagKill:
-		s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+		s.logger.Log(obs.EventStepFailed, req.TaskID, req.StepID, map[string]any{
 			"error":             "output_stagnation: identical tool results repeated after hint",
 			"consecutive_count": repeats,
 			"root_cause":        "model_stuck",

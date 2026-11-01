@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -23,7 +24,7 @@ func (s *Spawner) accumulateTurnObservations(
 	// ── Priority 3: Gateway Watchdog (Active Conflict Probing) ─────────
 	if alert := s.watchdog.Sniff(resp.ToolCalls, req.Hub); alert != nil {
 		toolResults = append(toolResults, fmt.Sprintf("\n%s", alert.Message))
-		s.logger.Log(EventSwarmWatchdogTriggered, req.TaskID, req.StepID, map[string]any{
+		s.logger.Log(obs.EventSwarmWatchdogTriggered, req.TaskID, req.StepID, map[string]any{
 			"type": alert.Type,
 		})
 	}
