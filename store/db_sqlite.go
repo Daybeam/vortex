@@ -421,6 +421,21 @@ func runMigrations(db *sql.DB) error {
 		created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_task_baselines_sop ON task_baselines(sop_id, sop_version);
+
+	-- Per-user OAuth tokens for outbound MCP connections (Gap 1+2 of
+	-- OAUTH_SHARED_MCP_MULTI_TENANT_DESIGN.md §4 L2). Each user (owner_id)
+	-- has their own access/refresh token per OAuth client config.
+	-- owner_id="" means operator-level (shared, backward-compatible).
+	CREATE TABLE IF NOT EXISTS oauth_tokens (
+		owner_id       TEXT NOT NULL DEFAULT '',
+		client_id      TEXT NOT NULL,
+		token_endpoint TEXT NOT NULL,
+		access_token   TEXT NOT NULL,
+		refresh_token  TEXT,
+		expires_at     DATETIME NOT NULL,
+		updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (owner_id, client_id, token_endpoint)
+	);
 	`)
 	if err != nil {
 		return err

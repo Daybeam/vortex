@@ -181,6 +181,19 @@ type ExperienceStore struct {
 
 	embeddingClient IEmbeddingClient
 
+	// skillExposures maps "taskID/stepID" to generated skill IDs attached to
+	// that step's prompt. Dynamic skills are attached only to the spawn
+	// prompt, never to the graph step's AdditionalSkills, so without this
+	// handoff they never reach StepRecord.Skills and UsageCount stays 0
+	// forever (the promotion gate becomes unreachable).
+	skillExposures map[string][]string
+
+	// skillLiveness reports whether the tool backing a generated skill is
+	// still registered. Nil = no filtering (stores built without a registry).
+	// A JIT tool expires after its TTL while its GeneratedSkill record lives
+	// on, so retrieval must not keep injecting dead ids into spawn prompts.
+	skillLiveness func(skillID string) bool
+
 	// rerankerClient provides System One semantic reranking of coarse retrieval
 	// candidates. When nil, RetrieveRelevantExperience returns coarse order.
 	// Scores are runtime-only — never persisted (whitepaper §1.3).
