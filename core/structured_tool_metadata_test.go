@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"strings"
 	"testing"
 
@@ -118,7 +119,7 @@ func TestExtractMeta_MetaNotAMap(t *testing.T) {
 // ── Phase 3: InspectTruncationArtifact ──────────────────────────────────────
 
 func TestSieve_InspectTruncationArtifact_NilMeta(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	ok, reason := s.InspectTruncationArtifact(nil, "all results")
 	if !ok || reason != "" {
 		t.Error("nil meta should pass")
@@ -126,7 +127,7 @@ func TestSieve_InspectTruncationArtifact_NilMeta(t *testing.T) {
 }
 
 func TestSieve_InspectTruncationArtifact_NotTruncated(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{Truncated: false}
 	ok, reason := s.InspectTruncationArtifact(meta, "all results")
 	if !ok || reason != "" {
@@ -135,7 +136,7 @@ func TestSieve_InspectTruncationArtifact_NotTruncated(t *testing.T) {
 }
 
 func TestSieve_InspectTruncationArtifact_TruncatedWithUniversalQuantifier(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{
 		Truncated: true,
 		Returned:  50,
@@ -152,7 +153,7 @@ func TestSieve_InspectTruncationArtifact_TruncatedWithUniversalQuantifier(t *tes
 }
 
 func TestSieve_InspectTruncationArtifact_TruncatedWithChineseQuantifier(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{
 		Truncated: true,
 		Returned:  50,
@@ -168,7 +169,7 @@ func TestSieve_InspectTruncationArtifact_TruncatedWithChineseQuantifier(t *testi
 }
 
 func TestSieve_InspectTruncationArtifact_TruncatedWithoutQuantifier(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{
 		Truncated: true,
 		Returned:  50,
@@ -181,7 +182,7 @@ func TestSieve_InspectTruncationArtifact_TruncatedWithoutQuantifier(t *testing.T
 }
 
 func TestSieve_InspectTruncationArtifact_DefaultHint(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{
 		Truncated: true,
 		Returned:  50,
