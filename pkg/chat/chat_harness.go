@@ -87,6 +87,10 @@ type ChatHarness struct {
 	// output inline and therefore dominated it on every task. Measured: 0
 	// delegations in 104 benchmark tasks.
 	DelegateStatus func(taskID string, wait time.Duration) (map[string]any, bool)
+	// HelpProvider returns a tier-filtered system manual for the orchestrator_help
+	// tool. Set per-request by the API layer, closing over the user's tier so
+	// execTool does not need to know about tiers. nil = feature unwired.
+	HelpProvider func(topic string) string
 	// OnTerminalTaskSeen is called when the model has just been shown a task's
 	// terminal state — through orchestrator_task_status or the delegate receipt.
 	//
@@ -112,9 +116,26 @@ type ChatHarness struct {
 	// When empty, behavior is unchanged (backward compatible).
 	// (ADDED 2026-10-28: harness-bench report §4.2.)
 	SessionRoot string
-	// core.Sieve is an optional repetition detector. If nil, a lightweight
+	// declaredArtifacts is the parsed completion contract from the task prompt.
+	// Set once at the start of Run; read by execTool to gate delegation when
+	// all declared artifacts already exist. nil = no contract (backward compat).
+	// Not exported — per-request state, safe because ChatHarness is created
+	// fresh per request by the API layer.
+	declaredArtifacts []string
+	// declaredFields is the other half of the same contract: for each declared
+	// JSON artifact, the top-level keys the prompt says it must carry. Parsed
+	// once at the start of Run. nil = the prompt states no fields, which must
+	// leave behaviour exactly as it was before this check existed.
+	//
+	// Why it exists: 9 of 35 harness-bench 011 failures in v69–v71 had artifacts
+	// that were present and (for 5 of them) arithmetically correct but shaped
+	// wrongly — `candidates: [{type: "recommended"}]` instead of a top-level
+	// `recommended`, or a participant map keyed by name instead of email.
+	// Existence alone called every one of them done.
+	declaredFields map[string][]string
+	// sieve.Sieve is an optional repetition detector. If nil, a lightweight
 	// signature-based fallback is used instead.
-	Sieve *core.Sieve
+	Sieve *sieve.Sieve
 	// Memory is an optional chat memory manager. If nil, full history
 	// is passed to the provider unchanged (legacy behavior). When set,
 	// history is windowed/summarized before the provider call.
@@ -321,6 +342,23 @@ func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
 			"required": []string{"task_id"},
 		},
 	})
+	tools = append(tools, schemas.ToolDefinition{
+		Name: "orchestrator_help",
+		Description: "Query the system manual to understand available tools, configuration, and safety rules. " +
+			"Use this when you need to know what the system can do, how a tool works, or what configuration is in effect. " +
+			"Returns tier-filtered information: guests see less than admins. No secrets (API keys/tokens) are ever exposed.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"topic": map[string]any{
+					"type": "string",
+					"description": "Which section of the manual to read: \"overview\" (default), \"tools\", \"config\", or \"safety\". " +
+						"overview = system identity + capabilities; tools = tool catalog + usage; config = current settings; safety = danger classification + host protection rules.",
+					"enum": []string{"overview", "tools", "config", "safety"},
+				},
+			},
+		},
+	})
 	return tools
 }
 
@@ -460,6 +498,31 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 	}
 
+	// ── Completion contract (阶段 2c) ────────────────────────────────────
+	// The declared artifact list is already inside the task prompt, so parsing
+	// it needs no new parameter and no harness change. nil means "this prompt
+	// carries no contract" — the ordinary case outside the benchmark — and
+	// must leave behaviour exactly as it was.
+	declaredArtifacts := core.ParseDeclaredArtifacts(query)
+	h.declaredArtifacts = declaredArtifacts
+	// Same prompt, same parsing philosophy: the field lists sit in a
+	// "Create `path` containing:" block, so no new parameter is needed.
+	declaredFields := core.ParseDeclaredArtifactFields(query)
+	h.declaredFields = declaredFields
+	contractSteers := 0 // at most one per run; doubles as the latch and the metric
+	// Bounded separately from contractSteers: a defect report must not consume
+	// the one-shot done steer, or a run that fixes its plan after the report
+	// would never be told it is finished. Two is enough for "here is what is
+	// wrong" plus "here is what is still wrong"; beyond that it is nagging and
+	// burns the turn budget.
+	contractDefectSteers := 0
+	const maxContractDefectSteers = 2
+	// Resolved once per run so the arm a batch actually ran under is recorded
+	// in the event, not inferred from the run-root name (→144). Default is
+	// authorize, i.e. behaviour is unchanged when the env var is unset.
+	completionContract := core.CompletionContractModeFromEnv()
+	core.LogCompletionContractOnce()
+
 	system := h.buildSystem()
 	tools := h.ToolDefinitions()
 	mcpServers := []schemas.MCPServerDef{{Name: "core", Tools: tools}}
@@ -573,7 +636,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	}
 
 	var finalText strings.Builder               // audit H1: was `var finalText string` with += (O(n²))
-	recentSigs := make([]string, 0, 5)          // fallback windowed loop detection when core.Sieve is nil (Gap-3)
+	recentSigs := make([]string, 0, 5)          // fallback windowed loop detection when sieve.Sieve is nil (Gap-3)
 	toolFailErrors := make(map[string][]string) // per-tool recent error messages (capped at 5)
 	noTextTurns := 0                            // consecutive turns with tool calls but no text output
 	// D8 (2026-11-01): the no-text nudge must fire at most once per run, and
@@ -625,9 +688,12 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			}
 		}
 		log.Printf("[chat-turn-summary] task=%s exit=%s turns=%d tool_calls=%d code_exec=%d "+
-			"writes=%d distinct_targets=%d steer_no_text=%d repeated_write=%d elapsed=%.1fs",
+			"writes=%d distinct_targets=%d steer_no_text=%d repeated_write=%d contract_declared=%d contract_steer=%d "+
+			"contract_defect_steer=%d fields_declared=%d elapsed=%.1fs",
 			taskID, reason, turnsUsed, toolCallsUsed, codeExecCalls, writeTotal,
-			len(writeTargets), noTextSteers, repeatedWriteSteers, time.Since(runStart).Seconds())
+			len(writeTargets), noTextSteers, repeatedWriteSteers, len(declaredArtifacts), contractSteers,
+			contractDefectSteers, len(declaredFields),
+			time.Since(runStart).Seconds())
 	}()
 
 	defer func() {
@@ -795,7 +861,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				emit(ChatEvent{Type: "loop_guard", Data: reason})
 			}
 		} else {
-			// Gap-3: fallback windowed loop detection when core.Sieve is nil.
+			// Gap-3: fallback windowed loop detection when sieve.Sieve is nil.
 			// Maintains recent 5 signatures and flags if the current sig
 			// appears >= 3 times in the window (replaces weak 1-hop prevSig).
 			sig := toolCallSignature(resp.ToolCalls)
@@ -955,6 +1021,58 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 					h.PendingSteer = ""
 				}
 				h.SteerLock.Unlock()
+
+				// ── Completion contract steer (阶段 2c) ──────────────
+				// Emitted at most once per run, on the last tool result of a
+				// turn — the same placement as PendingSteer, because that is
+				// where the model looks next.
+				//
+				// This does not change the exit condition. The model still
+				// decides to stop; the steer only tells it that stopping is now
+				// justified, since otherwise the only thing that ever says
+				// "done" is the turn budget.
+				//
+				// SessionRoot == "" is the legacy layout (artifacts under
+				// outputs/<taskID>), where these relative names are not rooted
+				// at any workspace. os.Stat would resolve them against the
+				// process working directory — the deploy directory — so a
+				// colliding name announces "all artifacts exist" over an empty
+				// workspace while everything else reads present=0 forever.
+				// Neither answer is about this run, so neither is worth having.
+				if contractSteers == 0 && len(declaredArtifacts) > 0 && h.SessionRoot != "" {
+					_, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, declaredArtifacts)
+					defects := core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields)
+					if missing == 0 && len(defects) == 0 {
+						contractSteers++
+						// The event always fires: "when would the steer have
+						// fired" is the observation arm C needs, and an absent
+						// event cannot be told apart from a contract that was
+						// never satisfiable.
+						emit(ChatEvent{Type: "artifacts_complete", Meta: map[string]any{
+							"declared": len(declaredArtifacts),
+							"mode":     completionContract.String(),
+						}})
+						if marker := core.CompletionContractMarker(completionContract); marker != "" {
+							result += "\n\n" + marker
+						}
+					} else if len(defects) > 0 && contractDefectSteers < maxContractDefectSteers {
+						// Present but wrong is not done. Say what is wrong in the
+						// same slot as the done steer, because that is where the
+						// model looks next, and do not send the done sentence
+						// (→113: a green light over an artifact the scorer will
+						// reject is worse than no signal at all).
+						contractDefectSteers++
+						emit(ChatEvent{Type: "artifacts_incomplete", Meta: map[string]any{
+							"declared": len(declaredArtifacts),
+							"missing":  missing,
+							"defects":  len(defects),
+							"mode":     completionContract.String(),
+						}})
+						if marker := core.ArtifactDefectsMarker(defects); marker != "" {
+							result += "\n\n" + marker
+						}
+					}
+				}
 			}
 
 			emit(ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": tc.Name}})
@@ -1110,6 +1228,15 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 		if !ok || prompt == "" {
 			return "", fmt.Errorf("delegate_to_orchestrator: missing or empty 'prompt' argument")
 		}
+		// Stage 3: Delegation gate — if all declared artifacts already exist,
+		// skip delegation and tell the model to reply directly. Do NOT return
+		// error (would consume a retry turn and the model might bypass).
+		if len(h.declaredArtifacts) > 0 && h.SessionRoot != "" {
+			if _, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, h.declaredArtifacts); missing == 0 &&
+				len(core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields)) == 0 {
+				return core.MarkerDelegationSkipped, nil
+			}
+		}
 		id, err := h.Delegate(prompt)
 		if err != nil {
 			return "", err
@@ -1142,6 +1269,13 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 			return formatTaskStatus(id, st), nil
 		}
 		return "", fmt.Errorf("orchestrator_task_status: task %s not found", id)
+	}
+	if name == "orchestrator_help" {
+		if h.HelpProvider == nil {
+			return "", fmt.Errorf("orchestrator_help: system manual is not wired in this deployment")
+		}
+		topic, _ := args["topic"].(string)
+		return h.HelpProvider(topic), nil
 	}
 	if name == "search_archive" {
 		query, _ := args["query"].(string)

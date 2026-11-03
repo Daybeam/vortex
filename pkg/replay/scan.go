@@ -22,12 +22,15 @@ var taskIDPattern = regexp.MustCompile(`^task_[A-Za-z0-9_-]{1,80}$`)
 type Loader struct {
 	logDir   string
 	tasksDir string
+	// now is the clock used to decide whether a run is still in flight. It is
+	// a field so tests can pin it; production always uses time.Now.
+	now func() time.Time
 }
 
 // NewLoader builds a loader rooted at the telemetry log directory and the
 // task artifact directory.
 func NewLoader(logDir, tasksDir string) *Loader {
-	return &Loader{logDir: logDir, tasksDir: tasksDir}
+	return &Loader{logDir: logDir, tasksDir: tasksDir, now: time.Now}
 }
 
 type logFile struct {
@@ -55,7 +58,7 @@ func (l *Loader) Index(days, limit int) (Index, error) {
 	index := Index{Runs: []RunSummary{}}
 	seen := make(map[string]bool, len(files))
 	for taskID, taskFiles := range files {
-		detail, err := buildRun(taskID, taskFiles)
+		detail, err := buildRun(taskID, taskFiles, l.now())
 		if err != nil {
 			continue
 		}
@@ -88,7 +91,7 @@ func (l *Loader) Detail(taskID string) (*RunDetail, error) {
 		return nil, err
 	}
 	if taskFiles, ok := files[taskID]; ok && len(taskFiles) > 0 {
-		detail, err := buildRun(taskID, taskFiles)
+		detail, err := buildRun(taskID, taskFiles, l.now())
 		if err != nil {
 			return nil, err
 		}

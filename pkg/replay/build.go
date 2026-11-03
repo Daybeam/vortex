@@ -13,7 +13,19 @@ import (
 // original run.
 const segmentGap = 30 * time.Minute
 
-func buildRun(taskID string, files []logFile) (*RunDetail, error) {
+// liveWindow is how long a run may go without writing a new event before the
+// loader stops calling it in flight. A killed process and a healthy one leave
+// the same log tail, so recency is the only signal that separates "still
+// running" from "interrupted".
+const liveWindow = 3 * time.Minute
+
+// dispatchMergeWindow collapses the two telemetry paths that describe a single
+// re-dispatch: the scheduler logs step_retrying and then, a moment later, a
+// fresh audit_entry with a new span id for the same step. Counting both would
+// report the same retry twice. Telemetry timestamps are seconds.
+const dispatchMergeWindow = 5.0
+
+func buildRun(taskID string, files []logFile, now time.Time) (*RunDetail, error) {
 	var raw []rawEvent
 	for _, file := range files {
 		raw = append(raw, parseFile(file)...)
@@ -30,6 +42,7 @@ func buildRun(taskID string, files []logFile) (*RunDetail, error) {
 	completed, failed, retries := stepTotals(index.list)
 	settled := hasEvent(events, "task_completed")
 	failedTerminal := hasEvent(events, "task_failed")
+	running := inFlight(events, index.list, settled, failedTerminal, now)
 	prompt := runPrompt(events)
 	provider, model := modelInfo(events)
 
@@ -37,7 +50,7 @@ func buildRun(taskID string, files []logFile) (*RunDetail, error) {
 		TaskID:     taskID,
 		Title:      runTitle(prompt, index.list, taskID),
 		Task:       prompt,
-		Status:     deriveStatus(index.list, settled, failedTerminal),
+		Status:     deriveStatus(index.list, settled, failedTerminal, running),
 		Replayable: true,
 		Settled:    settled || failedTerminal,
 		Dates:      dates,
@@ -219,16 +232,45 @@ func mergeEvent(target *rawEvent, extra rawEvent) {
 }
 
 type stepAgg struct {
-	starts     []float64
-	doneAt     float64
-	failAt     float64
-	lastEvent  float64
-	role       string
-	thought    string
-	errText    string
-	confidence *float64
-	tools      int
-	retries    int
+	starts      []float64
+	dispatchAts []stepDispatch
+	doneAt      float64
+	failAt      float64
+	lastEvent   float64
+	role        string
+	thought     string
+	errText     string
+	confidence  *float64
+	tools       int
+}
+
+// stepDispatch is one re-dispatch of a step, with the error that caused it when
+// telemetry recorded one.
+type stepDispatch struct {
+	at  float64
+	err string
+}
+
+// appendDispatch records the instant a step was dispatched again, keeping one
+// entry per re-dispatch even when both telemetry paths report it.
+func (a *stepAgg) appendDispatch(at float64, err string) {
+	if at <= 0 {
+		return
+	}
+	for index, existing := range a.dispatchAts {
+		if math.Abs(existing.at-at) < dispatchMergeWindow {
+			if existing.err == "" {
+				a.dispatchAts[index].err = err
+			}
+			return
+		}
+	}
+	a.dispatchAts = append(a.dispatchAts, stepDispatch{at: at, err: err})
+	sort.Slice(a.dispatchAts, func(i, j int) bool { return a.dispatchAts[i].at < a.dispatchAts[j].at })
+}
+
+func (a *stepAgg) retries() int {
+	return len(a.dispatchAts)
 }
 
 func (a *stepAgg) execStart() float64 {
@@ -249,15 +291,19 @@ func (a *stepAgg) firstStart() float64 {
 }
 
 type stepIndex struct {
-	list      []Step
-	byID      map[string]*Step
-	execStart map[string]float64
+	list        []Step
+	byID        map[string]*Step
+	execStart   map[string]float64
+	dispatchAts map[string][]stepDispatch
 }
 
 func aggregateSteps(events []rawEvent, runStart float64) stepIndex {
 	order := make([]string, 0, 8)
 	aggs := make(map[string]*stepAgg, 8)
 	subtasks := make(map[string]string, 8)
+	// One span id per dispatch, so a step that was sent out again shows up as a
+	// second entry instead of silently extending the first attempt.
+	spans := make(map[string]map[string]float64, 8)
 
 	for _, event := range events {
 		if event.StepID == "" {
@@ -271,6 +317,17 @@ func aggregateSteps(events []rawEvent, runStart float64) stepIndex {
 				}
 				if task != "" {
 					subtasks[event.StepID] = oneLine(stripReference(task), 400)
+				}
+			}
+			if event.Event == "audit_entry" {
+				span := detailString(event.Detail, "span_id")
+				if span != "" {
+					if spans[event.StepID] == nil {
+						spans[event.StepID] = make(map[string]float64, 2)
+					}
+					if at, seen := spans[event.StepID][span]; !seen || event.TS < at {
+						spans[event.StepID][span] = event.TS
+					}
 				}
 			}
 			continue
@@ -296,10 +353,20 @@ func aggregateSteps(events []rawEvent, runStart float64) stepIndex {
 		return order[i] < order[j]
 	})
 
+	for _, id := range order {
+		heads := sortedSpanTimes(spans[id])
+		// The first span is the original dispatch; everything after it is a
+		// re-run of the same step.
+		for _, at := range heads[min(1, len(heads)):] {
+			aggs[id].appendDispatch(at, "")
+		}
+	}
+
 	index := stepIndex{
-		list:      make([]Step, 0, len(order)),
-		byID:      make(map[string]*Step, len(order)),
-		execStart: make(map[string]float64, len(order)),
+		list:        make([]Step, 0, len(order)),
+		byID:        make(map[string]*Step, len(order)),
+		execStart:   make(map[string]float64, len(order)),
+		dispatchAts: make(map[string][]stepDispatch, len(order)),
 	}
 	for position, id := range order {
 		agg := aggs[id]
@@ -307,8 +374,21 @@ func aggregateSteps(events []rawEvent, runStart float64) stepIndex {
 		index.list = append(index.list, step)
 		index.byID[id] = &index.list[len(index.list)-1]
 		index.execStart[id] = stepTime(agg.execStart(), agg.firstStart(), agg.lastEvent)
+		index.dispatchAts[id] = append([]stepDispatch(nil), agg.dispatchAts...)
 	}
 	return index
+}
+
+func sortedSpanTimes(heads map[string]float64) []float64 {
+	if len(heads) == 0 {
+		return nil
+	}
+	times := make([]float64, 0, len(heads))
+	for _, at := range heads {
+		times = append(times, at)
+	}
+	sort.Float64s(times)
+	return times
 }
 
 func applyStepEvent(agg *stepAgg, event rawEvent) {
@@ -322,17 +402,20 @@ func applyStepEvent(agg *stepAgg, event rawEvent) {
 		if agg.role == "" {
 			agg.role = detailString(event.Detail, "role_id")
 		}
-	case "EventCoreToolCall":
+	case "EventCoreToolCall", "EventMCPToolCall":
 		agg.tools++
 	case "tool_call":
 		if detailString(event.Detail, "phase") == "finished" {
 			agg.tools++
 		}
 	case "step_retrying":
-		agg.retries++
+		errText := oneLine(detailString(event.Detail, "error"), 200)
+		agg.appendDispatch(event.TS, errText)
 		if agg.errText == "" {
-			agg.errText = oneLine(detailString(event.Detail, "error"), 200)
+			agg.errText = errText
 		}
+	case "EventA3Compensation":
+		agg.appendDispatch(event.TS, "compensation")
 	case "step_completed":
 		agg.doneAt = event.TS
 		if event.Confidence != nil {
@@ -379,7 +462,7 @@ func buildStep(id string, position int, agg *stepAgg, task string, runStart floa
 		EndMs:      millisBetween(runStart, math.Max(startAt, endAt)),
 		DurationMs: millisBetween(startAt, math.Max(startAt, endAt)),
 		Tools:      agg.tools,
-		Retries:    agg.retries,
+		Retries:    agg.retries(),
 		Thought:    agg.thought,
 		Error:      agg.errText,
 		Confidence: agg.confidence,
@@ -414,10 +497,18 @@ func stepTotals(steps []Step) (completed, failed, retries int) {
 
 // countTools covers both step-scoped core tool calls and run-level admin tool
 // calls, which carry no step id.
+//
+// EventMCPToolCall counts too. A sub-agent calling an MCP server is a tool call
+// in every sense the reader cares about, and until that event existed this
+// counter silently reported only the in-process half. Records written before
+// the event existed are unaffected (they simply never contain it), so a replay
+// of old jsonl yields the same number as before — but comparisons of this
+// field across the change are no longer apples to apples, and should be
+// grouped by whether EventMCPToolCall is present.
 func countTools(events []rawEvent) int {
 	tools := 0
 	for _, event := range events {
-		if event.Event == "EventCoreToolCall" {
+		if event.Event == "EventCoreToolCall" || event.Event == "EventMCPToolCall" {
 			tools++
 			continue
 		}
@@ -428,13 +519,15 @@ func countTools(events []rawEvent) int {
 	return tools
 }
 
-func deriveStatus(steps []Step, settled, failedTerminal bool) string {
+func deriveStatus(steps []Step, settled, failedTerminal, running bool) string {
 	completed, failed, _ := stepTotals(steps)
 	switch {
 	case settled:
 		return StatusCompleted
 	case failedTerminal:
 		return StatusFailed
+	case running:
+		return StatusRunning
 	case completed > 0 && failed > 0:
 		return StatusPartial
 	case completed > 0:
@@ -444,6 +537,31 @@ func deriveStatus(steps []Step, settled, failedTerminal bool) string {
 	default:
 		return StatusInterrupted
 	}
+}
+
+// inFlight reports whether the run is still being written. A run that logged
+// its own terminal event is settled; a run whose every step already reached a
+// terminal state is finished even if the task never logged one (the process
+// died in the gap). Only a run with an open step and a fresh tail is live.
+func inFlight(events []rawEvent, steps []Step, settled, failedTerminal bool, now time.Time) bool {
+	if settled || failedTerminal || len(events) == 0 || !hasOpenStep(steps) {
+		return false
+	}
+	return now.Sub(eventTime(events[len(events)-1].TS)) < liveWindow
+}
+
+// hasOpenStep is true when a step started but never reached a terminal state,
+// or when the run has no step yet and is still being decomposed.
+func hasOpenStep(steps []Step) bool {
+	if len(steps) == 0 {
+		return true
+	}
+	for _, step := range steps {
+		if step.Status == StepRunning {
+			return true
+		}
+	}
+	return false
 }
 
 func runTitle(prompt string, steps []Step, taskID string) string {
@@ -562,7 +680,10 @@ func buildTimeline(events []rawEvent, start, end float64, prompt string, index s
 				}
 			}
 			out = append(out, Event{AtMs: at, Kind: KindStart, StepID: step, Text: role})
-		case "EventCoreToolCall":
+		case "EventCoreToolCall", "EventMCPToolCall":
+			// Both are tool calls and both carry a "tool" field; the transport
+			// difference (in-process core tool vs MCP server) matters for
+			// attribution but not for the timeline, so they share one shape.
 			out = append(out, Event{
 				AtMs:   at,
 				Kind:   KindTool,
@@ -575,10 +696,6 @@ func buildTimeline(events []rawEvent, start, end float64, prompt string, index s
 			}
 			tool := detailString(event.Detail, "tool")
 			out = append(out, Event{AtMs: at, Kind: KindTool, StepID: step, Tool: tool})
-		case "step_retrying":
-			out = append(out, Event{AtMs: at, Kind: KindRetry, StepID: step, Text: oneLine(detailString(event.Detail, "error"), 140)})
-		case "EventA3Compensation":
-			out = append(out, Event{AtMs: at, Kind: KindRetry, StepID: step, Text: "compensation"})
 		case "decision_required":
 			out = append(out, Event{AtMs: at, Kind: KindGate, StepID: step, Text: firstNonEmpty(detailString(event.Detail, "kind"), detailString(event.Detail, "question"), "decision required")})
 		case "mount_policy_rejected":
@@ -604,6 +721,19 @@ func buildTimeline(events []rawEvent, start, end float64, prompt string, index s
 	if finalAt < 0 {
 		out = append(out, Event{AtMs: millisBetween(start, end), Kind: KindFinal})
 	}
+	// Retry beats come from the dispatch tally rather than the event stream: a
+	// re-dispatch can be logged as an audit span, a step_retrying, or a
+	// compensation, and the tally already collapsed those into one entry each.
+	for _, step := range index.list {
+		for position, dispatch := range index.dispatchAts[step.ID] {
+			text := dispatch.err
+			if text == "" {
+				text = "attempt " + strconv.Itoa(position+2)
+			}
+			out = append(out, Event{AtMs: millisBetween(start, dispatch.at), Kind: KindRetry, StepID: step.ID, Text: text})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].AtMs < out[j].AtMs })
 	return out
 }
 
@@ -651,10 +781,15 @@ func oneLine(text string, limit int) string {
 	return string(runes[:limit-1]) + "…"
 }
 
-func rfc3339(ts float64) string {
+// eventTime converts a telemetry unix timestamp to a time.Time.
+func eventTime(ts float64) time.Time {
 	seconds := int64(ts)
 	nanos := int64(math.Round((ts - float64(seconds)) * 1e9))
-	return time.Unix(seconds, nanos).UTC().Format(time.RFC3339)
+	return time.Unix(seconds, nanos)
+}
+
+func rfc3339(ts float64) string {
+	return eventTime(ts).UTC().Format(time.RFC3339)
 }
 
 func millisBetween(from, to float64) int64 {

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/core/sieve"
 	"github.com/daybeam/vortex/store"
 )
@@ -102,7 +101,7 @@ func TestInspectToolCalls_ExemptsLegitimateStatusPolling(t *testing.T) {
 		{"task_id": "task_abc", "wait_seconds": 20},
 		{"task_id": "task_abc"}, // no blocking arg, still volatile
 	} {
-		s := core.NewSieve(10)
+		s := sieve.NewSieve(10)
 		s.ToolRepetitionThreshold = 3
 		call := store.ToolInteraction{ToolName: "orchestrator_task_status", Arguments: args}
 		for i := 0; i < 8; i++ {
@@ -115,7 +114,7 @@ func TestInspectToolCalls_ExemptsLegitimateStatusPolling(t *testing.T) {
 
 // ...and it must still fire when the same call is genuinely repetitive.
 func TestInspectToolCalls_StillBlocksIdenticalReads(t *testing.T) {
-	s := core.NewSieve(10)
+	s := sieve.NewSieve(10)
 	s.ToolRepetitionThreshold = 3
 	call := store.ToolInteraction{ToolName: "read_file", Arguments: map[string]any{"path": "/workspace/a.txt"}}
 
@@ -135,7 +134,7 @@ func TestInspectToolCalls_StillBlocksIdenticalReads(t *testing.T) {
 }
 
 func TestInspectToolCalls_StillBlocksIdenticalWrites(t *testing.T) {
-	s := core.NewSieve(10)
+	s := sieve.NewSieve(10)
 	s.ToolRepetitionThreshold = 3
 	call := store.ToolInteraction{ToolName: "write_file", Arguments: map[string]any{"path": "/workspace/a.txt"}}
 

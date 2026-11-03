@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"os"
 	"path/filepath"
@@ -8,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -61,7 +61,7 @@ func TestChatHarness_ResultRepetition_E2E(t *testing.T) {
 		}
 	}
 
-	sieve := core.NewSieve(100)
+	sieve := sieve.NewSieve(100)
 	sieve.ToolRepetitionThreshold = 3
 
 	h := &ChatHarness{

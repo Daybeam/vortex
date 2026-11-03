@@ -9,6 +9,7 @@ const (
 	StatusFailed      = "failed"
 	StatusInterrupted = "interrupted"
 	StatusArtifacts   = "artifacts"
+	StatusRunning     = "running"
 )
 
 // Replay event kinds emitted by the loader. The frontend maps these onto its
@@ -57,7 +58,7 @@ type RunSummary struct {
 	Provider  string `json:"provider,omitempty"`
 	Model     string `json:"model,omitempty"`
 	Artifacts int    `json:"artifactCount,omitempty"`
-	Error      string   `json:"error,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // Step is one unit of work inside a run. Times are milliseconds relative to

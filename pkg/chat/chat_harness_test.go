@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"fmt"
 	"os"
@@ -157,7 +158,7 @@ func TestChatHarnessLoopGuard(t *testing.T) {
 		Model:      "mock",
 		OutputBase: outBase,
 		MaxTurns:   6,
-		Sieve:      core.NewSieve(100),
+		Sieve:      sieve.NewSieve(100),
 	}
 	var events []ChatEvent
 	h.Run(context.Background(), "task1",
@@ -254,7 +255,7 @@ func TestChatHarnessSteerNoTextLoop(t *testing.T) {
 		Model:      "mock",
 		OutputBase: t.TempDir(),
 		MaxTurns:   6,
-		Sieve:      core.NewSieve(100),
+		Sieve:      sieve.NewSieve(100),
 	}
 	var events []ChatEvent
 	h.Run(context.Background(), "task1",
@@ -278,7 +279,7 @@ func TestChatHarnessNoTextSteerLatchesOnce(t *testing.T) {
 		Model:      "mock",
 		OutputBase: t.TempDir(),
 		MaxTurns:   20, // long enough for the old code to fire 6 times
-		Sieve:      core.NewSieve(100),
+		Sieve:      sieve.NewSieve(100),
 	}
 	var events []ChatEvent
 	h.Run(context.Background(), "task1",
@@ -304,7 +305,7 @@ func TestChatHarnessNoTextSteerSuppressedWhenToolsSucceed(t *testing.T) {
 		Model:      "mock",
 		OutputBase: outBase,
 		MaxTurns:   12,
-		Sieve:      core.NewSieve(100),
+		Sieve:      sieve.NewSieve(100),
 	}
 	var events []ChatEvent
 	h.Run(context.Background(), "task1",
@@ -355,7 +356,7 @@ func TestChatHarnessWriteToolNotCached(t *testing.T) {
 		Model:      "mock",
 		OutputBase: t.TempDir(),
 		MaxTurns:   5,
-		Sieve:      core.NewSieve(100),
+		Sieve:      sieve.NewSieve(100),
 	}
 	var events []ChatEvent
 	h.Run(context.Background(), "task1",
@@ -456,7 +457,7 @@ func TestChatHarness_WriteToolActionResultHasActionCompleted(t *testing.T) {
 		Model:      "mock",
 		OutputBase: t.TempDir(),
 		MaxTurns:   5,
-		Sieve:      core.NewSieve(100),
+		Sieve:      sieve.NewSieve(100),
 	}
 	var events []ChatEvent
 	h.Run(context.Background(), "task-ac",
@@ -863,7 +864,7 @@ func TestThinkingExtractor_Flush(t *testing.T) {
 	}
 }
 
-// ── Gap-3: Fallback Windowed Loop Detection (core.Sieve=nil) ─────────────────────
+// ── Gap-3: Fallback Windowed Loop Detection (sieve.Sieve=nil) ─────────────────────
 
 type fallbackLoopProvider struct {
 	calls int
@@ -904,13 +905,13 @@ func TestChatHarness_FallbackWindowedLoop_WhenSieveNil(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// core.Sieve is nil — exercises the fallback windowed loop detection (Gap-3).
+	// sieve.Sieve is nil — exercises the fallback windowed loop detection (Gap-3).
 	h := &ChatHarness{
 		Provider:   &fallbackLoopProvider{},
 		Model:      "mock",
 		OutputBase: outBase,
 		MaxTurns:   8,
-		// core.Sieve intentionally nil
+		// sieve.Sieve intentionally nil
 	}
 
 	var events []ChatEvent
@@ -925,7 +926,7 @@ func TestChatHarness_FallbackWindowedLoop_WhenSieveNil(t *testing.T) {
 		}
 	}
 	if !sawFallbackGuard {
-		t.Error("expected loop_guard event with 'windowed fallback' when core.Sieve is nil")
+		t.Error("expected loop_guard event with 'windowed fallback' when sieve.Sieve is nil")
 	}
 }
 
