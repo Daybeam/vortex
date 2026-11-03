@@ -242,6 +242,7 @@ func (r *Registry) loadLocked() error {
 		r.DefaultProvider = "default"
 	}
 	r.DefaultEmbeddingProvider = cfg.DefaultEmbeddingProvider
+	r.GlobalFallback = cfg.GlobalFallback
 	r.ExternalRuntimes = cfg.ExternalRuntimes
 	r.System = cfg.System
 	r.applySystemDefaults()
@@ -632,6 +633,7 @@ func (r *Registry) buildConfigSnapshotLocked() Config {
 
 	return Config{
 		DefaultProvider:        r.DefaultProvider,
+		GlobalFallback:         r.GlobalFallback,
 		Providers:              providers,
 		Skills:                 skills,
 		MCPs:                   mcps,

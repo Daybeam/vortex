@@ -13,6 +13,7 @@ type Registry struct {
 	configPath               string
 	DefaultProvider          string
 	DefaultEmbeddingProvider string
+	GlobalFallback           []ProviderConfig
 	Providers                map[string]*ProviderConfig
 	Skills                   map[string]*Skill
 	PendingSkills            map[string]*Skill // staging for unverified external skills (TODO-4: not discoverable until promoted)

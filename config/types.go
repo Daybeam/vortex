@@ -517,7 +517,7 @@ type SandboxConfig struct {
 }
 
 // RetentionSettings controls dual-mode (headless vs GUI) storage compaction
-// and lifecycle retention. See docs/architecture/STORAGE_COMPACTION_DESIGN.md.
+// and lifecycle retention. See docs/completed/2026-09-17/STORAGE_COMPACTION_DESIGN.md.
 type RetentionSettings struct {
 	Mode                   string `json:"mode,omitempty"`
 	TaskHistoryDays        int    `json:"task_history_days,omitempty"`
@@ -526,6 +526,19 @@ type RetentionSettings struct {
 	MaxPromotionAuditLogs  int    `json:"max_promotion_audit_logs,omitempty"`
 	AutoVacuumIntervalDays int    `json:"auto_vacuum_interval_days,omitempty"`
 	VacuumOnStartup        bool   `json:"vacuum_on_startup,omitempty"`
+	// AssetGC controls file-side cleanup of task output directories.
+	// "off" = no file cleanup; "staging_only" = only .staging TTL (default);
+	// "task_dirs" = identify terminal task dirs older than AssetTTLDays as
+	// deletion candidates (does NOT auto-delete — use orchestrator_cleanup_workspace).
+	// Invalid values default to "staging_only" (conservative).
+	AssetGC string `json:"asset_gc,omitempty"`
+	// AssetTTLDays is the minimum age in days for a terminal task dir to be
+	// a deletion candidate. Only effective when AssetGC == "task_dirs".
+	// Default 365.
+	AssetTTLDays int `json:"asset_ttl_days,omitempty"`
+	// AssetWarnBytes is the StorePath size threshold for a capacity warning
+	// notification. 0 = disabled. Default 5 GiB.
+	AssetWarnBytes int64 `json:"asset_warn_bytes,omitempty"`
 }
 
 // FeatureFlags holds behavior toggles that were previously env-var-only
@@ -618,6 +631,11 @@ type SystemSettings struct {
 	SwarmFallbackDelay        int            `json:"swarm_fallback_delay,omitempty"`
 	SwarmAgentCount           int            `json:"swarm_agent_count,omitempty"` // audit L1: was hardcoded 5
 	DelegationMode            bool           `json:"delegation_mode,omitempty"`
+	// DelegationEnvelopeWaitSeconds controls the synchronous envelope delivery
+	// window in submit_task/submit_decision. Default 30s (envelope compilation
+	// takes 19–26s measured). 0 = disable sync delivery, fall back to
+	// get_task_status polling. See ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §4.2.
+	DelegationEnvelopeWaitSeconds int `json:"delegation_envelope_wait_seconds,omitempty"`
 	// NonInteractive enables unattended mode: when a step would block on a
 	// decision (step failure, low confidence, max-turns, autonomous abort),
 	// the engine auto-selects a conservative default instead of blocking
