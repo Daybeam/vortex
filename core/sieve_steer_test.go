@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"strings"
 	"testing"
 
@@ -17,7 +18,7 @@ func newTestSpawner(t *testing.T) *Spawner {
 	return &Spawner{
 		registry: reg,
 		logger:   mustNewLogger(t, t.TempDir(), &reg.System),
-		sieve:    newSieveFromConfig(reg.System),
+		sieve:    sieve.NewSieveFromConfig(reg.System),
 	}
 }
 

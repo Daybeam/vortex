@@ -31,7 +31,7 @@ func TestBuild_VolatileBlocksAfterConstraints(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-kv2",
+		"test task", "", "task-kv2", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -78,7 +78,7 @@ func TestBuild_ConstraintsBlockHasCacheMarker(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-kv2-marker",
+		"test task", "", "task-kv2-marker", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -110,7 +110,7 @@ func TestBuild_ArchiveBlocksAfterConstraints(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-kv2-archive",
+		"test task", "", "task-kv2-archive", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)

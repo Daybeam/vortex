@@ -21,6 +21,8 @@ import (
 type fakeExperienceStore struct {
 	QuerySkillRecommendationsFn func(ctx context.Context, capability string, minConfidence float64) []string
 	SelectSkillFn               func(ctx context.Context, availableSkills []string, capability, roleID, modelID string, epsilon float64) string
+	RecordSkillExposureFn       func(taskID, stepID string, ids []string)
+	TakeSkillExposuresFn        func(taskID, stepID string) []string
 }
 
 var _ store.IExperienceStore = (*fakeExperienceStore)(nil)
@@ -85,6 +87,18 @@ func (f *fakeExperienceStore) GetGeneratedSkillsSnapshot() map[string]*store.Gen
 }
 func (f *fakeExperienceStore) UpdateGeneratedSkillVerified(id string, verified bool) {}
 func (f *fakeExperienceStore) IncrementGeneratedSkillUsage(id string)                {}
+func (f *fakeExperienceStore) RecordSkillExposure(taskID, stepID string, ids []string) {
+	if f.RecordSkillExposureFn != nil {
+		f.RecordSkillExposureFn(taskID, stepID, ids)
+	}
+}
+func (f *fakeExperienceStore) TakeSkillExposures(taskID, stepID string) []string {
+	if f.TakeSkillExposuresFn != nil {
+		return f.TakeSkillExposuresFn(taskID, stepID)
+	}
+	return nil
+}
+func (f *fakeExperienceStore) SetSkillLivenessProbe(probe func(skillID string) bool) {}
 func (f *fakeExperienceStore) QueryRoleAffinity(ctx context.Context, roleID, taskType string) float64 {
 	return 0
 }

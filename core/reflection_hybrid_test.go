@@ -15,7 +15,9 @@ import (
 
 // MockHybridProvider implements providers.Provider (interfaces.Provider) for testing
 type MockHybridProvider struct {
-	response string
+	response   string
+	lastSystem string
+	lastUser   string
 }
 
 func (m *MockHybridProvider) Name() string { return "mock-hybrid" }
@@ -23,6 +25,8 @@ func (m *MockHybridProvider) CountTokens(ctx context.Context, text string) (int,
 	return len(text) / 4, nil
 }
 func (m *MockHybridProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+	m.lastSystem = req.System
+	m.lastUser = req.User
 	return &schemas.ProviderResponse{Text: m.response}, nil
 }
 func (m *MockHybridProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {

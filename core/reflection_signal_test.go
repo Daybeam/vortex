@@ -54,7 +54,7 @@ func TestReflectionEngine_SignalCapture(t *testing.T) {
 	}
 
 	// 2. Reflect (call registerAsSkill directly to avoid background network call in test)
-	re.registerAsSkill(context.Background(), "jit_test", "repair", "fix something", "Command not found: 'grep'")
+	re.registerAsSkill(context.Background(), "jit_test", "repair", "fix something", "Command not found: 'grep'", "")
 
 	// 3. Verify that the skill was generated with the FailureSignal
 	es.Mu.RLock()

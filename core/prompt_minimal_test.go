@@ -14,7 +14,7 @@ func collectPrompt(t *testing.T, pa *PromptAssembler, role *config.Role) string 
 	blocks, err := pa.Build(
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-minimal",
+		"test task", "", "task-minimal", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)

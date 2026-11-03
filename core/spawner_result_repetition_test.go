@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"strings"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestSpawner_ResultRepetition_SieveInitialized(t *testing.T) {
 	s := &Spawner{
 		registry: reg,
 		logger:   logger,
-		sieve:    newSieveFromConfig(reg.System),
+		sieve:    sieve.NewSieveFromConfig(reg.System),
 	}
 
 	if s.sieve == nil {
@@ -70,7 +71,7 @@ func TestSpawner_ResultRepetition_SieveInitialized(t *testing.T) {
 // which execution path it's on.
 func TestSpawner_ResultRepetition_MessageFormat(t *testing.T) {
 	s := &Spawner{
-		sieve: NewSieve(10),
+		sieve: sieve.NewSieve(10),
 	}
 	s.sieve.ToolRepetitionThreshold = 2
 
@@ -101,19 +102,19 @@ func TestSpawner_ResultRepetition_MessageFormat(t *testing.T) {
 // time-varying results with the same args, so flagging them as "repetition"
 // would be a false positive.
 func TestSpawner_ResultRepetition_PollerExempt(t *testing.T) {
-	// The spawner's condition is: isReadTool(name) && !isPollerTool(name)
+	// The spawner's condition is: sieve.IsReadTool(name) && !sieve.IsPollerTool(name)
 	// Poller tools should fail this condition.
 	pollers := []string{"progress_check", "health_status", "wait_for_completion"}
 	for _, name := range pollers {
-		if !isReadTool(name) {
+		if !sieve.IsReadTool(name) {
 			continue // not a read tool, wouldn't be checked anyway
 		}
-		if !isPollerTool(name) {
+		if !sieve.IsPollerTool(name) {
 			t.Errorf("Poller %q should be exempt but isPollerTool returned false", name)
 		}
 		// The spawner's condition: isReadTool && !isPollerTool
 		// For pollers, this should be false → CheckResultRepetition NOT called.
-		shouldCheck := isReadTool(name) && !isPollerTool(name)
+		shouldCheck := sieve.IsReadTool(name) && !sieve.IsPollerTool(name)
 		if shouldCheck {
 			t.Errorf("Poller %q should NOT trigger CheckResultRepetition in spawner", name)
 		}
@@ -127,7 +128,7 @@ func TestSpawner_ResultRepetition_PollerExempt(t *testing.T) {
 func TestSpawner_ResultRepetition_WriteToolExempt(t *testing.T) {
 	writes := []string{"create_user", "update_record", "delete_item", "cancel_order", "write_file"}
 	for _, name := range writes {
-		if isReadTool(name) {
+		if sieve.IsReadTool(name) {
 			t.Errorf("Write tool %q should NOT be classified as read tool — would wrongly trigger CheckResultRepetition", name)
 		}
 	}

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/capability"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,10 +144,10 @@ func TestActivateTopSkills_FiltersAndActivates(t *testing.T) {
 		},
 	}
 
-	candidates := []DiscoveryCandidate{
-		{ID: "ext_a", Type: CandidateSkill, Confidence: 0.9},
-		{ID: "ext_b", Type: CandidateSkill, Confidence: 0.8},
-		{ID: "ext_c", Type: CandidateRole, Confidence: 0.95}, // not a skill
+	candidates := []capability.DiscoveryCandidate{
+		{ID: "ext_a", Type: capability.CandidateSkill, Confidence: 0.9},
+		{ID: "ext_b", Type: capability.CandidateSkill, Confidence: 0.8},
+		{ID: "ext_c", Type: capability.CandidateRole, Confidence: 0.95}, // not a skill
 	}
 
 	result, skillDir := ActivateTopSkills(reg, candidates, 3)
@@ -177,10 +178,10 @@ func TestActivateTopSkills_RespectsTopN(t *testing.T) {
 		},
 	}
 
-	candidates := []DiscoveryCandidate{
-		{ID: "ext_a", Type: CandidateSkill, Confidence: 0.9},
-		{ID: "ext_b", Type: CandidateSkill, Confidence: 0.8},
-		{ID: "ext_c", Type: CandidateSkill, Confidence: 0.7},
+	candidates := []capability.DiscoveryCandidate{
+		{ID: "ext_a", Type: capability.CandidateSkill, Confidence: 0.9},
+		{ID: "ext_b", Type: capability.CandidateSkill, Confidence: 0.8},
+		{ID: "ext_c", Type: capability.CandidateSkill, Confidence: 0.7},
 	}
 
 	result, _ := ActivateTopSkills(reg, candidates, 2)
@@ -202,8 +203,8 @@ func TestActivateTopSkills_NoSkills_ReturnsEmpty(t *testing.T) {
 		Skills: map[string]*config.Skill{},
 	}
 
-	candidates := []DiscoveryCandidate{
-		{ID: "ext_x", Type: CandidateRole, Confidence: 0.9},
+	candidates := []capability.DiscoveryCandidate{
+		{ID: "ext_x", Type: capability.CandidateRole, Confidence: 0.9},
 	}
 
 	result, skillDir := ActivateTopSkills(reg, candidates, 3)

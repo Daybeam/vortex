@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"sync"
 	"testing"
@@ -47,7 +48,7 @@ func TestSmartRouted_DecisionResolvedFinalizesExactlyOnce(t *testing.T) {
 		graphs:          make(map[string]*schemas.TaskGraph),
 		doneChans:       make(map[string]chan struct{}),
 		bgWg:            sync.WaitGroup{},
-		sieve:           NewSieve(1),
+		sieve:           sieve.NewSieve(1),
 		spawner:         &Spawner{},
 		notifyChan:      make(chan struct{}),
 		lifecycleCtx:    lifecycleCtx,
@@ -136,7 +137,7 @@ func TestFinalize_IsIdempotent(t *testing.T) {
 		graphs:          make(map[string]*schemas.TaskGraph),
 		doneChans:       make(map[string]chan struct{}),
 		bgWg:            sync.WaitGroup{},
-		sieve:           NewSieve(1),
+		sieve:           sieve.NewSieve(1),
 		spawner:         &Spawner{},
 		notifyChan:      make(chan struct{}),
 		lifecycleCtx:    lifecycleCtx,

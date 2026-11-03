@@ -98,6 +98,12 @@ func TestResolveMCPURL_PlaceholderNotInURL_Errors(t *testing.T) {
 }
 
 func TestCallRemoteMCPTool_SuccessWithHeaderAuth(t *testing.T) {
+	// Wire a CredentialResolver for API-key auth (package-level, set by startup
+	// in production). Restore old value on cleanup.
+	oldResolver := credentialResolver
+	SetCredentialResolver(NewOAuthCredentialResolver(nil))
+	t.Cleanup(func() { credentialResolver = oldResolver })
+
 	var gotAuthHeader string
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

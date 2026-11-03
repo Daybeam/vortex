@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -90,5 +91,70 @@ func TestPromptManager_CookbookTemplating(t *testing.T) {
 	expected := "Strategy: Divide and Conquer"
 	if rendered != expected {
 		t.Errorf("expected %q, got %q", expected, rendered)
+	}
+}
+
+// TestBaseRoleRender_NoNoValue verifies that rendering base_role.md with a
+// complete template context produces no "<no value>" artifacts.
+//
+// Defect: D-PROMPT-4 (§4.4) — base_role.md previously referenced {{.user_name}}
+// which was never provided in tmplCtx, causing "<no value>" to appear in the
+// rendered system prompt. The fix removes the {{.user_name}} reference and
+// adds missingkey=error to the template parser.
+//
+// Before fix: render output contained "<no value>" (from {{.user_name}} with
+// default missingkey=invalid). After fix: all keys are provided, no "<no value>".
+//
+// See: docs/plan/ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §6
+func TestBaseRoleRender_NoNoValue(t *testing.T) {
+	pm := NewPromptManager("../prompts", nil)
+
+	tmplCtx := map[string]any{
+		"task": map[string]any{
+			"id":   "test-task-001",
+			"step": "step-1",
+			"role": "coder",
+		},
+		"env": map[string]string{
+			"Time": "2026-11-02T12:00:00Z",
+		},
+	}
+
+	rendered, err := pm.GetAndRender("base_role.md", tmplCtx)
+	if err != nil {
+		t.Fatalf("GetAndRender failed: %v", err)
+	}
+
+	if strings.Contains(rendered, "<no value>") {
+		t.Errorf("rendered base_role.md contains <no value>:\n%s", rendered)
+	}
+}
+
+// TestPromptManagerMissingKeyErrors verifies that the PromptManager's template
+// parser uses missingkey=error, so a missing key produces an error instead of
+// silently rendering "<no value>".
+//
+// Defect: D-PROMPT-4 (§4.4) — prompt_manager.go previously parsed templates
+// without missingkey=error, so missing keys rendered as "<no value>" with no
+// error. The fix adds .Option("missingkey=error") to the template parser.
+//
+// Before fix: Render succeeds, output contains "<no value>". After fix: Render
+// returns an error.
+//
+// See: docs/plan/ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §6
+func TestPromptManagerMissingKeyErrors(t *testing.T) {
+	pm := NewPromptManager("", nil)
+
+	ctx := map[string]any{
+		"known": "value",
+	}
+
+	_, err := pm.Render("test_missing_key", "Hello {{.known}} {{.nonexistent}}", ctx)
+	if err == nil {
+		t.Fatal("expected error for missing key with missingkey=error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("error should mention the missing key, got: %v", err)
 	}
 }

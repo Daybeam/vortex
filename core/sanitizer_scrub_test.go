@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/capability"
 	"context"
 	"fmt"
 	"strings"
@@ -96,7 +97,7 @@ func TestCapabilityNavigator_ScrubsSecretsFromQuery(t *testing.T) {
 	cfg := reg.Providers["default"]
 	providers.GlobalRouter.Register("nav-scrub-slot", cfg, mock)
 
-	nav := NewCapabilityNavigator(reg)
+	nav := capability.NewCapabilityNavigator(reg)
 
 	// Query contains an API key that should be scrubbed.
 	queryWithSecret := "search for api_key=sk-abcDef1234567890XYZ12 in records"
