@@ -354,10 +354,11 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		}
 
 		graph := &schemas.TaskGraph{
-			TaskID:  taskID,
-			TraceID: traceID,
-			Steps:   map[string]*schemas.Step{stepID: step},
-			Status:  schemas.GraphRunning, SubmitterIsAdmin: inp.SubmitterIsAdmin,
+			TaskID:    taskID,
+			TraceID:   traceID,
+			ProjectID: defaultProjectID(inp.ProjectID),
+			Steps:     map[string]*schemas.Step{stepID: step},
+			Status:    schemas.GraphRunning, SubmitterIsAdmin: inp.SubmitterIsAdmin,
 			PendingDecisions: []*schemas.Decision{},
 			OutputFiles:      []schemas.OutputFile{},
 			CreatedAt:        time.Now(),
@@ -506,8 +507,10 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 						(result.Output.Status == schemas.StatusOK || result.Output.Status == schemas.StatusPartial) {
 						if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
 							if step.AutoRefineCount < step.MaxAutoRefine {
+								s.Mu.Lock() // audit C-3: protect field writes — persistGraph reads under RLock.
 								step.AutoRefineCount++
 								step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Refining...", failType, reason))
+								s.Mu.Unlock()
 								s.logger.Log("EventStepRetrying", graph.TaskID, step.ID, map[string]any{
 									"reason": "exit_criteria_fail", "details": reason,
 									"refine_attempt": step.AutoRefineCount, "fail_type": failType,
@@ -736,10 +739,11 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	s.validateWorkspaceKeyCollisions(steps)
 
 	graph := &schemas.TaskGraph{
-		TaskID:  taskID,
-		TraceID: traceID,
-		Steps:   steps,
-		Status:  schemas.GraphRunning, SubmitterIsAdmin: anySubmitterIsAdmin(inputs),
+		TaskID:    taskID,
+		TraceID:   traceID,
+		ProjectID: resolveProjectID(inputs),
+		Steps:     steps,
+		Status:    schemas.GraphRunning, SubmitterIsAdmin: anySubmitterIsAdmin(inputs),
 		PendingDecisions: []*schemas.Decision{},
 		OutputFiles:      []schemas.OutputFile{},
 		CreatedAt:        time.Now(),
@@ -992,4 +996,28 @@ func anySubmitterIsAdmin(inputs []schemas.StepInput) bool {
 		}
 	}
 	return false
+}
+
+// defaultProjectID normalizes a project identifier. Empty values fall back to
+// the "default" project space, which preserves backward compatibility for
+// callers that do not opt into project scoping (Phase 2 of the Project Space
+// & Memory Tiering design).
+func defaultProjectID(pid string) string {
+	if pid == "" {
+		return "default"
+	}
+	return pid
+}
+
+// resolveProjectID extracts the project identifier from a batch of submitted
+// steps. The first non-empty ProjectID wins; if none is set, the task is
+// assigned to the "default" project. This mirrors anySubmitterIsAdmin's
+// single-submission-tier assumption.
+func resolveProjectID(inputs []schemas.StepInput) string {
+	for i := range inputs {
+		if inputs[i].ProjectID != "" {
+			return inputs[i].ProjectID
+		}
+	}
+	return "default"
 }

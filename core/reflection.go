@@ -55,6 +55,11 @@ func NewReflectionEngine(
 	jit *jit.JITManager,
 	logger *obs.Logger,
 ) *ReflectionEngine {
+	// Reflection also queries generated skills (novelty check, crystallization
+	// dedup), so it needs the same dead-JIT filtering as the spawn path.
+	if es != nil && reg != nil {
+		es.SetSkillLivenessProbe(func(id string) bool { return reg.GetMCP(id) != nil })
+	}
 	return &ReflectionEngine{
 		expStore:  es,
 		taskStore: ts,
@@ -129,7 +134,7 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 		}
 		re.registry.Mu.RUnlock()
 		skills = append(skills, step.AdditionalSkills...)
-
+		skills = creditExposedSkills(skills, re.expStore.TakeSkillExposures(graph.TaskID, step.ID))
 		conf := 0.0
 		if step.Confidence != nil {
 			conf = *step.Confidence
@@ -144,52 +149,11 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 		}
 
 		// ── JIT Auto-Promotion Capture (ADDED 2026-09-06) ────────────────
-		// If this step's trace contains calls to any dynamically-generated
-		// JIT tools (id prefix "jit_"), surface them as if they were bound
-		// skills. The downstream maybePromoteSkill() hook (see reflection.go
-		// around line 245) then runs its existing UsageCount/SuccessRate
-		// UCB gate against them — no new promotion logic needed, we just
-		// feed the JIT IDs into the same pipeline that already handles
-		// role-bound skills. This closes the "capture" half of the JIT
-		// lifecycle: agents that successfully escape a capability_required
-		// via a runtime-generated tool now get their tool considered for
-		// auto-promotion to the permanent registry after N successful uses.
-		//
-		// We also SEED the JIT ID into GeneratedSkills on first sighting so
-		// that maybePromoteSkill's GetGeneratedSkill lookup can actually
-		// find it — without seeding, an ephemeral JIT tool that never gets
-		// promoted via registerAsSkill would be forever invisible to the
-		// promotion gate.
-		if step.Status == schemas.StepOK && len(trace) > 0 {
-			seen := make(map[string]bool, len(skills))
-			for _, sk := range skills {
-				seen[sk] = true
-			}
-			for _, t := range trace {
-				if !strings.HasPrefix(t.ToolName, "jit_") || seen[t.ToolName] {
-					continue
-				}
-				seen[t.ToolName] = true
-				skills = append(skills, t.ToolName)
-				if _, exists := re.expStore.GetGeneratedSkill(t.ToolName); !exists {
-					re.expStore.AddGeneratedSkill(ctx, &store.GeneratedSkill{
-						ID:         t.ToolName,
-						Capability: capability,
-						// SuccessRate starts at 1.0: we only seed on StepOK.
-						// UpdateRouteWeight in RecordTaskCompletion will
-						// blend in subsequent failures on the affinity side,
-						// and maybePromoteSkill's > 0.8 gate will naturally
-						// filter out tools that start failing.
-						SuccessRate: 1.0,
-						LastUsed:    time.Now(),
-						OS:          runtime.GOOS,
-						Arch:        runtime.GOARCH,
-						Shell:       env.GetShellVersion(),
-					})
-				} else {
-					re.expStore.IncrementGeneratedSkillUsage(t.ToolName)
-				}
-			}
+		// Surface dynamically generated tools found in a successful trace so
+		// maybePromoteSkill's usage gate can see them (see
+		// captureTraceJITSkills).
+		if step.Status == schemas.StepOK {
+			skills = re.captureTraceJITSkills(ctx, capability, trace, skills)
 		}
 
 		records = append(records, store.StepRecord{
@@ -365,6 +329,27 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 	}
 }
 
+// creditExposedSkills appends dynamically retrieved skill IDs that are not
+// already present. Those skills are attached only to the spawn prompt, never
+// to step.AdditionalSkills, so without this handoff StepRecord.Skills never
+// sees them and UsageCount stays 0 (the promotion gate becomes unreachable).
+func creditExposedSkills(skills, exposures []string) []string {
+	if len(exposures) == 0 {
+		return skills
+	}
+	seen := make(map[string]bool, len(skills)+len(exposures))
+	for _, id := range skills {
+		seen[id] = true
+	}
+	for _, id := range exposures {
+		if !seen[id] {
+			seen[id] = true
+			skills = append(skills, id)
+		}
+	}
+	return skills
+}
+
 func (re *ReflectionEngine) isNovelTask(ctx context.Context, task string) bool {
 	// Simple keyword-based similarity check
 	relevant := re.expStore.QueryRelevantSkills(ctx, task, 1)
@@ -420,7 +405,7 @@ func (re *ReflectionEngine) CrystallizeStepToSkill(ctx context.Context, rec stor
 			"Do not rewrite from scratch unless necessary; perform an ADDITIVE EDIT that handles the new case while preserving old robustness.",
 			rec.Capability, parentID)
 
-		if baseCode, err := re.jit.GetSource(parentID); err == nil {
+		if baseCode, ok := re.skillSource(parentID); ok {
 			instruction += fmt.Sprintf("\n\nExisting Baseline Code:\n```lua\n%s\n```", baseCode)
 		}
 	}
@@ -464,11 +449,11 @@ Use variables for any hardcoded values that should be parameters.`, rec.Task, re
 	// Register as a temporary JIT tool with a long TTL (24h)
 	id, err := re.jit.RegisterTool(code, "lua", 24*time.Hour, true)
 	if err == nil {
-		re.registerAsSkill(ctx, id, rec.Capability, rec.Task, rec.LastError)
+		re.registerAsSkill(ctx, id, rec.Capability, rec.Task, rec.LastError, code)
 	}
 }
 
-func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability, originalTask, failureSignal string) {
+func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability, originalTask, failureSignal, sourceCode string) {
 	// ── JIT Auto-Promotion Dedup (ADDED 2026-09-06) ─────────────────────
 	// If the ID already exists in GeneratedSkills — which happens when a
 	// JIT tool gets seeded by the trace-based capture hook in
@@ -543,6 +528,7 @@ func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability,
 		Arch:          runtime.GOARCH,        // Environment Fingerprint (ADDED 2026-08-16)
 		Shell:         env.GetShellVersion(), // Environment Fingerprint (ADDED 2026-08-20)
 		FailureSignal: failureSignal,         // Trigger-driven retrieval (ADDED 2026-08-16)
+		SourceText:    sourceCode,            // Survives JIT expiry; additive-edit/merge fallback
 	})
 }
 
@@ -570,7 +556,7 @@ func (re *ReflectionEngine) ScanForHybridMerge(ctx context.Context) {
 		// Fetch source code for all variants
 		sources := make(map[string]string)
 		for _, id := range ids {
-			if src, err := re.jit.GetSource(id); err == nil {
+			if src, ok := re.skillSource(id); ok {
 				sources[id] = src
 			}
 		}
@@ -639,7 +625,7 @@ Output ONLY the unified Lua code. No markdown, no explanation.`
 	id, err := re.jit.RegisterTool(code, "lua", 72*time.Hour, true) // Longer TTL for expert skills
 	if err == nil {
 		// Register as a NEW verified root skill
-		re.registerAsSkill(ctx, id, capability, "Unified Expert Skill via Hybrid Merge", "")
+		re.registerAsSkill(ctx, id, capability, "Unified Expert Skill via Hybrid Merge", "", code)
 		re.expStore.UpdateGeneratedSkillVerified(id, true)
 		re.expStore.PersistAll(ctx)
 

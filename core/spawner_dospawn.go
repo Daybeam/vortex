@@ -225,7 +225,7 @@ turnLoop:
 			}
 
 			// Dynamic Protocol: Re-build prompts and servers for each candidate family
-			systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, mergedContext, toolFewShots, req.Isolation, precedents, req.Task, "", req.TaskID, trace)
+			systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, mergedContext, toolFewShots, req.Isolation, precedents, req.Task, "", req.TaskID, req.StepID, trace)
 			if err != nil {
 				return s.failedOutput(role.BaseCapability, fmt.Sprintf("failed to render prompt: %v", err)), nil
 			}

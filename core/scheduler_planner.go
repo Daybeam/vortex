@@ -227,7 +227,7 @@ func (s *DirectedEngine) plannerToolCatalog(roleID string, submitterIsAdmin bool
 // plannerAllowedRoles renders + returns the role ids a plan may assign.
 // Only roles that exist in the registry are offered.
 //
-// Phase 4 integration (2026-10-20): delegates role discovery to DiscoverImpl,
+// Phase 4 integration (2026-10-20): delegates role discovery to capability.DiscoverImpl,
 // sharing the discovery logic with the discover MCP tool. MCP ID enrichment
 // still reads from the registry (DiscoveryRoleSummary doesn't include MCP IDs).
 // See docs/completed/2026-10-21/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 4.
@@ -293,7 +293,7 @@ func (s *DirectedEngine) plannerAllowedRoles() (string, map[string]bool) {
 		} else {
 			sb.WriteString(fmt.Sprintf("- `%s`", id))
 		}
-		// Enrich with tool count (from DiscoverImpl) and bound MCP IDs
+		// Enrich with tool count (from capability.DiscoverImpl) and bound MCP IDs
 		// (from registry). Helps the planner make informed role assignments
 		// without a separate discover call per role.
 		mcpIDs := mcpIDsByRole[id]

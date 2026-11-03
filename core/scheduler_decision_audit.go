@@ -22,6 +22,11 @@ import (
 
 // regexCache caches compiled exit-criteria regexes by pattern to avoid
 // recompilation on every audit check (audit P2).
+//
+// Boundedness: keys are exit-criteria pattern strings, which originate from
+// role/SOP config (fixed vocabulary) and LLM-generated PlanDAG exit criteria.
+// In practice the set is small and reusable; the cache is unbounded in theory
+// but bounded by the distinct-criteria vocabulary in the deployment.
 var regexCache sync.Map // map[string]*regexp.Regexp
 
 // compileRegexCache returns a cached compiled regex, compiling on first use.

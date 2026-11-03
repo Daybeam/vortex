@@ -78,6 +78,9 @@ func estimateJSONSize(v any) int64 {
 }
 
 func (s *DirectedEngine) run(ctx context.Context, taskID string) {
+	// L-7.3: per-task WG tracks all in-flight step goroutines so CancelTask/Clear
+	// can wait for them to drain before proceeding.
+	stepWG := s.getOrCreateStepWG(taskID)
 	for {
 		select {
 		case <-ctx.Done():
@@ -210,22 +213,28 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 
 		for _, step := range ready {
 			wg.Add(1)
+			stepWG.Add(1) // L-7.3: track per-task for CancelTask/Clear drain
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
 				wg.Done()
+				stepWG.Done() // L-7.3: undo Add since we're not spawning
 				// audit C-10: wait for in-flight goroutines with grace period before
 				// returning, so previously launched steps can bail out cleanly.
 				wd := make(chan struct{})
 				go func() { wg.Wait(); close(wd) }()
+				// audit P-8-sibling: use NewTimer+Stop to avoid time.After timer leak.
+				drainTimer := time.NewTimer(5 * time.Second)
+				defer drainTimer.Stop()
 				select {
 				case <-wd:
-				case <-time.After(5 * time.Second):
+				case <-drainTimer.C:
 				}
 				return
 			}
 			go func(st *schemas.Step) {
 				defer wg.Done()
+				defer stepWG.Done() // L-7.3
 				defer func() { <-sem }()
 				defer func() {
 					if r := recover(); r != nil {
@@ -250,9 +259,12 @@ func (s *DirectedEngine) run(ctx context.Context, taskID string) {
 			// Context canceled (e.g. session timeout or shutdown).
 			// Wait for in-flight step goroutines with a grace period so they
 			// can bail out cleanly instead of orphaning (audit H3).
+			// audit P-8-sibling: use NewTimer+Stop to avoid time.After timer leak.
+			graceTimer := time.NewTimer(5 * time.Second)
+			defer graceTimer.Stop()
 			select {
 			case <-waitDone:
-			case <-time.After(5 * time.Second):
+			case <-graceTimer.C:
 				// Grace period expired — steps hold a cancelled ctx and will
 				// exit on their own; return to unblock the run loop.
 			}

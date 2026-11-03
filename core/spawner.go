@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"fmt"
 	"log"
@@ -63,7 +64,7 @@ type Spawner struct {
 	skillRouter       *SkillRouter
 	verifierRegistry  map[string]verify.Verifier
 	constraintAdapter *ConstraintAdapter
-	sieve             *Sieve
+	sieve             *sieve.Sieve
 	contextManager    *ContextManager
 	domainReadCache   *DomainToolReadCache // #2-universal (eval §23): replay cached read results
 	CaSKG             *CaSKGManager
@@ -140,6 +141,13 @@ type Spawner struct {
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *obs.Logger, loader *ResourceLoader, outputBase string) *Spawner {
+	// A JIT tool expires after its TTL while its GeneratedSkill record lives
+	// on; retrieval must not inject ids whose tool is gone. Nil store is a
+	// supported construction (several tests pass nil).
+	if es != nil {
+		es.SetSkillLivenessProbe(func(id string) bool { return reg.GetMCP(id) != nil })
+	}
+
 	interceptors := []Interceptor{
 		AuditInterceptor(logger), // FIRST: wrap everything in audit
 		HealthCheckInterceptor(reg, logger),
@@ -173,7 +181,7 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		skillRouter:       NewSkillRouter(reg),
 		constraintAdapter: NewConstraintAdapter(),
 		CaSKG:             caskg,
-		sieve:             newSieveFromConfig(reg.System),
+		sieve:             sieve.NewSieveFromConfig(reg.System),
 		contextManager:    NewContextManager(reg),
 		domainReadCache:   NewDomainToolReadCache(), // #2-universal: replay cached read results
 		watchdog:          NewGatewayWatchdog(reg),

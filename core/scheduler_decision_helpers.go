@@ -219,6 +219,7 @@ func (s *DirectedEngine) archiveStep(graph *schemas.TaskGraph, step *schemas.Ste
 
 	item := MemoryItem{
 		TaskID:    graph.TaskID,
+		ProjectID: graph.ProjectID, // Phase 3: enables ScopeProject cross-task recall
 		NodeID:    step.ID,
 		Intent:    step.Task,
 		Summary:   summary,

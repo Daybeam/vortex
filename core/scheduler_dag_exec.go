@@ -267,16 +267,19 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					}
 					// N2 fix (DELEGATION_HANDOVER_REDESIGN.md §11.1): render upstream
 					// data as JSON for machine consumers, not Go %v syntax.
+					// D-PROMPT-3 fix (§4.3): reduce budget from 4000→1200 rune and
+					// add artifact path ref so subagent can read_file for full output.
 					var summary string
 					if b, err := json.Marshal(res.Data); err == nil {
 						summary = string(b)
 					} else {
 						summary = fmt.Sprintf("%v", res.Data) // fallback
 					}
-					if r := []rune(summary); len(r) > 4000 {
-						summary = string(r[:4000]) + "...(truncated)"
+					if r := []rune(summary); len(r) > 1200 {
+						summary = string(r[:1200]) + "...(truncated)"
 					}
-					upstreamBlock += fmt.Sprintf("\n  %s: %s", depID, summary)
+					artifactRef := filepath.Join("outputs", taskID, depID)
+					upstreamBlock += fmt.Sprintf("\n  %s: %s\n  (full output at %s/ — use read_file if needed)", depID, summary, artifactRef)
 				}
 				if upstreamBlock != "" {
 					taskText = fmt.Sprintf("%s\n\nUPSTREAM RESULTS (from completed predecessor steps — use these directly, do not re-fetch):%s", taskText, upstreamBlock)
@@ -333,7 +336,10 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 
 		if err == nil {
 			// Record effective provider/model (ADDED 2026-07-24)
+			// audit C-3: protect field write — persistGraph reads under RLock.
+			s.Mu.Lock()
 			step.ProviderID = result.ProviderID
+			s.Mu.Unlock()
 			// FIX (2026-08-21, playbook follow-up): this block previously called
 			// s.handleOutput(...) and returned immediately here on every successful
 			// Spawn. That skipped the Sieve Guardian repetition/schema check, the
@@ -424,7 +430,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 					s.registry.SetCooldown(step.ProviderID, time.Duration(wait)*time.Second)
 				}
 
+				s.Mu.Lock() // audit C-3: protect field write — persistGraph reads under RLock.
 				step.RetryCount++
+				s.Mu.Unlock()
 				if step.RetryCount > step.MaxRetries {
 					break
 				}
@@ -454,10 +462,12 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				return
 			}
 
+			s.Mu.Lock() // audit C-3: protect field writes — persistGraph reads under RLock.
 			step.LastError = store.SanitizeError(err.Error())
 			if step.TriggerError == "" {
 				step.TriggerError = step.LastError // Capture first failure signal (ADDED 2026-08-16)
 			}
+			s.Mu.Unlock()
 
 			// Circuit Breaker: Fail fast on authentication/permission errors
 			if strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), "PERMISSION_DENIED") || strings.Contains(err.Error(), "HTTP 401") {
@@ -561,7 +571,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				return
 			}
 
+			s.Mu.Lock() // audit C-3: protect field write — persistGraph reads under RLock.
 			step.RetryCount++
+			s.Mu.Unlock()
 			// Fix: check ctx cancellation BEFORE logging EventStepRetrying.
 			// Without this, cancel_task can produce a misleading step_retrying
 			// log entry even though the retry never executes (the select below
@@ -596,15 +608,17 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			requiredSchema = "json"
 		}
 
-		if valid, reason := s.sieve.InspectWithSystemOne(s.lifecycleCtx, outputText, requiredSchema); !valid {
+		if valid, reason := s.sieve.InspectWithSystemOne(ctx, outputText, requiredSchema); !valid {
 			s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 				"error":      "Sieve Guardian intercepted",
 				"reason":     reason,
 				"root_cause": string(FailureClassContractViolation),
 			})
+			s.Mu.Lock() // audit C-3: protect field writes — persistGraph reads under RLock.
 			step.LastError = store.SanitizeError("sieve_intercepted: " + reason)
 			step.PartialOutput = outputText
 			step.RetryCount++
+			s.Mu.Unlock()
 			if step.RetryCount > step.MaxRetries {
 				break
 			}
@@ -615,7 +629,9 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			continue
 		}
 
+		s.Mu.Lock() // audit C-3: protect field write — persistGraph reads under RLock.
 		step.ModelID = result.ModelID
+		s.Mu.Unlock()
 		s.handleOutput(graph, step, result)
 
 		// ── StagedWorkspace post-step snapshot (success, WIRED 2026-08-21) ──

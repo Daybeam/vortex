@@ -1076,10 +1076,15 @@ func (s *Spawner) tryDelegationMode(ctx context.Context, req *SpawnRequest, role
 	// Defect 3 fix: redact sensitive context in delegation mode
 	delegationCtx := redactContextForDelegation(mergedContext)
 	delegationPrecedents := []*schemas.DecisionNode{}
-	systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "", req.TaskID, nil)
+	compileStart := time.Now()
+	systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "", req.TaskID, req.StepID, nil)
 	if err != nil {
 		return nil, false
 	}
+	s.logger.Log(obs.EventStepStarted, req.TaskID, req.StepID, map[string]any{
+		"action":      "delegation_compile_timing",
+		"duration_ms": time.Since(compileStart).Milliseconds(),
+	})
 	s.logger.Log(obs.EventStepStarted, req.TaskID, req.StepID, map[string]any{
 		"action": "delegation_triggered",
 		"reason": "system_delegation_mode_enabled",
