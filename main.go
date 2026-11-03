@@ -3,6 +3,7 @@
 package main
 
 import (
+	"github.com/daybeam/vortex/core/capability"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -129,6 +130,7 @@ func main() {
 	if db != nil {
 		defer db.Close()
 	}
+	setOAuthTokenStore(db) // DB-backed per-user OAuth token persistence.
 
 	// ── Store initialization ──────────────────────────────────────────────
 	s, err := store.NewStore(root, expDir, schedulePath, &reg.System, db)
@@ -175,7 +177,7 @@ func main() {
 	}
 
 	if *mode == "worker" {
-		log.Fatal("worker mode is not available in this build")
+		log.Fatal("worker mode not available in open core")
 	} else if *execTool != "" {
 		argsJSON := *execArgs
 		if *execFile != "" {
@@ -198,9 +200,15 @@ func main() {
 // in PendingSkills staging — discoverable only after promote_skill.
 // See docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md.
 func bootstrapRuntime(reg *config.Registry) {
+	// Sync global fallback provider chain from config.
+	initOAuthTokenManager()
+	syncGlobalFallback(reg)
+
 	reg.OnReload(func() {
 		featureflags.Sync(reg)
 		core.InvalidateMCPEnvCache()
+		invalidateOAuthTokens()
+		syncGlobalFallback(reg)
 	})
 
 	if projectDir, err := os.Getwd(); err == nil {
@@ -247,7 +255,7 @@ func runExec(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase
 	ciAnalyzer := ci_analyzer.NewGoAnalyzer("")
 	ciOverlay := ci_overlay.NewManager(ciAnalyzer, "")
 	ciHandler := ci_tools.NewHandler(ciAnalyzer, ciOverlay)
-	navigator := core.NewCapabilityNavigator(reg)
+	navigator := capability.NewCapabilityNavigator(reg)
 	sopsDir := filepath.Join(config.ConfigDir(configPath), "workspace/sops/")
 	sopMgr := core.NewSOPManager(reg, sopsDir)
 
@@ -456,7 +464,7 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 	ciAnalyzer := ci_analyzer.NewGoAnalyzer("")
 	ciOverlay := ci_overlay.NewManager(ciAnalyzer, "")
 	ciHandler := ci_tools.NewHandler(ciAnalyzer, ciOverlay)
-	navigator := core.NewCapabilityNavigator(reg)
+	navigator := capability.NewCapabilityNavigator(reg)
 	sopsDir := filepath.Join(config.ConfigDir(configPath), "workspace/sops/")
 	sopMgr := core.NewSOPManager(reg, sopsDir)
 
@@ -482,6 +490,11 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 	}
 	app.InitArchive(outputBase)
 	defer app.StopArchive() // audit M12: stop pruning goroutine on shutdown
+
+	// Task webhook callback. This build has no ChatHandler, so wiring it here is
+	// the only place it can happen — otherwise terminal events from MCP/stdio
+	// tasks would never be pushed anywhere. No-op unless WEBHOOK_CALLBACK_URL is
+	// set (default-off).
 
 	// Budget Gate: auto-suspend tasks when token usage exceeds configured
 	// thresholds. No-op unless budget_gate.enabled is set in config.json.

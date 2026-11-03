@@ -306,7 +306,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 		"decider_role": deciderRole,
 	})
 	s.goBackground(func() {
-		choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin, deciderOwnerID)
+ 		choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin, deciderOwnerID)
 		if choice == "" {
 			return // must not auto-resolve (e.g. human_approval_required)
 		}
@@ -334,9 +334,9 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	// human_approval_required: legal/compliance gate. Must not auto-resolve
 	// unless explicitly overridden via AllowHumanApprovalAutoResolve.
 	if dtype == schemas.DecisionHumanApprovalRequired &&
-		s.registry != nil && !s.registry.System.AllowHumanApprovalAutoResolve {
-		return "" // must wait for a human
-	}
+ 		s.registry != nil && !s.registry.System.AllowHumanApprovalAutoResolve {
+ 		return "" // must wait for a human
+ 	}
 	// Delegate strategy: spawn decider role to choose.
 	if deciderRole != "" && s.spawner != nil {
 		observability.GetGlobalMetrics().Inc("orchestrator.decision_gate.calls", 1)
@@ -418,11 +418,7 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 	return "", false
 }
 
-// askSystemOneForDecision uses the System One decision model to pick an option
-// for a blocked decision. Returns (choice, true) if the model picked a valid
-// option with sufficient confidence, or ("", false) on any error or low
-// askSystemOneForDecision is stubbed in the open core (System One is not
-// available in the open core build).
+// askSystemOneForDecision is stubbed in the open core (no System One provider).
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,

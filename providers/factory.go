@@ -7,17 +7,33 @@ import (
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/interfaces"
+	"github.com/daybeam/vortex/pkg/pluginverify"
 	"github.com/daybeam/vortex/pkg/ratelimit"
 )
 
 var (
 	cache = make(map[string]interfaces.Provider)
 	mu    sync.Mutex
+
+	// globalFallback is the system-wide fallback chain applied to any provider
+	// that does not have its own FallbackChain. Set via SetGlobalFallback from
+	// config loading. Per-provider FallbackChain always takes precedence.
+	globalFallback []config.ProviderConfig
 )
+
+// SetGlobalFallback sets the system-wide fallback provider chain. Providers
+// without an explicit FallbackChain will use this as their fallback instead.
+// Pass nil or empty to disable. Thread-safe.
+func SetGlobalFallback(chain []config.ProviderConfig) {
+	mu.Lock()
+	globalFallback = chain
+	mu.Unlock()
+}
 
 func ClearCache() {
 	mu.Lock()
 	cache = make(map[string]interfaces.Provider)
+	globalFallback = nil
 	mu.Unlock()
 	GlobalRouter.mu.Lock()
 	GlobalRouter.slots = make(map[string]*ProviderSlot)
@@ -100,10 +116,17 @@ func Get(cfg *config.ProviderConfig, runtimes config.ExternalRuntimes) (interfac
 	// This is complementary to the router's automatic pool-based failover:
 	// FallbackProvider does ordered sequential failover (try A, then B, then C)
 	// while the router does round-robin + health detection within a pool.
-	if len(cfg.FallbackChain) > 0 {
-		chain := make([]Provider, 0, len(cfg.FallbackChain)+1)
+	// Per-provider FallbackChain takes precedence over the global fallback.
+	mu.Lock()
+	effectiveFallback := cfg.FallbackChain
+	if len(effectiveFallback) == 0 {
+		effectiveFallback = globalFallback
+	}
+	mu.Unlock()
+	if len(effectiveFallback) > 0 {
+		chain := make([]Provider, 0, len(effectiveFallback)+1)
 		chain = append(chain, finalProvider)
-		for _, fbCfg := range cfg.FallbackChain {
+		for _, fbCfg := range effectiveFallback {
 			fbProvider, fbErr := Get(&fbCfg, runtimes)
 			if fbErr != nil {
 				continue // skip misconfigured fallbacks
@@ -139,17 +162,33 @@ func newProvider(cfg *config.ProviderConfig, runtimes config.ExternalRuntimes) (
 		if scriptPath == "" {
 			return nil, fmt.Errorf("script provider requires extra.script_path")
 		}
+		// Verify script integrity if sha256 hash is declared (Change 2/3).
+		if hash, _ := cfg.Extra["sha256"].(string); hash != "" {
+			if err := pluginverify.VerifyScriptIntegrity(scriptPath, hash); err != nil {
+				return nil, fmt.Errorf("script provider: %w", err)
+			}
+		}
 		return NewScriptProvider(cfg, scriptPath)
 	case "external":
 		scriptPath, _ := cfg.Extra["script_path"].(string)
 		if scriptPath == "" {
 			return nil, fmt.Errorf("external provider requires extra.script_path")
 		}
+		// Verify script integrity if sha256 hash is declared (Change 2/3).
+		if hash, _ := cfg.Extra["sha256"].(string); hash != "" {
+			if err := pluginverify.VerifyScriptIntegrity(scriptPath, hash); err != nil {
+				return nil, fmt.Errorf("external provider: %w", err)
+			}
+		}
 		return NewExternalScriptProvider(cfg, scriptPath, runtimes)
+ 	case "swarm":
+		return nil, fmt.Errorf("swarm provider not available in open core")
+	case "systemone":
+		return NewSystemOneProvider(cfg), nil
 	case "host":
 		return &HostProvider{name: brand}, nil
 	default:
-		return nil, fmt.Errorf("unsupported provider %q (supported: anthropic, openai, gemini, ollama, script, external, host)", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider %q (supported: anthropic, openai, gemini, ollama, script, external, swarm, systemone, host)", cfg.Provider)
 	}
 }
 

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -81,7 +82,7 @@ type DirectedEngine struct {
 	outputBase     string
 	tmpBase        string
 	SignalField    *SignalField
-	sieve          *Sieve
+	sieve          *sieve.Sieve
 	budgetGuard    *BudgetGuard
 	budgetSentinel *BudgetSentinel
 	walker         *DAGGraphWalker
@@ -138,7 +139,8 @@ type DirectedEngine struct {
 	notifyMu          sync.Mutex
 
 	// lifecycleCtx is cancelled by Stop() to shut down background services
-	// and async poll goroutines.
+	// (swarm agents, convergence monitor, parameter adaptor) and async poll
+	// goroutines. Replaces context.Background() at service-start sites.
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
 
@@ -228,16 +230,16 @@ func NewDirectedEngine(
 		outputBase:          outputBase,
 		tmpBase:             tmpBase,
 		SignalField:         sf,
-		sieve:               newSieveFromConfig(reg.System),
+		sieve:               sieve.NewSieveFromConfig(reg.System),
 		budgetGuard:         NewBudgetGuard(0), // Default safety margin
 		budgetSentinel:      NewBudgetSentinel(),
 		pathLocks:           NewPathLockManager(),
 		drafts:              NewDraftStore(),
-		hashCache:           make(map[string]string),
-		maxHashCacheEntries: defaultMaxHashCacheEntries,
-		UseSwarm:            os.Getenv("ACAIS_MODE") == "1",
-		notifyChan:          make(chan struct{}),
-		recentDecisions:     make(map[string]time.Time),
+ 		hashCache:           make(map[string]string),
+ 		maxHashCacheEntries: defaultMaxHashCacheEntries,
+ 		UseSwarm:            os.Getenv("ACAIS_MODE") == "1",
+ 		notifyChan:          make(chan struct{}),
+ 		recentDecisions:     make(map[string]time.Time),
 	}
 	s.spawner.SignalField = sf
 
@@ -246,15 +248,11 @@ func NewDirectedEngine(
 	// Initialise lifecycle context for background services (cancelled by Stop).
 	s.lifecycleCtx, s.lifecycleCancel = context.WithCancel(context.Background())
 	if s.UseSwarm {
-		// Swarm mode (ACAIS) is not included in this build. Log a warning
-		// instead of starting swarm agents.
-		s.logger.Log("EventSwarmUnavailable", "", "", map[string]any{
-			"message": "ACAIS_MODE=1 but swarm components are not available in the open core; running in single-agent mode",
-		})
+		log.Printf("WARN: swarm mode requested but not available in open core")
 	}
 
-	// Start Asset Sentry
-	s.goBackground(func() { s.assets.Sentry(s.lifecycleCtx, ts) }) // audit L5: use goBackground so Stop() drains
+	// Start Asset Sentry (D-GC-1 fix: pass TaskRegistry, not ITaskStore)
+	s.goBackground(func() { s.assets.Sentry(s.lifecycleCtx, s.TaskRegistry) }) // audit L5: use goBackground so Stop() drains
 
 	// Start terminal-graph evictor to prevent unbounded map growth (audit C4).
 	// Graphs that reached a terminal state are removed from s.graphs,
@@ -302,9 +300,14 @@ func (s *DirectedEngine) waitStepDrain(taskID string, timeout time.Duration) {
 	}
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
+	// audit P-8-sibling: use NewTimer+Stop to avoid time.After timer leak.
+	// The helper goroutine drains when wg reaches 0 (steps exit on ctx cancel);
+	// a hung provider would leak both the step and helper — fix at provider level.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-done:
-	case <-time.After(timeout):
+	case <-timer.C:
 	}
 }
 
@@ -377,25 +380,10 @@ func (s *DirectedEngine) WireHooks(hooks []config.HookConfig, runtimes config.Ex
 			})
 			return nil
 		})
-  }
-}
-
-// ProjectOf returns the project space identifier for the given task.
-// If the task is unknown or has no project set, it returns "default".
-func (s *DirectedEngine) ProjectOf(taskID string) string {
-	s.Mu.RLock()
-	defer s.Mu.RUnlock()
-	return projectOfGraph(s.graphs[taskID])
-}
-
-// projectOfGraph is the lock-free form of ProjectOf, for callers that already
-// hold a *TaskGraph and therefore need no lookup at all.
-func projectOfGraph(graph *schemas.TaskGraph) string {
-	if graph == nil || graph.ProjectID == "" {
-		return "default"
 	}
-	return graph.ProjectID
 }
+
+// Stop shuts down background monitors and agents.
 
 // Stop shuts down background monitors and agents.
 func (s *DirectedEngine) Stop() {
@@ -787,6 +775,37 @@ func (s *DirectedEngine) TaskKnown(taskID string) bool {
 	_, ok := s.graphs[taskID]
 	s.Mu.RUnlock()
 	return ok
+}
+
+// ProjectOf returns the project space identifier for the given task.
+// If the task is unknown or has no project set, it returns "default".
+// This enables search callers to resolve projectScope from a taskID
+// (Project Space & Memory Tiering design Phase 3).
+func (s *DirectedEngine) ProjectOf(taskID string) string {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	return projectOfGraph(s.graphs[taskID])
+}
+
+// projectOfGraph is the lock-free form of ProjectOf, for callers that already
+// hold a *TaskGraph and therefore need no lookup at all.
+//
+// It exists because ProjectOf takes s.Mu.RLock, and sync.RWMutex is not
+// reentrant: a goroutine that already holds s.Mu.Lock and then calls ProjectOf
+// blocks forever waiting on a read lock it can never get — no error, no
+// timeout, no cancellation. tryBacktrack (core/cycle_breaker.go) ran exactly
+// that way after 40617ac0f wired ProjectOf into buildPreviousSummary, which
+// tryBacktrack calls under its own write lock: every cycle-breaker backtrack
+// deadlocked the task.
+//
+// The rule this encodes is worth keeping: a helper that needs one field of a
+// struct the caller already holds should take the field, not re-acquire the
+// lock to look it up.
+func projectOfGraph(graph *schemas.TaskGraph) string {
+	if graph == nil || graph.ProjectID == "" {
+		return "default"
+	}
+	return graph.ProjectID
 }
 
 // ─── Clear ────────────────────────────────────────────────────────────────
