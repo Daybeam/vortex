@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -262,6 +263,7 @@ func (s *PromptAssembler) Build(
 	taskText string,
 	latestError string,
 	taskID string, // P1-5: for Archive Path D query
+	stepID string, // D-PROMPT-4: for base_role.md template
 ) ([]schemas.ContentBlock, error) {
 	var blocks []schemas.ContentBlock
 	// KV-2 (2026-10-27): volatile blocks (anti-pattern, similar-task,
@@ -290,13 +292,20 @@ func (s *PromptAssembler) Build(
 		tmplCtx := map[string]any{
 			"task": map[string]any{
 				"id":   taskID,
+				"step": stepID,
 				"role": role.Name,
 			},
 			"env": map[string]string{
 				"Time": stablePromptTime(hub).Format(time.RFC3339),
 			},
 		}
-		if rendered, err := s.promptManager.GetAndRender("base_role.md", tmplCtx); err == nil && rendered != "" {
+		// D-PROMPT-4 fix (§4.4): log render errors instead of silently dropping.
+		// With missingkey=error, a missing key now returns an error — we log it
+		// but still skip the block (preserve existing skip behavior, but observable).
+		rendered, renderErr := s.promptManager.GetAndRender("base_role.md", tmplCtx)
+		if renderErr != nil {
+			log.Printf("prompt_assembler: base_role.md render failed for task %s: %v", taskID, renderErr)
+		} else if rendered != "" {
 			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 				Text:         rendered,
 				CacheControl: "ephemeral",

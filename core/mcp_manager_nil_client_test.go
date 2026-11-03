@@ -42,7 +42,7 @@ func TestPerformRemoteMCPHandshake_NilHTTPClient_UsesDefault(t *testing.T) {
 	// Deliberately bypass NewMCPConnectionManager — httpClient is nil.
 	m := &MCPConnectionManager{}
 
-	sid := m.performRemoteMCPHandshake(context.Background(), mcp)
+	sid := m.performRemoteMCPHandshake(context.Background(), mcp, "")
 	if sid != "test-session-from-default-client" {
 		t.Fatalf("expected session ID from default client handshake, got %q (nil httpClient fallback not working)", sid)
 	}
@@ -67,7 +67,7 @@ func TestPerformRemoteMCPHandshake_NilHTTPClient_NoPanicOnHandshakeError(t *test
 			t.Fatalf("performRemoteMCPHandshake panicked with nil httpClient on error response: %v", r)
 		}
 	}()
-	sid := m.performRemoteMCPHandshake(context.Background(), mcp)
+	sid := m.performRemoteMCPHandshake(context.Background(), mcp, "")
 	// No session ID header on a 500 response — should return empty string.
 	if sid != "" {
 		t.Fatalf("expected empty session ID on 500 response, got %q", sid)

@@ -46,8 +46,17 @@ func (a *ActiveContextAssembler) Assemble(
 	var sb strings.Builder
 
 	// === HOT CONTEXT (always injected) ===
+	// D-PROMPT-3 fix (§4.3): truncate taskSpec in ActiveContext to avoid
+	// duplicating the full task text that already appears in the user message.
+	// The full spec is in req.Task (user side); ActiveContext keeps a brief
+	// summary for system-side context.
 	sb.WriteString("## Current Task\n")
-	sb.WriteString(taskSpec)
+	if r := []rune(taskSpec); len(r) > 200 {
+		sb.WriteString(string(r[:200]))
+		sb.WriteString("...(see user message for full task spec)")
+	} else {
+		sb.WriteString(taskSpec)
+	}
 	sb.WriteString("\n\n## Current Step\n")
 	sb.WriteString(stepInput)
 	if latestError != "" {

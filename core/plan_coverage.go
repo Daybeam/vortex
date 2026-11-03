@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"fmt"
 	"strings"
 
@@ -45,12 +46,12 @@ var authToolKeywords = []string{"login", "logout", "signin", "sign_in", "authent
 
 // isActionTool reports whether a tool can produce the effect a request asked for.
 func isActionTool(name string) bool {
-	if isReadTool(name) {
+	if sieve.IsReadTool(name) {
 		return false
 	}
 	lower := strings.ToLower(name)
-	if i := strings.LastIndex(lower, toolNamespaceSeparator); i >= 0 {
-		lower = lower[i+len(toolNamespaceSeparator):]
+	if i := strings.LastIndex(lower, sieve.ToolNamespaceSeparator); i >= 0 {
+		lower = lower[i+len(sieve.ToolNamespaceSeparator):]
 	}
 	for _, kw := range authToolKeywords {
 		if strings.Contains(lower, kw) {

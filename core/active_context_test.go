@@ -101,3 +101,30 @@ func TestActiveContextAssembler_Budgeting(t *testing.T) {
 		t.Errorf("expected store to receive budget 50 (TokenBudget/2), got %d", mockStore.lastBudget)
 	}
 }
+
+// TestActiveContextDoesNotRepeatUserTask verifies D-PROMPT-3 fix (§4.3):
+// ActiveContext truncates the task spec to avoid duplicating the full text
+// that already appears in the user message. A task spec > 200 chars should
+// be truncated with a "see user message" hint.
+func TestActiveContextDoesNotRepeatUserTask(t *testing.T) {
+	assembler := NewActiveContextAssembler(nil, nil, 100)
+
+	t.Run("short spec preserved", func(t *testing.T) {
+		spec := "Analyze the attack surface"
+		result := assembler.Assemble(context.Background(), spec, "step1", "", "cap", "role")
+		if !strings.Contains(result, spec) {
+			t.Error("short task spec should be preserved in ActiveContext")
+		}
+	})
+
+	t.Run("long spec truncated", func(t *testing.T) {
+		longSpec := strings.Repeat("x", 300)
+		result := assembler.Assemble(context.Background(), longSpec, "step1", "", "cap", "role")
+		if strings.Contains(result, longSpec) {
+			t.Error("full 300-char task spec should NOT appear in ActiveContext (D-PROMPT-3)")
+		}
+		if !strings.Contains(result, "see user message") {
+			t.Error("ActiveContext should hint to see user message for full spec")
+		}
+	})
+}

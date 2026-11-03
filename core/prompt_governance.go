@@ -337,7 +337,9 @@ func (e *PromptBudgetEnforcer) ProgressiveDisclosureSkills(skills []SkillSummary
 	}
 	var sb strings.Builder
 	sb.WriteString("# Active Skills (Progressive Disclosure)\n\n")
-	sb.WriteString("The following skills are active. Use `skill_view` to load full details on demand.\n\n")
+	// `skill_view` is registered nowhere; pointing agents at it produced
+	// calls that could never succeed. Only the summaries below are available.
+	sb.WriteString("The following skills are active. Each entry shows its trigger and a one-line summary.\n\n")
 	for _, s := range skills {
 		desc := s.Description
 		if desc == "" {

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -56,14 +57,14 @@ type AuditResult struct {
 type ContextManager struct {
 	registry *config.Registry
 	anchors  []string // Critical semantic markers that MUST be preserved
-	sieve    *Sieve   // ADDED 2026-08-30 for Fidelity Audit
+	sieve    *sieve.Sieve   // ADDED 2026-08-30 for Fidelity Audit
 }
 
 func NewContextManager(reg *config.Registry) *ContextManager {
 	return &ContextManager{
 		registry: reg,
 		anchors:  []string{"S2T", "DecisionID", "Goal:", "Final Result:", "$artifact", "$contract"},
-		sieve:    NewSieve(reg.System.MaxContextKeep),
+		sieve:    sieve.NewSieve(reg.System.MaxContextKeep),
 	}
 }
 
