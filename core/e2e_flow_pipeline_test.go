@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -114,7 +115,7 @@ func TestE2E_FullTaskExecutionFlowPipeline(t *testing.T) {
 	// Stage 4: Tool Execution & Sieve Loop Interception
 	// ------------------------------------------------------------------------
 	t.Log("Stage 4: Sieve Tool Inspection & Poller Loop Interception")
-	sieve := NewSieve(100)
+	sieve := sieve.NewSieve(100)
 	sieve.ToolRepetitionThreshold = 2
 
 	toolCall := store.ToolInteraction{

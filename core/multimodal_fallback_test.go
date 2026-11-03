@@ -35,6 +35,17 @@ func (m *mockBackend) Claim(ctx context.Context, taskID, stepID string) (bool, e
 
 func TestSpawner_MultimodalFallbackDetection(t *testing.T) {
 	// 1. Setup Registry
+	//
+	// base_url points at a closed local port on purpose. Without it the factory
+	// builds a normal OpenAI provider against the default api.openai.com and the
+	// test makes a real network call -- the comment at the bottom says "we expect
+	// providers.Get to fail", but it does not fail, so the only thing that ever
+	// stopped the call was the network refusing it. When the network blackholes
+	// instead (observed: TLS handshake stuck for the full -timeout, whole core
+	// package reported FAIL after 300 s), this test hangs the gate. Nothing here
+	// is about OpenAI: it asserts that a vision request on a text-only role is
+	// planned as a fallback, and a refused connection gets us there in ms.
+	deadEndpoint := "http://127.0.0.1:1/v1"
 	reg := &config.Registry{
 		DefaultProvider: "main_model",
 		Providers: map[string]*config.ProviderConfig{
@@ -42,12 +53,14 @@ func TestSpawner_MultimodalFallbackDetection(t *testing.T) {
 				Provider:  "openai",
 				Model:     "gpt-3.5-turbo",
 				APIKeyEnv: "OPENAI_API_KEY",
+				BaseURL:   deadEndpoint,
 				PoolID:    "text_only",
 			},
 			"main_model": {
 				Provider:  "openai",
 				Model:     "gpt-4o",
 				APIKeyEnv: "OPENAI_API_KEY",
+				BaseURL:   deadEndpoint,
 				PoolID:    "main_model",
 			},
 		},

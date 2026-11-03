@@ -34,7 +34,7 @@ func TestPromptAssembler_UserProfileInjection_Enabled(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-1",
+		"test task", "", "task-1", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -79,7 +79,7 @@ func TestPromptAssembler_UserProfileInjection_Disabled(t *testing.T) {
 	blocks, _ := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-1",
+		"test task", "", "task-1", "",
 	)
 
 	for _, b := range blocks {
@@ -101,7 +101,7 @@ func TestPromptAssembler_UserProfileInjection_NilStore(t *testing.T) {
 	blocks, _ := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-1",
+		"test task", "", "task-1", "",
 	)
 
 	for _, b := range blocks {
@@ -127,7 +127,7 @@ func TestPromptAssembler_UserProfileInjection_EmptyProfile(t *testing.T) {
 	blocks, _ := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-1",
+		"test task", "", "task-1", "",
 	)
 
 	for _, b := range blocks {
@@ -170,7 +170,7 @@ func TestPromptAssembler_UserProfileInjection_DelegationMode_Skipped(t *testing.
 	blocks, _ := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-1",
+		"test task", "", "task-1", "",
 	)
 
 	for _, b := range blocks {
@@ -195,7 +195,7 @@ func TestPromptAssembler_EpistemicGroundingRule_Enabled(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-1",
+		"test task", "", "task-1", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -230,7 +230,7 @@ func TestPromptAssembler_EpistemicGroundingRule_Disabled(t *testing.T) {
 	blocks, _ := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-1",
+		"test task", "", "task-1", "",
 	)
 
 	for _, b := range blocks {

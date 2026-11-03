@@ -18,7 +18,7 @@ import (
 //
 // Reproduction: run concurrent Publish + Unsubscribe and verify no panic.
 // Run with `go test -race` to detect the data race.
-func TestC1_EventBus_ConcurrentPublishUnsubscribe(t *testing.T) {
+func TestEventBus_ConcurrentPublishUnsubscribe(t *testing.T) {
 	bus := NewEventBus()
 
 	const numHandlers = 100
@@ -86,7 +86,7 @@ func TestC1_EventBus_ConcurrentPublishUnsubscribe(t *testing.T) {
 
 // TestC1_EventBus_TombstonedHandlerSkipped verifies that tombstoned (nil)
 // handlers are skipped during Publish, which is the companion to the C-1 fix.
-func TestC1_EventBus_TombstonedHandlerSkipped(t *testing.T) {
+func TestEventBus_TombstonedHandlerSkipped(t *testing.T) {
 	bus := NewEventBus()
 
 	callCount := 0

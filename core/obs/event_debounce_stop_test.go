@@ -16,7 +16,7 @@ import (
 //
 // Reproduction: after stop(), publishing events should not invoke the
 // subscriber handler (verified by checking the handler counter).
-func TestR2_SubscribeBatched_StopRemovesHandler(t *testing.T) {
+func TestSubscribeBatched_StopRemovesHandler(t *testing.T) {
 	bus := NewEventBus()
 
 	// Track handler invocations.

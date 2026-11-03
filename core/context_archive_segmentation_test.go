@@ -47,7 +47,7 @@ func TestPromptAssembler_ArchiveStepSummaries_Injected(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", taskID,
+		"test task", "", taskID, "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -76,7 +76,7 @@ func TestPromptAssembler_ArchiveStepSummaries_NilArchive_NoOp(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-123",
+		"test task", "", "task-123", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -100,7 +100,7 @@ func TestPromptAssembler_ArchiveStepSummaries_EmptyTaskID_NoOp(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "", // empty taskID
+		"test task", "", "", "", // empty taskID
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -619,7 +619,7 @@ func TestSpawnRequest_TaskID_PassedToBuildSystemPrompt(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-id-123",
+		"test task", "", "task-id-123", "",
 		nil,
 	)
 	if err != nil {
@@ -663,7 +663,7 @@ func TestIntegration_ArchiveStepSummaries_InPromptBlocks(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"Add integration tests", "", taskID,
+		"Add integration tests", "", taskID, "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)

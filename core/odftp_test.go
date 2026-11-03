@@ -1,13 +1,14 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"testing"
 
 	"github.com/daybeam/vortex/schemas"
 )
 
 func TestSieve_VerifyFidelity(t *testing.T) {
-	s := NewSieve(10)
+	s := sieve.NewSieve(10)
 
 	original := "Goal: Implement ODFTP\nDecisionID: 12345\n$artifact: data.json"
 

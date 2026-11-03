@@ -324,8 +324,13 @@ func TestProgressiveDisclosureSkills_IndexForm(t *testing.T) {
 	if !strings.Contains(got, "Research") {
 		t.Errorf("should list Research skill, got: %s", got)
 	}
-	if !strings.Contains(got, "skill_view") {
-		t.Errorf("should mention skill_view tool, got: %s", got)
+	// Regression: the section used to advertise `skill_view`, a tool that is
+	// registered nowhere, so agents emitted calls that could never succeed.
+	if strings.Contains(got, "skill_view") {
+		t.Errorf("must not advertise a nonexistent skill_view tool, got: %s", got)
+	}
+	if !strings.Contains(got, "one-line summary") {
+		t.Errorf("should describe the available summary-only form, got: %s", got)
 	}
 }
 

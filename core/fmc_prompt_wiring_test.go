@@ -51,7 +51,7 @@ func TestSpawner_ActiveContextAssembler_FiresWithoutSimilarTaskPatterns(t *testi
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "test-model"}, []string{}, nil, nil, false, nil,
-		"do the coding task", "operation timeout after 30s", "",
+		"do the coding task", "operation timeout after 30s", "", "",
 		nil,
 	)
 	if err != nil {
@@ -100,7 +100,7 @@ func TestSpawner_FailureModeProfileInjection(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "test-model"}, []string{}, nil, nil, false, nil,
-		"do the coding task", "", "",
+		"do the coding task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestSpawner_FailureModeProfileInjection_NoDataIsSilent(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "unseen-model"}, []string{}, nil, nil, false, nil,
-		"do the coding task", "", "",
+		"do the coding task", "", "", "",
 		nil,
 	)
 	if err != nil {

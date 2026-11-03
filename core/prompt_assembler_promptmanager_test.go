@@ -34,7 +34,7 @@ func TestPromptAssembler_PromptManagerFallback_RoleInstructionEmpty(t *testing.T
 	blocks, err := pa.Build(
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-123",
+		"test task", "", "task-123", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -79,7 +79,7 @@ func TestPromptAssembler_PromptManagerFallback_SkippedWhenInstructionPresent(t *
 	blocks, err := pa.Build(
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-456",
+		"test task", "", "task-456", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -108,7 +108,7 @@ func TestPromptAssembler_PromptManagerFallback_NilSafe(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-789",
+		"test task", "", "task-789", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
