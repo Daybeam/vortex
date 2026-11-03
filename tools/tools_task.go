@@ -17,6 +17,25 @@ import (
 	"github.com/daybeam/vortex/store"
 )
 
+// delegationEnvelopeWait returns the sync envelope delivery timeout from config.
+// Default 30s (envelope compilation takes 19–26s measured). <0 = disabled
+// (fall back to get_task_status polling). 0/unset = default 30s.
+// See ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §4.2.
+func delegationEnvelopeWait(reg *config.Registry) time.Duration {
+	if reg == nil {
+		return 30 * time.Second
+	}
+	s := reg.System.DelegationEnvelopeWaitSeconds
+	switch {
+	case s < 0:
+		return 0 // disabled
+	case s > 0:
+		return time.Duration(s) * time.Second
+	default:
+		return 30 * time.Second // unset = default
+	}
+}
+
 // Helper functions from tools.go
 func parseSessionRoles(v any) []*config.Role {
 	if v == nil {
@@ -520,7 +539,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			if app.Registry.System.EnablePlannerFirst {
 				resp["planner_skipped"] = "delegation_mode"
 			}
-			delegations, found := app.Scheduler.FirstDelegations(ctx, id, 2*time.Second)
+			delegations, found := app.Scheduler.FirstDelegations(ctx, id, delegationEnvelopeWait(app.Registry))
 			if found {
 				enrichDelegationViews(delegations, EffectiveTier(ctx, app))
 				resp["delegations"] = delegations
@@ -741,7 +760,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			"human_approval": hasApproval,
 		}
 		if shouldRouteToFulfill(choice, output) && app.Registry != nil && app.Registry.System.DelegationMode {
-			delegations, found := app.Scheduler.FirstDelegations(ctx, tid, 500*time.Millisecond)
+			delegations, found := app.Scheduler.FirstDelegations(ctx, tid, delegationEnvelopeWait(app.Registry))
 			if found {
 				enrichDelegationViews(delegations, EffectiveTier(ctx, app))
 				resp["delegations"] = delegations

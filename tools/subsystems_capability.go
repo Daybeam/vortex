@@ -1,11 +1,11 @@
 package tools
 
 import (
+	"github.com/daybeam/vortex/core/capability"
 	"context"
 	"fmt"
 
 	"github.com/daybeam/vortex/config"
-	"github.com/daybeam/vortex/core"
 )
 
 func registerCapabilitySubsystem(app *App) {
@@ -44,7 +44,7 @@ func registerCapabilitySubsystem(app *App) {
 				def.Manifest = raw
 			}
 
-			driver, err := core.NewCapabilityDriver(def, app.Registry)
+			driver, err := capability.NewCapabilityDriver(def, app.Registry)
 			if err != nil {
 				return nil, err
 			}
@@ -72,7 +72,7 @@ func registerCapabilitySubsystem(app *App) {
 				return nil, fmt.Errorf("capability.unmount: id is required")
 			}
 			def := config.CapabilityDef{ID: id, Transport: config.TransportRemoteSSE}
-			driver, err := core.NewCapabilityDriver(def, app.Registry)
+			driver, err := capability.NewCapabilityDriver(def, app.Registry)
 			if err != nil {
 				return nil, err
 			}
@@ -97,7 +97,7 @@ func registerCapabilitySubsystem(app *App) {
 				return nil, fmt.Errorf("capability.inspect: id and endpoint are required")
 			}
 			def := config.CapabilityDef{ID: id, Transport: config.TransportRemoteSSE, Endpoint: endpoint}
-			driver, err := core.NewCapabilityDriver(def, app.Registry)
+			driver, err := capability.NewCapabilityDriver(def, app.Registry)
 			if err != nil {
 				return nil, err
 			}

@@ -1,10 +1,10 @@
 package tools
 
 import (
+	"github.com/daybeam/vortex/core/capability"
 	"context"
 	"testing"
 
-	"github.com/daybeam/vortex/core"
 )
 
 // Security regression tests for the discovery subsystem.
@@ -124,7 +124,7 @@ func TestDiscover_SelfScopeNoRoleReturnsEmpty(t *testing.T) {
 	}
 
 	// Must return empty, NOT a pool-level list of all roles
-	dr, ok := result.(*core.DiscoveryResult)
+	dr, ok := result.(*capability.DiscoveryResult)
 	if !ok {
 		t.Fatalf("unexpected result type: %T", result)
 	}

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"github.com/daybeam/vortex/core/capability"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -149,7 +150,7 @@ type App struct {
 	JIT               *jit.JITManager
 	Logger            *obs.Logger
 	CodeIntel         *ci.Handler
-	Navigator         *core.CapabilityNavigator
+	Navigator         *capability.CapabilityNavigator
 	ConfigPath        string
 	RootDir           string // project root dir for absolute path resolution (desktop: walked-up config dir)
 	Tier              string
@@ -277,8 +278,13 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 		effectiveTier := EffectiveTier(ctx, app)
 
 		app.Logger.Log(obs.EventToolCall, taskID, "", map[string]any{
-			"tool":  name,
-			"args":  req.Params.Arguments,
+			"tool": name,
+			// Bounded and redacted like every other tool-call record. This used
+			// to log req.Params.Arguments raw: no size cap, no redaction, on the
+			// one path where the parent agent hands over whole prompts and
+			// session-level parameters. submit_task alone can carry a multi-KB
+			// task body.
+			"args":  core.ToolArgsLogString(name, req.Params.Arguments),
 			"tier":  effectiveTier,
 			"phase": "started",
 		})

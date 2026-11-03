@@ -1,6 +1,7 @@
 package tools
 
 import (
+	cappkg "github.com/daybeam/vortex/core/capability"
 	"context"
 	"os"
 	"path/filepath"
@@ -78,7 +79,7 @@ func TestPromoteSkill_ActionSuccess(t *testing.T) {
 	}
 
 	// Set up Navigator so Refresh() can be called
-	app.Navigator = core.NewCapabilityNavigator(app.Registry)
+	app.Navigator = cappkg.NewCapabilityNavigator(app.Registry)
 
 	// Invoke the real action handler
 	result, err := registry.Invoke(context.Background(), app, "admin", "promote_skill", map[string]any{
@@ -148,7 +149,7 @@ func TestPromoteSkill_ActionMakesDiscoverable(t *testing.T) {
 		StagedAt:   time.Now(),
 	}
 
-	app.Navigator = core.NewCapabilityNavigator(app.Registry)
+	app.Navigator = cappkg.NewCapabilityNavigator(app.Registry)
 
 	// Before promotion: capability should NOT be in index
 	app.Navigator.Refresh()
@@ -179,7 +180,7 @@ func TestPromoteSkill_ActionMakesDiscoverable(t *testing.T) {
 // 4. CapabilityIndex → skill's capability is discoverable
 func TestE2E_ImportPromoteDiscoverable(t *testing.T) {
 	app := initSkillTestApp()
-	app.Navigator = core.NewCapabilityNavigator(app.Registry)
+	app.Navigator = cappkg.NewCapabilityNavigator(app.Registry)
 
 	// 1. Create a skill directory with SKILL.md
 	skillDir := t.TempDir()
