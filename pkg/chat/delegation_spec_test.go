@@ -3,6 +3,8 @@ package chat
 import (
 	"strings"
 	"testing"
+
+	"github.com/daybeam/vortex/core"
 )
 
 const specTaskPrompt = "Prepare the scheduling handoff for request `CAL-NW-482`.\n" +
@@ -75,9 +77,47 @@ func TestDelegatedPromptDoesNotDuplicateContract(t *testing.T) {
 	t.Setenv(DelegationSpecEnv, "on")
 	h := newSpecHarness(specTaskPrompt)
 	// A parent that already pasted the contract keeps its own copy, untouched.
+	// Quoting the contract says nothing about the task body, though: it is the
+	// short tail that mentions `Delete: none`, and a parent can quote it while
+	// still summarising the instruction from memory. Dropping the instruction
+	// here would be silent, so only the contract is skipped.
 	parent := r2ParentSummary + "\n" + coreContractForTest()
+	got := h.delegatedPromptWithSpec(parent)
+
+	if strings.Count(got, "## Enforced workspace change contract") != 1 {
+		t.Fatalf("contract heading must appear once, not be duplicated:\n%s", got)
+	}
+	if !strings.Contains(got, "start/end time") {
+		t.Fatalf("quoting the contract must not drop the instruction body:\n%s", got)
+	}
+}
+
+// A parent that pasted the whole specification leaves nothing to add, so the
+// append has to be a byte-for-byte no-op rather than a duplicate copy.
+func TestDelegatedPromptUnchangedWhenSpecAlreadyPresent(t *testing.T) {
+	t.Setenv(DelegationSpecEnv, "on")
+	h := newSpecHarness(specTaskPrompt)
+	parent := r2ParentSummary + "\n\n" + specTaskPrompt
 	if got := h.delegatedPromptWithSpec(parent); got != parent {
-		t.Fatalf("a prompt that already carries the contract must not be extended, got:\n%s", got)
+		t.Fatalf("a prompt that already carries the spec must not be extended, got:\n%s", got)
+	}
+}
+
+// The mirror case: a parent that pasted the instruction still needs the
+// contract, because "Delete: none" lives only in the contract section.
+func TestDelegatedPromptAppendsContractWhenOnlyInstructionPasted(t *testing.T) {
+	t.Setenv(DelegationSpecEnv, "on")
+	h := newSpecHarness(specTaskPrompt)
+	instruction, _ := core.SpecSections(specTaskPrompt)
+	parent := r2ParentSummary + "\n\n" + instruction
+
+	got := h.delegatedPromptWithSpec(parent)
+
+	if strings.Count(got, strings.TrimSpace(instruction)) != 1 {
+		t.Fatalf("the pasted instruction must not be repeated:\n%s", got)
+	}
+	if !strings.Contains(got, "Delete: none") {
+		t.Fatalf("the contract is missing from the parent and must be appended:\n%s", got)
 	}
 }
 

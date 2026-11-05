@@ -1130,7 +1130,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 
 	exitReason = "max_turns"
 	emit(ChatEvent{Type: "error", Data: fmt.Sprintf("max turns (%d) exceeded", maxTurns)})
-	return finalText.String(), fmt.Errorf("max turns (%d) exceeded", maxTurns)
+	return markTruncated(finalText.String(), maxTurns), fmt.Errorf("max turns (%d) exceeded: %w", maxTurns, ErrMaxTurnsExceeded)
 }
 
 // streamTurn runs one provider call for Run: content is appended to finalText

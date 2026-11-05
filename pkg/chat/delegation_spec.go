@@ -82,10 +82,19 @@ func LogDelegationSpecOnce() {
 // workspace-change contract to a delegation prompt.
 //
 // Returns prompt unchanged (byte for byte) when there is nothing to add: no
-// task prompt was captured, the prompt carries no contract, the two sections
-// are empty, or the caller already pasted the contract itself. The last case
-// matters because a duplicate "Delete: none" reads like a different rule from
-// the one above it.
+// task prompt was captured, the append is switched off, the two sections are
+// empty, or the prompt already carries both sections verbatim.
+//
+// The two sections are gated independently, and that matters. An earlier
+// version returned early as soon as the prompt contained
+// `core.WorkspaceContractHeader`, on the theory that a caller who pasted the
+// contract had pasted the spec. It had not: the contract is the short tail
+// that mentions `Delete: none`, and a parent can quote it while still
+// summarising the task body from memory. The early return then handed the
+// sub-agent a prompt with no verbatim task text at all — the exact loss this
+// append exists to prevent (178/193) — and did it silently, because the only
+// symptom is a missing section. Presence is now tested per section: the
+// contract by its heading, the instruction by its own body.
 func (h *ChatHarness) delegatedPromptWithSpec(prompt string) string {
 	if h == nil || !DelegationSpecEnabled() {
 		return prompt
@@ -94,10 +103,21 @@ func (h *ChatHarness) delegatedPromptWithSpec(prompt string) string {
 	if strings.TrimSpace(spec) == "" {
 		return prompt
 	}
-	if strings.Contains(prompt, core.WorkspaceContractHeader) {
-		return prompt
-	}
 	instruction, contract := core.SpecSections(spec)
+
+	// Duplicate "Delete: none" reads like a different rule from the one above
+	// it, so a contract the caller already carries is dropped rather than
+	// repeated.
+	if contract != "" && strings.Contains(prompt, core.WorkspaceContractHeader) {
+		contract = ""
+	}
+	// The instruction is dropped only when the caller carries that body
+	// itself. The comparison is a plain substring test on purpose: a reflowed
+	// copy is not detected, and the failure mode of missing it is one duplicate
+	// section, while the failure mode of guessing wrong is silence.
+	if instruction != "" && strings.Contains(prompt, strings.TrimSpace(instruction)) {
+		instruction = ""
+	}
 	// Size guard. The append can only duplicate text that is already in this
 	// session's context, so it cannot make a prompt larger than the model has
 	// already accepted — but it can make the *sub-agent's* prompt that large,
