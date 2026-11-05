@@ -153,7 +153,7 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 		// maybePromoteSkill's usage gate can see them (see
 		// captureTraceJITSkills).
 		if step.Status == schemas.StepOK {
-			skills = re.captureTraceJITSkills(ctx, capability, trace, skills)
+			skills = re.captureTraceJITSkills(ctx, capability, step.Task, trace, skills)
 		}
 
 		records = append(records, store.StepRecord{

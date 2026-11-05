@@ -36,6 +36,21 @@ type ContextHub struct {
 	// original error is returned. This fixes the ghost binding defect
 	// (DELEGATION_AND_SUBMIT_DEFECTS.md §2.2): allows runtime dynamic MCP
 	// injection without pre-registration in config.json.
+	//
+	// PRODUCTION STATUS (audit M3, 2026-11-04): intentionally nil in all
+	// production code paths. NewContextHub never assigns this field. The
+	// nil-checks at validator.go:290 and validator.go:481 guard the call,
+	// so unknown MCP IDs always fail with "unknown MCP id" error.
+	// Wiring this callback is a feature addition that requires:
+	//   1. A discovery source (config file, registry, or remote service)
+	//   2. Security validation — auto-mounting unknown MCPs is dangerous:
+	//      an attacker could reference a malicious MCP ID and have it
+	//      auto-mounted with full tool access.
+	//   3. A deliberate design decision and security review.
+	// The seam is tested in delegation_defects_test.go and
+	// mount_policy_multitenant_test.go with test-specific implementations.
+	// See guard test TestOnUnknownMCP_NilInProduction and gap G7 in
+	// CALL_CHAINS.md §8.
 	OnUnknownMCP func(mcpID string) *config.MCPDef
 
 	// Circuit breaker for embedding providers: track non-retryable failures per provider
@@ -145,8 +160,31 @@ func (h *ContextHub) GetRole(roleID string) *config.Role {
 	return h.Registry.Roles[roleID]
 }
 
+// skillToolAlive reports whether a skill's backing tool still exists. A JIT
+// tool expires after its TTL while its GeneratedSkill record and the
+// /skills/<id> config entry persist, so "registered" is not the same as
+// "usable". Promoted tools stay alive because PromotePermanent writes them
+// into Registry.MCPs. Non-JIT skills have no backing tool and are always
+// treated as alive.
+//
+// Task-local closure is unaffected: executeStep restores expired tools from
+// graph.LocalMCPs before the step's prompt is assembled, so a restorable tool
+// is already back in DynamicMCPs by the time this predicate runs.
+func (h *ContextHub) skillToolAlive(skillID string) bool {
+	if !strings.HasPrefix(skillID, "jit_") || h.Registry == nil {
+		return true
+	}
+	return h.Registry.GetMCP(skillID) != nil
+}
+
 func (h *ContextHub) GetSkill(skillID string) *config.Skill {
 	if skillID == "" {
+		return nil
+	}
+	// Dead JIT ids must resolve to nil: this is the single resolution point
+	// feeding findskills, affinity recommendations and prompt assembly, all
+	// of which would otherwise advertise a tool that no longer exists.
+	if !h.skillToolAlive(skillID) {
 		return nil
 	}
 
@@ -295,7 +333,7 @@ func (h *ContextHub) FindSkillByCapability(desc string) *config.Skill {
 					skill = &sk
 				}
 			}
-			if skill != nil {
+			if skill != nil && h.skillToolAlive(skill.ID) {
 				sessionCandidates = append(sessionCandidates, skill)
 			}
 		})
@@ -308,7 +346,9 @@ func (h *ContextHub) FindSkillByCapability(desc string) *config.Skill {
 	h.Registry.Mu.RLock()
 	var globalCandidates []*config.Skill
 	for _, s := range h.Registry.Skills {
-		globalCandidates = append(globalCandidates, s)
+		if s != nil && h.skillToolAlive(s.ID) {
+			globalCandidates = append(globalCandidates, s)
+		}
 	}
 	h.Registry.Mu.RUnlock()
 
@@ -321,6 +361,9 @@ func (h *ContextHub) FindSkillByCapability(desc string) *config.Skill {
 		// GetGeneratedSkillsSnapshot handles its own locking internally.
 		genCandidates := make([]*config.Skill, 0)
 		for _, gs := range h.Exp.GetGeneratedSkillsSnapshot() {
+			if gs != nil && !h.skillToolAlive(gs.ID) {
+				continue
+			}
 			genCandidates = append(genCandidates, generatedToConfigSkill(gs))
 		}
 		if match := best(genCandidates); match != nil {

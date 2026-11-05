@@ -111,9 +111,15 @@ func ExecuteBatchReplace(req BatchReplaceRequest) (*BatchReplaceResult, error) {
 			newContent = newContent[:s.start] + s.item.NewStr + newContent[s.end:]
 		}
 
-		// Write to temp file in same directory for atomic rename
+		// Write to temp file in same directory for atomic rename.
+		// rand.Read from crypto/rand never fails on Linux/Windows, but
+		// ignoring the error leaves randBytes as all-zeros on a (theoretical)
+		// failure, risking temp-file collisions under concurrent calls.
 		randBytes := make([]byte, 4)
-		_, _ = rand.Read(randBytes)
+		if _, err := rand.Read(randBytes); err != nil {
+			cleanupTempFiles(tempFiles)
+			return nil, fmt.Errorf("failed to generate temp file suffix for %s: %w", path, err)
+		}
 		tmpPath := path + "." + hex.EncodeToString(randBytes) + ".tmp"
 
 		if err := os.WriteFile(tmpPath, []byte(newContent), 0644); err != nil {

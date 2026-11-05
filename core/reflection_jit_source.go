@@ -19,7 +19,9 @@ import (
 // The generated script body is captured on the record: JIT tools expire after
 // their TTL while the record lives on, and without a persisted copy additive
 // editing and hybrid merge silently lose their baseline once the tool is gone.
-func (re *ReflectionEngine) captureTraceJITSkills(ctx context.Context, capability string, trace []store.ToolInteraction, skills []string) []string {
+// The step task is stored as the Description so lexical retrieval and
+// progressive disclosure see real text instead of only the capability label.
+func (re *ReflectionEngine) captureTraceJITSkills(ctx context.Context, capability, task string, trace []store.ToolInteraction, skills []string) []string {
 	if len(trace) == 0 {
 		return skills
 	}
@@ -35,8 +37,9 @@ func (re *ReflectionEngine) captureTraceJITSkills(ctx context.Context, capabilit
 		skills = append(skills, t.ToolName)
 		if _, exists := re.expStore.GetGeneratedSkill(t.ToolName); !exists {
 			re.expStore.AddGeneratedSkill(ctx, &store.GeneratedSkill{
-				ID:         t.ToolName,
-				Capability: capability,
+				ID:          t.ToolName,
+				Capability:  capability,
+				Description: task,
 				// SuccessRate starts at 1.0: we only seed on StepOK.
 				// UpdateRouteWeight in RecordTaskCompletion will blend in
 				// subsequent failures on the affinity side, and

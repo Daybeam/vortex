@@ -39,15 +39,28 @@ func NewRoleGenerator(registry *config.Registry, loader *ResourceLoader, logger 
 func (g *RoleGenerator) GetOrCreateRole(ctx context.Context, taskID string, stepID string, roleID string, taskDescription string, capability string) (*config.Role, error) {
 	// 1. Semantic Reuse Check
 	hash := g.computeHash(taskDescription, capability)
+	// audit H1: hold RLock while iterating registry.Roles. CommitOps (called
+	// from GenerateRole below) writes registry.Roles under Mu.Lock, so an
+	// unlocked range here is a concurrent map read+write -> fatal panic.
+	// CleanupExpiredRoles already takes RLock for the same iteration; this
+	// matches it. The match is captured under lock and logged outside it to
+	// avoid holding the registry lock during I/O.
+	g.registry.Mu.RLock()
+	var hashMatch *config.Role
 	for _, r := range g.registry.Roles {
 		if r.Metadata["hash"] == hash {
-			g.logger.Log(obs.EventRoleSynthesisSuppressed, taskID, stepID, map[string]any{
-				"reason":           "HashConflict",
-				"existing_role_id": r.ID,
-				"hash":             hash,
-			})
-			return r, nil
+			hashMatch = r
+			break
 		}
+	}
+	g.registry.Mu.RUnlock()
+	if hashMatch != nil {
+		g.logger.Log(obs.EventRoleSynthesisSuppressed, taskID, stepID, map[string]any{
+			"reason":           "HashConflict",
+			"existing_role_id": hashMatch.ID,
+			"hash":             hash,
+		})
+		return hashMatch, nil
 	}
 
 	// 2. Defensive Cleanup

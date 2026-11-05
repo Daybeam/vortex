@@ -217,18 +217,22 @@ func (a *ContextArchive) Items() []MemoryItem {
 
 // Append writes one MemoryItem to disk. Called from scheduler.go after step success.
 func (a *ContextArchive) Append(item MemoryItem) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if item.Timestamp.IsZero() {
 		item.Timestamp = time.Now()
 	}
 
+	// audit M5 (2026-11-05): formerly held mu.Lock across json.Marshal +
+	// os.OpenFile + f.Write. Move the marshal (CPU work) outside the lock.
+	// The lock is still needed for items/indexDirty/lastOffset consistency
+	// with the file write, but the marshal no longer blocks readers.
 	// JSON Lines: each item = one line
 	data, err := json.Marshal(item)
 	if err != nil {
 		return err
 	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	a.items = append(a.items, item)
 	if len(a.items) > maxInMemoryItems {

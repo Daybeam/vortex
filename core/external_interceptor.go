@@ -143,9 +143,28 @@ func subprocessInterceptorWithCommand(scriptPath, exe string, extraArgs []string
 		runtime := exe
 
 		// Interceptor inputs
+		// audit L9 (2026-11-05): formerly json.Marshal of the full
+		// SpawnRequest every turn. The interceptor script only needs
+		// decision-relevant fields and can only modify Task/Metadata
+		// (see response parsing below). Exclude scheduler-internal
+		// fields (TurnsBudgetBonus, MaxOutputTokens, Temperature,
+		// FrequencyPenalty, ProviderOverride, RoutingMode,
+		// CompressionHint, PredecessorSkillID, DegradedMCPs) to reduce
+		// marshal cost. JSON field names match SpawnRequest's Go field
+		// names (no json tags on SpawnRequest) for backward compat.
 		input := map[string]any{
-			"phase":   "pre",
-			"request": req,
+			"phase": "pre",
+			"request": map[string]any{
+				"TaskID":                   req.TaskID,
+				"StepID":                   req.StepID,
+				"RoleID":                   req.RoleID,
+				"Task":                     req.Task,
+				"AdditionalSkills":         req.AdditionalSkills,
+				"AdditionalMCPs":           req.AdditionalMCPs,
+				"AdditionalToolAllowlists": req.AdditionalToolAllowlists,
+				"ContextRefs":              req.ContextRefs,
+				"Metadata":                 req.Metadata,
+			},
 		}
 		inputBytes, _ := json.Marshal(input)
 

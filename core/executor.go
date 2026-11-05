@@ -133,9 +133,17 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 		}
 	}
 
+	// audit L5 (2026-11-05): wg is declared here (formerly below) so the
+	// stdin writer goroutine can join it. Without joining, the goroutine
+	// could outlive the function, leaking if the write blocks on a full
+	// pipe buffer.
+	var wg sync.WaitGroup
+
 	// Write initial input if provided
 	if len(input) > 0 {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(os.Stderr, "[executor] stdin writer panic: %v\n", r)
@@ -162,7 +170,6 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 	idleTimer := time.NewTimer(e.IdleTimeout)
 	defer idleTimer.Stop()
 
-	var wg sync.WaitGroup
 	wg.Add(2)
 
 	// Monitor Stdout for data and patterns.
@@ -388,12 +395,20 @@ func isWSLBash(p string) bool {
 }
 
 // gitBashCandidates returns common git bash install locations.
-func gitBashCandidates() []string {
+// audit L10 (2026-11-05): cached with sync.OnceValue — os.Getenv is
+// called 3× per execution formerly, but the env vars don't change during
+// the process lifetime. The cache computes once and returns the same
+// slice on every subsequent call.
+var gitBashCandidatesCache = sync.OnceValue(func() []string {
 	return []string{
 		filepath.Join(os.Getenv("ProgramFiles"), "Git", "bin", "bash.exe"),
 		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Git", "bin", "bash.exe"),
 		filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Git", "bin", "bash.exe"),
 	}
+})
+
+func gitBashCandidates() []string {
+	return gitBashCandidatesCache()
 }
 
 // scanPathForNonWSLBash scans PATH directories for bash.exe outside System32.

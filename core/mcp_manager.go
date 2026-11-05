@@ -59,9 +59,12 @@ func cachedGetenv(key string) string {
 	if v, ok := mcpEnvCache.Load(key); ok {
 		return v.(string)
 	}
-	v := os.Getenv(key)
-	mcpEnvCache.Store(key, v)
-	return v
+	// audit L6: LoadOrStore makes the check-then-act atomic. os.Getenv is
+	// deterministic so both racing callers compute the same value; this just
+	// replaces the non-atomic Load-then-Store idiom. Cache stays effective
+	// (os.Getenv runs only on the miss path).
+	v, _ := mcpEnvCache.LoadOrStore(key, os.Getenv(key))
+	return v.(string)
 }
 
 // MCPConnectionManager isolates all stdio subprocess handling and JSON-RPC
@@ -411,6 +414,10 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 			continue
 		}
 		desc, _ := t["description"].(string)
+		// Sanitize invisible Unicode from remote MCP tool metadata
+		// (MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.2).
+		name = sanitizeMCPToolField(name, mcp.ID, "name")
+		desc = sanitizeMCPToolField(desc, mcp.ID, "description")
 		def := schemas.ToolDefinition{Name: name, Description: desc}
 		if is, ok := t["inputSchema"].(map[string]any); ok {
 			def.InputSchema = is
