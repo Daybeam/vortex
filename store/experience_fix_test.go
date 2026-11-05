@@ -182,7 +182,7 @@ func TestRecordTaskCompletion_PopulatesDecisionOutcomes(t *testing.T) {
 // Before fix: overlap=1 → score=1+SuccessRate*0.5 → passes.
 // After fix: overlapRatio=1/40=0.025 < threshold=0.45 → filtered.
 //
-// See: docs/plan/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §1.2
+// See: docs/completed/2026-11-05/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §1.2
 func TestQueryRelevantSkills_RealJITNoiseFiltered(t *testing.T) {
 	es := newTestStore(t)
 
@@ -217,7 +217,7 @@ func TestQueryRelevantSkills_RealJITNoiseFiltered(t *testing.T) {
 // (few tokens) pass with low overlap, while specific skills (many tokens)
 // are filtered unless overlap is high.
 //
-// See: docs/plan/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §2.3
+// See: docs/completed/2026-11-05/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §2.3
 func TestQueryRelevantSkills_SpecificityThreshold(t *testing.T) {
 	es := newTestStore(t)
 
@@ -265,7 +265,7 @@ func TestQueryRelevantSkills_SpecificityThreshold(t *testing.T) {
 // unproven skills (UsageCount=0) get no SuccessRate boost, while proven
 // skills get a small tiebreaker.
 //
-// See: docs/plan/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §2.4
+// See: docs/completed/2026-11-05/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §2.4
 func TestQueryRelevantSkills_ConfidenceWeightedSuccessRate(t *testing.T) {
 	es := newTestStore(t)
 
@@ -318,7 +318,7 @@ func (m *mockEmbeddingClient) EmbedWithModel(ctx context.Context, text string) (
 // embedding client returns an error, the system falls back to lexical
 // scoring without crashing.
 //
-// See: docs/plan/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §3
+// See: docs/completed/2026-11-05/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §3
 func TestQueryRelevantSkills_EmbeddingDegradation(t *testing.T) {
 	es := newTestStore(t)
 
@@ -343,7 +343,7 @@ func TestQueryRelevantSkills_EmbeddingDegradation(t *testing.T) {
 // TestQueryRelevantSkills_SemanticWithEmbeddings verifies that when
 // embeddings are available, cosine similarity is used for scoring.
 //
-// See: docs/plan/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §2.2
+// See: docs/completed/2026-11-05/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §2.2
 func TestQueryRelevantSkills_SemanticWithEmbeddings(t *testing.T) {
 	es := newTestStore(t)
 
