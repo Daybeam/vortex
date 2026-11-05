@@ -320,3 +320,31 @@ func TestActivate_MissingSkillFile_DegradesToDescription(t *testing.T) {
 		t.Error("no instructions section expected when SKILL.md is unreadable")
 	}
 }
+
+// Mount-point defense: even if an expired JIT candidate reaches activation,
+// it must not become prompt text pointing at a tool that no longer exists.
+func TestActivateTopSkills_SkipsExpiredJITTools(t *testing.T) {
+	reg := &config.Registry{
+		Skills: map[string]*config.Skill{
+			"jit_dead": {ID: "jit_dead", Name: "Dead", Description: "Desc Dead", SkillDir: "/tmp/dead"},
+			"jit_live": {ID: "jit_live", Name: "Live", Description: "Desc Live", SkillDir: "/tmp/live"},
+		},
+		DynamicMCPs: map[string]*config.MCPDef{"jit_live": {ID: "jit_live"}},
+	}
+
+	candidates := []capability.DiscoveryCandidate{
+		{ID: "jit_dead", Type: capability.CandidateSkill, Confidence: 0.9},
+		{ID: "jit_live", Type: capability.CandidateSkill, Confidence: 0.8},
+	}
+
+	result, skillDir := ActivateTopSkills(reg, candidates, 2)
+	if strings.Contains(result, "Desc Dead") {
+		t.Fatalf("expired JIT skill must not be mounted, got %q", result)
+	}
+	if !strings.Contains(result, "Desc Live") {
+		t.Fatalf("live JIT skill should be mounted, got %q", result)
+	}
+	if skillDir != "/tmp/live" {
+		t.Fatalf("primary skill dir should be the live skill's, got %q", skillDir)
+	}
+}

@@ -151,8 +151,9 @@ func TestScanForHybridMerge_UsesStoredSourceWhenToolsExpired(t *testing.T) {
 }
 
 // TestReflectOnTask_CapturesTraceJITSource covers the second seeding path:
-// tools discovered in a successful trace were recorded with no description and
-// no body, so their records could never serve as an editing baseline.
+// tools discovered in a successful trace used to be recorded with no
+// description and no body, so retrieval only ever saw the capability label
+// and the record could never serve as an editing baseline.
 func TestReflectOnTask_CapturesTraceJITSource(t *testing.T) {
 	tmp := t.TempDir()
 	reg, _ := newMockJITRegistry(t, "-- unused")
@@ -191,6 +192,9 @@ func TestReflectOnTask_CapturesTraceJITSource(t *testing.T) {
 	}
 	if gs.SourceText != "-- trace tool body" {
 		t.Fatalf("trace seed must capture the tool body, got %q", gs.SourceText)
+	}
+	if gs.Description != "use the generated tool" {
+		t.Fatalf("trace seed must store the step task as Description, got %q", gs.Description)
 	}
 }
 
