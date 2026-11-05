@@ -97,6 +97,15 @@ func (r *ToolRouter) RefreshToolEmbeddings(ctx context.Context, reg *config.Regi
 		if mcp == nil {
 			continue
 		}
+		// audit L11 (2026-11-05): formerly O(N×M) linear scan of
+		// FullToolDefinitions for each toolName in AvailableTools.
+		// Pre-build a name→description index for O(1) lookup.
+		toolDescIndex := make(map[string]string, len(mcp.FullToolDefinitions))
+		for _, def := range mcp.FullToolDefinitions {
+			if def.Description != "" {
+				toolDescIndex[def.Name] = def.Description
+			}
+		}
 		for _, toolName := range mcp.AvailableTools {
 			// M-7 (2026-10-04): Use strings.Builder instead of repeated += allocation.
 			var sb strings.Builder
@@ -113,13 +122,10 @@ func (r *ToolRouter) RefreshToolEmbeddings(ctx context.Context, reg *config.Regi
 				sb.WriteString(p)
 				sb.WriteByte(' ')
 			}
-			// Pull description from full tool definitions if available.
-			for _, def := range mcp.FullToolDefinitions {
-				if def.Name == toolName && def.Description != "" {
-					sb.WriteString(def.Description)
-					sb.WriteByte(' ')
-					break
-				}
+			// Pull description from the pre-built index.
+			if desc, ok := toolDescIndex[toolName]; ok {
+				sb.WriteString(desc)
+				sb.WriteByte(' ')
 			}
 			versionKey := mcp.Domain + "_" + strconv.Itoa(len(mcp.AvailableTools))
 			docs = append(docs, toolDoc{id: toolName, versionKey: versionKey, text: strings.TrimSpace(sb.String())})
