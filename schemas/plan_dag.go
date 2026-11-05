@@ -39,6 +39,9 @@ type PlanStep struct {
 	DependsOn    []string `json:"depends_on,omitempty"`
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 	ExitCriteria string   `json:"exit_criteria,omitempty"`
+	// DeterministicChecks mirrors StepInput.DeterministicChecks; without it a
+	// planner-declared check dies at the plan parse (register O1).
+	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
 	// MCPID is the MCP server the AllowedTools belong to. Optional: when
 	// empty the parser uses singleMCP (the common case — one bound server).
 	MCPID string `json:"mcp_id,omitempty"`
@@ -256,10 +259,11 @@ func ParsePlanDAG(raw string, opt PlanParseOptions) ([]StepInput, error) {
 		}
 
 		inp := StepInput{
-			ID:        ps.ID,
-			RoleID:    ps.RoleID,
-			Task:      ps.Task,
-			DependsOn: append([]string(nil), ps.DependsOn...),
+			ID:                  ps.ID,
+			RoleID:              ps.RoleID,
+			Task:                ps.Task,
+			DependsOn:           append([]string(nil), ps.DependsOn...),
+			DeterministicChecks: append([]DeterministicCheck(nil), ps.DeterministicChecks...),
 		}
 		if mcpID != "" {
 			inp.AdditionalMCPs = []string{mcpID}
@@ -267,9 +271,8 @@ func ParsePlanDAG(raw string, opt PlanParseOptions) ([]StepInput, error) {
 		if allowlist != nil {
 			inp.AdditionalToolAllowlists = allowlist
 		}
-		if ec := strings.TrimSpace(ps.ExitCriteria); ec != "" {
-			inp.ExitCriteria = ec
-		}
+		// Zero value is "" either way, so trim unconditionally (a whitespace-only criterion must not survive).
+		inp.ExitCriteria = strings.TrimSpace(ps.ExitCriteria)
 		out = append(out, inp)
 	}
 

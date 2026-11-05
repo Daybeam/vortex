@@ -51,6 +51,9 @@ type StepInput struct {
 	VerifierModel string  `json:"verifier_model,omitempty"`
 	MaxAutoRefine int     `json:"max_auto_refine,omitempty"`
 	RiskRating    float64 `json:"risk_rating,omitempty"` // Numeric risk score (0.0-1.0)
+	// DeterministicChecks mirrors Step.DeterministicChecks below; until it existed
+	// here no SOP or submit body could reach Case 2.5 (register O1).
+	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
 	// Cross-Family Debate (ADDED 2026-09-14): opt-in Proposer→Critic→Synthesizer loop.
 	// See docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
 	EnableDebate    bool `json:"enable_debate,omitempty"`

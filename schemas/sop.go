@@ -26,17 +26,19 @@ type SOPTrigger struct {
 
 // SOPStep defines a node in the workflow DAG.
 type SOPStep struct {
-	ID            string   `json:"id"`
-	Role          string   `json:"role"`
-	Task          string   `json:"task"`
-	Skills        []string `json:"skills,omitempty"`
-	MCPs          []string `json:"mcps,omitempty"`
-	Provider      string   `json:"provider,omitempty"`
-	DependsOn     []string `json:"depends_on,omitempty"`
-	ExitCriteria  string   `json:"exit_criteria,omitempty"`
-	ConditionExpr string   `json:"condition_expr,omitempty"` // Optional branching expression
-	OnSuccess     string   `json:"on_success,omitempty"`     // Explicit success jump
-	OnFailure     string   `json:"on_failure,omitempty"`     // Explicit failure jump (fallback)
+	ID           string   `json:"id"`
+	Role         string   `json:"role"`
+	Task         string   `json:"task"`
+	Skills       []string `json:"skills,omitempty"`
+	MCPs         []string `json:"mcps,omitempty"`
+	Provider     string   `json:"provider,omitempty"`
+	DependsOn    []string `json:"depends_on,omitempty"`
+	ExitCriteria string   `json:"exit_criteria,omitempty"`
+	// DeterministicChecks mirrors Step.DeterministicChecks; absent here it is dropped at parse time (O1).
+	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
+	ConditionExpr       string               `json:"condition_expr,omitempty"` // Optional branching expression
+	OnSuccess           string               `json:"on_success,omitempty"`     // Explicit success jump
+	OnFailure           string               `json:"on_failure,omitempty"`     // Explicit failure jump (fallback)
 }
 
 // UnmarshalJSON implements custom unmarshaling for SOP to support legacy formats
