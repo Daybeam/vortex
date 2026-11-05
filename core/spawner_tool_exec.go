@@ -610,33 +610,12 @@ func (s *Spawner) processToolCalls(
 			// Tool Execution Timeout (default 120s)
 			toolCtx, cancelTool := context.WithTimeout(ctx, 120*time.Second)
 
-			// Helper to perform the actual call (including SAV verification)
+			// Helper to perform the actual call, so the reconnect retry below can
+			// reuse the same sequence after evicting a dead client.
 			doCall := func() (any, error) {
 				cli, err := s.mcpMgr.ensureMCPClient(toolCtx, mcpDef, req.TaskID)
 				if err != nil {
 					return nil, err
-				}
-
-				verifierID := req.Hub.Registry.GetVerifierID(call.Name)
-				if verifierID != "" {
-					if v, ok := s.verifierRegistry[verifierID]; ok {
-						state, sErr := v.Sense(toolCtx, mcpID, call.Name, s)
-						if sErr == nil {
-							res, err := cli.SendRequest(toolCtx, "tools/call", map[string]any{
-								"name":      call.Name,
-								"arguments": call.Arguments,
-							})
-							if err != nil {
-								return nil, err
-							}
-							success, vErr := v.Verify(toolCtx, mcpID, call.Name, state, res, s)
-							if !success {
-								return v.Recover(toolCtx, mcpID, call.Name, call.Arguments, vErr, s)
-							}
-							return res, nil
-						}
-						return nil, fmt.Errorf("SAV Sense failed: %v", sErr)
-					}
 				}
 
 				return cli.SendRequest(toolCtx, "tools/call", map[string]any{
