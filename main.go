@@ -384,6 +384,13 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 		defer ct.Close()
 	}
 	scheduler.SetCostTracker(ct)
+	// The hub is the default mode; without this it records no routing
+	// telemetry while the other three entrypoints do (O39).
+	var capProfileStore *store.CapabilityProfileStore
+	if s.DB != nil {
+		capProfileStore = store.NewCapabilityProfileStore(s.DB)
+	}
+	scheduler.WireCapabilityRouting(capProfileStore, registry.NewModelRegistry())
 	scheduler.JITSessions = jit.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.SetTaskRegistry(s.TaskRegistry)
 	if s.DB != nil {
@@ -488,11 +495,7 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 		ResourceLoader:  loader,
 		MemoryBankStore: mbStore,
 		DB:              s.DB,
-		// CapProfile is deliberately absent: runHub never calls
-		// WireCapabilityRouting, so this process records no routing telemetry and
-		// there is no store to hand out. exp.get_capability_profile then answers
-		// "not wired" rather than showing an empty table. See
-		// docs/audit/unwired-code-register.md.
+		CapProfile:      capProfileStore,
 	}
 	app.InitArchive(outputBase)
 	defer app.StopArchive() // audit M12: stop pruning goroutine on shutdown
