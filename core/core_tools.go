@@ -561,9 +561,19 @@ func allowedDirsStr(validator *SafePathValidator, taskDir string) string {
 // after the script started and includes them in the response. If no changes
 // are found, a hint is added suggesting print() statements.
 //
-// In the 041-capacity-planning task, this fix alone is predicted to cut
-// 38/41 wasted calls (88% reduction) — the script writes 3 deliverables
-// but never prints, so 37 subsequent calls are pure repetition.
+// Status: the 041 hypothesis (38/41 wasted calls cut) was never measured, and
+// 029 does not support it. Measured on 029 (2026-11-05, DELEGATION_ARTIFACT_
+// DELIVERY_REMEDIATION.md §33): the delegated agent received this exact
+// "4 file(s) were modified. Use read_file to verify their contents." payload
+// 25 times in one run — byte-identical apart from the timestamp — and answered
+// every one of them by re-running the whole pipeline, which rewrites the same
+// four files and produces the same payload again. The hint names a tool the
+// model does not use; it verifies by re-running. Read and write are the same
+// action here, so verification cannot terminate.
+//
+// What the payload cannot do is distinguish rewrite #3 from rewrite #25. Any
+// change to it has to give the model something that changes between attempts,
+// otherwise the response stays a fixed point (→200).
 func addSilentSuccessSummary(resp map[string]any, cwd string, startTime time.Time) {
 	stdout, _ := resp["stdout"].(string)
 	if stdout != "" {

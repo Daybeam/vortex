@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daybeam/vortex/core/cron"
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -385,29 +384,25 @@ func (sm *ScheduleManager) applyAdaptiveRecovery(s *schemas.Schedule) {
 }
 
 func (sm *ScheduleManager) calculateNextRun(s *schemas.Schedule) time.Time {
-	switch s.Type {
-	case schemas.ScheduleOnce:
-		return time.Time{} // No next run after execution
-	case schemas.ScheduleInterval:
-		d, err := time.ParseDuration(s.Interval)
-		if err != nil {
-			sm.logger.Log("schedule_config_error", "", "", map[string]any{
-				"schedule_id": s.ID,
-				"error":       "invalid interval: " + s.Interval,
-			})
-			return time.Time{}
-		}
-		return time.Now().Add(d)
-	case schemas.ScheduleCron:
-		next, err := cron.NextRun(s.CronExpr, time.Now())
-		if err != nil {
-			sm.logger.Log("schedule_config_error", "", "", map[string]any{
-				"schedule_id": s.ID,
-				"error":       "invalid cron: " + s.CronExpr + " (" + err.Error() + ")",
-			})
-			return time.Now().Add(24 * time.Hour) // Fallback
-		}
-		return next
+	// A `once` row never gets a second occurrence after it runs, even when its
+	// run_at window is still ahead of us: this is called from submitAndTrack,
+	// and a manual RunNow preview must not leave the scheduled fire armed.
+	// schedule.resume reaches the same branch from the other direction, where a
+	// future run_at *is* the next window (register O5, decision Q4-1).
+	if s.Type == schemas.ScheduleOnce {
+		return time.Time{}
 	}
-	return time.Time{}
+	now := time.Now()
+	next, err := ScheduleNextRunAfter(s, now)
+	if err != nil {
+		sm.logger.Log("schedule_config_error", "", "", map[string]any{
+			"schedule_id": s.ID,
+			"error":       err.Error(),
+		})
+		if s.Type == schemas.ScheduleCron {
+			return now.Add(24 * time.Hour) // Fallback
+		}
+		return time.Time{}
+	}
+	return next
 }

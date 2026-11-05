@@ -112,7 +112,11 @@ type DirectedEngine struct {
 	// querying process are not the same one.
 	// Nil-safe: set explicitly by main*.go after NewDirectedEngine returns, same
 	// rationale as JITSessions above. All call sites must nil-check before use.
+	// Guarded by taskRegistryMu: the Asset Sentry goroutine (started below, in
+	// this constructor) reads it while main*.go assigns it. Use
+	// taskRegistry()/SetTaskRegistry instead of touching the field directly.
 	TaskRegistry store.TaskRegistry
+	taskRegistryMu sync.RWMutex
 
 	// BaselineStore pins SOP/Role versions at task creation time so resumed
 	// tasks use the pinned version instead of the live registry. Nil-safe:
@@ -249,8 +253,8 @@ func NewDirectedEngine(
 		hashCache:           make(map[string]string),
 		maxHashCacheEntries: defaultMaxHashCacheEntries,
 		UseSwarm:            os.Getenv("ACAIS_MODE") == "1",
- 		notifyChan:          make(chan struct{}),
- 		recentDecisions:     make(map[string]time.Time),
+		notifyChan:          make(chan struct{}),
+		recentDecisions:     make(map[string]time.Time),
 	}
 	s.spawner.SignalField = sf
 
@@ -263,7 +267,12 @@ func NewDirectedEngine(
 	}
 
 	// Start Asset Sentry (D-GC-1 fix: pass TaskRegistry, not ITaskStore)
-	s.goBackground(func() { s.assets.Sentry(s.lifecycleCtx, s.TaskRegistry) }) // audit L5: use goBackground so Stop() drains
+	// Passed as a getter, not a value: the ledger is wired by main*.go *after*
+	// this constructor returns, so a value captured here would be nil for the
+	// life of the engine (the first tick is an hour away — the bug would never
+	// show in a test run). The getter also reads under the registry mutex,
+	// which is what removes the 2026-11-02 data race.
+	s.goBackground(func() { s.assets.Sentry(s.lifecycleCtx, s.taskRegistry) }) // audit L5: use goBackground so Stop() drains
 
 	// Start terminal-graph evictor to prevent unbounded map growth (audit C4).
 	// Graphs that reached a terminal state are removed from s.graphs,
@@ -693,7 +702,7 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 	}
 	var statusData []byte
 	var statusStr string
-	if s.TaskRegistry != nil {
+	if s.taskRegistry() != nil {
 		var sErr error
 		statusData, sErr = json.Marshal(graph.ToStatusDict())
 		if sErr != nil {
@@ -728,8 +737,8 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 			log.Printf("WARN: persistGraph: failed to write artifacts.json for task %s: %v", graph.TaskID, werr)
 		}
 	}
-	if s.TaskRegistry != nil && len(statusData) > 0 {
-		if serr := s.TaskRegistry.SaveTask(s.lifecycleCtx, graph.TaskID, statusStr, statusData); serr != nil {
+	if tr := s.taskRegistry(); tr != nil && len(statusData) > 0 {
+		if serr := tr.SaveTask(s.lifecycleCtx, graph.TaskID, statusStr, statusData); serr != nil {
 			log.Printf("WARN: persistTaskState: failed to save task state for %s: %v", graph.TaskID, serr)
 		}
 	}

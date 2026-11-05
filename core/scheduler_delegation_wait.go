@@ -44,9 +44,10 @@ type DelegationView struct {
 //   - "none": no execution path available (the caller should not have reached
 //     delegation — public+no-sandbox is rejected at submit_task).
 type ExecutionHint struct {
-	Mode    string `json:"mode"`
-	Sandbox string `json:"sandbox,omitempty"` // "task_workspace" when sandboxed
-	Note    string `json:"note,omitempty"`    // human-readable guidance
+	Mode     string `json:"mode"`
+	Fallback string `json:"fallback,omitempty"` // secondary mode if primary unavailable
+	Sandbox  string `json:"sandbox,omitempty"`  // "task_workspace" when sandboxed
+	Note     string `json:"note,omitempty"`     // human-readable guidance
 }
 
 // FirstDelegations waits up to timeout for the task to produce delegation

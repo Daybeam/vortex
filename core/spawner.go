@@ -13,7 +13,6 @@ import (
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core/obs"
-	"github.com/daybeam/vortex/core/verify"
 	"github.com/daybeam/vortex/pkg/gateway"
 	"github.com/daybeam/vortex/pkg/registry"
 	"github.com/daybeam/vortex/providers"
@@ -62,7 +61,6 @@ type Spawner struct {
 	processor         *OutputProcessor
 	toolRouter        *ToolRouter
 	skillRouter       *SkillRouter
-	verifierRegistry  map[string]verify.Verifier
 	constraintAdapter *ConstraintAdapter
 	sieve             *sieve.Sieve
 	contextManager    *ContextManager
@@ -164,14 +162,13 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 	caskg.HookEventBus(obs.DefaultBus)
 
 	spawner := &Spawner{
-		registry:         reg,
-		taskStore:        ts,
-		expStore:         es,
-		logger:           logger,
-		ResourceLoader:   loader,
-		mcpMgr:           NewMCPConnectionManager(reg, logger),
-		verifierRegistry: make(map[string]verify.Verifier),
-		interceptors:     interceptors,
+		registry:       reg,
+		taskStore:      ts,
+		expStore:       es,
+		logger:         logger,
+		ResourceLoader: loader,
+		mcpMgr:         NewMCPConnectionManager(reg, logger),
+		interceptors:   interceptors,
 		contextProviders: []ContextProvider{
 			&TimeProvider{},
 		},

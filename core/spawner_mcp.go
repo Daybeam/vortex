@@ -574,7 +574,8 @@ func (s *Spawner) buildMCPServers(
 	return servers
 }
 
-// DirectExecute allows Verifiers to call tools without triggering the SAV loop.
+// DirectExecute calls one MCP tool outside the step pipeline: the proxy
+// subsystem's entry point, and verify.ToolExecutor for the replay scheduler.
 // Moved from spawner.go during god-class split.
 func (s *Spawner) DirectExecute(ctx context.Context, mcpID, toolName string, args map[string]any) (any, error) {
 	hub := NewContextHub(s.registry, nil, s.expStore)

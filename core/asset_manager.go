@@ -104,7 +104,13 @@ type sweepStats struct {
 // (which always failed with empty stepID → deleted every task dir) with
 // TaskRegistry.LoadTask. Per §3.3, the background sweep NEVER auto-deletes
 // task directories — deletion is via explicit orchestrator_cleanup_workspace.
-func (am *AssetManager) Sentry(ctx context.Context, tr store.TaskRegistry) {
+// `tr` is a getter, not a value. The ledger is wired by main*.go *after*
+// NewDirectedEngine returns, and this goroutine is started inside that
+// constructor; a captured value would be nil forever (the first tick is an
+// hour away, so nothing would ever notice). Reading it per tick also goes
+// through the engine's registry mutex, which is what the 2026-11-05 race
+// report asked for.
+func (am *AssetManager) Sentry(ctx context.Context, tr func() store.TaskRegistry) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
@@ -114,7 +120,11 @@ func (am *AssetManager) Sentry(ctx context.Context, tr store.TaskRegistry) {
 			return
 		case <-ticker.C:
 		}
-		stats := am.sweepOnce(ctx, time.Now(), tr)
+		var registry store.TaskRegistry
+		if tr != nil {
+			registry = tr()
+		}
+		stats := am.sweepOnce(ctx, time.Now(), registry)
 		log.Printf("asset_gc: scanned=%d staging_cleaned=%d candidates=%d skipped=%d",
 			stats.scanned, stats.stagingCleaned, stats.candidates, stats.skipped)
 	}

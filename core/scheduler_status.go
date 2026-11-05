@@ -73,6 +73,9 @@ func (s *DirectedEngine) GetStatus(taskID string, view ...string) (map[string]an
 	graph := s.graphs[taskID]
 	if graph != nil {
 		result := graph.ToStatusDictView(v)
+		// Q4-6/O20: say so out loud when a delegation has gone unanswered past
+		// the window, instead of leaving "running" as the only signal.
+		s.attachDelegationWaitLocked(result, graph, time.Now())
 		s.Mu.RUnlock()
 		return result, true
 	}
@@ -82,10 +85,11 @@ func (s *DirectedEngine) GetStatus(taskID string, view ...string) (map[string]an
 	// may have been lost to a restart. Without this, callers see "not found" for
 	// tasks that are in fact running — the task-level rows do not exist in
 	// task_steps, so nothing else can answer the query.
-	if s.TaskRegistry == nil {
+	tr := s.taskRegistry()
+	if tr == nil {
 		return nil, false
 	}
-	row, graphJSON, err := s.TaskRegistry.LoadTask(s.lifecycleCtx, taskID)
+	row, graphJSON, err := tr.LoadTask(s.lifecycleCtx, taskID)
 	if err != nil || row == nil {
 		return nil, false
 	}
@@ -105,6 +109,14 @@ func (s *DirectedEngine) GetStatus(taskID string, view ...string) (map[string]an
 					status[k] = val
 				}
 			}
+			// Same report the in-memory path gives, so a host cannot get a
+			// silent "running" from whichever side of the master/proxy split
+			// happens to answer. g is a private copy, but the helper's contract
+			// is "caller holds Mu", so take the read lock rather than fork the
+			// contract for one path.
+			s.Mu.RLock()
+			s.attachDelegationWaitLocked(status, &g, time.Now())
+			s.Mu.RUnlock()
 		}
 	}
 	return status, true
@@ -135,7 +147,11 @@ func (s *DirectedEngine) WaitTask(ctx context.Context, taskID string, timeout ti
 	snapshotStatus := func() (map[string]any, schemas.GraphStatus, int) {
 		s.Mu.RLock()
 		defer s.Mu.RUnlock()
-		return graph.ToStatusDictView(v), graph.Status, len(graph.PendingDecisions)
+		status := graph.ToStatusDictView(v)
+		// wait_task is where a host parks itself, so the no-answer report has to
+		// be on this path too, not only on get_task_status (Q4-6/O20).
+		s.attachDelegationWaitLocked(status, graph, time.Now())
+		return status, graph.Status, len(graph.PendingDecisions)
 	}
 
 	// Fast path: check if already terminal or has pending decisions
@@ -309,12 +325,15 @@ func findPendingDecisionLocked(graph *schemas.TaskGraph, decisionID string) (*sc
 // misroutedFulfillError explains why a non-delegation decision reached the
 // delegation-only FulfillStep entry point.
 //
-// O17 (2026-11-04): the tool layer routes any submit_decision call carrying a
-// non-empty `output` here (shouldRouteToFulfill, tools/tools_task.go:66-67), so
-// a host that serialises an empty result object for a skip|abort lands on this
-// path. The wording used to talk about delegations only, which is what made me
-// record a false finding ("a step_failed decision can be parked but never
-// answered"). Name the decision's real type and the payload rule that applies.
+// O17 (2026-11-04): the tool layer used to route any submit_decision call
+// carrying a non-empty `output` here (shouldRouteToFulfill in tools/tools_task.go),
+// so a host that serialises an empty result object for skip|abort landed on this
+// path. Q4-5 (2026-11-05) put the decision's type in front of that heuristic —
+// see routeSubmitDecision in tools/submit_decision_route.go — so this error now
+// mainly fires for a caller that named choice="fulfill" on the wrong decision.
+// The wording used to talk about delegations only, which is what made me record
+// a false finding ("a step_failed decision can be parked but never answered").
+// Name the decision's real type and the payload rule that applies.
 func misroutedFulfillError(decisionID string, decType schemas.DecisionType) error {
 	return fmt.Errorf("decision %q is a %q decision, not a delegation: answer it with choice=skip|abort|retry and NO output payload (a non-empty output is what routed this call onto the delegation-only fulfill path)", decisionID, decType)
 }

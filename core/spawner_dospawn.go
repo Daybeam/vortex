@@ -109,9 +109,17 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// (write_file/read_file/execute_code) without any domain MCP calls,
 	// break the turn loop — the model is stuck in a self-proof loop.
 	//
-	// NECESSITY: Premature — no production evidence of this pattern. maxTurns
-	// (default 50) + #11 dedup already bound the problem. The gap this catches
-	// (different fs-only calls each turn, no domain progress) is narrow.
+	// NECESSITY: production evidence now exists (DELEGATION_ARTIFACT_DELIVERY_
+	// REMEDIATION.md §33, 2026-11-05). b6a-v75-029-r2's delegated agent made 28
+	// consecutive fs-only calls, 25 of which rewrote all four deliverables, and
+	// the run ended at the 40-request wall with the numeric rows wrong. The
+	// earlier note ("no production evidence; the gap is narrow") no longer holds.
+	//
+	// BUT it still must not be enabled as a break at 5: of the 16 side-runs that
+	// would be cut, 5 ended at a perfect score, and the artifacts at the cut
+	// point are not recoverable from the stored trace. Counted, not assumed —
+	// see §33.5. If this is ever turned on, it is a steer, not an abort, and it
+	// has to survive an arm first.
 	// Design: measure-first-then-act. Deploy with metrics only (limit=0),
 	// monitor orchestrator.progress.fs_only_streak_max, enable threshold only
 	// if metrics justify it. See docs/completed/2026-10-03/ §#4+#15.
