@@ -1,6 +1,8 @@
 package config
 
 import (
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -92,16 +94,58 @@ type ProviderHealth struct {
 	WasCoolingDown  bool // tracks cooldown→recovery transition (admin lifecycle §3.2)
 }
 
-// GetWorkspacePolicy returns the WorkspacePolicy for the given owner.
-// When per-owner policy exists, it merges allowed roots; otherwise returns
-// the global policy. Returns nil when workspace policy is disabled.
+// GetWorkspacePolicy returns the WorkspacePolicy that applies to ownerID.
+//
+// audit O3 (2026-11-04): PerOwner was declared by the tier-gated design and then
+// ignored, so every owner received the global roots and the per-tenant half of
+// TIER_GATED_WORKSPACE_SCOPE_DESIGN §3.6 never applied to anything. The merge may
+// only narrow. Consumers read an empty AllowedRoots as "no whitelist → allow"
+// (core/scheduler_submit.go:976), so an override is honoured root-by-root, and a
+// root that escapes the global list is dropped rather than becoming the whole
+// list. When the global list is empty the override is itself the narrowing.
+// Returns nil when workspace policy is disabled.
 func (r *Registry) GetWorkspacePolicy(ownerID string) *WorkspacePolicyConfig {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 	if !r.System.WorkspacePolicy.Enabled {
 		return nil
 	}
-	// Return a copy so callers can't mutate the registry's config.
+	// Return a copy so callers can't mutate the registry's config. The struct
+	// copy alone shared the slice, so this copies the roots as well.
 	policy := r.System.WorkspacePolicy
+	policy.AllowedRoots = append([]string(nil), policy.AllowedRoots...)
+	if ownerID == "" {
+		return &policy // local / unattributed caller: global policy, unchanged
+	}
+	per, ok := policy.PerOwner[ownerID]
+	if !ok || len(per.AllowedRoots) == 0 {
+		return &policy
+	}
+	narrowed := make([]string, 0, len(per.AllowedRoots))
+	for _, root := range per.AllowedRoots {
+		if len(policy.AllowedRoots) == 0 || withinAnyRoot(policy.AllowedRoots, root) {
+			narrowed = append(narrowed, root)
+		}
+	}
+	if len(narrowed) > 0 {
+		policy.AllowedRoots = narrowed
+	}
+	// Other owners' overrides are not this caller's business.
+	policy.PerOwner = nil
 	return &policy
+}
+
+// withinAnyRoot reports whether root is one of allowed or sits below it.
+// Same containment rule as validateWorkspaceScope, so an override can never
+// authorise a path the global list would not.
+func withinAnyRoot(allowed []string, root string) bool {
+	cleanRoot := filepath.Clean(root)
+	for _, a := range allowed {
+		cleanAllowed := filepath.Clean(a)
+		if cleanRoot == cleanAllowed ||
+			strings.HasPrefix(cleanRoot, cleanAllowed+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }

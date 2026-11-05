@@ -689,6 +689,11 @@ type SystemSettings struct {
 	// agent loop. 0 = default 2048. (ADDED 2026-10-28: previously hardcoded
 	// to 2048 with no config wiring — harness-bench report §4.1.)
 	ChatMaxOutputTokens int `json:"chat_max_output_tokens,omitempty"`
+	// ChatMaxTurns caps the tool-turn budget of the chat agent loop alone.
+	// 0 = fall back to max_tool_turns, then to chat.DefaultMaxTurns (50).
+	// Added 2026-11-04: max_tool_turns is the DAG step loop's knob, and sharing
+	// it meant a DAG-side change silently re-cut the chat budget.
+	ChatMaxTurns int `json:"chat_max_turns,omitempty"`
 	// ReadinessGateSoft softens the delegation readiness gate language from
 	// "NEVER blindly delegate" to a suggestion. Set true for weak models (≤7B)
 	// that over-apply the hard rule and ask excessive clarifying questions

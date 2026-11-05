@@ -763,6 +763,18 @@ func (r *Registry) applySystemDefaults() {
 		r.System.DelegationMode = (v == "true" || v == "1")
 	}
 
+	// Delegation mode assumes no provider is available — suppress role
+	// generation that would attempt a provider.Complete() call.
+	// LogInterceptor (builtin_interceptors.go) runs BEFORE tryDelegationMode
+	// and checks EnableEphemeralRoleGen/EnableDynamicRoleGen to decide
+	// whether to call the provider for missing roles. Without this suppression,
+	// a step without an existing role_id triggers a Gemini call even in
+	// delegation mode, violating the zero-outcall contract.
+	if r.System.DelegationMode {
+		r.EnableEphemeralRoleGen = false
+		r.EnableDynamicRoleGen = false
+	}
+
 	// MemoryBankEnabled env override (ADDED 2026-10-17).
 	// Env var takes precedence over config.json. Unset = use config value.
 	if v := os.Getenv("VORTEX_MEMORY_BANK_ENABLED"); v != "" {
