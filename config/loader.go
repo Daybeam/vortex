@@ -196,6 +196,26 @@ func sortedSystemKeys() []string {
 	return keys
 }
 
+// warnNonDeclarativeExitCriteria makes the Q2-4 contract visible at load time:
+// SOP criteria must be "regex:<pattern>", "file:<path>", or "json". Prose still
+// falls through to the legacy substring branch in verifyExitCriteria, so this
+// warning does not change what any existing SOP does — it tells the author which
+// steps have a criterion that is not a real gate.
+func warnNonDeclarativeExitCriteria(sop *schemas.SOP) {
+	var bad []string
+	for stepID, step := range sop.Steps {
+		if !schemas.ExitCriteriaIsDeclarative(step.ExitCriteria) {
+			bad = append(bad, fmt.Sprintf("%s=%q", stepID, step.ExitCriteria))
+		}
+	}
+	if len(bad) == 0 {
+		return
+	}
+	sort.Strings(bad)
+	log.Printf("WARN: config: SOP %q declares %d non-declarative exit_criteria (%s); only regex:<pattern>, file:<path>, and json are legal (Q2-4). Prose still runs the legacy substring check.",
+		sop.ID, len(bad), strings.Join(bad, ", "))
+}
+
 func (r *Registry) loadLocked() error {
 	data, err := os.ReadFile(r.configPath)
 	if err != nil {
@@ -331,6 +351,7 @@ func (r *Registry) loadLocked() error {
 		if s.ID == "" {
 			continue // FIX (2026-09-03): restored empty-ID skip, dropped during the loader.go split
 		}
+		warnNonDeclarativeExitCriteria(&s)
 		r.SOPs[s.ID] = &s
 		keepSOPs[s.ID] = true
 	}

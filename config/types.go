@@ -641,6 +641,11 @@ type SystemSettings struct {
 	// error. nil ⇒ default 30m; *0 (or negative) ⇒ never report. Seconds. Report
 	// only — it does NOT abort the step (Q4-6/O20; the O22 constraint).
 	DelegationAnswerTimeoutSeconds *int `json:"delegation_answer_timeout_seconds,omitempty"`
+	// DecisionStaleTimeoutSeconds is how long a step_failed decision may wait
+	// for a human before get_task_status/wait_task//tasks report it as stale.
+	// nil ⇒ default 24h; *0 (or negative) ⇒ never report. Seconds. Report only
+	// — the step stays failed and downstream stays blocked (Q5-5, O22).
+	DecisionStaleTimeoutSeconds *int `json:"decision_stale_timeout_seconds,omitempty"`
 	// NonInteractive enables unattended mode: when a step would block on a
 	// decision (step failure, low confidence, max-turns, autonomous abort),
 	// the engine auto-selects a conservative default instead of blocking
