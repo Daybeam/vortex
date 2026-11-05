@@ -224,7 +224,7 @@ func TestDelegationAnswerTimeout_NamesTheOldestOfMany(t *testing.T) {
 	if report == nil {
 		t.Fatal("two parked delegations reported nothing")
 	}
-	stale, ok := report["decisions"].([]StaleDelegation)
+	stale, ok := report["decisions"].([]StaleDecision)
 	if !ok || len(stale) != 2 {
 		t.Fatalf("decisions = %#v, want 2 entries", report["decisions"])
 	}
