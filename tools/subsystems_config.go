@@ -6,12 +6,45 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
+
+// systemUpdateFields is the whitelist config.update_system accepts. Anything
+// else is now a hard error; it used to fall through to an empty patch and an
+// {"ok":true,"message":"no changes"} reply, so a typo looked like a write.
+// Regression: tools/subsystems_update_system_test.go.
+var systemUpdateFields = []string{
+	"confidence_threshold", "max_decision_outcomes", "max_context_keep",
+	"default_jit_ttl", "swarm_fallback_delay", "staging_enabled",
+	"bookmarks", "external_interceptors", "swarm_mode_enabled",
+}
+
+// unknownSystemUpdateFields returns args' keys outside the whitelist, sorted.
+// _actor/_task_id are legal for direct Go callers: Invoke() strips every
+// _-prefixed key, then re-injects only _actor from the authenticated context
+// (audit O4), so _task_id reaches a handler only through a direct Go caller.
+func unknownSystemUpdateFields(args map[string]any) []string {
+	known := make(map[string]bool, len(systemUpdateFields)+2)
+	for _, f := range systemUpdateFields {
+		known[f] = true
+	}
+	known["_actor"] = true
+	known["_task_id"] = true
+	var unknown []string
+	for k := range args {
+		if !known[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
+}
 
 func registerConfigSubsystem(app *App) {
 	s := &Subsystem{
@@ -165,14 +198,12 @@ func registerConfigSubsystem(app *App) {
 		Name:        "update_system",
 		Description: "Update global system settings. Persists to config.json.",
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
-			var ops []config.PatchOp
-			fields := []string{
-				"confidence_threshold", "max_decision_outcomes", "max_context_keep",
-				"default_jit_ttl", "swarm_fallback_delay", "staging_enabled",
-				"bookmarks", "external_interceptors", "swarm_mode_enabled",
+			// A rejected call must not read back as a successful no-op write.
+			if unknown := unknownSystemUpdateFields(args); len(unknown) > 0 {
+				return nil, fmt.Errorf("update_system: unknown field(s) [%s]; accepted fields: [%s]", strings.Join(unknown, ", "), strings.Join(systemUpdateFields, ", "))
 			}
-
-			for _, f := range fields {
+			var ops []config.PatchOp
+			for _, f := range systemUpdateFields {
 				if v, ok := args[f]; ok {
 					val, _ := json.Marshal(v)
 					path := "/system/" + f

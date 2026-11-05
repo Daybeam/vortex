@@ -2,6 +2,7 @@ package tools
 
 import (
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -91,5 +92,72 @@ func TestRegisterTier1_HasSubmitDecision(t *testing.T) {
 
 	if _, ok := s.ListTools()["orchestrator_submit_decision"]; !ok {
 		t.Errorf("expected orchestrator_submit_decision to be present on the public tier (F26 design) -- if this changed intentionally, update this test")
+	}
+}
+
+// TestServerInstructionsAdmin_OnlyNamesRegisteredTools applies the same
+// "never advertise a tool the caller cannot see" invariant to the admin-tier
+// instructions. Only the advertised-subset direction is checked here: the admin
+// string documents how to drive the engine, not the whole surface, so naming
+// fewer than all 12 tools is legitimate.
+func TestServerInstructionsAdmin_OnlyNamesRegisteredTools(t *testing.T) {
+	s := server.NewMCPServer("test-admin", "0.0.0")
+	app := newTestApp(t)
+	app.InitArchive(t.TempDir())
+	t.Cleanup(app.StopArchive)
+	RegisterAll(s, app)
+	registered := s.ListTools()
+
+	for _, name := range tierToolNameRe.FindAllString(ServerInstructions, -1) {
+		if name == "orchestrator_mcp" { // serverInfo name, not a tool
+			continue
+		}
+		if _, ok := registered[name]; !ok {
+			t.Errorf("ServerInstructions advertises %q but RegisterAll does not register it", name)
+		}
+	}
+}
+
+// tierToolNameRe matches a tool identifier as the instruction strings spell them.
+var tierToolNameRe = regexp.MustCompile(`orchestrator_[a-z0-9_]+`)
+
+// TestServerInstructionsPublic_MatchesTier1ToolSet checks the invariant stated
+// in server_instructions.go's own comment -- "referencing a tool the caller
+// cannot see is confusing at best and at worst invites a failed call to a
+// nonexistent tool" -- in both directions.
+// Regression (found 2026-11-03 while reconciling the documented tool surface
+// against tools/list): the public instructions advertised
+// orchestrator_analyze_task, a name that has never been registered anywhere in
+// this module, and omitted orchestrator_context_search, which RegisterTier1
+// does register. A public client following the instructions would call a tool
+// that does not exist and never discover one that does.
+func TestServerInstructionsPublic_MatchesTier1ToolSet(t *testing.T) {
+	s := server.NewMCPServer("test-public", "0.0.0")
+	app := newTestApp(t)
+	// orchestrator_context_search only registers when app.Archive is wired
+	// (tools_task.go:634), which every main_*.go does via InitArchive. Without
+	// it the fixture would serve a smaller tool set than production.
+	app.InitArchive(t.TempDir())
+	t.Cleanup(app.StopArchive)
+	RegisterTier1(s, app)
+	registered := s.ListTools()
+
+	mentioned := map[string]bool{}
+	for _, name := range tierToolNameRe.FindAllString(ServerInstructionsPublic, -1) {
+		if name == "orchestrator_mcp" { // serverInfo name, not a tool
+			continue
+		}
+		mentioned[name] = true
+	}
+
+	for name := range mentioned {
+		if _, ok := registered[name]; !ok {
+			t.Errorf("ServerInstructionsPublic advertises %q but RegisterTier1 does not register it -- public clients will call a tool that does not exist", name)
+		}
+	}
+	for name := range registered {
+		if !mentioned[name] {
+			t.Errorf("RegisterTier1 registers %q but ServerInstructionsPublic never mentions it -- callers have no reason to reach for it", name)
+		}
 	}
 }

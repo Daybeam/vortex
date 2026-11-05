@@ -42,7 +42,7 @@ Decision Rules:
 Capability Awareness:
 The orchestrator itself does not provide domain-specific capabilities. It relies on the configured roles and MCP servers in the current environment (see orchestrator_submit_task description for the active list). If a required capability is missing, adapt your execution plan instead of assuming unsupported functionality.
 
-After submitting, use orchestrator_wait_task / orchestrator_get_task_status to check progress. If pending_decisions > 0 (the task is waiting for your input; status may show "running" not "blocked"), call orchestrator_submit_decision (fulfill|skip|abort|retry, or admin-only retry_with_skill:ID|create_skill) to unblock it. Use view="full" to see decision prompts.`
+After submitting, use orchestrator_wait_task / orchestrator_get_task_status to check progress. If pending_decisions > 0 (the task is waiting for your input; status may show "running" not "blocked"), call orchestrator_submit_decision (fulfill|skip|abort|retry, or admin-only retry_with_skill:ID|create_skill) to unblock it. Use view="full" to see decision prompts. Only fulfill may carry the output argument: pass an empty output for skip|abort|retry, because any non-empty output is routed to the delegation-only fulfill path (O17).`
 
 // ServerInstructionsPublic is the variant surfaced on the public/Tier1 MCP
 // server instance (VORTEX_PUBLIC_KEY). It intentionally omits any
@@ -60,7 +60,7 @@ After submitting, use orchestrator_wait_task / orchestrator_get_task_status to c
 // stop calling tools altogether and fabricate a "done" answer instead --
 // this is believed to be a significant contributor to the low tool-
 // utilization / premature-completion behavior observed with public clients.
-const ServerInstructionsPublic = `orchestrator_mcp delegates multi-step, tool-using work to a supervised sub-agent. You are connected via the public tier: only orchestrator_submit_task, orchestrator_wait_task, orchestrator_get_task_status, orchestrator_discover, orchestrator_analyze_task, orchestrator_get_logs, and orchestrator_submit_decision are available.
+const ServerInstructionsPublic = `orchestrator_mcp delegates multi-step, tool-using work to a supervised sub-agent. You are connected via the public tier: only orchestrator_submit_task, orchestrator_wait_task, orchestrator_get_task_status, orchestrator_discover, orchestrator_context_search, orchestrator_get_logs, and orchestrator_submit_decision are available.
 
 Core Philosophy: "Professional Roles for Professional Tasks"
 Use Orchestrator to prevent your system prompt from being cluttered with diverse domain knowledge. Delegating to specialized roles (software dev, research, etc.) keeps your context efficient and focused.

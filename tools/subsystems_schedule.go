@@ -121,15 +121,35 @@ func registerScheduleSubsystem(app *App) {
 		},
 	}
 
-	s.Actions["reload"] = Action{
-		Name:        "reload",
-		Description: "Reload configuration from disk and clear provider caches.",
+	// audit O6, decision Q4-2 (2026-11-04): this body clears provider caches and
+	// reloads the tool registry — it has never touched SStore, so a caller who
+	// edited schedules.json and invoked it got a green "ok" and stale cron rows.
+	// Renamed to what it does. The alternative, calling ScheduleStore.Reload here,
+	// was rejected on two measured grounds: Reload is merge-only (store/schedule.go:36
+	// requires len(list) > 0 and never clears the map, so deleted rows resurrect) and
+	// it holds ScheduleStore.Mu across up to 10s of backend I/O while the 30s scan
+	// ticker fires the same *schemas.Schedule pointers.
+	s.Actions["reload_registry"] = Action{
+		Name:        "reload_registry",
+		Description: "Clear provider caches and reload the tool registry from disk. Does NOT reload the schedule store — the previous name \"reload\" implied that it did.",
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			providers.ClearCache()
 			if err := app.Registry.Load(); err != nil {
 				return nil, fmt.Errorf("failed to reload registry: %w", err)
 			}
 			return map[string]any{"ok": true}, nil
+		},
+	}
+
+	// Tombstone: the old name must not degrade into "action not found", which
+	// reads as a typo, and must not keep answering ok while doing the wrong
+	// thing. Invoke checks the tier before running a handler, so this message
+	// reaches admins only.
+	s.Actions["reload"] = Action{
+		Name:        "reload",
+		Description: "Removed — renamed to `reload_registry` (register O6). This action never reloaded the schedule store.",
+		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			return nil, fmt.Errorf(`schedule.reload was renamed to schedule.reload_registry: it clears provider caches and reloads the tool registry, and has never reloaded the schedule store (register O6). Use "reload_registry" for that behavior, or "config.reload" for the same body`)
 		},
 	}
 

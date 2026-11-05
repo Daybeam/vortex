@@ -3,6 +3,7 @@ package tools
 import (
 	"github.com/daybeam/vortex/core/capability"
 	"context"
+	"strings"
 	"testing"
 
 )
@@ -10,7 +11,8 @@ import (
 // Security regression tests for the discovery subsystem.
 //
 // These tests pin the fixes for the security audit (2026-10-21):
-//   1. Invoke strips _-prefixed args (prevents _is_admin/_role_id injection)
+//   1. Invoke strips _-prefixed args (prevents _is_admin/_role_id injection);
+//      the one exception is the server-injected _actor (audit O4, 2026-11-04)
 //   2. ParseScope rejects role:<id> for non-admin non-self callers
 //   3. Discover handler does not silently escalate self→pool for type=roles
 
@@ -18,6 +20,11 @@ import (
 // strips all keys starting with "_" from args before passing to the handler.
 // This prevents callers from injecting _is_admin, _role_id, or any other
 // internal injection point.
+//
+// audit O4 (2026-11-04) added one server-injected key, so the invariant is now
+// "no *caller-controlled* _-prefixed key reaches a handler": _actor may appear,
+// and only ever with the value resolved from the context. Both halves are
+// pinned below, so the injection cannot be quietly widened later.
 func TestInvoke_StripsUnderscorePrefixedArgs(t *testing.T) {
 	const sub = "secprobe_strip"
 	var receivedArgs map[string]any
@@ -36,21 +43,23 @@ func TestInvoke_StripsUnderscorePrefixedArgs(t *testing.T) {
 	})
 
 	app := &App{}
-	ctx := context.WithValue(context.Background(), AuthTierKey, TierAdmin)
-
-	_, err := registry.Invoke(ctx, app, sub, "probe", map[string]any{
+	forged := map[string]any{
 		"normal_param": "visible",
 		"_is_admin":    true,
 		"_role_id":     "admin_role",
 		"_secret":      "should_be_stripped",
-	})
-	if err != nil {
-		t.Fatalf("Invoke failed: %v", err)
+		"_actor":       "attacker-chosen",
 	}
 
-	// Verify _-prefixed keys were stripped
+	// Case 1: admin with no owner and no client session, so the server has no
+	// identity to attribute -- nothing may be injected, and every _-prefixed key
+	// must be gone.
+	ctx := context.WithValue(context.Background(), AuthTierKey, TierAdmin)
+	if _, err := registry.Invoke(ctx, app, sub, "probe", forged); err != nil {
+		t.Fatalf("Invoke failed: %v", err)
+	}
 	for k := range receivedArgs {
-		if len(k) > 0 && k[0] == '_' {
+		if strings.HasPrefix(k, "_") {
 			t.Errorf("SECURITY: _-prefixed key %q leaked into handler args", k)
 		}
 	}
@@ -58,6 +67,21 @@ func TestInvoke_StripsUnderscorePrefixedArgs(t *testing.T) {
 	// Verify normal params survived
 	if receivedArgs["normal_param"] != "visible" {
 		t.Errorf("normal param was stripped: %v", receivedArgs)
+	}
+
+	// Case 2: the same forged body from a caller the server *can* identify. The
+	// only surviving _-key must be _actor, and it must carry the context value,
+	// not the caller's.
+	if _, err := registry.Invoke(context.WithValue(ctx, AuthOwnerKey, "tenant-a"), app, sub, "probe", forged); err != nil {
+		t.Fatalf("Invoke with owner: %v", err)
+	}
+	if got := receivedArgs["_actor"]; got != "tenant-a" {
+		t.Errorf("SECURITY: _actor = %v, want the context identity %q", got, "tenant-a")
+	}
+	for k := range receivedArgs {
+		if strings.HasPrefix(k, "_") && k != "_actor" {
+			t.Errorf("SECURITY: caller-controlled _-prefixed key %q reached the handler", k)
+		}
 	}
 }
 
