@@ -419,7 +419,10 @@ func (es *ExperienceStore) updateStatePotentialsLocked(ctx context.Context, rec 
 	}
 	// audit P-C1: single goroutine saves all state potentials sequentially
 	// (SQLite is single-writer anyway) — replaces N goroutines with 1.
-	if len(toSave) > 0 {
+	// audit M5: debounce via stateSaveInFlight — if a save is already in
+	// flight, skip; the next PersistAll will pick up all accumulated
+	// changes from memory. Same pattern as persistInFlight.
+	if len(toSave) > 0 && es.stateSaveInFlight.CompareAndSwap(false, true) {
 		es.saveWg.Add(1)
 		go func(pots []*StatePotential) {
 			defer func() {
@@ -428,6 +431,7 @@ func (es *ExperienceStore) updateStatePotentialsLocked(ctx context.Context, rec 
 				}
 			}()
 			defer es.saveWg.Done()
+			defer es.stateSaveInFlight.Store(false)
 			// audit C-HIGH-4: detached context with timeout — prevents silent
 			// data loss when caller's ctx is cancelled (e.g., HTTP timeout).
 			// Same pattern as audit C-14 fix for persist goroutine.

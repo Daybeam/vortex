@@ -205,6 +205,13 @@ type ExperienceStore struct {
 	// persist will pick up all accumulated changes.
 	persistInFlight atomic.Bool
 
+	// stateSaveInFlight prevents unbounded goroutine spawn from
+	// updateStatePotentialsLocked's fire-and-forget DB save. If a save
+	// is already running, the next one is skipped — the subsequent
+	// persist (PersistAll) will pick up all accumulated changes from
+	// memory. Same debounce pattern as persistInFlight (audit M5).
+	stateSaveInFlight atomic.Bool
+
 	// saveWg tracks fire-and-forget DB save goroutines (StatePotential,
 	// Cooccurrence) so shutdown can wait for them to drain before closing
 	// the backend (audit H10).

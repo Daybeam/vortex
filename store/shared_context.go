@@ -54,7 +54,7 @@ type SharedContextEntry struct {
 // Persistence: JSONL file at {dir}/{taskID}.jsonl. Each WriteEntry appends
 // one line. Reads parse the full file and return the requested subset.
 type SharedContext struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	dir    string // persistence directory
 	taskID string // scoping key; filename is {taskID}.jsonl
 	seq    int64  // in-memory sequence counter for entry IDs
@@ -84,9 +84,11 @@ func (sc *SharedContext) filePath() string {
 // WriteEntry appends a new entry to the shared context. The entry's ID and
 // CreatedAt are auto-filled if zero. Returns the written entry (with ID set).
 func (sc *SharedContext) WriteEntry(entry *SharedContextEntry) (*SharedContextEntry, error) {
+	// audit M7 (2026-11-05): formerly held mu.Lock across json.Marshal +
+	// os.OpenFile + f.Write. The lock only protects sc.seq (the sequence
+	// counter). Narrow the lock to just the seq increment + ID assignment,
+	// then marshal + file I/O outside the lock.
 	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
 	sc.seq++
 	if entry.ID == "" {
 		entry.ID = fmt.Sprintf("ctx_%s_%d", sc.taskID, sc.seq)
@@ -95,6 +97,7 @@ func (sc *SharedContext) WriteEntry(entry *SharedContextEntry) (*SharedContextEn
 		entry.CreatedAt = time.Now().UTC()
 	}
 	entry.TaskID = sc.taskID
+	sc.mu.Unlock()
 
 	path := sc.filePath()
 	if path == "" {
@@ -154,8 +157,12 @@ func (sc *SharedContext) ReadRecent(limit int, typeFilter ContextEntryType) ([]*
 
 // ReadAll returns all entries in chronological order (oldest first).
 func (sc *SharedContext) ReadAll() ([]*SharedContextEntry, error) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
+	// audit H5: ReadAll only reads the append-only JSONL file (no shared
+	// mutable state besides seq, which is written only under Lock). Use RLock
+	// so concurrent readers don't block each other; was Lock, serializing
+	// every read behind the writer.
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
 
 	path := sc.filePath()
 	if path == "" {
