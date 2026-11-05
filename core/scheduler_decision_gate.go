@@ -91,6 +91,10 @@ func (s *DirectedEngine) addDecision(
 	ctx map[string]any,
 	options []string,
 ) {
+	// audit L8 (2026-11-05): nil guard — step is required (dereferenced below).
+	if graph == nil || step == nil {
+		return
+	}
 	// Inject available models for dynamic escalation (MADMDE)
 	if ctx == nil {
 		ctx = make(map[string]any)
@@ -98,7 +102,6 @@ func (s *DirectedEngine) addDecision(
 	if s.registry != nil {
 		ctx["available_models"] = s.registry.GetHealthyModelsSummary()
 	}
-
 	// [CORE: DAG Surgery Option Injection] (2026-09-07)
 	// When the decision type is upstream_insufficient or step_failed with
 	// context_deficit, add "rewrite_dag" as a valid option for the external
@@ -138,10 +141,7 @@ func (s *DirectedEngine) addDecision(
 	for k := range graph.GlobalWorkspace {
 		workspaceKeys = append(workspaceKeys, k)
 	}
-	resultRef := ""
-	if step != nil {
-		resultRef = step.ResultRef
-	}
+	resultRef := step.ResultRef
 	s.Mu.RUnlock()
 	options = filterOptionsForTier(consecutiveSkips, maxSkips, ctx, options, graph != nil && graph.SubmitterIsAdmin)
 
@@ -409,13 +409,55 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 			return opt, true
 		}
 	}
-	// Fuzzy: response contains the option as a substring.
+	// Fuzzy (audit M2, 2026-11-05): response contains the option as a whole
+	// word. The former strings.Contains check matched "skip" inside "skipping",
+	// so a decider text like "I recommend abort because skipping would lose
+	// progress" returned "skip" (iteration order, not decider intent). Use
+	// word-boundary matching and prefer the longest matching option so the
+	// most specific choice wins when several options appear as whole words.
+	var bestMatch string
 	for _, opt := range options {
-		if strings.Contains(text, strings.ToLower(opt)) {
-			return opt, true
+		lo := strings.ToLower(opt)
+		if containsWord(text, lo) && len(lo) > len(bestMatch) {
+			bestMatch = opt
 		}
 	}
+	if bestMatch != "" {
+		return bestMatch, true
+	}
 	return "", false
+}
+
+// containsWord reports whether s contains word as a whole word (bounded by
+// non-word characters or string edges). Both inputs must be lowercased.
+// audit M2: replaces strings.Contains in the decider fuzzy fallback so option
+// substrings embedded in larger words (e.g. "skip" in "skipping") don't match.
+func containsWord(s, word string) bool {
+	if word == "" {
+		return false
+	}
+	idx := 0
+	for idx <= len(s)-len(word) {
+		i := strings.Index(s[idx:], word)
+		if i < 0 {
+			return false
+		}
+		start := idx + i
+		end := start + len(word)
+		leftBoundary := start == 0 || !isWordChar(s[start-1])
+		rightBoundary := end == len(s) || !isWordChar(s[end])
+		if leftBoundary && rightBoundary {
+			return true
+		}
+		idx = end
+	}
+	return false
+}
+
+// isWordChar reports whether b is a word character (alnum or underscore), the
+// set excluded from word boundaries by containsWord.
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 // askSystemOneForDecision is stubbed in the open core (no System One provider).

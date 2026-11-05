@@ -71,6 +71,16 @@ type DirectedEngine struct {
 	// step lifecycle marshal overhead. sync.Map for lock-free access.
 	lastPersistAt sync.Map
 
+	// The graph persist fence (register O33, decision Q2-2). Semantics and its
+	// two known limits are in core/scheduler_fence.go.
+	fenceOwner string
+	fences     sync.Map // taskID → graphFence: the token this process last claimed
+	// fenceCancels holds each executor's own cancel func so losing the fence can
+	// stop the goroutine, not only its writes (a muted executor still burns
+	// tokens and still fires external MCP calls).
+	fenceCancels sync.Map // taskID → context.CancelFunc
+	fenceBroken  sync.Map // taskID → struct{}: sticky refuse, cleared only by a fresh claim
+
 	spawner        *Spawner
 	jit            *jit.JITManager
 	taskStore      store.ITaskStore
@@ -219,6 +229,7 @@ func NewDirectedEngine(
 		cancelFuncs:         make(map[string]context.CancelFunc),
 		doneChans:           make(map[string]chan struct{}),
 		stepWGs:             make(map[string]*sync.WaitGroup),
+		fenceOwner:          fenceOwnerToken(),
 		spawner:             NewSpawner(reg, ts, es, logger, loader, outputBase),
 		jit:                 jit,
 		taskStore:           ts,
@@ -235,9 +246,9 @@ func NewDirectedEngine(
 		budgetSentinel:      NewBudgetSentinel(),
 		pathLocks:           NewPathLockManager(),
 		drafts:              NewDraftStore(),
- 		hashCache:           make(map[string]string),
- 		maxHashCacheEntries: defaultMaxHashCacheEntries,
- 		UseSwarm:            os.Getenv("ACAIS_MODE") == "1",
+		hashCache:           make(map[string]string),
+		maxHashCacheEntries: defaultMaxHashCacheEntries,
+		UseSwarm:            os.Getenv("ACAIS_MODE") == "1",
  		notifyChan:          make(chan struct{}),
  		recentDecisions:     make(map[string]time.Time),
 	}
@@ -492,11 +503,25 @@ func (s *DirectedEngine) goBackground(fn func()) {
 // fix-propagation gap where a new site forgets the UseSwarm branch.
 // (audit L-N9: third recurrence of this bug class; L-7.1 → L-N5/N6/N1/N4 → L-N9)
 func (s *DirectedEngine) startGraphExecutor(ctx context.Context, taskID string) {
+	// Q2-2 (register O33): the executor runs under its own child context so that
+	// losing the fence can cancel this executor rather than only muting its writes
+	// — run() returns on ctx.Done() and executeStep/Spawner.Spawn take this same
+	// ctx, so the loser stops spending tokens and stops firing external MCP calls.
+	//
+	// No claim is written here. Stamping happens in persistGraph, with the manifest
+	// the claim protects; a token already on disk is not evidence of a live rival
+	// (crash resume would break), and a background write from this goroutine races
+	// whoever owns the directory — see stampFence.
+	runCtx, cancel := context.WithCancel(ctx)
+	s.fenceCancels.Store(taskID, cancel)
+	executor := s.swarmWatchdog
 	if !s.UseSwarm {
-		s.goBackground(func() { s.run(ctx, taskID) })
-	} else {
-		s.goBackground(func() { s.swarmWatchdog(ctx, taskID) })
+		executor = s.run
 	}
+	s.goBackground(func() {
+		defer cancel()
+		executor(runCtx, taskID)
+	})
 }
 
 func (s *DirectedEngine) Refresh() error {
@@ -621,6 +646,16 @@ func (s *DirectedEngine) detectReadDeps(graph *schemas.TaskGraph, stepID string,
 }
 
 func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
+	// Q2-2 (register O33): compare-before-write. A graph this process no longer
+	// holds means another engine adopted the same outputs/<taskID>, so manifest,
+	// artifacts and the ledger row all belong to that engine's view of reality.
+	// Refusing is not enough on its own — recordFenceLoss cancels the executor,
+	// which is what makes this a stop instead of a mute.
+	if !s.holdsFence(graph.TaskID) {
+		s.recordFenceLoss(graph.TaskID)
+		return
+	}
+
 	// H-5 (2026-10-04): Debounce — skip if the same graph was persisted
 	// < 200ms ago. Eliminates redundant persists at adjacent state
 	// transitions (e.g., scheduler_dag.go:147+162 are < 10ms apart).
@@ -681,6 +716,11 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 	if len(manifestData) > 0 {
 		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), manifestData, 0644); werr != nil {
 			log.Printf("WARN: persistGraph: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
+		} else {
+			// Q2-2: this is the stamp point — the claim is published with the state
+			// it protects, so a second engine driving the same directory finds a
+			// token to contend with (see stampFence for why not earlier).
+			s.stampFence(graph.TaskID)
 		}
 	}
 	if len(artifactsData) > 0 {
@@ -829,6 +869,7 @@ func (s *DirectedEngine) Clear(taskID string) error {
 	s.Mu.Lock()
 	delete(s.stepWGs, taskID)
 	s.Mu.Unlock()
+	s.dropFence(taskID)
 
 	// audit HIGH (2026-10-28): clear EffectTracker — Clear is the catch-all
 	// terminal path, so ensure cleanup even if finalize/cancel was missed.
@@ -883,6 +924,7 @@ func (s *DirectedEngine) evictTerminalGraphs(ctx context.Context) {
 				delete(s.cancelFuncs, taskID)
 				delete(s.doneChans, taskID)
 				delete(s.stepWGs, taskID) // L-7.3
+				s.dropFence(taskID)
 			}
 		}
 		s.Mu.Unlock()

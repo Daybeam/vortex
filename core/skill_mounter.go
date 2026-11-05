@@ -150,6 +150,17 @@ func ActivateTopSkills(reg *config.Registry, candidates []capability.DiscoveryCa
 		if !ok {
 			continue
 		}
+		// Mount point for dead-reference defense: a JIT tool expires while its
+		// /skills entry persists. Discovery already filters these, but this is
+		// where a dead id would otherwise become prompt text. reg.Mu is held
+		// here, so read the MCP maps directly rather than calling GetMCP.
+		if strings.HasPrefix(c.ID, "jit_") {
+			_, static := reg.MCPs[c.ID]
+			_, dynamic := reg.DynamicMCPs[c.ID]
+			if !static && !dynamic {
+				continue
+			}
+		}
 		mounter := &SkillMounter{}
 		fragment := mounter.Activate(sk)
 		if fragment == "" {

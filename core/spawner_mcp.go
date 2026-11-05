@@ -318,6 +318,11 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 			continue
 		}
 		desc, _ := t["description"].(string)
+		// Sanitize invisible Unicode (TAG block, zero-width, control) from
+		// external MCP tool metadata to prevent hidden prompt injection
+		// (arXiv:2607.05744v1, MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.2).
+		name = sanitizeMCPToolField(name, mcp.ID, "name")
+		desc = sanitizeMCPToolField(desc, mcp.ID, "description")
 		def := schemas.ToolDefinition{
 			Name:        name,
 			Description: desc,

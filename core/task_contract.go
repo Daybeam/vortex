@@ -113,30 +113,43 @@ func backtickedTokens(s string) []string {
 	}
 }
 
-// WorkspaceArtifactsComplete counts how many declared artifacts exist under
-// root.
+// MissingArtifacts returns the declared names that are not on disk, in
+// declaration order.
 //
 // It stats, it does not read: presence is the only question here, and deciding
 // whether a CSV's *contents* are good would put a second, worse grader inside
 // the engine. A zero-byte file counts as present — it is a real failure mode,
 // but a different one, and the scorer already judges it.
 //
-// Names that would escape root are counted as missing rather than followed.
-// The contract comes from task text, which on a hostile input is untrusted.
-func WorkspaceArtifactsComplete(root string, declared []string) (present, missing int) {
+// The name is resolved strictly against root (see resolveArtifactPath): a task
+// that declared `x.md` and got `<root>/workspace/x.md` is reported missing.
+// That is the signal the delegation receipt needs, and it must NOT be softened
+// into a recursive search — finding the file somewhere else turns a silent
+// misplacement into a "looks complete".
+func MissingArtifacts(root string, declared []string) []string {
+	var missing []string
+	// Names that would escape root are counted as missing rather than followed.
+	// The contract comes from task text, which on a hostile input is untrusted.
 	for _, rel := range declared {
 		path, ok := resolveArtifactPath(root, rel)
 		if !ok {
-			missing++
+			missing = append(missing, rel)
 			continue
 		}
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			present++
 			continue
 		}
-		missing++
+		missing = append(missing, rel)
 	}
-	return present, missing
+	return missing
+}
+
+// WorkspaceArtifactsComplete counts how many declared artifacts exist under
+// root. Thin wrapper over MissingArtifacts so the presence rule has exactly one
+// implementation (→131: a second copy would drift).
+func WorkspaceArtifactsComplete(root string, declared []string) (present, missing int) {
+	absent := MissingArtifacts(root, declared)
+	return len(declared) - len(absent), len(absent)
 }
 
 // resolveArtifactPath maps a declared name onto root, refusing anything that

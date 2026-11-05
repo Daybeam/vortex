@@ -118,10 +118,18 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	if err := os.MkdirAll(outDir, 0755); err != nil { // audit L-3.1: log MkdirAll failure
 		log.Printf("WARN: finalizeDecision: failed to create output dir %s: %v", outDir, err)
 	}
-	manifest := graph.ToStatusDict()
-	if data, err := json.Marshal(manifest); err == nil { // P-1.8: compact marshal on hot path
-		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {
-			log.Printf("WARN: finalizeDecision: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
+	// Q2-2 (register O33): this is the second writer of manifest.json — it marshals
+	// graph.ToStatusDict(), not the graph — so it needs the same compare-before-write
+	// as persistGraph. Without it, a loser finalizing a decision would overwrite the
+	// holder's manifest with its own view of the steps.
+	if !s.holdsFence(graph.TaskID) {
+		s.recordFenceLoss(graph.TaskID)
+	} else {
+		manifest := graph.ToStatusDict()
+		if data, err := json.Marshal(manifest); err == nil { // P-1.8: compact marshal on hot path
+			if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {
+				log.Printf("WARN: finalizeDecision: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
+			}
 		}
 	}
 

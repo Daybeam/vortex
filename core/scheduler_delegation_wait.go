@@ -59,6 +59,11 @@ type ExecutionHint struct {
 // approach — see design doc §4.1 for the rationale vs. changing Submit's signature.
 func (s *DirectedEngine) FirstDelegations(ctx context.Context, taskID string, timeout time.Duration) ([]DelegationView, bool) {
 	deadline := time.Now().Add(timeout)
+	// audit P-8-sibling (L1): use NewTimer+Stop to avoid time.After timer
+	// leak on each iteration of this busy-wait loop. Matches the pattern in
+	// scheduler_dag.go:227 and schedule_manager.go:315.
+	timer := time.NewTimer(50 * time.Millisecond)
+	defer timer.Stop()
 	for {
 		if ctx.Err() != nil {
 			return nil, false
@@ -78,10 +83,11 @@ func (s *DirectedEngine) FirstDelegations(ctx context.Context, taskID string, ti
 		if time.Now().After(deadline) {
 			return nil, false
 		}
+		timer.Reset(50 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			return nil, false
-		case <-time.After(50 * time.Millisecond):
+		case <-timer.C:
 		}
 	}
 }

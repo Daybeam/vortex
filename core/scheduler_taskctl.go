@@ -48,6 +48,20 @@ func (s *DirectedEngine) CancelTask(taskID string) error {
 	return nil
 }
 
+// MarkTaskAborted sets the ledger row to a terminal status without touching the
+// in-memory graph. 'aborted' is ledger-only (GraphStatus has no counterpart) and
+// is already in the compactor's terminal set; it says "a human discarded this",
+// which is why it is not 'failed'.
+func (s *DirectedEngine) MarkTaskAborted(taskID string) error {
+	if taskID == "" {
+		return fmt.Errorf("MarkTaskAborted: task ID required")
+	}
+	if s.TaskRegistry == nil {
+		return fmt.Errorf("MarkTaskAborted: no task registry, ledger row for %q left as-is", taskID)
+	}
+	return s.TaskRegistry.UpdateTaskStatus(s.lifecycleCtx, taskID, "aborted")
+}
+
 // SuspendTask pauses a running task by cancelling its execution context and
 // transitioning the graph to GraphSuspended. Unlike CancelTask, the task can
 // be resumed later via ResumeSuspendedTask. This is a Control Plane operation

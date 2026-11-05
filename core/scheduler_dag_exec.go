@@ -608,7 +608,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			requiredSchema = "json"
 		}
 
-		if valid, reason := s.sieve.InspectWithSystemOne(ctx, outputText, requiredSchema); !valid {
+		if valid, reason := s.guardStepOutput(ctx, result, outputText, requiredSchema); !valid {
 			s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 				"error":      "Sieve Guardian intercepted",
 				"reason":     reason,

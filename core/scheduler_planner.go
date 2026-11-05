@@ -95,7 +95,10 @@ Respond with ONE JSON object and nothing else. No prose, no markdown fences.
       "task": "<self-contained instruction for this step>",
       "depends_on": ["<id of a predecessor step>", ...],
       "allowed_tools": ["<exact tool name from the catalog below>", ...],
-      "exit_criteria": "<optional: 'regex:<pattern>' or 'file:<path>' or empty>"
+      "exit_criteria": "<optional: 'regex:<pattern>' or 'file:<path>' or 'json' or empty>",
+      "deterministic_checks": [
+        { "type": "<one of file_exists|command_pass|plan_checkboxes|code_entities>", "params": { "<key>": "<value>" } }
+      ]
     }
   ]
 }
@@ -111,7 +114,12 @@ Hard rules — violating any of these makes the plan unusable and it will be dis
 6. Emit only work that is still pending. Never re-emit an already completed step.
 7. "allowed_tools" is the ONLY set of tools a step may call. If a step needs to
    authenticate first, the login tool must be listed too.
-8. No reasoning preamble. Do NOT open with a <thought> block, an analysis, or a
+8. "deterministic_checks" is optional. When present, "type" MUST be exactly one
+   of file_exists (params: path), command_pass (params: command),
+   plan_checkboxes, code_entities. A type outside that list is skipped silently,
+   which the engine then reads as a pass — never invent a type name. Prefer these
+   over prose criteria: they run before any model audit and cost no tokens.
+9. No reasoning preamble. Do NOT open with a <thought> block, an analysis, or a
    numbered outline. The first character of your answer must be "{" and the
    last must be "}".`
 

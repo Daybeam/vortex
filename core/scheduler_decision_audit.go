@@ -38,8 +38,11 @@ func compileRegexCache(pattern string) (*regexp.Regexp, error) {
 	if err != nil {
 		return nil, err
 	}
-	regexCache.Store(pattern, re)
-	return re, nil
+	// audit L7: LoadOrStore makes the check-then-act atomic. regexp.Compile
+	// is deterministic for a given pattern; this replaces the non-atomic
+	// Load-then-Store idiom. Returns the canonical cached instance.
+	actual, _ := regexCache.LoadOrStore(pattern, re)
+	return actual.(*regexp.Regexp), nil
 }
 
 // runCriticAudit runs a single VerifierModel audit pass on the given content.
@@ -120,7 +123,7 @@ Output ONLY the revised result, no explanations.`, step.Task, currentContent, cr
 }
 
 // executeDebateAndAudit runs the Proposer→Critic→Synthesizer debate loop.
-// Design ref: docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
+// Design ref: docs/completed/2026-09-14/CROSS_FAMILY_DEBATE_DESIGN.md
 // Hard-capped at 2 rounds. Budget-guarded by the existing BudgetGuard.
 func (s *DirectedEngine) executeDebateAndAudit(ctx context.Context, graph *schemas.TaskGraph, step *schemas.Step, result *SpawnResult) (bool, string, schemas.VerificationFailureType) {
 	// L-N16 (2026-10-04): Guard against nil result. Without this, the
@@ -295,7 +298,7 @@ func (s *DirectedEngine) verifyExitCriteria(ctx context.Context, graph *schemas.
 	if step.VerifierModel != "" {
 		// Cross-Family Debate (ADDED 2026-09-14): when EnableDebate is true,
 		// run the Proposer→Critic→Synthesizer loop instead of a single audit.
-		// See docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
+		// See docs/completed/2026-09-14/CROSS_FAMILY_DEBATE_DESIGN.md
 		if step.EnableDebate {
 			return s.executeDebateAndAudit(ctx, graph, step, result)
 		}
@@ -367,27 +370,9 @@ Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA`, step.Task, step.ExitC
 		}
 	}
 
-	// Case 4: JSON validation
+	// Case 4: JSON validation — the meaning of "json" is in verifyJSONCriterion.
 	if step.ExitCriteria == "json" {
-		var j any
-		if err := json.Unmarshal([]byte(content), &j); err != nil {
-			// Attempt truncation repair if LLM output was cut by max_tokens.
-			// This is a best-effort fallback — if the original parse failed
-			// but the repaired version succeeds, we accept it and log the
-			// event for observability.
-			if repaired, ok := jsonrepair.Repair(content); ok {
-				if err2 := json.Unmarshal([]byte(repaired), &j); err2 == nil {
-					s.logger.Log("EventJSONTruncationRepaired", graph.TaskID, step.ID, map[string]any{
-						"original_len":  len(content),
-						"repaired_len":  len(repaired),
-						"exit_criteria": step.ExitCriteria,
-					})
-					return true, "", schemas.FailureNone
-				}
-			}
-			return false, "output is not valid JSON", schemas.FailureSchemaViolation
-		}
-		return true, "", schemas.FailureNone
+		return s.verifyJSONCriterion(graph, step, output)
 	}
 
 	// Case 4: Substring matching (default)
@@ -395,6 +380,44 @@ Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA`, step.Task, step.ExitC
 		return false, fmt.Sprintf("output missing required keyword: %s", step.ExitCriteria), schemas.FailureLogicError
 	}
 
+	return true, "", schemas.FailureNone
+}
+
+// verifyJSONCriterion is what exit_criteria "json" asserts: the step's result
+// payload is JSON. output.Result is a map[string]any, so the %v rendering
+// verifyExitCriteria uses everywhere else is `map[k:v]` — which can never parse,
+// which made this branch unsatisfiable for every structured result (register O28).
+// A structured map is therefore JSON by construction; the only shape carrying raw
+// model text is the ParseOutput fallback {"raw": "<snippet>"} (schemas/output.go:370),
+// and that is where the check has teeth — and where truncation repair matters.
+// Shape validation proper belongs to OutputContract.TypeSchema, which SOPs do not
+// fill yet; "json" will not mean "matches a declared schema" until they do.
+func (s *DirectedEngine) verifyJSONCriterion(graph *schemas.TaskGraph, step *schemas.Step, output schemas.SubagentOutput) (bool, string, schemas.VerificationFailureType) {
+	rawText, isModelText := output.Result["raw"].(string)
+	if !isModelText {
+		if len(output.Result) == 0 {
+			return false, "output is not valid JSON", schemas.FailureSchemaViolation
+		}
+		return true, "", schemas.FailureNone
+	}
+	var j any
+	if err := json.Unmarshal([]byte(rawText), &j); err != nil {
+		// Attempt truncation repair if LLM output was cut by max_tokens.
+		// This is a best-effort fallback — if the original parse failed
+		// but the repaired version succeeds, we accept it and log the
+		// event for observability.
+		if repaired, ok := jsonrepair.Repair(rawText); ok {
+			if err2 := json.Unmarshal([]byte(repaired), &j); err2 == nil {
+				s.logger.Log("EventJSONTruncationRepaired", graph.TaskID, step.ID, map[string]any{
+					"original_len":  len(rawText),
+					"repaired_len":  len(repaired),
+					"exit_criteria": step.ExitCriteria,
+				})
+				return true, "", schemas.FailureNone
+			}
+		}
+		return false, "output is not valid JSON", schemas.FailureSchemaViolation
+	}
 	return true, "", schemas.FailureNone
 }
 
