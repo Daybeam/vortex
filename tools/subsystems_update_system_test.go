@@ -223,6 +223,38 @@ func TestUpdateSystem_WhitelistedFieldsRemainAccepted(t *testing.T) {
 	}
 }
 
+// TestUpdateSystem_DoesNotAcceptAPIKeys pins the deliberate asymmetry from the
+// O24-3 follow-up: named keys are writable only through the operator-facing
+// HTTP route (POST /api/config/update-system on adminMux), never through the
+// model-facing action, so a confused or compromised model cannot mint itself
+// an admin credential.
+func TestUpdateSystem_DoesNotAcceptAPIKeys(t *testing.T) {
+	reg, err := config.NewRegistry(filepath.Join(t.TempDir(), "config_test.json"))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	app := &App{Registry: reg}
+	RegisterSubsystems(app)
+
+	action, ok := findUpdateSystemAction()
+	if !ok {
+		t.Fatalf("update_system action not registered")
+	}
+
+	res, err := action.Handler(context.Background(), app, map[string]any{
+		"api_keys": []any{map[string]any{"key": "model-minted", "owner_id": "model", "tier": "admin"}},
+	})
+	if err == nil {
+		t.Fatalf("update_system accepted api_keys with %+v -- a model must not mint named keys", res)
+	}
+	if !strings.Contains(err.Error(), "api_keys") {
+		t.Errorf("error should name api_keys, got: %v", err)
+	}
+	if len(reg.System.APIKeys) != 0 {
+		t.Errorf("rejected call still wrote keys: %+v", reg.System.APIKeys)
+	}
+}
+
 // findUpdateSystemAction locates the registered update_system Action via
 // the package-level global `registry` (tools/subsystems.go), which is what
 // RegisterSubsystems actually populates -- not anything hung off App or

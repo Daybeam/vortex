@@ -87,9 +87,10 @@ func profilesOf(t *testing.T, out map[string]any) []store.ModelCapabilityProfile
 	return p
 }
 
-// TestCapabilityProfile_NotWiredSaysSo is the hub case (main.go runHub never
-// calls WireCapabilityRouting): the answer must distinguish "this process
-// records nothing" from "nothing has been recorded yet".
+// TestCapabilityProfile_NotWiredSaysSo is the no-DB case (an entrypoint that
+// leaves CapProfile nil when s.DB is nil): the answer must distinguish "this
+// process records nothing" from "nothing has been recorded yet". The hub wires
+// a store since B11 (O39), so this is no longer the default daemon's answer.
 func TestCapabilityProfile_NotWiredSaysSo(t *testing.T) {
 	app := newCapabilityProfileApp(t, false)
 	out := callProfileQuery(t, app, nil)
@@ -146,6 +147,27 @@ func TestCapabilityProfile_QueryShapes(t *testing.T) {
 		}
 		if got[0].SuccessRate != 3.0/9.0 {
 			t.Errorf("success_rate = %v, want the recorded 3/9", got[0].SuccessRate)
+		}
+	})
+
+	// Regression for B10-F1 (docs/plan/O_BATCH_REMEDIATION_2026-11-04.md, batch B10;
+	// found by the code_review_cycle SOP, 2026-11-05). Before the fix a capability-only
+	// query fell through the switch to GetAllProfiles, so the answer contained every
+	// model while the action's Description promised the filter narrows -- silently,
+	// with a profile_count that looked authoritative.
+	t.Run("by_capability_only", func(t *testing.T) {
+		out := callProfileQuery(t, app, map[string]any{"capability": "writes Go code"})
+		got := profilesOf(t, out)
+		if len(got) != 2 {
+			t.Fatalf("profiles = %d, want 2 (model-a and model-b both record this capability)", len(got))
+		}
+		for _, p := range got {
+			if p.Capability != "writes Go code" {
+				t.Errorf("leaked capability %q into a capability-only query", p.Capability)
+			}
+		}
+		if n, _ := out["profile_count"].(int); n != 2 {
+			t.Errorf("profile_count = %v, want 2 -- it must count the filtered set", out["profile_count"])
 		}
 	})
 

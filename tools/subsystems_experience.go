@@ -79,6 +79,17 @@ func registerExperienceSubsystem(app *App) {
 				}
 			case modelID != "":
 				profiles, err = app.CapProfile.GetProfilesForModel(ctx, modelID)
+			case capability != "":
+				// The store has no cross-model capability query, so narrow here:
+				// without this arm a capability-only call fell into default and
+				// returned every profile while the Description promises it narrows.
+				all, e := app.CapProfile.GetAllProfiles(ctx)
+				err = e
+				for _, p := range all {
+					if p.Capability == capability {
+						profiles = append(profiles, p)
+					}
+				}
 			default:
 				profiles, err = app.CapProfile.GetAllProfiles(ctx)
 			}

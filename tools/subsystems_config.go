@@ -46,6 +46,24 @@ func unknownSystemUpdateFields(args map[string]any) []string {
 	return unknown
 }
 
+// redactConfigForRead returns cfg as a JSON-shaped map with every secret
+// masked. audit O24-3: get_config is admitted for public-tier callers
+// (tier1AllowedActions) and used to mask only provider api_key.
+// config.RedactConfigSecrets owns the one list of secret-bearing fields,
+// shared with /api/config.
+func redactConfigForRead(cfg config.Config) (map[string]any, error) {
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var redacted map[string]any
+	if err := json.Unmarshal(encoded, &redacted); err != nil {
+		return nil, err
+	}
+	config.RedactConfigSecrets(redacted)
+	return redacted, nil
+}
+
 func registerConfigSubsystem(app *App) {
 	s := &Subsystem{
 		Name:        "config",
@@ -64,13 +82,6 @@ func registerConfigSubsystem(app *App) {
 			var cfg config.Config
 			if err := json.Unmarshal(raw, &cfg); err != nil {
 				return nil, err
-			}
-			// Mask API keys
-			for name, p := range cfg.Providers {
-				if p.APIKey != "" {
-					p.APIKey = "***configured***"
-					cfg.Providers[name] = p
-				}
 			}
 			// FIX (2026-06-25, re-applied 2026-06-28): cfg.Skills only reflects the main config skills array;
 			// not skills loaded from workspace/skills/ directory by Registry.Load.
@@ -112,7 +123,7 @@ func registerConfigSubsystem(app *App) {
 			cfg.MCPs = liveMCPs
 			cfg.RoleGroups = liveGroups
 			cfg.Roles = liveRoles
-			return cfg, nil
+			return redactConfigForRead(cfg)
 		},
 	}
 
