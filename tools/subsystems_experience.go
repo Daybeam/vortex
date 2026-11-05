@@ -3,6 +3,9 @@ package tools
 import (
 	"context"
 	"fmt"
+	"sort"
+
+	"github.com/daybeam/vortex/store"
 )
 
 func registerExperienceSubsystem(app *App) {
@@ -40,6 +43,54 @@ func registerExperienceSubsystem(app *App) {
 				"task_patterns": len(app.ExpStore.GetTaskPatternsSnapshot()),
 				"top_roles":     topRoles,
 			}, nil
+		},
+	}
+
+	// Q5-1 (register O7): every internal construction site writes this telemetry
+	// and NextPareto reads it, but there was no query face, so "what did the
+	// router learn" had no answer. Read-only, as the ruling asked.
+	s.Actions["get_capability_profile"] = Action{
+		Name: "get_capability_profile",
+		Description: "Read-only view of the routing telemetry recorded per (model, capability): runs, success rate, average turns, latency and token cost. " +
+			"Optional model_id and capability narrow the query; capability is matched exactly against the recorded string, which is the role's base_capability. " +
+			"theta reads 0 unless a batch recalculation ran -- Spawner.RecalculateThetas has no production caller, so 0 means 'never computed', not 'average ability'.",
+		Parameters: map[string]any{"model_id": "string (optional)", "capability": "string (optional, exact match)"},
+		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			if app.CapProfile == nil {
+				// An empty list here would read as "no runs recorded yet", which is a
+				// different fact: this process never wired the routing that records them.
+				return map[string]any{
+					"wired":  false,
+					"reason": "this process did not wire capability routing (it needs a SQLite DB), so it records no telemetry of its own",
+				}, nil
+			}
+			modelID := strArg(args, "model_id")
+			capability := strArg(args, "capability")
+			var (
+				profiles []store.ModelCapabilityProfile
+				err      error
+			)
+			switch {
+			case modelID != "" && capability != "":
+				p, e := app.CapProfile.GetProfile(ctx, modelID, capability)
+				err = e
+				if p != nil {
+					profiles = []store.ModelCapabilityProfile{*p}
+				}
+			case modelID != "":
+				profiles, err = app.CapProfile.GetProfilesForModel(ctx, modelID)
+			default:
+				profiles, err = app.CapProfile.GetAllProfiles(ctx)
+			}
+			if err != nil {
+				return nil, err
+			}
+			page, dropped := pageCapabilityProfiles(profiles, capabilityProfilePageLimit)
+			out := map[string]any{"wired": true, "profile_count": len(profiles), "profiles": page}
+			if dropped > 0 {
+				out["truncated"] = dropped
+			}
+			return out, nil
 		},
 	}
 
@@ -84,4 +135,17 @@ func registerExperienceSubsystem(app *App) {
 	}
 
 	registry.Register(s)
+}
+
+// capabilityProfilePageLimit bounds how many rows an unfiltered query can drop
+// into a caller's context. Ordering is most-runs-first, so the cap sheds the
+// least-evidenced profiles and the response says how many it shed.
+const capabilityProfilePageLimit = 50
+
+func pageCapabilityProfiles(profiles []store.ModelCapabilityProfile, limit int) ([]store.ModelCapabilityProfile, int) {
+	sort.Slice(profiles, func(i, j int) bool { return profiles[i].TotalRuns > profiles[j].TotalRuns })
+	if len(profiles) <= limit {
+		return profiles, 0
+	}
+	return profiles[:limit], len(profiles) - limit
 }

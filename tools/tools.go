@@ -158,6 +158,7 @@ type App struct {
 	IntentRouter      *core.IntentRouter
 	EmbedClient       core.EmbeddingClient
 	MemoryBankStore   *store.MemoryBankStore
+	CapProfile        *store.CapabilityProfileStore // same instance the spawner records routing telemetry into; nil = this process never wired it, which exp.get_capability_profile reports as "not wired" rather than an empty list (Q5-1 / O7)
 	Archive           *core.ContextArchive
 	Promoter          *Promoter // Optional usage-driven hot-promoter for invoke actions
 	SOPManager        *core.SOPManager

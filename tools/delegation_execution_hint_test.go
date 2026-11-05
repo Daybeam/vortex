@@ -41,7 +41,7 @@ func TestEnrichDelegationViews_SetsHintOnAll(t *testing.T) {
 		{StepID: "s2", DecisionID: "d2"},
 		{StepID: "s3", DecisionID: "d3"},
 	}
-	enrichDelegationViews(views, TierAdmin)
+	enrichDelegationViews(views, TierAdmin, nil)
 	for i, v := range views {
 		if v.ExecutionHint == nil {
 			t.Fatalf("views[%d].ExecutionHint = nil, want non-nil", i)

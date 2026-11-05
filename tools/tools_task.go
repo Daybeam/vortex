@@ -12,7 +12,6 @@ import (
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/core/jit"
-	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -63,6 +62,10 @@ func parseSessionSkills(v any) []*config.Skill {
 // (true) or SubmitDecisionWithPayload (false). T1: replan/create_role/
 // rewrite_dag/goal_change_requested carry structured payload and must go
 // through SubmitDecisionWithPayload even when output is non-empty.
+//
+// Since Q4-5 (2026-11-05) this is the FALLBACK rule, not the whole answer:
+// routeSubmitDecision (tools/submit_decision_route.go) consults it first and
+// then lets the parked decision's own type veto it.
 func shouldRouteToFulfill(choice, output string) bool {
 	return (choice == "fulfill" || output != "") && choice != "rewrite_dag" && choice != "replan" && choice != "create_role" && choice != "goal_change_requested"
 }
@@ -112,15 +115,48 @@ func delegationTierError(tier string) error {
 }
 
 // enrichDelegationViews fills in ExecutionHint on each DelegationView based on
-// the caller's tier. See DELEGATION_HANDOVER_REDESIGN.md §12.3 (P1).
+// the caller's declared capabilities (preferred) or tier (fallback).
+// See DELEGATION_HANDOVER_REDESIGN.md §12.3 (P1) and host-capability extension.
 //
-// Public tier is rejected at submit_task (delegationTierError), so only
-// admin/local callers reach here — they get "local_fs" (use
-// orchestrator_run_command with cwd = workspace.task_output_dir).
-func enrichDelegationViews(views []core.DelegationView, tier string) {
-	hint := executionHintForTier(tier)
+// When capabilities is non-empty, executionHintForCapabilities selects the mode.
+// When nil/empty, falls back to tier-based logic (backward compat).
+func enrichDelegationViews(views []core.DelegationView, tier string, capabilities []string) {
+	hint := executionHintForCapabilities(capabilities)
+	if hint == nil {
+		hint = executionHintForTier(tier)
+	}
 	for i := range views {
 		views[i].ExecutionHint = hint
+	}
+}
+
+// executionHintForCapabilities selects the best execution mode based on the
+// host's declared capabilities. Returns nil if no recognized capability is
+// present, signaling the caller to fall back to tier-based logic.
+//
+// Priority: acp > subagent_dispatch > local_fs > broker.
+// ACP takes priority because it forwards to a sandboxed endpoint without
+// leaking the full prompt to the host process.
+func executionHintForCapabilities(caps []string) *core.ExecutionHint {
+	has := func(c string) bool {
+		for _, x := range caps {
+			if x == c {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case has("acp"):
+		return &core.ExecutionHint{Mode: "acp", Note: "Forward to ACP endpoint using acp_hint"}
+	case has("subagent_dispatch"):
+		return &core.ExecutionHint{Mode: "subagent", Fallback: "local_fs", Note: "Dispatch to a subagent with the envelope prompt; fallback to orchestrator_run_command if unavailable"}
+	case has("local_fs"):
+		return &core.ExecutionHint{Mode: "local_fs", Note: "Use orchestrator_run_command with cwd = workspace.task_output_dir"}
+	case has("broker"):
+		return &core.ExecutionHint{Mode: "broker", Note: "Call orchestrator_call_tool for each tool in tool_definitions"}
+	default:
+		return nil
 	}
 }
 
@@ -173,6 +209,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithNumber("timeout", mcp.Description("Per-task timeout in seconds. Overrides the global default. 0 = use system default.")),
 		mcp.WithNumber("token_budget", mcp.Description("Per-task token budget cap. Overrides the global default. 0 = use system default.")),
 		mcp.WithAny("charter", mcp.Description("Optional Task Charter: {\"intent\": \"why\", \"non_goals\": [\"what not to do\"], \"constraints\": [\"what must hold\"]}. See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.")),
+		mcp.WithAny("host_capabilities", mcp.Description("Host execution capabilities. Array of strings. Recognized values: \"subagent_dispatch\" (host can spawn subagents), \"local_fs\" (host has filesystem access via orchestrator_run_command), \"acp\" (host can forward to ACP endpoint), \"broker\" (host can call orchestrator_call_tool). When provided, the delegation envelope's execution_hint.mode is selected based on these capabilities instead of the caller's tier.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, _ := req.Params.Arguments.(map[string]any)
 
@@ -198,6 +235,20 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		requestedRoot := strArg(args, "workspace_root")
 		timeoutSecs := intArg(args, "timeout", 0)
 		tokenBudget := int64Arg(args, "token_budget", 0)
+
+		// Host capability declaration: when provided, the delegation envelope's
+		// execution_hint.mode is selected from these capabilities instead of the
+		// caller's tier. Recognized values: subagent_dispatch, local_fs, acp, broker.
+		var hostCapabilities []string
+		if capsRaw, ok := args["host_capabilities"]; ok && capsRaw != nil {
+			if caps, ok := capsRaw.([]any); ok {
+				for _, c := range caps {
+					if s, ok := c.(string); ok {
+						hostCapabilities = append(hostCapabilities, s)
+					}
+				}
+			}
+		}
 
 		// Tier-Gated Workspace Scope (ADDED 2026-10-13):
 		// Public tier callers cannot escalate via workspace_root.
@@ -541,7 +592,7 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			}
 			delegations, found := app.Scheduler.FirstDelegations(ctx, id, delegationEnvelopeWait(app.Registry))
 			if found {
-				enrichDelegationViews(delegations, EffectiveTier(ctx, app))
+				enrichDelegationViews(delegations, EffectiveTier(ctx, app), hostCapabilities)
 				resp["delegations"] = delegations
 				resp["next_action"] = "submit_decision"
 				resp["pending_decision_count"] = len(delegations)
@@ -689,89 +740,14 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 	}
 
 	app.register(s, mcp.NewTool("orchestrator_submit_decision",
-		mcp.WithDescription("Respond to a blocked step decision. Choices: skip|abort|retry|refine_and_retry (public tier), retry_with_skill:ID|retry_with_context:TEXT|escalate_model:MODEL|create_skill|rewrite_dag|goal_change_requested (admin tier only). For rewrite_dag, pass surgery JSON in 'output' with deprecated_step_id and replacement_steps. For goal_change_requested, pass a TaskCharter JSON in 'output' with intent, non_goals, constraints. For delegation-required decisions, pass choice='fulfill' plus an 'output' JSON string containing the subagent/human result payload. Optionally attach 'human_approval' {enabled, evidence_text, evidence_ref} to log a human review trail."),
+		mcp.WithDescription("Respond to a blocked step decision. Choices: skip|abort|retry|refine_and_retry (public tier), retry_with_skill:ID|retry_with_context:TEXT|escalate_model:MODEL|create_skill|rewrite_dag|goal_change_requested (admin tier only). For rewrite_dag, pass surgery JSON in 'output' with deprecated_step_id and replacement_steps. For goal_change_requested, pass a TaskCharter JSON in 'output' with intent, non_goals, constraints. For delegation-required decisions, pass choice='fulfill' plus an 'output' JSON string containing the subagent/human result payload. The engine routes by the decision's type, read from decision_id: skip|abort|retry are answered payload-free, so an 'output' you send for one is dropped (the response says output_ignored) instead of being treated as a delegation hand-back. Optionally attach 'human_approval' {enabled, evidence_text, evidence_ref} to log a human review trail."),
 		mcp.WithString("task_id", mcp.Required()),
 		mcp.WithString("decision_id", mcp.Required()),
 		mcp.WithString("choice", mcp.Required()),
-		mcp.WithString("output", mcp.Description("Optional. Only used with choice='fulfill' or delegation decisions: the subagent/human result payload as a JSON string.")),
+		mcp.WithString("output", mcp.Description("Optional. The result payload for a delegation decision, with choice='fulfill'; for rewrite_dag/goal_change_requested the surgery/charter JSON. Send nothing for skip|abort|retry — a non-delegation decision ignores it (output_ignored).")),
 		mcp.WithObject("human_approval", mcp.Description("Optional. Attach a structured human-review trail. Fields: enabled (bool), evidence_text (string), evidence_ref (string, e.g. @session:... or a URL). All fields optional; only effective when provided.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		tid := strArg(req.Params.Arguments, "task_id")
-		if DenyIfNotOwner(ctx, app, tid) {
-			return errResult("not found")
-		}
-		did := strArg(req.Params.Arguments, "decision_id")
-		choice := strArg(req.Params.Arguments, "choice")
-		output := strArg(req.Params.Arguments, "output")
-
-		args := map[string]any{}
-		if req.Params.Arguments != nil {
-			for k, v := range req.Params.Arguments.(map[string]any) {
-				args[k] = v
-			}
-		}
-		humanApproval, _ := args["human_approval"].(map[string]any)
-		hasApproval := humanApproval != nil && len(humanApproval) > 0
-
-		// Public tier choice allowlist.
-		// T2: replan/create_role are open to public tier BUT public callers
-		// cannot inject payload — replan uses pre-computed planner plan,
-		// create_role uses GenerateRoleObjects.
-		if err := validateTierChoice(EffectiveTier(ctx, app), choice, output); err != nil {
-			return errResult(err.Error())
-		}
-
-		// Route: fulfill path if output provided, or if choice explicitly says "fulfill".
-		// T1: replan/create_role/rewrite_dag carry structured payload and must
-		// route through SubmitDecisionWithPayload, not FulfillStep.
-		if shouldRouteToFulfill(choice, output) {
-			if output == "" {
-				return errResult("choice='fulfill' or output payload requires 'output' field with the result JSON")
-			}
-			if err := app.Scheduler.FulfillStep(tid, did, output); err != nil {
-				return errResult(err.Error())
-			}
-		} else {
-			if err := app.Scheduler.SubmitDecisionWithPayload(tid, did, choice, output); err != nil {
-				return errResult(err.Error())
-			}
-		}
-
-		// Attach human approval evidence to the task log if provided.
-		// Non-blocking: logging failure does not fail the decision itself.
-		if hasApproval && app.Logger != nil {
-			evidenceText, _ := humanApproval["evidence_text"].(string)
-			evidenceRef, _ := humanApproval["evidence_ref"].(string)
-			enabled, _ := humanApproval["enabled"].(bool)
-			app.Logger.Log(obs.EventHumanApprovalAttached, tid, "", map[string]any{
-				"decision_id":   did,
-				"choice":        choice,
-				"enabled":       enabled,
-				"evidence_text": evidenceText,
-				"evidence_ref":  evidenceRef,
-			})
-		}
-		// Build response. §4.2 (DELEGATION_HANDOVER_REDESIGN.md): after FulfillStep
-		// succeeds in delegation mode, synchronously return the next batch of
-		// delegation envelopes so the host can continue without an extra
-		// wait_task poll. This reduces N-step round-trips from 1+2N to N+1.
-		resp := map[string]any{
-			"ok":             true,
-			"human_approval": hasApproval,
-		}
-		if shouldRouteToFulfill(choice, output) && app.Registry != nil && app.Registry.System.DelegationMode {
-			delegations, found := app.Scheduler.FirstDelegations(ctx, tid, delegationEnvelopeWait(app.Registry))
-			if found {
-				enrichDelegationViews(delegations, EffectiveTier(ctx, app))
-				resp["delegations"] = delegations
-				resp["next_action"] = "submit_decision"
-				resp["pending_decision_count"] = len(delegations)
-			} else {
-				resp["next_action"] = "get_task_status"
-				resp["view_hint"] = "full"
-			}
-		}
-		return jsonOK(resp)
+		return handleSubmitDecision(app, ctx, req)
 	})
 
 	app.register(s, mcp.NewTool("orchestrator_get_logs",

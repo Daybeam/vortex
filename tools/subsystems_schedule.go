@@ -76,11 +76,11 @@ func registerScheduleSubsystem(app *App) {
 				CreatedAt:  time.Now(),
 			}
 
-			// Initial NextRun calculation is handled by ScheduleManager.scan
-			// but we can set it now to be safe.
-			// We can't easily call ScheduleManager.calculateNextRun here due to circular deps
-			// (App -> ScheduleManager -> Scheduler -> App).
-			// Instead, we just set it to Now to trigger it on the next scan, or let scan handle it.
+			// Initial NextRun is left for ScheduleManager.scan to settle. The
+			// manager's own method is unreachable here (App -> ScheduleManager ->
+			// Scheduler -> App), which is why core exposes the pure
+			// ScheduleNextRunAfter instead — resume below uses it. Setting NextRun
+			// to Now for a new row is deliberate: it fires on the next scan.
 			sch.NextRun = time.Now()
 			if sch.Type == schemas.ScheduleOnce && sch.RunAt != nil {
 				sch.NextRun = *sch.RunAt
@@ -106,6 +106,11 @@ func registerScheduleSubsystem(app *App) {
 			return map[string]any{"ok": true}, nil
 		},
 	}
+
+	// audit O5, decision Q4-1 (2026-11-05): pause existed on MCP, resume did
+	// not, and a bare status flip would fire the catch-up run the pause was
+	// meant to prevent. Resume skips; reasoning in subsystem_schedule_resume.go.
+	s.Actions["resume"] = resumeAction()
 
 	s.Actions["delete"] = Action{
 		Name:        "delete",
