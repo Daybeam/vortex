@@ -7,14 +7,21 @@ import (
 
 // Regression test for O17 (docs/audit/unwired-code-register.md §O17).
 //
-// orchestrator_submit_decision routes on payload presence, not on decision type:
-// shouldRouteToFulfill (tools/tools_task.go:66-67) sends any call with a non-empty
+// orchestrator_submit_decision used to route on payload presence, not on decision
+// type: shouldRouteToFulfill (tools/tools_task.go) sent any call with a non-empty
 // `output` to FulfillStep, which is delegation-only. A host that answers a
 // step_failed decision with choice=abort and an empty JSON object therefore lands
 // here, and the old message — `decision "dec_x" is not a delegation` — named a
 // concept the caller had never mentioned. Reading only that error I recorded the
 // false finding "a step_failed decision can be parked but never answered"; the
 // same decision answered payload-free returned {"ok":true}.
+//
+// Q4-5 (2026-11-05) fixed the routing itself (tools/submit_decision_route.go
+// vetoes the payload rule with the decision's type), so this call shape no longer
+// reaches FulfillStep from the tool layer. The gate stays — it is the last line
+// for a direct FulfillStep caller (pkg/api's HTTP decision handler) and for an
+// explicit choice="fulfill" aimed at the wrong decision — so the message this
+// pins is still observable, and it is the fix's only other surface.
 //
 // The message is the fix's only observable surface, so it is what this pins: it
 // must name the decision's real type and the payload rule that actually applies.

@@ -518,7 +518,7 @@ func TestDiscoverTools_AllowedToolsNarrowing(t *testing.T) {
 	}
 }
 
-// Regression for docs/plan/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §7.6:
+// Regression for docs/completed/2026-11-05/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §7.6:
 // a JIT tool expires while its /skills entry persists. findskills must not
 // return the dead id — tier-1 counts a returned skill as capability-covered,
 // and the later GetSkill filter would drop it, silently leaving the gap open.

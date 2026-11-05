@@ -52,7 +52,7 @@ func TestMarkTaskAborted_WritesTerminalStatusLedgerOnly(t *testing.T) {
 	defer s.Stop()
 
 	reg := &abortedStatusRegistry{}
-	s.TaskRegistry = reg
+	s.SetTaskRegistry(reg)
 
 	graph := &schemas.TaskGraph{TaskID: "taskA", Status: schemas.GraphRunning}
 	s.RegisterGraphForTest(graph)
@@ -79,7 +79,7 @@ func TestMarkTaskAborted_WritesTerminalStatusLedgerOnly(t *testing.T) {
 func TestMarkTaskAborted_FailsLoudlyWithoutRegistry(t *testing.T) {
 	s, _ := newAbortTestEngine(t)
 	defer s.Stop()
-	s.TaskRegistry = nil
+	s.SetTaskRegistry(nil)
 
 	err := s.MarkTaskAborted("taskA")
 	if err == nil || !strings.Contains(err.Error(), "no task registry") {
@@ -87,7 +87,7 @@ func TestMarkTaskAborted_FailsLoudlyWithoutRegistry(t *testing.T) {
 	}
 
 	reg := &abortedStatusRegistry{}
-	s.TaskRegistry = reg
+	s.SetTaskRegistry(reg)
 	if err := s.MarkTaskAborted(""); err == nil {
 		t.Error("expected an error for an empty task ID")
 	}

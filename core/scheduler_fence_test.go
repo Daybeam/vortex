@@ -129,7 +129,7 @@ func TestFence_LoserWritesNeitherManifestNorLedger(t *testing.T) {
 	// A persists normally first, so "nothing changed" below cannot be blamed on a
 	// path that never worked.
 	reg := &fenceSaveRegistry{}
-	a.TaskRegistry = reg
+	a.SetTaskRegistry(reg)
 	clearDebounce(a, taskID)
 	a.persistGraph(graph)
 	if reg.count() != 1 {
@@ -304,7 +304,7 @@ func TestFence_UnclaimedTaskIsNotPoliced(t *testing.T) {
 	graph := fenceRunningGraph(taskID)
 	s.RegisterGraphForTest(graph)
 	reg := &fenceSaveRegistry{}
-	s.TaskRegistry = reg
+	s.SetTaskRegistry(reg)
 
 	clearDebounce(s, taskID)
 	s.persistGraph(graph)

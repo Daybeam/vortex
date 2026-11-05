@@ -6,7 +6,7 @@ import (
 	"github.com/daybeam/vortex/config"
 )
 
-// Regression for docs/plan/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §7.6:
+// Regression for docs/completed/2026-11-05/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §7.6:
 // a JIT tool expires after its TTL while its /skills/<id> config entry and
 // GeneratedSkill record persist. Resolution must treat such ids as missing,
 // or findskills / affinity recommendations and prompt assembly advertise a
