@@ -1086,7 +1086,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				// Neither answer is about this run, so neither is worth having.
 				if contractSteers == 0 && len(declaredArtifacts) > 0 && h.SessionRoot != "" {
 					_, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, declaredArtifacts)
-					defects := core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields)
+					defects := h.artifactDefects(ctx, taskID)
 					if missing == 0 && len(defects) == 0 {
 						contractSteers++
 						// The event always fires: "when would the steer have
