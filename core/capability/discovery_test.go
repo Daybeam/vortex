@@ -517,3 +517,37 @@ func TestDiscoverTools_AllowedToolsNarrowing(t *testing.T) {
 		}
 	}
 }
+
+// Regression for docs/plan/JIT_SKILL_RETRIEVAL_NOISE_REMEDIATION.md §7.6:
+// a JIT tool expires while its /skills entry persists. findskills must not
+// return the dead id — tier-1 counts a returned skill as capability-covered,
+// and the later GetSkill filter would drop it, silently leaving the gap open.
+func TestFindSkillsImpl_SkipsExpiredJITTools(t *testing.T) {
+	reg := &config.Registry{
+		Skills: map[string]*config.Skill{
+			"jit_dead":     {ID: "jit_dead", Name: "Dead", Capability: "code"},
+			"jit_live":     {ID: "jit_live", Name: "Live", Capability: "code"},
+			"jit_promoted": {ID: "jit_promoted", Name: "Promoted", Capability: "code"},
+			"skill_static": {ID: "skill_static", Name: "Static", Capability: "code"},
+		},
+		MCPs:        map[string]*config.MCPDef{"jit_promoted": {ID: "jit_promoted"}},
+		DynamicMCPs: map[string]*config.MCPDef{"jit_live": {ID: "jit_live"}},
+	}
+
+	result, err := FindSkillsImpl(reg, "", "code", "", 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(result.Skills))
+	for _, s := range result.Skills {
+		got[s.ID] = true
+	}
+	if got["jit_dead"] {
+		t.Fatalf("expired JIT skill must be excluded, got %v", result.Skills)
+	}
+	for _, want := range []string{"jit_live", "jit_promoted", "skill_static"} {
+		if !got[want] {
+			t.Fatalf("expected %q in results, got %v", want, result.Skills)
+		}
+	}
+}

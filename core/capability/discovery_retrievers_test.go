@@ -183,3 +183,20 @@ func TestSemanticRetriever_ProvidesTakesPrecedenceOverCapability(t *testing.T) {
 		t.Errorf("expected exactly 1 match (Provides precedence), got %d", matchCount)
 	}
 }
+
+// Same dead-reference rule as FindSkillsImpl: an expired JIT skill must not
+// be offered as a discovery candidate (submit_task activates top-3 skills).
+func TestKeywordRetriever_SkipsExpiredJITTools(t *testing.T) {
+	reg := makeDiscoveryTestRegistry()
+	reg.DynamicMCPs = make(map[string]*config.MCPDef)
+	reg.Skills["jit_dead"] = &config.Skill{ID: "jit_dead", Name: "ThreeJS Dead", Description: "threejs game"}
+	reg.Skills["jit_live"] = &config.Skill{ID: "jit_live", Name: "ThreeJS Live", Description: "threejs game"}
+	reg.DynamicMCPs["jit_live"] = &config.MCPDef{ID: "jit_live"}
+
+	r := &KeywordRetriever{Registry: reg}
+	candidates := r.Recall(context.Background(), "threejs", nil)
+
+	if len(candidates) != 1 || candidates[0].ID != "jit_live" {
+		t.Fatalf("expected only the live JIT skill, got %v", candidates)
+	}
+}

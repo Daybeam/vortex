@@ -58,6 +58,9 @@ func (r *FilterRetriever) Recall(ctx context.Context, query string, tags []strin
 
 		// Exact match search in Skill Provides
 		for id, sk := range r.Registry.Skills {
+			if !skillToolAliveLocked(r.Registry, id) {
+				continue
+			}
 			for _, p := range sk.Provides {
 				if strings.EqualFold(p, tag) {
 					candidates = append(candidates, DiscoveryCandidate{
@@ -153,6 +156,9 @@ func (r *KeywordRetriever) Recall(ctx context.Context, query string, tags []stri
 
 	// Search Skills
 	for id, sk := range r.Registry.Skills {
+		if !skillToolAliveLocked(r.Registry, id) {
+			continue
+		}
 		if strings.Contains(strings.ToLower(sk.Name), lowerQuery) ||
 			strings.Contains(strings.ToLower(sk.Description), lowerQuery) {
 			candidates = append(candidates, DiscoveryCandidate{
@@ -208,6 +214,9 @@ func (r *SemanticRetriever) Recall(ctx context.Context, query string, tags []str
 
 		// Match against Skills (multi-value Provides with legacy Capability fallback)
 		for id, skill := range r.Registry.Skills {
+			if !skillToolAliveLocked(r.Registry, id) {
+				continue
+			}
 			matched := false
 			for _, skProv := range skill.Provides {
 				if strings.EqualFold(skProv, tag) {

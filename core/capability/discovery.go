@@ -459,6 +459,23 @@ type SkillMatch struct {
 	MatchReason string   `json:"match_reason"` // "capability" | "provides" | "name" | "description"
 }
 
+// skillToolAliveLocked reports whether a skill's backing tool still exists.
+// A JIT tool expires after its TTL while its /skills/<id> entry persists, so
+// such ids must not be offered as candidates. Non-JIT skills have no backing
+// tool. Caller must already hold reg.Mu (read or write) — this reads the MCP
+// maps directly instead of calling Registry.GetMCP, which would self-nest an
+// RLock and can deadlock once a writer is waiting.
+func skillToolAliveLocked(reg *config.Registry, id string) bool {
+	if !strings.HasPrefix(id, "jit_") {
+		return true
+	}
+	if _, ok := reg.MCPs[id]; ok {
+		return true
+	}
+	_, ok := reg.DynamicMCPs[id]
+	return ok
+}
+
 // FindSkillsImpl searches the skill registry for skills that can supplement
 // a role's capabilities. This is the fast tier-1 path before the slow tier-2
 // path (RoleGenerator cookbook LLM call).
@@ -489,7 +506,7 @@ func FindSkillsImpl(reg *config.Registry, query, capability, provides string, pa
 
 	var matched []SkillMatch
 	for _, sk := range reg.Skills {
-		if sk == nil {
+		if sk == nil || !skillToolAliveLocked(reg, sk.ID) {
 			continue
 		}
 
