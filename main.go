@@ -124,7 +124,7 @@ func main() {
 	dbPath := getenv("VORTEX_DB_PATH", filepath.Join(root, "orchestrator_runtime.db"))
 	db, err := store.InitDB(dbPath)
 	if err != nil {
-		log.Printf("[warning] failed to init sqlite db: %v. Falling back to File storage.", err)
+		log.Printf("[warning] %s", store.FileFallbackWarning(err))
 		db = nil
 	}
 	if db != nil {

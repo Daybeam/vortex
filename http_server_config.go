@@ -57,7 +57,13 @@ func applyCORS(w http.ResponseWriter) {
 // or wails://wails (macOS/Linux), which is cross-origin to the loopback API on
 // http://localhost:<port>, and WebView2 enforces CORS. Unlike applyCORS (audit
 // S-M4), which emits no header unless VORTEX_CORS_ORIGIN is set, this
-// loopback-only, auth-free server defaults to "*" so the UI can reach the API.
+// loopback-only server defaults to "*" so the UI can reach the API.
+//
+// Not to be read as "auth-free": when a key is configured, desktopAuthorize
+// still demands it on every request, so "*" only tells a browser the *owner of
+// the key* may read the reply. With no key at all the wildcard is the only
+// thing standing between a page on the internet and the local engine, which is
+// why desktopAuthorize adds a loopback-Origin gate on that path (audit O27).
 func desktopCORSOrigin() string {
 	if origin := corsAllowedOrigin(); origin != "" {
 		return origin
