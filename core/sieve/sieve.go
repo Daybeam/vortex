@@ -253,6 +253,34 @@ func (s *Sieve) PruneOutput(text string, goal string) string {
 	return strings.Join(pruned, "\n")
 }
 
+// minRepetitionPairs is how many similar line pairs must be found before an
+// output is called a logic loop. One pair is not enough: O21 measured four of
+// this repository's own prompt bodies tripping the guard on their own text, and
+// a single repeated line is a normal feature of templates, tables and bullets.
+// A stuck model produces dozens of pairs (the captured hunter loop scored 85).
+const minRepetitionPairs = 2
+
+// isStructuralLine reports a line that carries no prose at all — a JSON or YAML
+// opener/closer, a markdown rule or fence, a table separator. Their repetition
+// is a property of the format rather than of the model, and both recorded
+// incidents are exactly this: the mounted-skill index joined with "\n---\n"
+// (O16) and a nested "{" inside a "findings.json — ONLY this JSON" output
+// template (O21).
+func isStructuralLine(line string) bool {
+	if line == "" {
+		return true
+	}
+	for _, r := range line {
+		switch r {
+		case '{', '}', '[', ']', '(', ')', '<', '>', '|', '-', '*', '#', '.', ':', ';', '/', '\\', '`', '~', '_', '"', '\'', '=':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Sieve) detectRepetition(text string) bool {
 	lines := strings.Split(text, "\n")
 	if len(lines) < 2 {
@@ -260,9 +288,10 @@ func (s *Sieve) detectRepetition(text string) bool {
 	}
 
 	// Slide a window and compare lines
+	pairs := 0
 	for i := 1; i < len(lines); i++ {
 		current := strings.TrimSpace(lines[i])
-		if current == "" {
+		if current == "" || isStructuralLine(current) {
 			continue
 		}
 
@@ -274,12 +303,15 @@ func (s *Sieve) detectRepetition(text string) bool {
 
 		for j := start; j < i; j++ {
 			prev := strings.TrimSpace(lines[j])
-			if prev == "" {
+			if prev == "" || isStructuralLine(prev) {
 				continue
 			}
 
 			if s.calculateSimilarity(current, prev) > s.RepetitionThreshold {
-				return true
+				pairs++
+				if pairs >= minRepetitionPairs {
+					return true
+				}
 			}
 		}
 	}
