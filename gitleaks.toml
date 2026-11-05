@@ -21,4 +21,6 @@ paths = [
   '''core/sanitizer_scrub_test\.go''',
   '''core/input_normalization_test\.go''',
   '''pkg/observability/redact_nested_test\.go''',
+  '''core/spawner_utils_test\.go''',
+  '''tools/tools_redaction_test\.go''',
 ]
