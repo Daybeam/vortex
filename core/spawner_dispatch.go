@@ -108,7 +108,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 		// If the tool has RiskLevel=high and supports dry_run, execute with
 		// dry_run=true to preview the operation without committing it.
 		// If high-risk but no dry_run support, log a warning.
-		// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.4.
+		// See docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.4.
 		toolDef := findCoreToolDef(call.Name)
 		if isHighRiskTool(toolDef) {
 			if supportsDryRun(toolDef) {

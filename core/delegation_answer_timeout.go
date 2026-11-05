@@ -31,8 +31,11 @@ import (
 // 30 m so one number governs "a human/host has been slow" across both shapes.
 const defaultDelegationAnswerTimeout = 30 * time.Minute
 
-// StaleDelegation is one parked delegation whose answer has not arrived.
-type StaleDelegation struct {
+// StaleDecision is one parked decision whose answer has not arrived. Shared by
+// the delegation report (Q4-6) and the step_failed staleness report (Q5-5) —
+// both answer the same question: which parked decision has been waiting too
+// long?
+type StaleDecision struct {
 	DecisionID     string `json:"decision_id"`
 	StepID         string `json:"step_id"`
 	WaitingSeconds int    `json:"waiting_seconds"`
@@ -59,11 +62,11 @@ func (s *DirectedEngine) delegationAnswerTimeout() time.Duration {
 // skipped: an answer can only be late relative to a timestamp that exists, and
 // graphs rebuilt from a manifest written before Created existed would otherwise
 // look months stale.
-func (s *DirectedEngine) staleDelegationsLocked(graph *schemas.TaskGraph, now time.Time, timeout time.Duration) []StaleDelegation {
+func (s *DirectedEngine) staleDelegationsLocked(graph *schemas.TaskGraph, now time.Time, timeout time.Duration) []StaleDecision {
 	if timeout <= 0 || graph == nil {
 		return nil
 	}
-	var stale []StaleDelegation
+	var stale []StaleDecision
 	for _, dec := range graph.PendingDecisions {
 		if dec == nil || dec.Type != schemas.DecisionDelegationRequired || dec.Created.IsZero() {
 			continue
@@ -72,7 +75,7 @@ func (s *DirectedEngine) staleDelegationsLocked(graph *schemas.TaskGraph, now ti
 		if waited < timeout {
 			continue
 		}
-		stale = append(stale, StaleDelegation{
+		stale = append(stale, StaleDecision{
 			DecisionID:     dec.ID,
 			StepID:         dec.StepID,
 			WaitingSeconds: int(waited.Seconds()),
@@ -81,10 +84,22 @@ func (s *DirectedEngine) staleDelegationsLocked(graph *schemas.TaskGraph, now ti
 	return stale
 }
 
+// oldestWaitSeconds is the age of the longest-waiting decision in a report, for
+// renderers that only need one scalar per signal (the /tasks row).
+func oldestWaitSeconds(stale []StaleDecision) int {
+	oldest := 0
+	for _, d := range stale {
+		if d.WaitingSeconds > oldest {
+			oldest = d.WaitingSeconds
+		}
+	}
+	return oldest
+}
+
 // delegationAnswerError words the report as an error a host can act on. It names
 // what is still reachable so nobody reads it as "already lost" — including the
 // warning that cancel destroys the parked envelope (O20's operator error).
-func delegationAnswerError(stale []StaleDelegation, timeout time.Duration) string {
+func delegationAnswerError(stale []StaleDecision, timeout time.Duration) string {
 	oldest := stale[0]
 	for _, d := range stale[1:] {
 		if d.WaitingSeconds > oldest.WaitingSeconds {
@@ -116,8 +131,11 @@ func (s *DirectedEngine) attachDelegationWaitLocked(status map[string]any, graph
 	status["delegation_wait"] = map[string]any{
 		"stale":           true,
 		"timeout_seconds": int(timeout.Seconds()),
-		"decisions":       stale,
-		"error":           delegationAnswerError(stale, timeout),
+		// Scalar copy so a renderer that only has the status dict (the /tasks
+		// list) does not have to type-assert the typed decisions slice.
+		"oldest_wait_seconds": oldestWaitSeconds(stale),
+		"decisions":           stale,
+		"error":               delegationAnswerError(stale, timeout),
 	}
 	status["next_action"] = "submit_decision"
 }

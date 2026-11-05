@@ -171,7 +171,7 @@ turnLoop:
 		// Duplicate tool calls within the same turn are skipped to prevent
 		// repeated execution (A1 anomaly). Resets each turn — different
 		// turns may legitimately repeat calls (e.g., after provider retry).
-		// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
+		// See docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
 		turnCtx := NewTurnIdempotencyContext()
 
 		// VDA: Attach visual context from current state

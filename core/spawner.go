@@ -120,7 +120,7 @@ type Spawner struct {
 
 	// effectTrackers (ADDED 2026-10-13): per-task EffectTracker for A2/A4
 	// effect tracking. Keyed by taskID. Lazy-created on first access.
-	// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3.
+	// See docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3.
 	effectTrackers sync.Map // taskID → *EffectTracker
 
 	// telemetry and providerRouter (ADDED 2026-10-21): provider routing telemetry

@@ -252,7 +252,7 @@ func (s *Spawner) processToolCalls(
 		// If this exact tool call (same name + same args) has already
 		// been executed in this turn, skip it. This prevents duplicate
 		// execution when a provider returns the same call multiple times.
-		// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
+		// See docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
 		opKey := toolCallKey(call.Name, call.Arguments)
 		if turnCtx.CheckAndMark(opKey) {
 			observability.GetGlobalMetrics().Inc("orchestrator.a1.duplicate_skipped", 1)

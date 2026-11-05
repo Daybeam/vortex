@@ -73,9 +73,12 @@ func (s *DirectedEngine) GetStatus(taskID string, view ...string) (map[string]an
 	graph := s.graphs[taskID]
 	if graph != nil {
 		result := graph.ToStatusDictView(v)
+		now := time.Now()
 		// Q4-6/O20: say so out loud when a delegation has gone unanswered past
 		// the window, instead of leaving "running" as the only signal.
-		s.attachDelegationWaitLocked(result, graph, time.Now())
+		s.attachDelegationWaitLocked(result, graph, now)
+		// Q5-5: same for a step_failed decision nobody has answered in a day.
+		s.attachStaleDecisionReportLocked(result, graph, now)
 		s.Mu.RUnlock()
 		return result, true
 	}
@@ -114,8 +117,10 @@ func (s *DirectedEngine) GetStatus(taskID string, view ...string) (map[string]an
 			// happens to answer. g is a private copy, but the helper's contract
 			// is "caller holds Mu", so take the read lock rather than fork the
 			// contract for one path.
+			now := time.Now()
 			s.Mu.RLock()
-			s.attachDelegationWaitLocked(status, &g, time.Now())
+			s.attachDelegationWaitLocked(status, &g, now)
+			s.attachStaleDecisionReportLocked(status, &g, now)
 			s.Mu.RUnlock()
 		}
 	}
@@ -149,8 +154,11 @@ func (s *DirectedEngine) WaitTask(ctx context.Context, taskID string, timeout ti
 		defer s.Mu.RUnlock()
 		status := graph.ToStatusDictView(v)
 		// wait_task is where a host parks itself, so the no-answer report has to
-		// be on this path too, not only on get_task_status (Q4-6/O20).
-		s.attachDelegationWaitLocked(status, graph, time.Now())
+		// be on this path too, not only on get_task_status (Q4-6/O20). The
+		// step_failed staleness report (Q5-5) rides along.
+		now := time.Now()
+		s.attachDelegationWaitLocked(status, graph, now)
+		s.attachStaleDecisionReportLocked(status, graph, now)
 		return status, graph.Status, len(graph.PendingDecisions)
 	}
 
@@ -241,11 +249,17 @@ func (s *DirectedEngine) GetManifest(taskID string) (map[string]any, bool) {
 }
 
 func (s *DirectedEngine) ListGraphs() []map[string]any {
+	now := time.Now()
 	s.Mu.RLock()
 	seen := make(map[string]bool, len(s.graphs))
 	out := make([]map[string]any, 0, len(s.graphs))
 	for id, g := range s.graphs {
-		out = append(out, g.ToStatusDict())
+		status := g.ToStatusDict()
+		// /tasks reads this list, not GetStatus, so the Q5-5 staleness signals
+		// have to be attached here as well or the task list stays silent.
+		s.attachDelegationWaitLocked(status, g, now)
+		s.attachStaleDecisionReportLocked(status, g, now)
+		out = append(out, status)
 		seen[id] = true
 	}
 	s.Mu.RUnlock()
@@ -273,7 +287,15 @@ func (s *DirectedEngine) ListGraphs() []map[string]any {
 			if g.Status == schemas.GraphRunning || g.Status == schemas.GraphBlocked {
 				g.Status = schemas.GraphOrphaned
 			}
-			out = append(out, g.ToStatusDict())
+			status := g.ToStatusDict()
+			// A parked decision on an orphaned task is still answerable
+			// (getOrReloadGraphLocked revives the manifest), so it gets the same
+			// signals as the in-memory half.
+			s.Mu.RLock()
+			s.attachDelegationWaitLocked(status, &g, now)
+			s.attachStaleDecisionReportLocked(status, &g, now)
+			s.Mu.RUnlock()
+			out = append(out, status)
 		}
 	}
 	return out

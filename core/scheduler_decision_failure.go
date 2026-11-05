@@ -143,7 +143,7 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	s.Mu.Unlock()
 
 	// ── A3 Outcome Probe + A2/A4 Compensation (ADDED 2026-10-13) ───────
-	// Design ref: docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3
+	// Design ref: docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3
 	//
 	// Before blocking the step, probe external state for all effects the
 	// step produced and attempt compensation in reverse order. File effects

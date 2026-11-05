@@ -9,7 +9,7 @@ import (
 
 // ─── Effect Boundary Defense: A2/A4 Effect Tracking + A3 Outcome Probe ────
 //
-// Design ref: docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3
+// Design ref: docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3
 //
 // EffectTracker records every tool call's external effect (not just file
 // operations like StagedWorkspace). On step failure, CompensateStep probes
