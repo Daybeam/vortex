@@ -245,7 +245,7 @@ func runExec(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase
 	scheduler.WireHooks(reg.System.Hooks, reg.ExternalRuntimes)
 
 	scheduler.JITSessions = jit.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
-	scheduler.TaskRegistry = s.TaskRegistry
+	scheduler.SetTaskRegistry(s.TaskRegistry)
 	if s.DB != nil {
 		scheduler.BaselineStore = store.NewBaselineStore(s.DB)
 	}
@@ -274,6 +274,7 @@ func runExec(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase
 		ConfigPath:      configPath,
 		ResourceLoader:  loader,
 		MemoryBankStore: mbStore,
+		CapProfile:      capProfileStore,
 		DB:              s.DB,
 	}
 	app.InitArchive(outputBase)
@@ -384,7 +385,7 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 	}
 	scheduler.SetCostTracker(ct)
 	scheduler.JITSessions = jit.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
-	scheduler.TaskRegistry = s.TaskRegistry
+	scheduler.SetTaskRegistry(s.TaskRegistry)
 	if s.DB != nil {
 		scheduler.BaselineStore = store.NewBaselineStore(s.DB)
 	}
@@ -487,14 +488,14 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 		ResourceLoader:  loader,
 		MemoryBankStore: mbStore,
 		DB:              s.DB,
+		// CapProfile is deliberately absent: runHub never calls
+		// WireCapabilityRouting, so this process records no routing telemetry and
+		// there is no store to hand out. exp.get_capability_profile then answers
+		// "not wired" rather than showing an empty table. See
+		// docs/audit/unwired-code-register.md.
 	}
 	app.InitArchive(outputBase)
 	defer app.StopArchive() // audit M12: stop pruning goroutine on shutdown
-
-	// Task webhook callback. This build has no ChatHandler, so wiring it here is
-	// the only place it can happen — otherwise terminal events from MCP/stdio
-	// tasks would never be pushed anywhere. No-op unless WEBHOOK_CALLBACK_URL is
-	// set (default-off).
 
 	// Budget Gate: auto-suspend tasks when token usage exceeds configured
 	// thresholds. No-op unless budget_gate.enabled is set in config.json.
