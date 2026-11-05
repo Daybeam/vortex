@@ -133,6 +133,13 @@ type ChatHarness struct {
 	// `recommended`, or a participant map keyed by name instead of email.
 	// Existence alone called every one of them done.
 	declaredFields map[string][]string
+	// taskPrompt is the last user message verbatim, captured once at the start
+	// of Run. It is the only copy of the original specification this process
+	// holds: the delegation path appends its two sections to whatever summary
+	// the parent model wrote, because that summary drops binding clauses
+	// (iron law 178 — "start/end" in 5/5 prompts, "Delete: none" in 4/5).
+	// Empty outside a task-shaped prompt, which makes the append a no-op.
+	taskPrompt string
 	// sieve.Sieve is an optional repetition detector. If nil, a lightweight
 	// signature-based fallback is used instead.
 	Sieve *sieve.Sieve
@@ -483,7 +490,7 @@ func (h *ChatHarness) buildTurnContext(query, taskID string) string {
 func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMessage, emit func(ChatEvent) error) (output string, err error) {
 	maxTurns := h.MaxTurns
 	if maxTurns <= 0 {
-		maxTurns = 6
+		maxTurns = DefaultMaxTurns
 	}
 	maxOutputTokens := h.MaxOutputTokens
 	if maxOutputTokens <= 0 {
@@ -505,6 +512,8 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	// must leave behaviour exactly as it was.
 	declaredArtifacts := core.ParseDeclaredArtifacts(query)
 	h.declaredArtifacts = declaredArtifacts
+	h.taskPrompt = query
+	LogDelegationSpecOnce()
 	// Same prompt, same parsing philosophy: the field lists sit in a
 	// "Create `path` containing:" block, so no new parameter is needed.
 	declaredFields := core.ParseDeclaredArtifactFields(query)
@@ -668,6 +677,14 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	turnsUsed := 0
 	toolCallsUsed := 0
 	codeExecCalls := 0 // tools whose writes are invisible to writeTargetOf
+	// Consecutive-no-output guard (P1-1, docs/plan/DELEGATION_ARTIFACT_DELIVERY_
+	// REMEDIATION.md §4.3). execute_code cannot be counted by writeTargetOf, so
+	// the streak is the only thing that can see a loop on it.
+	execGuardMode, execStreakLimit := codeExecGuardSettings()
+	codeExecStreak := 0
+	codeExecStreakMax := 0
+	codeExecSteers := 0
+	codeExecSteered := false // latched: one correction per run
 	writeTotal := 0
 	writeTargets := make(map[string]struct{})
 	noTextSteers := 0
@@ -689,11 +706,11 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 		log.Printf("[chat-turn-summary] task=%s exit=%s turns=%d tool_calls=%d code_exec=%d "+
 			"writes=%d distinct_targets=%d steer_no_text=%d repeated_write=%d contract_declared=%d contract_steer=%d "+
-			"contract_defect_steer=%d fields_declared=%d elapsed=%.1fs",
+			"contract_defect_steer=%d fields_declared=%d code_exec_streak_max=%d code_exec_steer=%d elapsed=%.1fs %s",
 			taskID, reason, turnsUsed, toolCallsUsed, codeExecCalls, writeTotal,
 			len(writeTargets), noTextSteers, repeatedWriteSteers, len(declaredArtifacts), contractSteers,
-			contractDefectSteers, len(declaredFields),
-			time.Since(runStart).Seconds())
+			contractDefectSteers, len(declaredFields), codeExecStreakMax, codeExecSteers,
+			time.Since(runStart).Seconds(), h.contractObservation())
 	}()
 
 	defer func() {
@@ -995,10 +1012,38 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				if target := h.writeTargetOf(tc.Name, tc.Arguments); target != "" {
 					writeTotal++
 					writeTargets[target] = struct{}{}
+					// Any real write breaks the no-output streak: the model is
+					// producing files again, which is exactly what the guard
+					// wants it to do.
+					codeExecStreak = 0
 					if n, steer := writeGuardSteer(writeCounts, tc.Name, target); steer != "" {
 						repeatedWriteSteers++
 						emit(ChatEvent{Type: "repeated_write", Data: target, Meta: map[string]any{"tool": tc.Name, "count": n}})
 						result += "\n\n" + steer
+					}
+				}
+
+				// ── Consecutive no-output code execution (P1-1) ───────
+				// Placed outside the write block above because execute_code
+				// never yields a write target: that is the whole gap.
+				if tc.Name == "execute_code" && execGuardMode != codeExecGuardOff {
+					codeExecStreak++
+					if codeExecStreak > codeExecStreakMax {
+						codeExecStreakMax = codeExecStreak
+					}
+					if !codeExecSteered && codeExecStreak >= execStreakLimit {
+						codeExecSteered = true
+						codeExecSteers++
+						missing := []string(nil)
+						if h.SessionRoot != "" && len(declaredArtifacts) > 0 {
+							missing = core.MissingArtifacts(h.SessionRoot, declaredArtifacts)
+						}
+						emit(ChatEvent{Type: "code_exec_steer", Meta: map[string]any{
+							"streak": codeExecStreak, "mode": execGuardMode.String(), "missing": len(missing),
+						}})
+						if execGuardMode == codeExecGuardSteer {
+							result += "\n\n" + codeExecSteerText(codeExecStreak, missing)
+						}
 					}
 				}
 			}
@@ -1237,6 +1282,10 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 				return core.MarkerDelegationSkipped, nil
 			}
 		}
+		// Hand the sub-agent the same words the parent was given. The parent's
+		// summary is a re-encoding, and it loses clauses that the grader scores
+		// (iron law 178); this append is the only step that can restore them.
+		prompt = h.delegatedPromptWithSpec(prompt)
 		id, err := h.Delegate(prompt)
 		if err != nil {
 			return "", err
@@ -1266,7 +1315,7 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 		}
 		if st, ok := h.DelegateStatus(id, time.Duration(wait*float64(time.Second))); ok && st != nil {
 			h.noteTerminalTask(id, st)
-			return formatTaskStatus(id, st), nil
+			return formatTaskStatus(id, st, h.declaredArtifacts), nil
 		}
 		return "", fmt.Errorf("orchestrator_task_status: task %s not found", id)
 	}

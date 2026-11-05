@@ -25,7 +25,7 @@ func TestFormatTaskStatus_NamesWorkspaceForUndeclaredOutput(t *testing.T) {
 		"status":         "completed",
 		"workspace_root": ws,
 		"steps":          map[string]any{"s1": map[string]any{"status": "ok"}},
-	})
+	}, nil)
 
 	if !strings.Contains(out, "workspace_root: "+ws) {
 		t.Fatalf("status must say where the task worked, got:\n%s", out)
@@ -45,7 +45,7 @@ func TestFormatTaskStatus_AbsolutisesDeclaredOutputs(t *testing.T) {
 		"status":         "completed",
 		"workspace_root": ws,
 		"output_files":   []map[string]any{{"path": "reports/findings.md"}},
-	})
+	}, nil)
 
 	want := filepath.Join(ws, "reports", "findings.md")
 	if !strings.Contains(out, want) {
@@ -63,7 +63,7 @@ func TestFormatTaskStatus_RunningGetsNoTerminalAdvice(t *testing.T) {
 	out := formatTaskStatus("task_1", map[string]any{
 		"status":         "running",
 		"workspace_root": "/workspace",
-	})
+	}, nil)
 	if strings.Contains(out, "this task is finished") {
 		t.Fatalf("a running task must not be reported as finished:\n%s", out)
 	}
@@ -75,7 +75,7 @@ func TestFormatTaskStatus_LegacyWithoutWorkspaceRoot(t *testing.T) {
 	out := formatTaskStatus("task_1", map[string]any{
 		"status":       "completed",
 		"output_files": []map[string]any{{"path": "review.txt"}},
-	})
+	}, nil)
 	if strings.Contains(out, "workspace_root:") {
 		t.Errorf("no workspace root was set; the report must not invent one:\n%s", out)
 	}

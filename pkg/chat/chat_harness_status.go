@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -22,7 +23,11 @@ import (
 // the model was to ask again: one trial called this tool 34 times in 40 turns.
 // Telling it where the files are, and that polling again cannot help, is what
 // turns a status tool into a hand-off.
-func formatTaskStatus(id string, st map[string]any) string {
+// declared is the task's artifact list parsed from the prompt's "Enforced
+// workspace change contract" section. It is the only source of "which files this
+// task was supposed to leave behind": the delegate contract has no outputs
+// field, so nothing the subagent reports can fill that gap (→170).
+func formatTaskStatus(id string, st map[string]any, declared []string) string {
 	var b strings.Builder
 	b.WriteString("task_id: " + id + "\n")
 	status := ""
@@ -96,10 +101,41 @@ func formatTaskStatus(id string, st map[string]any) string {
 		case len(names) > 0:
 			b.WriteString("this task is finished — read the output_files above and answer. " +
 				"Calling orchestrator_task_status again will not change anything.\n")
+		case len(declared) > 0 && root != "":
+			// The declared list comes from the task prompt's "Enforced workspace
+			// change contract" section (h.declaredArtifacts), not from the
+			// subagent: the delegate contract has no field for outputs, so
+			// `names` above is always empty for a delegated task and this line
+			// used to say nothing at all about the files. Measured on 011
+			// b3d-v71-r5: the receipt said "declared no output files, go ls",
+			// the parent could not tell "missing" from "elsewhere", and it spent
+			// 32 execute_code calls rebuilding before the budget ended the run.
+			//
+			// These are counts, not a verdict: the list is
+			// mutation_contract.allowed_created, which differs from the task's
+			// required_artifacts on 185 of 274 tasks, so `present < declared`
+			// must never be turned into "the task failed" (→171).
+			absent := core.MissingArtifacts(root, declared)
+			b.WriteString(fmt.Sprintf("declared %d artifact(s); present %d",
+				len(declared), len(declared)-len(absent)))
+			if len(absent) > 0 {
+				b.WriteString("; missing: " + strings.Join(absent, ", "))
+			}
+			b.WriteString("\n")
+			if len(absent) > 0 {
+				b.WriteString("the missing ones are not under " + root + " by those names — list it " +
+					"(e.g. execute_code with `ls -la`) before rebuilding anything, because a file " +
+					"can exist in the wrong place. Do not poll this tool again for this task.\n")
+			} else {
+				b.WriteString("all declared artifacts exist under " + root +
+					" — read them and answer. Do not poll this tool again for this task.\n")
+			}
 		case root != "":
 			b.WriteString("this task is finished and declared no output files: the agents write " +
 				"into the workspace, so list " + root + " (e.g. execute_code with `ls -la`) " +
-				"to find the deliverable. Do not poll this tool again for this task.\n")
+				"to find the deliverable. Do not poll this tool again for this task. " +
+				"no artifacts were declared for this task; if you expected files, the delegate " +
+				"call must declare them.\n")
 		default:
 			b.WriteString("this task is finished and declared no output files. " +
 				"Do not poll this tool again for this task.\n")
