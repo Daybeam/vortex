@@ -268,6 +268,13 @@ func (r *Registry) loadLocked() error {
 	}
 	r.EnableDynamicRoleGen = cfg.EnableDynamicRoleGen
 	r.EnableEphemeralRoleGen = cfg.EnableEphemeralRoleGen
+	// Re-apply the delegation-mode suppression: the two assignments above run
+	// after applySystemDefaults() (which is where the env/config merge happens)
+	// and would otherwise re-enable role gen that a config file turned on
+	// explicitly. Order matters, not the value: delegation mode promises zero
+	// provider out-calls, so role gen cannot stay on. Regression test:
+	// loader_delegation_rolegen_test.go (config with providers + enable flags).
+	r.suppressRoleGenInDelegationMode()
 	r.RequirePlanReview = cfg.RequirePlanReview
 	r.SwarmModeEnabled = cfg.SwarmModeEnabled
 	r.StepPlan = cfg.StepPlan
@@ -713,6 +720,29 @@ func (r *Registry) bootstrapDefaultsLocked() {
 	r.registerStandardSkillsLocked()
 }
 
+// suppressRoleGenInDelegationMode enforces delegation mode's zero-outcall
+// contract on the role-resolution path.
+//
+// LogInterceptor (core/builtin_interceptors.go) runs BEFORE tryDelegationMode
+// and, when a step's role is missing, checks EnableEphemeralRoleGen /
+// EnableDynamicRoleGen to decide whether to call provider.Complete(). Both
+// default to true on the bootstrap path, so without this a delegation-mode
+// deployment would still spend a model call just to build a prompt envelope —
+// the one thing delegation mode exists to avoid. Falling through to
+// tryDefaultRoleFallback (orchestrator_default) is enough: delegation only
+// needs a role to shape the envelope, not a generated one.
+//
+// Idempotent and cheap; called from applySystemDefaults (covers the no-config
+// and bootstrap paths) and again after loadLocked's cfg assignments (covers
+// the normal config path, where those assignments would undo it).
+func (r *Registry) suppressRoleGenInDelegationMode() {
+	if !r.System.DelegationMode {
+		return
+	}
+	r.EnableEphemeralRoleGen = false
+	r.EnableDynamicRoleGen = false
+}
+
 func (r *Registry) applySystemDefaults() {
 	if r.System.ConfidenceThreshold == 0 {
 		r.System.ConfidenceThreshold = 0.7
@@ -765,15 +795,11 @@ func (r *Registry) applySystemDefaults() {
 
 	// Delegation mode assumes no provider is available — suppress role
 	// generation that would attempt a provider.Complete() call.
-	// LogInterceptor (builtin_interceptors.go) runs BEFORE tryDelegationMode
-	// and checks EnableEphemeralRoleGen/EnableDynamicRoleGen to decide
-	// whether to call the provider for missing roles. Without this suppression,
-	// a step without an existing role_id triggers a Gemini call even in
-	// delegation mode, violating the zero-outcall contract.
-	if r.System.DelegationMode {
-		r.EnableEphemeralRoleGen = false
-		r.EnableDynamicRoleGen = false
-	}
+	// See suppressRoleGenInDelegationMode. Called here as well as in
+	// applySystemDefaults because the cfg assignments below run AFTER it and
+	// would otherwise re-enable the flags that a config file set explicitly
+	// (regression: 2026-11-05, config with providers + enable_*_role_gen=true).
+	r.suppressRoleGenInDelegationMode()
 
 	// MemoryBankEnabled env override (ADDED 2026-10-17).
 	// Env var takes precedence over config.json. Unset = use config value.

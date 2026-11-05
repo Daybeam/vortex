@@ -585,18 +585,6 @@ func (r *Registry) CheckCapabilities(caps []string) []string {
 	return missing
 }
 
-// GetVerifierID is not implemented: it always returns "". The tool -> verifier
-// plugin mapping it was written for was never added to config, so every caller
-// reads "this tool has no verifier" and the SAV Sense/Verify/Recover branch in
-// core/spawner_tool_exec.go stays unreachable. Kept because it satisfies an
-// interface; see docs/audit/unwired-code-register.md §O8 before wiring anything
-// that depends on a non-empty return.
-func (r *Registry) GetVerifierID(toolName string) string {
-	r.Mu.RLock()
-	defer r.Mu.RUnlock()
-	return ""
-}
-
 func (r *Registry) CommitOps(ops []PatchOp, actor, taskID string) error {
 	// audit P-MED-4: release lock before WAL append — previously held Lock
 	// during wal.Append (which does f.Sync disk flush), blocking all config

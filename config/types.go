@@ -636,6 +636,11 @@ type SystemSettings struct {
 	// takes 19–26s measured). 0 = disable sync delivery, fall back to
 	// get_task_status polling. See ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §4.2.
 	DelegationEnvelopeWaitSeconds int `json:"delegation_envelope_wait_seconds,omitempty"`
+	// DelegationAnswerTimeoutSeconds is how long a parked delegation may wait
+	// for its answer before get_task_status/wait_task report it as an explicit
+	// error. nil ⇒ default 30m; *0 (or negative) ⇒ never report. Seconds. Report
+	// only — it does NOT abort the step (Q4-6/O20; the O22 constraint).
+	DelegationAnswerTimeoutSeconds *int `json:"delegation_answer_timeout_seconds,omitempty"`
 	// NonInteractive enables unattended mode: when a step would block on a
 	// decision (step failure, low confidence, max-turns, autonomous abort),
 	// the engine auto-selects a conservative default instead of blocking

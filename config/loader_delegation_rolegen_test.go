@@ -44,6 +44,11 @@ func TestLoad_DelegationMode_Env_SuppressesRoleGen(t *testing.T) {
 func TestLoad_DelegationMode_Config_SuppressesRoleGen(t *testing.T) {
 	os.Unsetenv("VORTEX_DELEGATION_MODE")
 
+	// NOTE (2026-11-05): this case is necessary but not sufficient. Its
+	// "providers": {} sends loadLocked down the empty-providers fallback, which
+	// re-runs applySystemDefaults() at the very end — so it passed even while
+	// the fix was being undone on the normal path. The case that covers the
+	// ordering is TestLoad_DelegationMode_ConfigWithProviders_* below.
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	configJSON := `{"system": {"delegation_mode": true}, "providers": {}}`
@@ -82,5 +87,76 @@ func TestLoad_NoDelegationMode_PreservesRoleGenDefaults(t *testing.T) {
 	}
 	if !reg.EnableDynamicRoleGen {
 		t.Error("EnableDynamicRoleGen should default to true when delegation mode is off")
+	}
+}
+
+// TestLoad_DelegationMode_ConfigWithProviders_SuppressesRoleGen covers the
+// ordering hole found on 2026-11-05: loadLocked assigns cfg.EnableDynamicRoleGen
+// / cfg.EnableEphemeralRoleGen AFTER applySystemDefaults() has run, so a config
+// that has providers (the normal case, which skips the bootstrap fallback) and
+// turns role gen on explicitly used to end up with both flags true even in
+// delegation mode. Measured before the fix: ephemeral=true dynamic=true.
+func TestLoad_DelegationMode_ConfigWithProviders_SuppressesRoleGen(t *testing.T) {
+	os.Unsetenv("VORTEX_DELEGATION_MODE")
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	configJSON := `{
+	  "default_provider": "p1",
+	  "providers": {"p1": {"provider": "openai", "model": "m", "api_key": "k"}},
+	  "enable_dynamic_role_gen": true,
+	  "enable_ephemeral_role_gen": true,
+	  "system": {"delegation_mode": true}
+	}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	reg, err := NewRegistry(configPath)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	if len(reg.Providers) == 0 {
+		t.Fatal("fixture precondition broken: providers must be non-empty so the " +
+			"bootstrap fallback (which re-applies defaults last) is NOT taken")
+	}
+	if !reg.System.DelegationMode {
+		t.Fatal("config.json delegation_mode=true was not applied")
+	}
+	if reg.EnableEphemeralRoleGen || reg.EnableDynamicRoleGen {
+		t.Errorf("delegation mode must suppress role gen even when the config turns it on "+
+			"(ephemeral=%v dynamic=%v) — LogInterceptor would call provider.Complete()",
+			reg.EnableEphemeralRoleGen, reg.EnableDynamicRoleGen)
+	}
+}
+
+// TestLoad_NoDelegationMode_ConfigWithProviders_KeepsRoleGen is the negative
+// half: the suppression must not leak into non-delegation deployments.
+func TestLoad_NoDelegationMode_ConfigWithProviders_KeepsRoleGen(t *testing.T) {
+	os.Unsetenv("VORTEX_DELEGATION_MODE")
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	configJSON := `{
+	  "default_provider": "p1",
+	  "providers": {"p1": {"provider": "openai", "model": "m", "api_key": "k"}},
+	  "enable_dynamic_role_gen": true,
+	  "enable_ephemeral_role_gen": true,
+	  "system": {"delegation_mode": false}
+	}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	reg, err := NewRegistry(configPath)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	if reg.System.DelegationMode {
+		t.Fatal("delegation mode should be off")
+	}
+	if !reg.EnableEphemeralRoleGen || !reg.EnableDynamicRoleGen {
+		t.Errorf("non-delegation config must keep role gen on (ephemeral=%v dynamic=%v)",
+			reg.EnableEphemeralRoleGen, reg.EnableDynamicRoleGen)
 	}
 }
