@@ -107,22 +107,29 @@ func TestForkTask_DownstreamStepsReset(t *testing.T) {
 
 	s.Mu.RLock()
 	forked := s.graphs[newTaskID]
+	s1Status := forked.Steps["s1"].Status
+	s2Status := forked.Steps["s2"].Status
+	s2Retry := forked.Steps["s2"].RetryCount
+	s3Status := forked.Steps["s3"].Status
 	s.Mu.RUnlock()
 
 	// s1 should be OK (fork point)
-	if forked.Steps["s1"].Status != schemas.StepOK {
-		t.Errorf("expected s1=StepOK, got %v", forked.Steps["s1"].Status)
+	if s1Status != schemas.StepOK {
+		t.Errorf("expected s1=StepOK, got %v", s1Status)
 	}
-	// s2 depends on s1, should be reset to Pending
-	if forked.Steps["s2"].Status != schemas.StepPending {
-		t.Errorf("expected s2=StepPending, got %v", forked.Steps["s2"].Status)
+	// s2 depends on s1, should be reset to Pending. The async scheduler
+	// (started by ForkTask via startGraphExecutor) may have already
+	// transitioned s2 to StepRunning — both prove ForkTask reset it,
+	// since the scheduler only transitions StepPending→StepRunning.
+	if s2Status != schemas.StepPending && s2Status != schemas.StepRunning {
+		t.Errorf("expected s2=StepPending or StepRunning, got %v", s2Status)
 	}
-	if forked.Steps["s2"].RetryCount != 0 {
-		t.Errorf("expected s2 RetryCount=0, got %d", forked.Steps["s2"].RetryCount)
+	if s2Retry != 0 {
+		t.Errorf("expected s2 RetryCount=0, got %d", s2Retry)
 	}
 	// s3 depends on s2 (transitive), should also be reset
-	if forked.Steps["s3"].Status != schemas.StepPending {
-		t.Errorf("expected s3=StepPending, got %v", forked.Steps["s3"].Status)
+	if s3Status != schemas.StepPending && s3Status != schemas.StepRunning {
+		t.Errorf("expected s3=StepPending or StepRunning, got %v", s3Status)
 	}
 }
 
