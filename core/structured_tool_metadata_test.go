@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"strings"
 	"testing"
 
@@ -54,7 +55,7 @@ func TestToolInteraction_NilMetaByDefault(t *testing.T) {
 	}
 }
 
-// ── Phase 2: extractMeta helper ─────────────────────────────────────────────
+// ── Phase 2: ExtractMeta helper ─────────────────────────────────────────────
 
 func TestExtractMeta_FromMapWithMeta(t *testing.T) {
 	result := map[string]any{
@@ -67,7 +68,7 @@ func TestExtractMeta_FromMapWithMeta(t *testing.T) {
 			"data_shape": "daily_bars",
 		},
 	}
-	meta := extractMeta(result)
+	meta := ExtractMeta(result)
 	if meta == nil {
 		t.Fatal("expected non-nil meta")
 	}
@@ -90,18 +91,18 @@ func TestExtractMeta_FromMapWithMeta(t *testing.T) {
 
 func TestExtractMeta_FromMapWithoutMeta(t *testing.T) {
 	result := map[string]any{"data": "some data"}
-	meta := extractMeta(result)
+	meta := ExtractMeta(result)
 	if meta != nil {
 		t.Error("expected nil meta when no 'meta' key present")
 	}
 }
 
 func TestExtractMeta_FromNonMap(t *testing.T) {
-	meta := extractMeta("just a string")
+	meta := ExtractMeta("just a string")
 	if meta != nil {
 		t.Error("expected nil meta for non-map result")
 	}
-	meta = extractMeta(42)
+	meta = ExtractMeta(42)
 	if meta != nil {
 		t.Error("expected nil meta for non-map result")
 	}
@@ -109,7 +110,7 @@ func TestExtractMeta_FromNonMap(t *testing.T) {
 
 func TestExtractMeta_MetaNotAMap(t *testing.T) {
 	result := map[string]any{"meta": "not a map"}
-	meta := extractMeta(result)
+	meta := ExtractMeta(result)
 	if meta != nil {
 		t.Error("expected nil meta when meta value is not a map")
 	}
@@ -118,7 +119,7 @@ func TestExtractMeta_MetaNotAMap(t *testing.T) {
 // ── Phase 3: InspectTruncationArtifact ──────────────────────────────────────
 
 func TestSieve_InspectTruncationArtifact_NilMeta(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	ok, reason := s.InspectTruncationArtifact(nil, "all results")
 	if !ok || reason != "" {
 		t.Error("nil meta should pass")
@@ -126,7 +127,7 @@ func TestSieve_InspectTruncationArtifact_NilMeta(t *testing.T) {
 }
 
 func TestSieve_InspectTruncationArtifact_NotTruncated(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{Truncated: false}
 	ok, reason := s.InspectTruncationArtifact(meta, "all results")
 	if !ok || reason != "" {
@@ -135,7 +136,7 @@ func TestSieve_InspectTruncationArtifact_NotTruncated(t *testing.T) {
 }
 
 func TestSieve_InspectTruncationArtifact_TruncatedWithUniversalQuantifier(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{
 		Truncated: true,
 		Returned:  50,
@@ -152,7 +153,7 @@ func TestSieve_InspectTruncationArtifact_TruncatedWithUniversalQuantifier(t *tes
 }
 
 func TestSieve_InspectTruncationArtifact_TruncatedWithChineseQuantifier(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{
 		Truncated: true,
 		Returned:  50,
@@ -168,7 +169,7 @@ func TestSieve_InspectTruncationArtifact_TruncatedWithChineseQuantifier(t *testi
 }
 
 func TestSieve_InspectTruncationArtifact_TruncatedWithoutQuantifier(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{
 		Truncated: true,
 		Returned:  50,
@@ -181,7 +182,7 @@ func TestSieve_InspectTruncationArtifact_TruncatedWithoutQuantifier(t *testing.T
 }
 
 func TestSieve_InspectTruncationArtifact_DefaultHint(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	meta := &store.ToolMetadata{
 		Truncated: true,
 		Returned:  50,

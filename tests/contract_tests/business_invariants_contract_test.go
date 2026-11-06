@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/sieve"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -122,7 +123,7 @@ func TestContract_StagedWorkspace_RollbackNilPreIsError(t *testing.T) {
 //   And:   Task status immediately becomes FAILED with error code
 //          InfiniteLoopDetected
 func TestContract_SieveGuardian_LoopDetection(t *testing.T) {
-	sieve := core.NewSieve(10) // maxKeep=10, threshold=3
+	sieve := sieve.NewSieve(10) // maxKeep=10, threshold=3
 	taskID := "task-sieve-contract"
 
 	// First 3 calls: should pass (threshold=3, check counts BEFORE appending).

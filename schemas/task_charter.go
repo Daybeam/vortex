@@ -3,6 +3,7 @@ package schemas
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // TaskCharter captures the task's intent (why), non-goals (what not to do),
@@ -22,7 +23,9 @@ type TaskCharter struct {
 
 // CharterPrompt formats the charter for injection into a step's system prompt.
 // Returns empty string when no charter is set (backward compatible).
-// Total output is capped at maxChars; excess is truncated with a marker.
+// Total output is capped at maxChars bytes; excess is truncated with a marker.
+// Truncation backs up to a rune boundary, so multi-byte text (CJK, emoji) is
+// never split into invalid UTF-8.
 func (c *TaskCharter) CharterPrompt(maxChars int) string {
 	if c == nil {
 		return ""
@@ -52,7 +55,11 @@ func (c *TaskCharter) CharterPrompt(maxChars int) string {
 	}
 	result := sb.String()
 	if maxChars > 0 && len(result) > maxChars {
-		result = result[:maxChars] + "\n... (charter truncated)"
+		cut := maxChars
+		for cut > 0 && !utf8.RuneStart(result[cut]) {
+			cut--
+		}
+		result = result[:cut] + "\n... (charter truncated)"
 	}
 	return result
 }

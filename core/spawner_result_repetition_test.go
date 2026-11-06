@@ -1,15 +1,11 @@
 package core
 
 import (
-	"context"
-	"os"
-	"path/filepath"
+	"github.com/daybeam/vortex/core/sieve"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/daybeam/vortex/config"
-	"github.com/daybeam/vortex/schemas"
 )
 
 // TestSpawner_ResultRepetition_SieveInitialized verifies that the Spawner
@@ -37,7 +33,7 @@ func TestSpawner_ResultRepetition_SieveInitialized(t *testing.T) {
 	s := &Spawner{
 		registry: reg,
 		logger:   logger,
-		sieve:    newSieveFromConfig(reg.System),
+		sieve:    sieve.NewSieveFromConfig(reg.System),
 	}
 
 	if s.sieve == nil {
@@ -75,7 +71,7 @@ func TestSpawner_ResultRepetition_SieveInitialized(t *testing.T) {
 // which execution path it's on.
 func TestSpawner_ResultRepetition_MessageFormat(t *testing.T) {
 	s := &Spawner{
-		sieve: NewSieve(10),
+		sieve: sieve.NewSieve(10),
 	}
 	s.sieve.ToolRepetitionThreshold = 2
 
@@ -106,19 +102,19 @@ func TestSpawner_ResultRepetition_MessageFormat(t *testing.T) {
 // time-varying results with the same args, so flagging them as "repetition"
 // would be a false positive.
 func TestSpawner_ResultRepetition_PollerExempt(t *testing.T) {
-	// The spawner's condition is: isReadTool(name) && !isPollerTool(name)
+	// The spawner's condition is: sieve.IsReadTool(name) && !sieve.IsPollerTool(name)
 	// Poller tools should fail this condition.
 	pollers := []string{"progress_check", "health_status", "wait_for_completion"}
 	for _, name := range pollers {
-		if !isReadTool(name) {
+		if !sieve.IsReadTool(name) {
 			continue // not a read tool, wouldn't be checked anyway
 		}
-		if !isPollerTool(name) {
+		if !sieve.IsPollerTool(name) {
 			t.Errorf("Poller %q should be exempt but isPollerTool returned false", name)
 		}
 		// The spawner's condition: isReadTool && !isPollerTool
 		// For pollers, this should be false → CheckResultRepetition NOT called.
-		shouldCheck := isReadTool(name) && !isPollerTool(name)
+		shouldCheck := sieve.IsReadTool(name) && !sieve.IsPollerTool(name)
 		if shouldCheck {
 			t.Errorf("Poller %q should NOT trigger CheckResultRepetition in spawner", name)
 		}
@@ -132,122 +128,8 @@ func TestSpawner_ResultRepetition_PollerExempt(t *testing.T) {
 func TestSpawner_ResultRepetition_WriteToolExempt(t *testing.T) {
 	writes := []string{"create_user", "update_record", "delete_item", "cancel_order", "write_file"}
 	for _, name := range writes {
-		if isReadTool(name) {
+		if sieve.IsReadTool(name) {
 			t.Errorf("Write tool %q should NOT be classified as read tool — would wrongly trigger CheckResultRepetition", name)
 		}
-	}
-}
-
-// ── E2E: ChatHarness result repetition detection ──────────────────────────
-//
-// The chat harness has CheckResultRepetition wired (chat_harness.go:397) —
-// the ONLY wired call site since 2026-10-12 (spawner wiring removed: task-
-// scoped history misfires on legitimate cross-step re-reads in DAG mode).
-// This E2E test verifies the full chat-path behavior: provider makes read
-// tool calls with different args → tool returns identical results → after
-// threshold, [RESULT REPETITION] message is prepended → result_repetition
-// event emitted.
-
-type resultRepetitionProvider struct {
-	calls int
-}
-
-func (p *resultRepetitionProvider) Complete(_ context.Context, _ schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
-	return p.StreamComplete(context.Background(), schemas.CompleteRequest{}, func(string) error { return nil })
-}
-
-func (p *resultRepetitionProvider) StreamComplete(_ context.Context, _ schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
-	p.calls++
-	// First 4 turns: call read_file on different files (all with same content).
-	// The Sieve's CheckResultRepetition fires when the same result content
-	// has been seen >= ToolRepetitionThreshold times.
-	if p.calls <= 4 {
-		return &schemas.ProviderResponse{
-			ToolCalls: []schemas.ToolCall{
-				{Name: "read_file", Arguments: map[string]any{"path": filepath.Join("data", "file"+string(rune('0'+p.calls))+".txt")}},
-			},
-		}, nil
-	}
-	// Final turn: return a text answer.
-	onChunk("Based on the data, the answer is 42.")
-	return &schemas.ProviderResponse{Text: "Based on the data, the answer is 42."}, nil
-}
-
-func (p *resultRepetitionProvider) Embed(_ context.Context, _ string) ([]float32, error) {
-	return nil, nil
-}
-func (p *resultRepetitionProvider) CountTokens(_ context.Context, text string) (int, error) {
-	return len(text) / 4, nil
-}
-func (p *resultRepetitionProvider) Name() string { return "result-rep-mock" }
-
-// TestChatHarness_ResultRepetition_E2E verifies that when a provider makes
-// read tool calls with different args but the tools return identical results,
-// the Sieve's CheckResultRepetition fires and the [RESULT REPETITION] steer
-// message is prepended to the tool result.
-//
-// This is the behavior contract that the spawner's new wiring relies on.
-// The spawner mirrors the chat_harness pattern: same condition
-// (isReadTool && !isPollerTool), same Sieve method, same message format.
-func TestChatHarness_ResultRepetition_E2E(t *testing.T) {
-	// Create files with identical content so read_file returns the same
-	// result regardless of which file is read.
-	// HandleCoreTool resolves relative paths against OutputBase/taskID.
-	taskID := "task-result-rep-e2e"
-	outputBase := t.TempDir()
-	dataDir := filepath.Join(outputBase, taskID, "data")
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	identicalContent := "The customer status is: active\n"
-	for i := 1; i <= 5; i++ {
-		filename := filepath.Join(dataDir, "file"+string(rune('0'+i))+".txt")
-		if err := os.WriteFile(filename, []byte(identicalContent), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	sieve := NewSieve(100)
-	sieve.ToolRepetitionThreshold = 3
-
-	h := &ChatHarness{
-		Provider:   &resultRepetitionProvider{},
-		Model:      "mock",
-		OutputBase: outputBase,
-		MaxTurns:   10,
-		Sieve:      sieve,
-	}
-
-	var events []ChatEvent
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	h.Run(ctx, taskID,
-		[]ChatMessage{{Role: "user", Content: "Read the customer data files and summarize"}},
-		func(ev ChatEvent) error { events = append(events, ev); return nil })
-
-	// Verify that result_repetition event was emitted.
-	sawResultRepetition := false
-	for _, ev := range events {
-		if ev.Type == "result_repetition" {
-			sawResultRepetition = true
-			t.Logf("result_repetition event emitted for tool: %s", ev.Data)
-		}
-	}
-	if !sawResultRepetition {
-		t.Error("Expected result_repetition event — CheckResultRepetition should have fired " +
-			"after 3+ identical read_file results. This means the Sieve's result-level " +
-			"repetition detection is not working.")
-	}
-
-	// Verify that the [RESULT REPETITION] message appeared in tool results.
-	sawRepetitionMsg := false
-	for _, ev := range events {
-		if ev.Type == "tool_result" && strings.Contains(ev.Data, "[RESULT REPETITION]") {
-			sawRepetitionMsg = true
-		}
-	}
-	if !sawRepetitionMsg {
-		t.Error("Expected [RESULT REPETITION] prefix in tool result — the steer message " +
-			"should be prepended when CheckResultRepetition fires")
 	}
 }

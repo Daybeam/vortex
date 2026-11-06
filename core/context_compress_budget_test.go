@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -203,9 +204,9 @@ func TestCTX51_D2_BudgetCompression(t *testing.T) {
 			blocks []schemas.ContentBlock
 			budget int
 		}{
-			"empty":        {nil, 100},
-			"single_no_bud": {mk(1, 100), 0},
-			"single_tight": {mk(1, 100000), 10},
+			"empty":             {nil, 100},
+			"single_no_bud":     {mk(1, 100), 0},
+			"single_tight":      {mk(1, 100000), 10},
 			"smaller_than_keep": {mk(5, 100), 1},
 		}
 		for name, tc := range cases {
@@ -249,10 +250,10 @@ func TestCTX51_D4_AuditCountsMaxTokens(t *testing.T) {
 	// reserve is pinned to the tier default (0 would fall back to it anyway) so
 	// the arithmetic is explicit: effectiveMaxCtx = 40960 - 4096 = 36864.
 	const (
-		win      = 40960
-		reserve  = 4096
-		maxOut   = 1871
-		wantA    = 39704
+		win     = 40960
+		reserve = 4096
+		maxOut  = 1871
+		wantA   = 39704
 	)
 
 	newCM := func(stub *ctx51Stub) *ContextManager {
@@ -453,8 +454,8 @@ func runCTX51EventCase(t *testing.T, label string, window, taskLen int) (kind st
 	}
 	logStr := string(raw)
 
-	compressed := strings.Count(logStr, string(EventContextCompressed))
-	skipped := strings.Count(logStr, `"`+string(EventContextCompressSkipped)+`"`)
+	compressed := strings.Count(logStr, string(obs.EventContextCompressed))
+	skipped := strings.Count(logStr, `"`+string(obs.EventContextCompressSkipped)+`"`)
 	total := compressed + skipped
 
 	calls, _, _ := stub.stats()

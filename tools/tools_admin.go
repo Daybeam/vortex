@@ -16,7 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 type deploySession struct {
@@ -223,7 +223,7 @@ func HandleAdminDeployFile(ctx context.Context, app *App, req mcp.CallToolReques
 	}
 
 	checksum := fmt.Sprintf("%x", sha256.Sum256(data))
-	app.Logger.Log(core.EventAdminFileDeployed, "system", "", map[string]any{
+	app.Logger.Log(obs.EventAdminFileDeployed, "system", "", map[string]any{
 		"path": absPath, "size": len(data), "checksum": checksum, "reason": reason,
 	})
 
@@ -346,7 +346,7 @@ func HandleAdminDeployCommit(ctx context.Context, app *App, req mcp.CallToolRequ
 		_ = os.Remove(session.TmpPath)
 	}
 
-	app.Logger.Log(core.EventAdminFileDeployed, "system", "", map[string]any{
+	app.Logger.Log(obs.EventAdminFileDeployed, "system", "", map[string]any{
 		"path": session.Path, "size": session.TotalSize, "checksum": actualHash, "reason": session.Reason,
 	})
 	return jsonOK(map[string]any{"status": "success", "path": session.Path, "sha256": actualHash})

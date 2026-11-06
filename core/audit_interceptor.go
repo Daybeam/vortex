@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/observability"
 )
 
 // AuditInterceptor logs detailed entry/exit of every subagent call with tracing.
-func AuditInterceptor(logger *Logger) Interceptor {
+func AuditInterceptor(logger *obs.Logger) Interceptor {
 	metrics := observability.GetGlobalMetrics()
 
 	return func(ctx context.Context, req *SpawnRequest, next SpawnerHandler) (*SpawnResult, error) {

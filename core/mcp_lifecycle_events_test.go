@@ -2,6 +2,8 @@ package core
 
 import (
 	"testing"
+
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // TestMCPLifecycleEvents_AreRouteableByAdmin pins the contract an admin
@@ -11,10 +13,10 @@ import (
 // config route could not reasonably trigger on them.
 func TestMCPLifecycleEvents_AreRouteableByAdmin(t *testing.T) {
 	// 1. The names are the normalized snake_case values a route names.
-	want := map[string]EventType{
-		"mcp_online":           EventMCPOnline,
-		"mcp_offline":          EventMCPOffline,
-		"mcp_discovery_failed": EventMCPDiscoveryFailed,
+	want := map[string]obs.EventType{
+		"mcp_online":           obs.EventMCPOnline,
+		"mcp_offline":          obs.EventMCPOffline,
+		"mcp_discovery_failed": obs.EventMCPDiscoveryFailed,
 	}
 	for name, ev := range want {
 		if string(ev) != name {
@@ -27,7 +29,7 @@ func TestMCPLifecycleEvents_AreRouteableByAdmin(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), nil)
 
 	got := make(chan string, 1)
-	unsub := DefaultBus.SubscribeWithCancel("mcp_offline", func(e AgentEvent) error {
+	unsub := obs.DefaultBus.SubscribeWithCancel("mcp_offline", func(e obs.AgentEvent) error {
 		select {
 		case got <- e.EventType:
 		default:
@@ -36,7 +38,7 @@ func TestMCPLifecycleEvents_AreRouteableByAdmin(t *testing.T) {
 	})
 	defer unsub()
 
-	logger.Log(EventMCPOffline, "task-1", "s1", map[string]any{"mcp": "demo"})
+	logger.Log(obs.EventMCPOffline, "task-1", "s1", map[string]any{"mcp": "demo"})
 
 	select {
 	case name := <-got:

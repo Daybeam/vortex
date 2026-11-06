@@ -128,7 +128,7 @@ func TestMCPToolsListFailure_SlogError(t *testing.T) {
 }
 
 // TestIsContextLimitError (#20 regression, eval §8.46):
-// Verifies that isContextLimitError correctly detects context-limit errors
+// Verifies that IsContextLimitError correctly detects context-limit errors
 // from different providers (OpenAI, Anthropic, Gemini, generic).
 //
 // Feature: Context Window Compression
@@ -176,9 +176,9 @@ func TestIsContextLimitError(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isContextLimitError(tc.err)
+			got := IsContextLimitError(tc.err)
 			if got != tc.want {
-				t.Errorf("isContextLimitError(%v) = %v, want %v", tc.err, got, tc.want)
+				t.Errorf("IsContextLimitError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

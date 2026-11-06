@@ -66,9 +66,15 @@ func (al *AuditLogger) Log(action, taskID, stepID, decisionID string, dtype, cho
 	if al == nil || al.filePath == "" {
 		return nil
 	}
-	al.mu.Lock()
-	defer al.mu.Unlock()
 
+	// audit M4 (2026-11-05): formerly held mu.Lock across json.Marshal +
+	// sha256 + os.OpenFile + f.Write. The lock only protects prevHash
+	// (the chain state). Narrow the lock to prevHash read + hash compute
+	// + prevHash update, then marshal + file I/O outside the lock.
+	// If the write fails, prevHash is already advanced — the chain is
+	// best-effort (same fragility as a crash between write and update
+	// in the old code).
+	al.mu.Lock()
 	entry := AuditEntry{
 		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
 		Action:     action,
@@ -86,6 +92,8 @@ func (al *AuditLogger) Log(action, taskID, stepID, decisionID string, dtype, cho
 	canonical, _ := json.Marshal(entryCopy)
 	h := sha256.Sum256([]byte(al.prevHash + string(canonical)))
 	entry.ThisHash = hex.EncodeToString(h[:])
+	al.prevHash = entry.ThisHash
+	al.mu.Unlock()
 
 	line, err := json.Marshal(entry)
 	if err != nil {
@@ -101,7 +109,6 @@ func (al *AuditLogger) Log(action, taskID, stepID, decisionID string, dtype, cho
 	if _, err := f.Write(line); err != nil {
 		return err
 	}
-	al.prevHash = entry.ThisHash
 	return nil
 }
 

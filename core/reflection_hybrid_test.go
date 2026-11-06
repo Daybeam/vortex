@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -14,7 +15,9 @@ import (
 
 // MockHybridProvider implements providers.Provider (interfaces.Provider) for testing
 type MockHybridProvider struct {
-	response string
+	response   string
+	lastSystem string
+	lastUser   string
 }
 
 func (m *MockHybridProvider) Name() string { return "mock-hybrid" }
@@ -22,6 +25,8 @@ func (m *MockHybridProvider) CountTokens(ctx context.Context, text string) (int,
 	return len(text) / 4, nil
 }
 func (m *MockHybridProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
+	m.lastSystem = req.System
+	m.lastUser = req.User
 	return &schemas.ProviderResponse{Text: m.response}, nil
 }
 func (m *MockHybridProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
@@ -59,7 +64,7 @@ func TestReflectionEngine_ScanForHybridMerge(t *testing.T) {
 	t.Cleanup(func() { providers.GlobalRouter.Deregister("default") })
 
 	logger := mustNewLogger(t, logDir, nil)
-	jit := NewJITManager(reg, tmpDir)
+	jit := jit.NewJITManager(reg, tmpDir)
 
 	// Experience store
 	es := mustNewExperienceStore(t, tmpDir, nil, nil, nil, nil)
@@ -121,7 +126,7 @@ func TestReflectionEngine_CrystallizeStepToSkill_Additive(t *testing.T) {
 	t.Cleanup(func() { providers.GlobalRouter.Deregister("default") })
 
 	logger := mustNewLogger(t, logDir, nil)
-	jit := NewJITManager(reg, tmpDir)
+	jit := jit.NewJITManager(reg, tmpDir)
 	es := mustNewExperienceStore(t, tmpDir, nil, nil, nil, nil)
 
 	// Mock TaskStore

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // SkillSyncer is the skill analog of CookbookSyncer: periodically syncs skills
@@ -28,14 +29,14 @@ import (
 type SkillSyncer struct {
 	registry       *config.Registry
 	resourceLoader *ResourceLoader
-	logger         *Logger
+	logger         *obs.Logger
 	stopChan       chan struct{}
 	stopOnce       sync.Once
 	ctx            context.Context
 	cancel         context.CancelFunc
 }
 
-func NewSkillSyncer(registry *config.Registry, loader *ResourceLoader, logger *Logger) *SkillSyncer {
+func NewSkillSyncer(registry *config.Registry, loader *ResourceLoader, logger *obs.Logger) *SkillSyncer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &SkillSyncer{
 		registry:       registry,

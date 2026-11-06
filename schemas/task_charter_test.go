@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // TestTaskCharter_PromptFormat verifies that CharterPrompt formats the charter
@@ -60,6 +61,35 @@ func TestTaskCharter_Truncation(t *testing.T) {
 	}
 	if !strings.Contains(got, "truncated") {
 		t.Errorf("truncated charter should contain truncation marker: %q", got)
+	}
+}
+
+// TestTaskCharter_TruncationKeepsValidUTF8 is a regression test.
+// Bug: CharterPrompt sliced result[:maxChars] by byte offset, which cut CJK and
+// emoji characters in half and injected invalid UTF-8 into step prompts. The
+// original truncation test used only ASCII ("x"), so it could not see this.
+// Found in code review 2026-11-01 (feature-validation follow-up).
+func TestTaskCharter_TruncationKeepsValidUTF8(t *testing.T) {
+	cases := map[string]string{
+		"cjk-3byte":   strings.Repeat("验证过期令牌", 20),
+		"emoji-4byte": strings.Repeat("🔥", 40),
+		"mixed":       strings.Repeat("ab验证", 30),
+	}
+	for name, intent := range cases {
+		c := &TaskCharter{Intent: intent}
+		// Sweep every budget so that some cut offsets land inside a multi-byte rune.
+		for n := 1; n < 120; n++ {
+			got := c.CharterPrompt(n)
+			if !utf8.ValidString(got) {
+				t.Fatalf("%s: maxChars=%d produced invalid UTF-8: %q", name, n, got)
+			}
+		}
+	}
+
+	// Truncated output must still carry the marker.
+	got := (&TaskCharter{Intent: strings.Repeat("验", 100)}).CharterPrompt(50)
+	if !strings.HasSuffix(got, "(charter truncated)") {
+		t.Errorf("missing truncation marker: %q", got)
 	}
 }
 

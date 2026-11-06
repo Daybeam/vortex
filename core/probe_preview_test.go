@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 func TestProbePreviewPrompt(t *testing.T) {
@@ -22,7 +23,7 @@ func TestProbePreviewPrompt(t *testing.T) {
 	if err := reg.Load(); err != nil {
 		t.Fatalf("registry load: %v", err)
 	}
-	_lg, _ := NewLogger(os.TempDir(), &reg.System)
+	_lg, _ := obs.NewLogger(os.TempDir(), &reg.System)
 	sp := NewSpawner(reg, nil, nil, _lg, NewResourceLoader(), "") // minimal dependencies
 	out, err := sp.PreviewPrompt("customer_service_agent",
 		"Handle this customer service conversation. The customer (user id noah_muller_9847) wants to book a flight from San Francisco to New York for three passengers.",

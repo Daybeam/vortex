@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -102,7 +103,7 @@ func newLifecycleEngine(t *testing.T) *DirectedEngine {
 	expDir := mkdirTemp(t)
 	expStore := mustNewExperienceStore(t, expDir, ts, &reg.System, nil, nil)
 	jitDir := mkdirTemp(t)
-	jit := NewJITManager(reg, jitDir)
+	jit := jit.NewJITManager(reg, jitDir)
 
 	engine := NewDirectedEngine(reg, ts, expStore, jit, logger, nil, outDir, outDir, nil)
 	t.Cleanup(func() { engine.Stop() })

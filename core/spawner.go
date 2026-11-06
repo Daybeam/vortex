@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"fmt"
 	"log"
@@ -11,10 +12,11 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
-	"github.com/daybeam/vortex/core/verify"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/gateway"
 	"github.com/daybeam/vortex/pkg/registry"
 	"github.com/daybeam/vortex/providers"
+	"github.com/daybeam/vortex/providers/routing"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -48,7 +50,7 @@ type Spawner struct {
 	registry          *config.Registry
 	taskStore         store.ITaskStore
 	expStore          store.IExperienceStore
-	logger            *Logger
+	logger            *obs.Logger
 	mcpMgr            *MCPConnectionManager
 	Mu                sync.Mutex
 	refreshWg         sync.WaitGroup // F3: tracks startup embedding-refresh goroutine
@@ -59,9 +61,8 @@ type Spawner struct {
 	processor         *OutputProcessor
 	toolRouter        *ToolRouter
 	skillRouter       *SkillRouter
-	verifierRegistry  map[string]verify.Verifier
 	constraintAdapter *ConstraintAdapter
-	sieve             *Sieve
+	sieve             *sieve.Sieve
 	contextManager    *ContextManager
 	domainReadCache   *DomainToolReadCache // #2-universal (eval §23): replay cached read results
 	CaSKG             *CaSKGManager
@@ -83,6 +84,11 @@ type Spawner struct {
 	// ClearSanitizer clears the sanitizer vault for a completed task (P2).
 	// Nil-safe: when nil or sanitizer is nil, call is a no-op.
 	ClearSanitizer func(taskID string)
+
+	// projectResolver resolves a taskID to its project space identifier.
+	// Injected by DirectedEngine via SetProjectResolver. Nil-safe: returns
+	// "default" when nil (Phase 3, Project Space & Memory Tiering design).
+	projectResolver func(taskID string) string
 
 	// signalCollector and policyDecider decouple data collection from policy
 	// computation in calculateMaxTurns. See core/policy_signals.go and
@@ -114,14 +120,14 @@ type Spawner struct {
 
 	// effectTrackers (ADDED 2026-10-13): per-task EffectTracker for A2/A4
 	// effect tracking. Keyed by taskID. Lazy-created on first access.
-	// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3.
+	// See docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3.
 	effectTrackers sync.Map // taskID → *EffectTracker
 
 	// telemetry and providerRouter (ADDED 2026-10-21): provider routing telemetry
 	// and strategy-based selection. Nil-safe: initialized in NewSpawner from config.
 	// See docs/completed/2026-10-21/PROVIDER_ROUTING_TELEMETRY_DESIGN.md.
-	telemetry      *TelemetryRegistry
-	providerRouter *ProviderRouter
+	telemetry      *routing.TelemetryRegistry
+	providerRouter *routing.ProviderRouter
 
 	// upstreamSummarizer (ADDED 2026-10-28): compresses long upstream context
 	// into a key-facts summary before side-loading in applyRefBasedHandoff.
@@ -132,7 +138,14 @@ type Spawner struct {
 	upstreamSummarizerConfig config.UpstreamSummarizerConfig
 }
 
-func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *Logger, loader *ResourceLoader, outputBase string) *Spawner {
+func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *obs.Logger, loader *ResourceLoader, outputBase string) *Spawner {
+	// A JIT tool expires after its TTL while its GeneratedSkill record lives
+	// on; retrieval must not inject ids whose tool is gone. Nil store is a
+	// supported construction (several tests pass nil).
+	if es != nil {
+		es.SetSkillLivenessProbe(func(id string) bool { return reg.GetMCP(id) != nil })
+	}
+
 	interceptors := []Interceptor{
 		AuditInterceptor(logger), // FIRST: wrap everything in audit
 		HealthCheckInterceptor(reg, logger),
@@ -146,17 +159,16 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 	}
 
 	caskg := NewCaSKGManager(filepath.Join("data", "causal_skill_graph.json"))
-	caskg.HookEventBus(DefaultBus)
+	caskg.HookEventBus(obs.DefaultBus)
 
 	spawner := &Spawner{
-		registry:         reg,
-		taskStore:        ts,
-		expStore:         es,
-		logger:           logger,
-		ResourceLoader:   loader,
-		mcpMgr:           NewMCPConnectionManager(reg, logger),
-		verifierRegistry: make(map[string]verify.Verifier),
-		interceptors:     interceptors,
+		registry:       reg,
+		taskStore:      ts,
+		expStore:       es,
+		logger:         logger,
+		ResourceLoader: loader,
+		mcpMgr:         NewMCPConnectionManager(reg, logger),
+		interceptors:   interceptors,
 		contextProviders: []ContextProvider{
 			&TimeProvider{},
 		},
@@ -166,7 +178,7 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		skillRouter:       NewSkillRouter(reg),
 		constraintAdapter: NewConstraintAdapter(),
 		CaSKG:             caskg,
-		sieve:             newSieveFromConfig(reg.System),
+		sieve:             sieve.NewSieveFromConfig(reg.System),
 		contextManager:    NewContextManager(reg),
 		domainReadCache:   NewDomainToolReadCache(), // #2-universal: replay cached read results
 		watchdog:          NewGatewayWatchdog(reg),
@@ -260,13 +272,13 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 		spawner.mcpMgr.InvalidateSessionCache()
 	})
 
-	spawner.CaSKG.HookEventBus(DefaultBus)
+	spawner.CaSKG.HookEventBus(obs.DefaultBus)
 
 	// Initialize provider routing telemetry (ADDED 2026-10-21).
 	// Nil-safe: if config is zero-value, defaults are applied in NewTelemetryRegistry.
 	routingCfg := reg.System.ProviderRouting
-	spawner.telemetry = NewTelemetryRegistry(routingCfg)
-	spawner.providerRouter = NewProviderRouter(spawner.telemetry, routingCfg.Strategy)
+	spawner.telemetry = routing.NewTelemetryRegistry(routingCfg)
+	spawner.providerRouter = routing.NewProviderRouter(spawner.telemetry, routingCfg.Strategy)
 
 	return spawner
 }
@@ -369,6 +381,25 @@ func (s *Spawner) SetArchive(a *ContextArchive) {
 	if s.pa != nil {
 		s.pa.SetArchive(a)
 	}
+}
+
+// SetProjectResolver injects the taskID→projectID resolver from the
+// DirectedEngine. Nil-safe: when nil, ProjectOf returns "default".
+// Propagates to the PromptAssembler if it has been initialized.
+func (s *Spawner) SetProjectResolver(r func(taskID string) string) {
+	s.projectResolver = r
+	if s.pa != nil {
+		s.pa.SetProjectResolver(r)
+	}
+}
+
+// ProjectOf returns the project space identifier for the given task.
+// Returns "default" when no resolver is wired or the task is unknown.
+func (s *Spawner) ProjectOf(taskID string) string {
+	if s.projectResolver == nil {
+		return "default"
+	}
+	return s.projectResolver(taskID)
 }
 
 // SetFoldEngine injects the FoldEngine for segment-based incremental fold.

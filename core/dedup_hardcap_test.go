@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -76,7 +77,7 @@ func TestToolCallKey_ReasonDoesNotChangeKey(t *testing.T) {
 // reason-blind: feeding the same call repeatedly while varying _reason still
 // trips the interception, because the hash ignores control arguments.
 func TestSieve_ReasonCannotResetConsecutiveCounter(t *testing.T) {
-	s := NewSieve(100)
+	s := sieve.NewSieve(100)
 	taskID, stepID := "task-reason-bypass", "step-1"
 
 	reasons := []string{"stale page", "retry", "different wording", "yet another"}

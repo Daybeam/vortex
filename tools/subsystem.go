@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/daybeam/vortex/pkg/bootmetrics"
 )
 
 // EditionSubsystem represents an optional, edition-specific component that
@@ -26,6 +27,7 @@ func (app *App) InitEditionSubsystems() error {
 		if err := s.Init(app); err != nil {
 			return fmt.Errorf("subsystem %s: %w", s.Name(), err)
 		}
+		bootmetrics.Mark("subsystem:" + s.Name())
 	}
 	return nil
 }

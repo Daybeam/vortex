@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/capability"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -51,8 +52,32 @@ func plannerRetryNudge(prev string) string {
 		prev + "\n\n" +
 		"Discard that answer completely. Reply again with ONLY the JSON object " +
 		"defined by the Output Contract above: no <thought> block, no " +
-		"explanation, no numbered outline, no markdown fence. Your first " +
-		"character must be { and you must stop after the closing }."
+	"explanation, no numbered outline, no markdown fence. Your first " +
+	"character must be { and you must stop after the closing }."
+}
+
+// buildPlanDelegationPrompt constructs the planner prompt for D5 P1b
+// (DELEGATION_HANDOVER_REDESIGN.md §4.5): when the planner is delegated
+// to the host, this prompt is returned as a delegation decision with
+// Kind="plan". The host produces a plan; the orchestrator injects it.
+//
+// This is a minimal version of the full planner prompt (RequestPlanning
+// builds a richer one with tool catalogs). The host has its own tools
+// and role knowledge, so we only send the task + output contract.
+func buildPlanDelegationPrompt(task, roleID string) map[string]any {
+	var sb strings.Builder
+	sb.WriteString("You are a Task Planner for a supervised execution engine.\n")
+	sb.WriteString("Break the user request below into an executable dependency graph.\n\n")
+	sb.WriteString("## User request\n")
+	sb.WriteString(task)
+	sb.WriteString("\n\n## Caller role\n")
+	sb.WriteString(roleID)
+	sb.WriteString("\n")
+	sb.WriteString(planJSONContract)
+	return map[string]any{
+		"system_prompt": "You are a Task Planner. Produce a JSON plan following the output contract exactly.",
+		"user_prompt":   sb.String(),
+	}
 }
 
 // planJSONContract is the exact output contract appended to every planner
@@ -70,7 +95,10 @@ Respond with ONE JSON object and nothing else. No prose, no markdown fences.
       "task": "<self-contained instruction for this step>",
       "depends_on": ["<id of a predecessor step>", ...],
       "allowed_tools": ["<exact tool name from the catalog below>", ...],
-      "exit_criteria": "<optional: 'regex:<pattern>' or 'file:<path>' or empty>"
+      "exit_criteria": "<optional: 'regex:<pattern>' or 'file:<path>' or 'json' or empty>",
+      "deterministic_checks": [
+        { "type": "<one of file_exists|command_pass|plan_checkboxes|code_entities>", "params": { "<key>": "<value>" } }
+      ]
     }
   ]
 }
@@ -86,7 +114,12 @@ Hard rules — violating any of these makes the plan unusable and it will be dis
 6. Emit only work that is still pending. Never re-emit an already completed step.
 7. "allowed_tools" is the ONLY set of tools a step may call. If a step needs to
    authenticate first, the login tool must be listed too.
-8. No reasoning preamble. Do NOT open with a <thought> block, an analysis, or a
+8. "deterministic_checks" is optional. When present, "type" MUST be exactly one
+   of file_exists (params: path), command_pass (params: command),
+   plan_checkboxes, code_entities. A type outside that list is skipped silently,
+   which the engine then reads as a pass — never invent a type name. Prefer these
+   over prose criteria: they run before any model audit and cost no tokens.
+9. No reasoning preamble. Do NOT open with a <thought> block, an analysis, or a
    numbered outline. The first character of your answer must be "{" and the
    last must be "}".`
 
@@ -128,7 +161,7 @@ func (s *DirectedEngine) plannerToolCatalog(roleID string, submitterIsAdmin bool
 	// shared enforceScope function from discovery.go. Same visibility logic
 	// as the discover MCP tool — single source of truth for scoping.
 	// See docs/completed/2026-10-21/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 4.
-	mcpIDs, scopeErr := enforceScope(s.registry, DiscoveryScope{Mode: "role", RoleID: roleID, AllowPool: false})
+	mcpIDs, scopeErr := capability.EnforceScope(s.registry, capability.DiscoveryScope{Mode: "role", RoleID: roleID, AllowPool: false})
 	if scopeErr != nil {
 		s.logger.Log("EventPlannerEmptyCatalog", "", roleID, map[string]any{
 			"role_id": roleID,
@@ -202,7 +235,7 @@ func (s *DirectedEngine) plannerToolCatalog(roleID string, submitterIsAdmin bool
 // plannerAllowedRoles renders + returns the role ids a plan may assign.
 // Only roles that exist in the registry are offered.
 //
-// Phase 4 integration (2026-10-20): delegates role discovery to DiscoverImpl,
+// Phase 4 integration (2026-10-20): delegates role discovery to capability.DiscoverImpl,
 // sharing the discovery logic with the discover MCP tool. MCP ID enrichment
 // still reads from the registry (DiscoveryRoleSummary doesn't include MCP IDs).
 // See docs/completed/2026-10-21/BUILTIN_PLAN_ROLES_OVERLAP_ANALYSIS.md §5 Phase 4.
@@ -212,12 +245,12 @@ func (s *DirectedEngine) plannerAllowedRoles() (string, map[string]bool) {
 		return "", allowed
 	}
 
-	result, err := DiscoverImpl(s.registry, DiscoveryScope{Mode: "pool", AllowPool: true}, "roles", "", 1, 1000)
+	result, err := capability.DiscoverImpl(s.registry, capability.DiscoveryScope{Mode: "pool", AllowPool: true}, "roles", "", 1, 1000)
 	if err != nil || result == nil {
 		return "", allowed
 	}
 
-	summaryMap := make(map[string]DiscoveryRoleSummary, len(result.Roles))
+	summaryMap := make(map[string]capability.DiscoveryRoleSummary, len(result.Roles))
 	var ids []string
 	for _, summary := range result.Roles {
 		// A planner must not assign work to itself or to the arbiter — that
@@ -268,7 +301,7 @@ func (s *DirectedEngine) plannerAllowedRoles() (string, map[string]bool) {
 		} else {
 			sb.WriteString(fmt.Sprintf("- `%s`", id))
 		}
-		// Enrich with tool count (from DiscoverImpl) and bound MCP IDs
+		// Enrich with tool count (from capability.DiscoverImpl) and bound MCP IDs
 		// (from registry). Helps the planner make informed role assignments
 		// without a separate discover call per role.
 		mcpIDs := mcpIDsByRole[id]

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -29,11 +30,11 @@ const (
 // ADDED (2026-08-27).
 type AntiSlopInterceptor struct {
 	registry *config.Registry
-	logger   *Logger
+	logger   *obs.Logger
 }
 
 // NewAntiSlopInterceptor creates a new interceptor.
-func NewAntiSlopInterceptor(reg *config.Registry, logger *Logger) *AntiSlopInterceptor {
+func NewAntiSlopInterceptor(reg *config.Registry, logger *obs.Logger) *AntiSlopInterceptor {
 	return &AntiSlopInterceptor{registry: reg, logger: logger}
 }
 

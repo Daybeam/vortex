@@ -108,9 +108,10 @@ func NewTaskStore(backend ITaskBackend) *TaskStore {
 }
 
 func (ts *TaskStore) Set(ctx context.Context, taskID, stepID string, result *StepResult) error {
-	ts.Mu.Lock()
-	defer ts.Mu.Unlock()
-
+	// audit M3 (2026-11-05): removed Mu.Lock — the backend (sql.DB or
+	// file-based) is thread-safe and TaskStore has no mutable state.
+	// Holding the lock across json.Marshal + backend.Save serialized all
+	// access and blocked readers during writes.
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return err
@@ -119,9 +120,7 @@ func (ts *TaskStore) Set(ctx context.Context, taskID, stepID string, result *Ste
 }
 
 func (ts *TaskStore) Get(ctx context.Context, taskID, stepID string) (*StepResult, error) {
-	ts.Mu.RLock()
-	defer ts.Mu.RUnlock()
-
+	// audit M3 (2026-11-05): removed Mu.RLock — backend is thread-safe.
 	data, err := ts.backend.Load(ctx, taskID, stepID)
 	if err != nil {
 		return nil, err
@@ -136,11 +135,9 @@ func (ts *TaskStore) Get(ctx context.Context, taskID, stepID string) (*StepResul
 
 // GetBatch fetches multiple step results in a single call (audit P-H1-H4).
 // If the backend supports batchLoader, uses a single SQL query; otherwise
-// falls back to N sequential Load calls (still under a single RLock).
+// falls back to N sequential Load calls.
 func (ts *TaskStore) GetBatch(ctx context.Context, taskID string, stepIDs []string) (map[string]*StepResult, error) {
-	ts.Mu.RLock()
-	defer ts.Mu.RUnlock()
-
+	// audit M3 (2026-11-05): removed Mu.RLock — backend is thread-safe.
 	result := make(map[string]*StepResult, len(stepIDs))
 	if len(stepIDs) == 0 {
 		return result, nil
@@ -184,13 +181,11 @@ func (ts *TaskStore) GetByRef(ctx context.Context, ref string) (*StepResult, err
 }
 
 func (ts *TaskStore) ClearTask(ctx context.Context, taskID string) (int, error) {
-	ts.Mu.Lock()
-	defer ts.Mu.Unlock()
+	// audit M3 (2026-11-05): removed Mu.Lock — backend is thread-safe.
 	return ts.backend.Delete(ctx, taskID)
 }
 
 func (ts *TaskStore) Claim(ctx context.Context, taskID, stepID string) (bool, error) {
-	ts.Mu.Lock()
-	defer ts.Mu.Unlock()
+	// audit M3 (2026-11-05): removed Mu.Lock — backend is thread-safe.
 	return ts.backend.Claim(ctx, taskID, stepID)
 }

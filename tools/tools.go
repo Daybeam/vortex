@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"github.com/daybeam/vortex/core/capability"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -13,6 +14,9 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/jit"
+	"github.com/daybeam/vortex/core/obs"
+	"github.com/daybeam/vortex/pkg/bootmetrics"
 	ci "github.com/daybeam/vortex/pkg/codeintel/tools"
 	"github.com/daybeam/vortex/store"
 )
@@ -143,10 +147,10 @@ type App struct {
 	ExpStore          store.IExperienceStore
 	Schedule          *core.ScheduleManager
 	SStore            *store.ScheduleStore
-	JIT               *core.JITManager
-	Logger            *core.Logger
+	JIT               *jit.JITManager
+	Logger            *obs.Logger
 	CodeIntel         *ci.Handler
-	Navigator         *core.CapabilityNavigator
+	Navigator         *capability.CapabilityNavigator
 	ConfigPath        string
 	RootDir           string // project root dir for absolute path resolution (desktop: walked-up config dir)
 	Tier              string
@@ -154,6 +158,7 @@ type App struct {
 	IntentRouter      *core.IntentRouter
 	EmbedClient       core.EmbeddingClient
 	MemoryBankStore   *store.MemoryBankStore
+	CapProfile        *store.CapabilityProfileStore // same instance the spawner records routing telemetry into; nil = this process never wired it, which exp.get_capability_profile reports as "not wired" rather than an empty list (Q5-1 / O7)
 	Archive           *core.ContextArchive
 	Promoter          *Promoter // Optional usage-driven hot-promoter for invoke actions
 	SOPManager        *core.SOPManager
@@ -226,6 +231,23 @@ func jsonOK(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(data)), nil
 }
 
+// jsonOKRedacted marshals v to JSON, then strips known secret patterns from
+// the serialized text before it enters the LLM/host context. Used for tool
+// outputs whose values are arbitrary structured data (e.g. get_logs events)
+// where redacting individual string fields would require a recursive walk.
+//
+// L2 fix (DELEGATION_HANDOVER_REDESIGN.md §12.6): the redaction patterns
+// (sk-…, AKIA…, Bearer …, api_key=…, emails, JWTs) never match JSON structural
+// tokens, so running them over the whole JSON text is safe and covers every
+// string field uniformly. Toggled by VORTEX_DISABLE_EGRESS_REDACTION.
+func jsonOKRedacted(v any) (*mcp.CallToolResult, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(core.RedactEgress(string(data))), nil
+}
+
 // loggedHandler wraps an MCP tool handler with structured logging for observability.
 func (app *App) loggedHandler(name string, handler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -256,9 +278,14 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 
 		effectiveTier := EffectiveTier(ctx, app)
 
-		app.Logger.Log(core.EventToolCall, taskID, "", map[string]any{
-			"tool":  name,
-			"args":  req.Params.Arguments,
+		app.Logger.Log(obs.EventToolCall, taskID, "", map[string]any{
+			"tool": name,
+			// Bounded and redacted like every other tool-call record. This used
+			// to log req.Params.Arguments raw: no size cap, no redaction, on the
+			// one path where the parent agent hands over whole prompts and
+			// session-level parameters. submit_task alone can carry a multi-KB
+			// task body.
+			"args":  core.ToolArgsLogString(name, req.Params.Arguments),
 			"tier":  effectiveTier,
 			"phase": "started",
 		})
@@ -279,7 +306,7 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 			detail["error"] = "tool execution failed"
 		}
 
-		app.Logger.Log(core.EventToolCall, taskID, "", detail)
+		app.Logger.Log(obs.EventToolCall, taskID, "", detail)
 		return res, err
 	}
 }
@@ -373,6 +400,7 @@ func int64Arg(rawArgs any, key string, def int64) int64 {
 func RegisterAll(s *server.MCPServer, app *App) {
 	RegisterTier1(s, app)
 	RegisterTier2(s, app)
+	bootmetrics.Mark("tools")
 }
 
 // RegisterTier1 registers public-safe tools.

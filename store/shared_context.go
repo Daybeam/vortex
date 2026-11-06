@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -54,10 +55,18 @@ type SharedContextEntry struct {
 // Persistence: JSONL file at {dir}/{taskID}.jsonl. Each WriteEntry appends
 // one line. Reads parse the full file and return the requested subset.
 type SharedContext struct {
-	mu     sync.Mutex
-	dir    string // persistence directory
-	taskID string // scoping key; filename is {taskID}.jsonl
-	seq    int64  // in-memory sequence counter for entry IDs
+	mu sync.RWMutex
+	// writeMu serialises the append path only. `mu` stopped covering file I/O
+	// in audit M7 (2026-11-05), which is right for readers — they should not
+	// queue behind a write — but leaves two writers appending to the same file
+	// concurrently. O_APPEND is not atomic across goroutines here: the test
+	// TestSharedContext_ConcurrentWrite lost 19 of 20 entries, and because
+	// ReadAll skips lines it cannot parse, the loss was silent. Writers take
+	// this lock; readers still only need RLock on `mu`.
+	writeMu sync.Mutex
+	dir     string // persistence directory
+	taskID  string // scoping key; filename is {taskID}.jsonl
+	seq     int64  // in-memory sequence counter for entry IDs
 }
 
 // NewSharedContext creates a SharedContext backed by a JSONL file in dir.
@@ -84,9 +93,11 @@ func (sc *SharedContext) filePath() string {
 // WriteEntry appends a new entry to the shared context. The entry's ID and
 // CreatedAt are auto-filled if zero. Returns the written entry (with ID set).
 func (sc *SharedContext) WriteEntry(entry *SharedContextEntry) (*SharedContextEntry, error) {
+	// audit M7 (2026-11-05): formerly held mu.Lock across json.Marshal +
+	// os.OpenFile + f.Write. The lock only protects sc.seq (the sequence
+	// counter). Narrow the lock to just the seq increment + ID assignment,
+	// then marshal + file I/O outside the lock.
 	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
 	sc.seq++
 	if entry.ID == "" {
 		entry.ID = fmt.Sprintf("ctx_%s_%d", sc.taskID, sc.seq)
@@ -95,11 +106,17 @@ func (sc *SharedContext) WriteEntry(entry *SharedContextEntry) (*SharedContextEn
 		entry.CreatedAt = time.Now().UTC()
 	}
 	entry.TaskID = sc.taskID
+	sc.mu.Unlock()
 
 	path := sc.filePath()
 	if path == "" {
 		return entry, nil // in-memory only
 	}
+
+	// One writer at a time, and only around the append: see the writeMu comment
+	// on the struct. Readers do not take this lock.
+	sc.writeMu.Lock()
+	defer sc.writeMu.Unlock()
 
 	line, err := json.Marshal(entry)
 	if err != nil {
@@ -154,8 +171,12 @@ func (sc *SharedContext) ReadRecent(limit int, typeFilter ContextEntryType) ([]*
 
 // ReadAll returns all entries in chronological order (oldest first).
 func (sc *SharedContext) ReadAll() ([]*SharedContextEntry, error) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
+	// audit H5: ReadAll only reads the append-only JSONL file (no shared
+	// mutable state besides seq, which is written only under Lock). Use RLock
+	// so concurrent readers don't block each other; was Lock, serializing
+	// every read behind the writer.
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
 
 	path := sc.filePath()
 	if path == "" {
@@ -171,16 +192,25 @@ func (sc *SharedContext) ReadAll() ([]*SharedContextEntry, error) {
 	}
 
 	var entries []*SharedContextEntry
+	corrupt := 0
 	for _, line := range splitLines(data) {
 		if len(line) == 0 {
 			continue
 		}
 		var e SharedContextEntry
 		if err := json.Unmarshal(line, &e); err != nil {
-			// Skip malformed lines rather than failing the entire read.
+			// Skip malformed lines rather than failing the entire read, but say
+			// so: an unparsable line means this file lost an entry, and the skip
+			// alone made a concurrent-write regression look like "the test wrote
+			// fewer entries" (see writeMu).
+			corrupt++
 			continue
 		}
 		entries = append(entries, &e)
+	}
+	if corrupt > 0 {
+		log.Printf("[shared-context] %s: skipped %d unparsable line(s); those entries are lost",
+			path, corrupt)
 	}
 	return entries, nil
 }

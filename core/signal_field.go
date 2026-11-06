@@ -97,18 +97,53 @@ func (sf *SignalField) decayLoop() {
 
 // ApplyDecay reduces all signal intensities across all layers.
 func (sf *SignalField) ApplyDecay() {
+	// audit M8 (2026-11-05): formerly held Mu.Lock (write) across the
+	// entire nested loop, blocking all Deposit/Suppress/SensingGlobal
+	// calls for the duration. Snapshot under RLock, compute outside,
+	// then Lock briefly to apply. A concurrent Deposit between snapshot
+	// and apply will be overwritten — acceptable because decay runs on a
+	// ticker and the deposit is picked up on the next tick (the old code
+	// blocked deposits entirely during decay, so this is strictly better).
+	sf.Mu.RLock()
+	decayRate := sf.DecayRate
+	type snap struct {
+		layer  SignalLayer
+		taskID string
+		value  float64
+	}
+	snaps := make([]snap, 0, 64)
+	for layer, tasks := range sf.Layers {
+		for taskID, intensity := range tasks {
+			snaps = append(snaps, snap{layer, taskID, intensity.Value})
+		}
+	}
+	sf.Mu.RUnlock()
+
+	// Compute decayed values outside the lock.
+	type update struct {
+		layer  SignalLayer
+		taskID string
+		value  float64
+		del    bool
+	}
+	updates := make([]update, len(snaps))
+	for i, s := range snaps {
+		newValue := s.value * decayRate
+		updates[i] = update{s.layer, s.taskID, newValue, newValue < 0.01}
+	}
+
+	// Apply under write lock — brief, just map writes and deletions.
 	sf.Mu.Lock()
 	defer sf.Mu.Unlock()
-
-	for _, tasks := range sf.Layers {
-		for taskID, intensity := range tasks {
-			// Exponential decay formula: I = I * decay_rate
-			intensity.Value *= sf.DecayRate
-
-			// Threshold to prune cold signals
-			if intensity.Value < 0.01 {
-				delete(tasks, taskID)
-			}
+	for _, u := range updates {
+		tasks, ok := sf.Layers[u.layer]
+		if !ok {
+			continue
+		}
+		if u.del {
+			delete(tasks, u.taskID)
+		} else if intensity, ok := tasks[u.taskID]; ok {
+			intensity.Value = u.value
 		}
 	}
 }

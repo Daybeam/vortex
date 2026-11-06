@@ -15,7 +15,7 @@ func TestBuildPreviousSummary_NoArchive_ReturnsDefault(t *testing.T) {
 	// engine.Archive is nil
 
 	dep := &schemas.Step{ID: "s1", ResultRef: "", TargetFile: ""}
-	got := engine.buildPreviousSummary(dep, "task1")
+	got := engine.buildPreviousSummary(dep, "task1", "default")
 	if !strings.Contains(got, "no previous output") {
 		t.Fatalf("expected default '(no previous output...)' message, got: %s", got)
 	}
@@ -26,7 +26,7 @@ func TestBuildPreviousSummary_TargetFile_Fallback(t *testing.T) {
 	// No archive, but TargetFile is set
 
 	dep := &schemas.Step{ID: "s1", TargetFile: "/tmp/artifact.json"}
-	got := engine.buildPreviousSummary(dep, "task1")
+	got := engine.buildPreviousSummary(dep, "task1", "default")
 	if !strings.Contains(got, "/tmp/artifact.json") {
 		t.Fatalf("expected TargetFile fallback mentioning the path, got: %s", got)
 	}
@@ -54,7 +54,7 @@ func TestBuildPreviousSummary_ResultRef_ArchiveHit(t *testing.T) {
 	}
 
 	dep := &schemas.Step{ID: "s1", ResultRef: "Revenue analysis"}
-	got := engine.buildPreviousSummary(dep, "task1")
+	got := engine.buildPreviousSummary(dep, "task1", "default")
 	if !strings.Contains(got, "Revenue analysis") {
 		t.Fatalf("expected ResultRef-based summary, got: %s", got)
 	}
@@ -80,7 +80,7 @@ func TestBuildPreviousSummary_StepID_ArchiveHit(t *testing.T) {
 
 	// ResultRef is empty, so it should fall through to Source 2 (step ID match).
 	dep := &schemas.Step{ID: "s1", ResultRef: ""}
-	got := engine.buildPreviousSummary(dep, "task1")
+	got := engine.buildPreviousSummary(dep, "task1", "default")
 	if !strings.Contains(got, "output.csv") {
 		t.Fatalf("expected step-ID-based summary, got: %s", got)
 	}
@@ -118,7 +118,7 @@ func TestBuildPreviousSummary_NoStepMatch_DoesNotReturnForeignSummary(t *testing
 
 	// Request previous output for step "s1" (no ResultRef, no TargetFile).
 	dep := &schemas.Step{ID: "s1", ResultRef: "", TargetFile: ""}
-	got := engine.buildPreviousSummary(dep, "task1")
+	got := engine.buildPreviousSummary(dep, "task1", "default")
 
 	// Must NOT return the foreign step's summary.
 	if strings.Contains(got, foreignSummary) {

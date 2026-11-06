@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/types"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -22,7 +23,7 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 	step.LastError = ""
 	step.ResultRef = result.Ref
 	s.Mu.Unlock()
-	s.logger.LogWithConfidence(EventStepCompleted, taskID, step.ID, conf, nil)
+	s.logger.LogWithConfidence(obs.EventStepCompleted, taskID, step.ID, conf, nil)
 	payload := map[string]any{"confidence": conf}
 	if output.Usage != nil {
 		payload["usage"] = map[string]any{
@@ -32,7 +33,7 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 		}
 	}
 	payload["role_id"] = step.RoleID
-	s.publishEvent(taskID, step.ID, EventStepCompleted, payload)
+	s.publishEvent(taskID, step.ID, obs.EventStepCompleted, payload)
 
 	if output.Usage != nil {
 		s.costTracker.Record(result.ModelID, taskID, step.ID, output.Usage.PromptTokens, output.Usage.CompletionTokens)

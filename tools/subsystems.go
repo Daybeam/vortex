@@ -155,6 +155,17 @@ func (r *SubsystemRegistry) Invoke(ctx context.Context, app *App, subsystem, act
 	}
 	args = sanitizedArgs
 
+	// audit O4: re-inject one _-prefixed key, from the server side only. The
+	// strip above is what made the config audit trail's actor column a constant
+	// "admin" -- the 8 strArg(args, "_actor") reads in subsystems_config.go
+	// could only ever see the default. CallerIdentity is the same value
+	// CheckTaskOwnership enforces, so the WAL now records who was actually
+	// authorized to make the change. It is resolved from ctx after the strip,
+	// so a forged "_actor" in the tool args cannot reach it.
+	if actor := CallerIdentity(ctx); actor != "" {
+		args["_actor"] = actor
+	}
+
 	ictx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

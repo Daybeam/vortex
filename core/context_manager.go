@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -56,14 +57,14 @@ type AuditResult struct {
 type ContextManager struct {
 	registry *config.Registry
 	anchors  []string // Critical semantic markers that MUST be preserved
-	sieve    *Sieve   // ADDED 2026-08-30 for Fidelity Audit
+	sieve    *sieve.Sieve   // ADDED 2026-08-30 for Fidelity Audit
 }
 
 func NewContextManager(reg *config.Registry) *ContextManager {
 	return &ContextManager{
 		registry: reg,
 		anchors:  []string{"S2T", "DecisionID", "Goal:", "Final Result:", "$artifact", "$contract"},
-		sieve:    NewSieve(reg.System.MaxContextKeep),
+		sieve:    sieve.NewSieve(reg.System.MaxContextKeep),
 	}
 }
 
@@ -379,7 +380,7 @@ func (cm *ContextManager) Squeeze(ctx context.Context, provider providers.Provid
 	}
 	// L2: Aggressive Compression — only on Volatile
 	if level >= LevelAggressive {
-		volatileUser = applySemanticPruning(volatileUser)
+		volatileUser = ApplySemanticPruning(volatileUser)
 	}
 
 	// Preserve protected verbatim inside System (concatenated, prepended so it
@@ -411,7 +412,7 @@ func (cm *ContextManager) Squeeze(ctx context.Context, provider providers.Provid
 			s = applyCodeCompress(s)
 		}
 		if level >= LevelAggressive {
-			s = applySemanticPruning(s)
+			s = ApplySemanticPruning(s)
 		}
 		return s
 	}
@@ -586,7 +587,7 @@ func applyRTK(text string) string {
 	return applyLogCompress(text)
 }
 
-func applySemanticPruning(text string) string {
+func ApplySemanticPruning(text string) string {
 	// Phase 4: Paragraph-level dedup + head/tail preservation.
 	// Replaces the old hardcoded turn-marker approach (User:, Assistant:, etc.)
 	// with a marker-agnostic algorithm that works on any text structure.

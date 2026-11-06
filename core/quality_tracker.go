@@ -19,6 +19,8 @@ package core
 import (
 	"sync"
 	"time"
+
+	"github.com/daybeam/vortex/core/obs"
 )
 
 const qualityWindowCap = 200
@@ -59,10 +61,10 @@ func (q *QualityTracker) Wire() func() {
 		return func() {}
 	}
 	q.unsubscribes = append(q.unsubscribes,
-		DefaultBus.SubscribeWithCancel(string(EventStepCompleted), q.onStepCompleted),
-		DefaultBus.SubscribeWithCancel(string(EventStepFailed), q.onStepFailed),
-		DefaultBus.SubscribeWithCancel(string(EventTaskCompleted), q.onTaskCompleted),
-		DefaultBus.SubscribeWithCancel(string(EventTaskFailed), q.onTaskFailed),
+		obs.DefaultBus.SubscribeWithCancel(string(obs.EventStepCompleted), q.onStepCompleted),
+		obs.DefaultBus.SubscribeWithCancel(string(obs.EventStepFailed), q.onStepFailed),
+		obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), q.onTaskCompleted),
+		obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskFailed), q.onTaskFailed),
 	)
 	return q.Unwire
 }
@@ -147,7 +149,7 @@ func (q *QualityTracker) GetTrend(key string, window time.Duration) QualityTrend
 }
 
 // onStepCompleted records an "ok" sample from EventStepCompleted payload.
-func (q *QualityTracker) onStepCompleted(ev AgentEvent) error {
+func (q *QualityTracker) onStepCompleted(ev obs.AgentEvent) error {
 	if q == nil || ev.TaskID == "" {
 		return nil
 	}
@@ -166,7 +168,7 @@ func (q *QualityTracker) onStepCompleted(ev AgentEvent) error {
 }
 
 // onStepFailed records a "fail" sample.
-func (q *QualityTracker) onStepFailed(ev AgentEvent) error {
+func (q *QualityTracker) onStepFailed(ev obs.AgentEvent) error {
 	if q == nil || ev.TaskID == "" {
 		return nil
 	}
@@ -183,7 +185,7 @@ func (q *QualityTracker) onStepFailed(ev AgentEvent) error {
 }
 
 // onTaskCompleted records a task-level "ok" sample under "task" key.
-func (q *QualityTracker) onTaskCompleted(ev AgentEvent) error {
+func (q *QualityTracker) onTaskCompleted(ev obs.AgentEvent) error {
 	if q == nil || ev.TaskID == "" {
 		return nil
 	}
@@ -198,7 +200,7 @@ func (q *QualityTracker) onTaskCompleted(ev AgentEvent) error {
 }
 
 // onTaskFailed records a task-level "fail" sample under "task" key.
-func (q *QualityTracker) onTaskFailed(ev AgentEvent) error {
+func (q *QualityTracker) onTaskFailed(ev obs.AgentEvent) error {
 	if q == nil || ev.TaskID == "" {
 		return nil
 	}

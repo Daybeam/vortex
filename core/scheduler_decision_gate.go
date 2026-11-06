@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -34,6 +35,12 @@ import (
 const (
 	DelegationKindExternalSubagent = "external_subagent"
 	DelegationKindDAGSurgery       = "dag_surgery"
+	// DelegationKindPlan (D5 P1b, DELEGATION_HANDOVER_REDESIGN.md §4.5):
+	// the planner's prompt is delegated to the host. The host produces a
+	// plan ({"steps":[...]}), and the orchestrator injects it via
+	// ParsePlanDAG + mutateGraphTopologyLocked. This is the "multi-step
+	// prompt" correct form: plan by host, DAG by orchestrator.
+	DelegationKindPlan = "plan"
 )
 
 func (s *DirectedEngine) handleDelegationRequired(graph *schemas.TaskGraph, step *schemas.Step, output schemas.SubagentOutput) {
@@ -84,6 +91,10 @@ func (s *DirectedEngine) addDecision(
 	ctx map[string]any,
 	options []string,
 ) {
+	// audit L8 (2026-11-05): nil guard — step is required (dereferenced below).
+	if graph == nil || step == nil {
+		return
+	}
 	// Inject available models for dynamic escalation (MADMDE)
 	if ctx == nil {
 		ctx = make(map[string]any)
@@ -91,7 +102,6 @@ func (s *DirectedEngine) addDecision(
 	if s.registry != nil {
 		ctx["available_models"] = s.registry.GetHealthyModelsSummary()
 	}
-
 	// [CORE: DAG Surgery Option Injection] (2026-09-07)
 	// When the decision type is upstream_insufficient or step_failed with
 	// context_deficit, add "rewrite_dag" as a valid option for the external
@@ -131,10 +141,7 @@ func (s *DirectedEngine) addDecision(
 	for k := range graph.GlobalWorkspace {
 		workspaceKeys = append(workspaceKeys, k)
 	}
-	resultRef := ""
-	if step != nil {
-		resultRef = step.ResultRef
-	}
+	resultRef := step.ResultRef
 	s.Mu.RUnlock()
 	options = filterOptionsForTier(consecutiveSkips, maxSkips, ctx, options, graph != nil && graph.SubmitterIsAdmin)
 
@@ -197,7 +204,7 @@ func (s *DirectedEngine) addDecision(
 	// available). WaitTask's fast path checks len(PendingDecisions) > 0.
 	s.broadcastDone(graph.TaskID)
 
-	s.logger.Log(EventDecisionRequired, graph.TaskID, step.ID, map[string]any{
+	s.logger.Log(obs.EventDecisionRequired, graph.TaskID, step.ID, map[string]any{
 		"decision_id": dec.ID,
 		"type":        dtype,
 		"options":     options,
@@ -220,7 +227,7 @@ func (s *DirectedEngine) addDecision(
 			}
 		}
 	}
-	s.publishEvent(graph.TaskID, step.ID, EventDecisionRequired, eventPayload)
+	s.publishEvent(graph.TaskID, step.ID, obs.EventDecisionRequired, eventPayload)
 
 	// E5 fix (2026-10-02): NonInteractive auto-resolution. The full strategy
 	// and risk-tier rationale lives on maybeAutoResolveNonInteractive, which
@@ -255,7 +262,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	// #14: Critical tier never auto-resolves — unless explicitly overridden.
 	tier, _ := schemas.DetermineRiskTier(step.Task, step.AdditionalMCPs)
 	if tier == schemas.RiskTierCritical && !s.registry.System.AllowCriticalAutoResolve {
-		s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+		s.logger.Log(obs.EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
 			"decision_id": dec.ID,
 			"skipped":     "risk_tier_critical",
 		})
@@ -263,7 +270,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	}
 	if tier == schemas.RiskTierCritical {
 		// Override is on — proceeding despite critical tier.
-		s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+		s.logger.Log(obs.EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
 			"decision_id": dec.ID,
 			"override":    "allow_critical_auto_resolve",
 			"tier":        string(tier),
@@ -275,7 +282,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	s.recentDecisionsMu.Lock()
 	if last, ok := s.recentDecisions[rlKey]; ok && time.Since(last) < 30*time.Second {
 		s.recentDecisionsMu.Unlock()
-		s.logger.Log(EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
+		s.logger.Log(obs.EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
 			"decision_id": dec.ID,
 			"skipped":     "rate_limited",
 		})
@@ -292,19 +299,19 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	deciderSubmitterIsAdmin := graph.SubmitterIsAdmin
 	deciderOwnerID := graph.OwnerID // inherit, do not default (2026-10-27 OAUTH §8.1)
 	deciderRole := s.registry.System.DecisionDeciderRole
-	s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
+	s.logger.Log(obs.EventDecisionAutoResolved, taskID, step.ID, map[string]any{
 		"decision_id":  decID,
 		"type":         string(dtype),
 		"options":      options,
 		"decider_role": deciderRole,
 	})
 	s.goBackground(func() {
-		choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin, deciderOwnerID)
+ 		choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin, deciderOwnerID)
 		if choice == "" {
 			return // must not auto-resolve (e.g. human_approval_required)
 		}
 		if err := s.SubmitDecision(taskID, decID, choice); err != nil {
-			s.logger.Log(EventDecisionAutoResolved, taskID, step.ID, map[string]any{
+			s.logger.Log(obs.EventDecisionAutoResolved, taskID, step.ID, map[string]any{
 				"decision_id":        decID,
 				"auto_resolve_error": err.Error(),
 			})
@@ -327,9 +334,9 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	// human_approval_required: legal/compliance gate. Must not auto-resolve
 	// unless explicitly overridden via AllowHumanApprovalAutoResolve.
 	if dtype == schemas.DecisionHumanApprovalRequired &&
-		s.registry != nil && !s.registry.System.AllowHumanApprovalAutoResolve {
-		return "" // must wait for a human
-	}
+ 		s.registry != nil && !s.registry.System.AllowHumanApprovalAutoResolve {
+ 		return "" // must wait for a human
+ 	}
 	// Delegate strategy: spawn decider role to choose.
 	if deciderRole != "" && s.spawner != nil {
 		observability.GetGlobalMetrics().Inc("orchestrator.decision_gate.calls", 1)
@@ -337,7 +344,7 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 			return choice
 		}
 		// Decider failed or returned invalid choice — fall through to conservative.
-		s.logger.Log(EventDecisionAutoResolved, taskID, stepID, map[string]any{
+		s.logger.Log(obs.EventDecisionAutoResolved, taskID, stepID, map[string]any{
 			"decision_id": decID,
 			"fallback":    "decider_failed_or_invalid",
 		})
@@ -402,17 +409,58 @@ Choose exactly ONE option from the list above. Respond with ONLY the option name
 			return opt, true
 		}
 	}
-	// Fuzzy: response contains the option as a substring.
+	// Fuzzy (audit M2, 2026-11-05): response contains the option as a whole
+	// word. The former strings.Contains check matched "skip" inside "skipping",
+	// so a decider text like "I recommend abort because skipping would lose
+	// progress" returned "skip" (iteration order, not decider intent). Use
+	// word-boundary matching and prefer the longest matching option so the
+	// most specific choice wins when several options appear as whole words.
+	var bestMatch string
 	for _, opt := range options {
-		if strings.Contains(text, strings.ToLower(opt)) {
-			return opt, true
+		lo := strings.ToLower(opt)
+		if containsWord(text, lo) && len(lo) > len(bestMatch) {
+			bestMatch = opt
 		}
+	}
+	if bestMatch != "" {
+		return bestMatch, true
 	}
 	return "", false
 }
 
-// askSystemOneForDecision is stubbed in the open core (System One is not
-// available in the open-source build).
+// containsWord reports whether s contains word as a whole word (bounded by
+// non-word characters or string edges). Both inputs must be lowercased.
+// audit M2: replaces strings.Contains in the decider fuzzy fallback so option
+// substrings embedded in larger words (e.g. "skip" in "skipping") don't match.
+func containsWord(s, word string) bool {
+	if word == "" {
+		return false
+	}
+	idx := 0
+	for idx <= len(s)-len(word) {
+		i := strings.Index(s[idx:], word)
+		if i < 0 {
+			return false
+		}
+		start := idx + i
+		end := start + len(word)
+		leftBoundary := start == 0 || !isWordChar(s[start-1])
+		rightBoundary := end == len(s) || !isWordChar(s[end])
+		if leftBoundary && rightBoundary {
+			return true
+		}
+		idx = end
+	}
+	return false
+}
+
+// isWordChar reports whether b is a word character (alnum or underscore), the
+// set excluded from word boundaries by containsWord.
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+// askSystemOneForDecision is stubbed in the open core (no System One provider).
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,
@@ -632,7 +680,7 @@ func (s *DirectedEngine) tryPlannerReplan(taskID, stepID, reason string, submitt
 	// Query Archive for all step summaries in this task (Path B).
 	var summariesText string
 	if s.Archive != nil {
-		summaries := s.Archive.SearchAllStepSummaries(taskID, reason, 10)
+		summaries := s.Archive.SearchAllStepSummaries(taskID, s.ProjectOf(taskID), reason, 10)
 		if len(summaries) > 0 {
 			var sb strings.Builder
 			sb.WriteString("\n\n## Completed Step Summaries\n")

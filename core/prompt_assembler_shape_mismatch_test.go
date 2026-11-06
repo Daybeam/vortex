@@ -35,7 +35,7 @@ func TestPromptAssembler_ShapeMismatchWarning_Wired(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-shape-mismatch",
+		"test task", "", "task-shape-mismatch", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -81,7 +81,7 @@ func TestPromptAssembler_ShapeMismatchWarning_NoMismatch(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-no-mismatch",
+		"test task", "", "task-no-mismatch", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -107,7 +107,7 @@ func TestPromptAssembler_ShapeMismatchWarning_NilInteractions(t *testing.T) {
 	blocks, err := pa.Build(
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
-		"test task", "", "task-nil-interactions",
+		"test task", "", "task-nil-interactions", "",
 	)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)

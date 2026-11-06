@@ -98,3 +98,59 @@ func TestValidateArtifact_NotJSON(t *testing.T) {
 		t.Errorf("expected schema_violation, got: %v", err)
 	}
 }
+
+// InspectArtifact is the "tell me everything that is wrong" half that the
+// completion contract needs; ValidateArtifact is the gate and stops at the first
+// problem. They must not drift apart, so this test pins both at once: every
+// problem InspectArtifact reports, and the exact message ValidateArtifact still
+// produces for the first one.
+func TestInspectArtifact_ReportsEveryProblemAndValidateAgrees(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plan.json")
+	if err := os.WriteFile(path, []byte(`{"a":1,"c":"not an object"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ac := schemas.ArtifactContract{
+		Path:           path,
+		RequiredFields: []string{"a", "b"},
+		TypeSchema:     map[string]string{"c": "object"},
+	}
+
+	problems := InspectArtifact(ac)
+	got := make(map[string]ArtifactProblemReason, len(problems))
+	for _, p := range problems {
+		got[p.Field] = p.Reason
+	}
+	if got["b"] != ProblemMissing {
+		t.Errorf("field b reason = %q, want %q (problems: %#v)", got["b"], ProblemMissing, problems)
+	}
+	if got["c"] != ProblemWrongType {
+		t.Errorf("field c reason = %q, want %q (problems: %#v)", got["c"], ProblemWrongType, problems)
+	}
+	if len(problems) != 2 {
+		t.Errorf("problems = %d, want 2 (one per breach, not one per artifact)", len(problems))
+	}
+
+	// Ordering is part of the contract: RequiredFields are reported before
+	// TypeSchema, so the gate's message is stable across runs.
+	if problems[0].Field != "b" {
+		t.Errorf("first problem = %q, want the required field b", problems[0].Field)
+	}
+
+	err := ValidateArtifact(ac)
+	if err == nil {
+		t.Fatal("gate must reject the same artifact")
+	}
+	if !strings.Contains(err.Error(), string(schemas.FailureSchemaViolation)) ||
+		!strings.Contains(err.Error(), `"b"`) {
+		t.Errorf("gate message = %v, want it to name the first breach (field b)", err)
+	}
+
+	// Field declared only in TypeSchema keeps its distinct message: the two
+	// messages tell a caller different things, so collapsing them would be a
+	// silent behaviour change for the Orchestrator handoff path.
+	onlyType := schemas.ArtifactContract{Path: path, TypeSchema: map[string]string{"zzz": "string"}}
+	err = ValidateArtifact(onlyType)
+	if err == nil || !strings.Contains(err.Error(), "declared in type_schema but absent") {
+		t.Errorf("type-schema-only absence = %v, want the type_schema message", err)
+	}
+}

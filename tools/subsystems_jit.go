@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/providers"
 )
 
@@ -42,7 +42,7 @@ func registerJitSubsystem(app *App) {
 			// it here too gives the action layer a chance to surface the
 			// structured PreflightResult to the caller (e.g. which backend
 			// was chosen) without a second round-trip.
-			pf := core.PreflightCheckDetailed(lang, script)
+			pf := jit.PreflightCheckDetailed(lang, script)
 			if !pf.OK {
 				return map[string]any{"ok": false, "preflight": pf}, pf.Err
 			}
@@ -64,7 +64,7 @@ func registerJitSubsystem(app *App) {
 		Name:        "list_runtimes",
 		Description: "List all JIT runtime backends (embedded + managed) and their availability. Embedded backends are always available; managed backends reflect the current host.",
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
-			return core.ListRuntimeCapabilities(), nil
+			return jit.ListRuntimeCapabilities(), nil
 		},
 	}
 
@@ -159,14 +159,14 @@ func registerJitSubsystem(app *App) {
 			// Preflight gate (architecture §2.2): runs before any session
 			// spawn or embedded VM construction. Returns a structured result
 			// so the caller can see which backend was chosen.
-			pf := core.PreflightCheckDetailed(lang, code)
+			pf := jit.PreflightCheckDetailed(lang, code)
 			if !pf.OK {
 				return map[string]any{"ok": false, "preflight": pf}, pf.Err
 			}
 
 			// Embedded tier: js/lua run in-process, no session state.
 			if pf.Capability.IsEmbedded {
-				res, err := core.EmbeddedRunner(ctx, pf.Lang, code)
+				res, err := jit.EmbeddedRunner(ctx, pf.Lang, code)
 				if err != nil {
 					return nil, err
 				}

@@ -32,7 +32,7 @@ import (
 // CheckAndMark logic — the same pattern used in spawner.go lines 670, 1336,
 // and 1381.
 //
-// Design ref: docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §6
+// Design ref: docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §6
 // "Integration test: A1 defense verification under retry"
 func TestIntegration_A1_Retry_DuplicateSkipped_OneEffectRecorded(t *testing.T) {
 	tmpDir := t.TempDir()

@@ -17,7 +17,7 @@ import (
 //
 // Reproduction: verify that LoadOrStore returns the same mutex for the same ID
 // (the core property that makes per-ID serialization work).
-func TestC7_HandshakeLock_PerIDSerialization(t *testing.T) {
+func TestHandshakeLock_PerIDSerialization(t *testing.T) {
 	m := &MCPConnectionManager{}
 
 	// First load creates the mutex.

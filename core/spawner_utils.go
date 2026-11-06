@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -359,7 +360,7 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-// isContextLimitError detects provider errors caused by the prompt exceeding
+// IsContextLimitError detects provider errors caused by the prompt exceeding
 // the model's maximum context window. Different providers phrase this differently:
 //   - OpenAI:    "context_length_exceeded" / "This model's maximum context length is"
 //   - Anthropic: "prompt is too long" / "context too long"
@@ -387,7 +388,7 @@ func isRetryableError(err error) bool {
 // 400 cascade death chain survived the §8.48.7 fix. Added "n_ctx" /
 // "n_prompt_tokens" (both formats always carry the n_ctx JSON field, and the
 // engine's SanitizeError stars the message but keeps the fields).
-func isContextLimitError(err error) bool {
+func IsContextLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -862,7 +863,7 @@ func (s *Spawner) fetchDynamicContext(ctx context.Context, taskID, stepID string
 		if c, err := cp.FetchContext(ctx); err == nil {
 			envContext[cp.Name()] = c
 		} else {
-			s.logger.Log(EventStepFailed, taskID, stepID, map[string]any{
+			s.logger.Log(obs.EventStepFailed, taskID, stepID, map[string]any{
 				"error":   fmt.Sprintf("Failed to fetch context from %s", cp.Name()),
 				"details": err.Error(),
 			})
@@ -910,7 +911,7 @@ func (s *Spawner) validateCapabilities(ctx context.Context, req *SpawnRequest, r
 	}
 
 	// No dynamic expansion available.
-	s.logger.LogCtx(ctx, EventTaskFailed, req.TaskID, req.StepID, map[string]any{
+	s.logger.LogCtx(ctx, obs.EventTaskFailed, req.TaskID, req.StepID, map[string]any{
 		"role":    req.RoleID,
 		"missing": missing,
 		"error":   "Missing required capabilities",
@@ -943,7 +944,7 @@ func (s *Spawner) retrieveDynamicSkills(ctx context.Context, req *SpawnRequest, 
 		relevant := s.expStore.QueryRelevantSkills(ctx, req.Task, 2)
 		if len(relevant) > 0 {
 			additionalSkills = append(additionalSkills, relevant...)
-			s.logger.Log(EventStepStarted, req.TaskID, req.StepID, map[string]any{
+			s.logger.Log(obs.EventStepStarted, req.TaskID, req.StepID, map[string]any{
 				"action": "auto_retrieved_skills",
 				"skills": relevant,
 			})
@@ -1075,11 +1076,16 @@ func (s *Spawner) tryDelegationMode(ctx context.Context, req *SpawnRequest, role
 	// Defect 3 fix: redact sensitive context in delegation mode
 	delegationCtx := redactContextForDelegation(mergedContext)
 	delegationPrecedents := []*schemas.DecisionNode{}
-	systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "", req.TaskID, nil)
+	compileStart := time.Now()
+	systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, delegationCtx, toolFewShots, req.Isolation, delegationPrecedents, req.Task, "", req.TaskID, req.StepID, nil)
 	if err != nil {
 		return nil, false
 	}
-	s.logger.Log(EventStepStarted, req.TaskID, req.StepID, map[string]any{
+	s.logger.Log(obs.EventStepStarted, req.TaskID, req.StepID, map[string]any{
+		"action":      "delegation_compile_timing",
+		"duration_ms": time.Since(compileStart).Milliseconds(),
+	})
+	s.logger.Log(obs.EventStepStarted, req.TaskID, req.StepID, map[string]any{
 		"action": "delegation_triggered",
 		"reason": "system_delegation_mode_enabled",
 	})

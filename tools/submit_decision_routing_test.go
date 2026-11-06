@@ -31,6 +31,11 @@ func TestShouldRouteToFulfill_T1Regression(t *testing.T) {
 		// Other choices with output: legacy behavior routes to FulfillStep
 		{"skip with output", "skip", `{"reason":"done"}`, true},
 		{"abort with output", "abort", `{"reason":"bad"}`, true},
+		// O17 trap, pinned: a host that serialises an empty result object for an
+		// abort — natural, because get_task_status view=full hands decisions back
+		// as JSON objects — lands in the delegation-only FulfillStep and used to
+		// get an error about delegations. The answer is the payload-free form.
+		{"abort with empty object payload", "abort", "{}", true},
 
 		// Other choices without output: route to SubmitDecisionWithPayload
 		{"skip without output", "skip", "", false},

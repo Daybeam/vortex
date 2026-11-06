@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -22,12 +23,12 @@ func (s *Spawner) persistAttachments(taskID, stepID string, attachments []schema
 
 	dir := filepath.Join(s.outputBase, taskID, stepID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		s.logger.Log(EventStepFailed, taskID, stepID, map[string]any{"error": "failed to create attachments dir", "details": err.Error()})
+		s.logger.Log(obs.EventStepFailed, taskID, stepID, map[string]any{"error": "failed to create attachments dir", "details": err.Error()})
 		return
 	}
 
 	for _, att := range attachments {
-		s.logger.Log(EventStepStarted, taskID, stepID, map[string]any{
+		s.logger.Log(obs.EventStepStarted, taskID, stepID, map[string]any{
 			"action": "persist_attachment",
 			"label":  att.Label,
 			"path":   att.Path,
@@ -97,6 +98,7 @@ func (s *Spawner) buildSystemPrompt(
 	taskText string,
 	latestError string,
 	taskID string, // P1-5: for Archive Path D query
+	stepID string, // D-PROMPT-4: for base_role.md template
 	trace []store.ToolInteraction, // ADDED 2026-10-25: for DataShape mismatch detection
 ) ([]schemas.ContentBlock, error) {
 	if s.pa == nil {
@@ -107,7 +109,7 @@ func (s *Spawner) buildSystemPrompt(
 	}
 	s.pa.SetOutputBase(s.outputBase) // D4: enable workspace path injection
 	s.pa.SetRecentInteractions(trace)
-	return s.pa.Build(ctx, hub, role, skillIDs, capability, providerCfg, toolConstraints, mergedContext, fewShots, isolation, precedents, taskText, latestError, taskID)
+	return s.pa.Build(ctx, hub, role, skillIDs, capability, providerCfg, toolConstraints, mergedContext, fewShots, isolation, precedents, taskText, latestError, taskID, stepID)
 }
 
 // PreviewPrompt assembles and returns the full system prompt for a role/task
@@ -122,7 +124,7 @@ func (s *Spawner) PreviewPrompt(roleID, task string, ctxMap map[string]any) (str
 	// audit L-NEW-13: add timeout to prevent blocking forever on I/O during prompt construction.
 	promptCtx, promptCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer promptCancel()
-	blocks, err := s.buildSystemPrompt(promptCtx, hub, role, []string{}, role.BaseCapability, &config.ProviderConfig{}, []string{}, ctxMap, []string{}, false, nil, task, "", "", nil)
+	blocks, err := s.buildSystemPrompt(promptCtx, hub, role, []string{}, role.BaseCapability, &config.ProviderConfig{}, []string{}, ctxMap, []string{}, false, nil, task, "", "", "", nil)
 	if err != nil {
 		return "", err
 	}
@@ -188,7 +190,7 @@ func (s *Spawner) SampleSystemPromptProfile() (*ContextProfile, error) {
 	// A short, neutral task text keeps the sample deterministic; precedents /
 	// few-shots / history are intentionally empty (this is a config-level
 	// sample, not a real task).
-	blocks, err := pa.Build(context.Background(), hub, role, []string{}, role.BaseCapability, pCfg, []string{}, map[string]any{}, []string{}, false, nil, "sample task", "", "")
+	blocks, err := pa.Build(context.Background(), hub, role, []string{}, role.BaseCapability, pCfg, []string{}, map[string]any{}, []string{}, false, nil, "sample task", "", "", "")
 	if err != nil {
 		return nil, err
 	}

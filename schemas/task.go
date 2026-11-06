@@ -37,6 +37,7 @@ type StepInput struct {
 	ContextRefs              map[string]string   `json:"context_refs"`
 	SubmitterIsAdmin         bool                `json:"-"` // set by entry handler; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
 	OwnerID                  string              `json:"-"` // set by entry handler from AuthOwnerKey; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
+	ProjectID                string              `json:"project_id,omitempty"` // project space; defaults to "default" if empty
 	FallbackFor              string              `json:"fallback_for,omitempty"`
 	MaxRetries               int                 `json:"max_retries"`
 
@@ -50,6 +51,9 @@ type StepInput struct {
 	VerifierModel string  `json:"verifier_model,omitempty"`
 	MaxAutoRefine int     `json:"max_auto_refine,omitempty"`
 	RiskRating    float64 `json:"risk_rating,omitempty"` // Numeric risk score (0.0-1.0)
+	// DeterministicChecks mirrors Step.DeterministicChecks below; until it existed
+	// here no SOP or submit body could reach Case 2.5 (register O1).
+	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
 	// Cross-Family Debate (ADDED 2026-09-14): opt-in Proposer→Critic→Synthesizer loop.
 	// See docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
 	EnableDebate    bool `json:"enable_debate,omitempty"`
@@ -421,7 +425,11 @@ type ContextNode struct {
 type TaskGraph struct {
 	TaskID  string           `json:"task_id"`
 	TraceID string           `json:"trace_id,omitempty"`
-	Steps   map[string]*Step `json:"steps"`
+	// ProjectID identifies the project space this task belongs to. Tasks
+	// sharing the same ProjectID can recall each other's ScopeProject memory
+	// items. Defaults to "default" when unspecified (backward-compatible).
+	ProjectID string           `json:"project_id,omitempty"`
+	Steps     map[string]*Step `json:"steps"`
 	Status  GraphStatus      `json:"status"`
 	// SubmitterIsAdmin is the authoritative mount-gate source: read via
 	// core/mount_gate.go's effectiveSubmitterIsAdmin, enforced in
@@ -567,6 +575,15 @@ func (g *TaskGraph) GetSubstitutions() []Substitution {
 	cp := make([]Substitution, len(g.Substitutions))
 	copy(cp, g.Substitutions)
 	return cp
+}
+
+// SubstitutionCount returns the number of recorded substitutions. Thread-safe.
+// Use this instead of len(g.Substitutions) in read-only contexts (e.g. status
+// summary views) to avoid racing with RecordSubstitution's append.
+func (g *TaskGraph) SubstitutionCount() int {
+	g.substitutionMu.Lock()
+	defer g.substitutionMu.Unlock()
+	return len(g.Substitutions)
 }
 
 // GetSessionRole returns the raw stored value for a session-scoped role (either
@@ -796,7 +813,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 			// Substitution count: non-zero means actual execution diverged from
 			// the request (role fallback, MCP degradation, etc.). See
 			// docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
-			"substitution_count": len(g.Substitutions),
+			"substitution_count": g.SubstitutionCount(),
 			// Charter present: non-nil means the task has an explicit intent /
 			// non-goals / constraints charter. See §P1.
 			"has_charter": g.Charter != nil,

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -126,7 +127,7 @@ func (s *DirectedEngine) applyStepFailurePolicy(graph *schemas.TaskGraph, step *
 	default:
 		return false
 	}
-	s.logger.Log(EventStepFailed, taskID, step.ID, map[string]any{
+	s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
 		"error":         "step-level FailurePolicy applied, bypassing decision_required",
 		"failure_class": string(failureClass),
 		"on_failure":    step.FailurePolicy.OnFailure,

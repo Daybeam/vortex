@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/search"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -77,7 +78,7 @@ func (s *DirectedEngine) swarmWatchdog(ctx context.Context, taskID string) {
 	s.Mu.RUnlock()
 
 	if !hasActivity {
-		s.logger.Log(EventSwarmWatchdogTriggered, taskID, "", map[string]any{
+		s.logger.Log(obs.EventSwarmWatchdogTriggered, taskID, "", map[string]any{
 			"delay_seconds": delay,
 			"message":       "No swarm activity detected, taking over locally",
 		})
@@ -218,6 +219,7 @@ func (s *DirectedEngine) archiveStep(graph *schemas.TaskGraph, step *schemas.Ste
 
 	item := MemoryItem{
 		TaskID:    graph.TaskID,
+		ProjectID: graph.ProjectID, // Phase 3: enables ScopeProject cross-task recall
 		NodeID:    step.ID,
 		Intent:    step.Task,
 		Summary:   summary,
@@ -373,6 +375,6 @@ func (s *DirectedEngine) transitionContextTree(graph *schemas.TaskGraph, step *s
 	// Telemetry outside the lock: logger.Log fans out to the event bus, and
 	// subscribers must never be able to re-enter engine locks.
 	if branchTelemetry != nil {
-		s.logger.Log(EventIntentShiftBranch, graph.TaskID, step.ID, branchTelemetry)
+		s.logger.Log(obs.EventIntentShiftBranch, graph.TaskID, step.ID, branchTelemetry)
 	}
 }

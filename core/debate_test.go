@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -117,13 +118,13 @@ func TestDebateRoundCap(t *testing.T) {
 }
 
 func TestDebateEventTypesDefined(t *testing.T) {
-	if EventDebateStarted == "" {
+	if obs.EventDebateStarted == "" {
 		t.Errorf("EventDebateStarted not defined")
 	}
-	if EventDebateCritiqueReceived == "" {
+	if obs.EventDebateCritiqueReceived == "" {
 		t.Errorf("EventDebateCritiqueReceived not defined")
 	}
-	if EventDebateConcluded == "" {
+	if obs.EventDebateConcluded == "" {
 		t.Errorf("EventDebateConcluded not defined")
 	}
 }

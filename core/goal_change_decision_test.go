@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -25,7 +26,7 @@ func setupTestSchedulerWithGraph(t *testing.T) (*DirectedEngine, *schemas.TaskGr
 		notifyChan: make(chan struct{}),
 	}
 	// Initialize a real logger so s.logger.Log doesn't panic.
-	logger, _ := NewLogger(t.TempDir(), nil)
+	logger, _ := obs.NewLogger(t.TempDir(), nil)
 	s.logger = logger
 	cleanup := func() { logger.Close() }
 	return s, graph, taskID, cleanup

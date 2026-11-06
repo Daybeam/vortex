@@ -76,11 +76,11 @@ func registerScheduleSubsystem(app *App) {
 				CreatedAt:  time.Now(),
 			}
 
-			// Initial NextRun calculation is handled by ScheduleManager.scan
-			// but we can set it now to be safe.
-			// We can't easily call ScheduleManager.calculateNextRun here due to circular deps
-			// (App -> ScheduleManager -> Scheduler -> App).
-			// Instead, we just set it to Now to trigger it on the next scan, or let scan handle it.
+			// Initial NextRun is left for ScheduleManager.scan to settle. The
+			// manager's own method is unreachable here (App -> ScheduleManager ->
+			// Scheduler -> App), which is why core exposes the pure
+			// ScheduleNextRunAfter instead — resume below uses it. Setting NextRun
+			// to Now for a new row is deliberate: it fires on the next scan.
 			sch.NextRun = time.Now()
 			if sch.Type == schemas.ScheduleOnce && sch.RunAt != nil {
 				sch.NextRun = *sch.RunAt
@@ -107,6 +107,11 @@ func registerScheduleSubsystem(app *App) {
 		},
 	}
 
+	// audit O5, decision Q4-1 (2026-11-05): pause existed on MCP, resume did
+	// not, and a bare status flip would fire the catch-up run the pause was
+	// meant to prevent. Resume skips; reasoning in subsystem_schedule_resume.go.
+	s.Actions["resume"] = resumeAction()
+
 	s.Actions["delete"] = Action{
 		Name:        "delete",
 		Description: "Delete a schedule.",
@@ -121,15 +126,35 @@ func registerScheduleSubsystem(app *App) {
 		},
 	}
 
-	s.Actions["reload"] = Action{
-		Name:        "reload",
-		Description: "Reload configuration from disk and clear provider caches.",
+	// audit O6, decision Q4-2 (2026-11-04): this body clears provider caches and
+	// reloads the tool registry — it has never touched SStore, so a caller who
+	// edited schedules.json and invoked it got a green "ok" and stale cron rows.
+	// Renamed to what it does. The alternative, calling ScheduleStore.Reload here,
+	// was rejected on two measured grounds: Reload is merge-only (store/schedule.go:36
+	// requires len(list) > 0 and never clears the map, so deleted rows resurrect) and
+	// it holds ScheduleStore.Mu across up to 10s of backend I/O while the 30s scan
+	// ticker fires the same *schemas.Schedule pointers.
+	s.Actions["reload_registry"] = Action{
+		Name:        "reload_registry",
+		Description: "Clear provider caches and reload the tool registry from disk. Does NOT reload the schedule store — the previous name \"reload\" implied that it did.",
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			providers.ClearCache()
 			if err := app.Registry.Load(); err != nil {
 				return nil, fmt.Errorf("failed to reload registry: %w", err)
 			}
 			return map[string]any{"ok": true}, nil
+		},
+	}
+
+	// Tombstone: the old name must not degrade into "action not found", which
+	// reads as a typo, and must not keep answering ok while doing the wrong
+	// thing. Invoke checks the tier before running a handler, so this message
+	// reaches admins only.
+	s.Actions["reload"] = Action{
+		Name:        "reload",
+		Description: "Removed — renamed to `reload_registry` (register O6). This action never reloaded the schedule store.",
+		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			return nil, fmt.Errorf(`schedule.reload was renamed to schedule.reload_registry: it clears provider caches and reloads the tool registry, and has never reloaded the schedule store (register O6). Use "reload_registry" for that behavior, or "config.reload" for the same body`)
 		},
 	}
 

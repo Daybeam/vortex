@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // SOP represents a Standard Operating Procedure workflow template.
@@ -26,17 +27,23 @@ type SOPTrigger struct {
 
 // SOPStep defines a node in the workflow DAG.
 type SOPStep struct {
-	ID            string   `json:"id"`
-	Role          string   `json:"role"`
-	Task          string   `json:"task"`
-	Skills        []string `json:"skills,omitempty"`
-	MCPs          []string `json:"mcps,omitempty"`
-	Provider      string   `json:"provider,omitempty"`
-	DependsOn     []string `json:"depends_on,omitempty"`
-	ExitCriteria  string   `json:"exit_criteria,omitempty"`
-	ConditionExpr string   `json:"condition_expr,omitempty"` // Optional branching expression
-	OnSuccess     string   `json:"on_success,omitempty"`     // Explicit success jump
-	OnFailure     string   `json:"on_failure,omitempty"`     // Explicit failure jump (fallback)
+	ID        string   `json:"id"`
+	Role      string   `json:"role"`
+	Task      string   `json:"task"`
+	Skills    []string `json:"skills,omitempty"`
+	MCPs      []string `json:"mcps,omitempty"`
+	Provider  string   `json:"provider,omitempty"`
+	DependsOn []string `json:"depends_on,omitempty"`
+	// ExitCriteria is the step's gate. Only declarative forms are legal since
+	// Q2-4 (2026-11-06): "regex:<pattern>", "file:<path>", or "json"; empty
+	// means no gate. Prose is still substring-matched at runtime for legacy
+	// files, but it is not a contract and SOP load warns about it.
+	ExitCriteria string `json:"exit_criteria,omitempty"`
+	// DeterministicChecks mirrors Step.DeterministicChecks; absent here it is dropped at parse time (O1).
+	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
+	ConditionExpr       string               `json:"condition_expr,omitempty"` // Optional branching expression
+	OnSuccess           string               `json:"on_success,omitempty"`     // Explicit success jump
+	OnFailure           string               `json:"on_failure,omitempty"`     // Explicit failure jump (fallback)
 }
 
 // UnmarshalJSON implements custom unmarshaling for SOP to support legacy formats
@@ -100,4 +107,25 @@ func (s *SOP) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// ExitCriteriaIsDeclarative reports whether c is one of the legal SOP
+// exit_criteria forms (Q2-4, 2026-11-06): "regex:<pattern>", "file:<path>",
+// or "json". Empty means "no gate" and is legal.
+//
+// A prefix with an empty payload is not legal: "regex:" compiles to a pattern
+// that matches everything and "file:" can never stat a path, so both are
+// degenerate gates that would silently pass or never pass.
+func ExitCriteriaIsDeclarative(c string) bool {
+	c = strings.TrimSpace(c)
+	switch {
+	case c == "", c == "json":
+		return true
+	case strings.HasPrefix(c, "regex:"):
+		return strings.TrimSpace(strings.TrimPrefix(c, "regex:")) != ""
+	case strings.HasPrefix(c, "file:"):
+		return strings.TrimSpace(strings.TrimPrefix(c, "file:")) != ""
+	default:
+		return false
+	}
 }

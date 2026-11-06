@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 func TestHandleAdminDeployFile(t *testing.T) {
@@ -24,7 +24,7 @@ func TestHandleAdminDeployFile(t *testing.T) {
 	t.Setenv("VORTEX_DEPLOY_ROOT", tempDir)
 
 	logDir := filepath.Join(tempDir, "logs")
-	logger, err := core.NewLogger(logDir, nil)
+	logger, err := obs.NewLogger(logDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestHandleAdminDeployFile_GatedByDefault(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	logDir := filepath.Join(tempDir, "logs")
-	logger, err := core.NewLogger(logDir, nil)
+	logger, err := obs.NewLogger(logDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

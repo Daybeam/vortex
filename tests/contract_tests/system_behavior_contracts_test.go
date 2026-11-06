@@ -3,7 +3,7 @@ package contract_tests
 import (
 	"testing"
 
-	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/sieve"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -13,7 +13,7 @@ import (
 // This replaces the deleted behavior_contracts_test.go which tested
 // a toy SieveGuardian mock instead of the project's real Sieve.
 func TestSystemContract_LoopDetection(t *testing.T) {
-	sieve := core.NewSieve(10) // maxKeep=10, default ToolRepetitionThreshold=3
+	sieve := sieve.NewSieve(10) // maxKeep=10, default ToolRepetitionThreshold=3
 
 	taskID := "task-loop-test"
 	toolCall := store.ToolInteraction{
@@ -46,7 +46,7 @@ func TestSystemContract_LoopDetection(t *testing.T) {
 // TestSystemContract_LoopDetection_DifferentTools verifies the Sieve
 // does NOT flag distinct tool calls as a loop.
 func TestSystemContract_LoopDetection_DifferentTools(t *testing.T) {
-	sieve := core.NewSieve(10)
+	sieve := sieve.NewSieve(10)
 
 	taskID := "task-diff-tools"
 	calls := []store.ToolInteraction{
@@ -65,7 +65,7 @@ func TestSystemContract_LoopDetection_DifferentTools(t *testing.T) {
 // TestSystemContract_LoopDetection_EmptyCalls verifies the Sieve
 // handles empty input gracefully.
 func TestSystemContract_LoopDetection_EmptyCalls(t *testing.T) {
-	sieve := core.NewSieve(10)
+	sieve := sieve.NewSieve(10)
 
 	ok, reason := sieve.InspectToolCalls("task-empty", "", nil)
 	if !ok {
@@ -79,7 +79,7 @@ func TestSystemContract_LoopDetection_EmptyCalls(t *testing.T) {
 // TestSystemContract_SieveContextCompression verifies the project's Sieve
 // can compress context data without panicking on nil/empty input.
 func TestSystemContract_SieveContextCompression(t *testing.T) {
-	sieve := core.NewSieve(10)
+	sieve := sieve.NewSieve(10)
 
 	// Empty map should not panic
 	result := sieve.CompressContext(map[string]any{})

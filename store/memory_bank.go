@@ -79,8 +79,10 @@ func (s *MemoryBankStore) SetEmbeddingClient(cli IEmbeddingClient) {
 // "client does not want X" / "API does not support Y" from blocking valid
 // actions when conditions change.
 func (s *MemoryBankStore) Save(mb MemoryBank) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// audit M6 (2026-11-05): removed mu.Lock — baseDir is immutable (set
+	// once in NewMemoryBankStore), Save does not touch embeddingClient or
+	// backend, and os.WriteFile is atomic. The lock serialized all Save
+	// calls across 6+ file writes for no correctness benefit.
 
 	// Self-healing §4: bound negative assertions with a temporal anchor.
 	for i, p := range mb.SystemPatterns {
@@ -208,8 +210,8 @@ func (s *MemoryBankStore) Save(mb MemoryBank) error {
 
 // SaveUserProfile writes the user profile to userProfile.md in the memory-bank directory.
 func (s *MemoryBankStore) SaveUserProfile(up UserProfile) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// audit M6 (2026-11-05): removed mu.Lock — baseDir is immutable and
+	// os.WriteFile is atomic. See Save for the full rationale.
 
 	var b strings.Builder
 	if len(up.Preferences) > 0 {

@@ -53,6 +53,34 @@ const (
 	MarkerRepeatedWriteFmt = "[REPEATED WRITE #%d to %s] Each write replaces the previous version of this file, " +
 		"so another full rewrite cannot add information. Read it back with read_file if you need to verify it, " +
 		"or change only what is actually wrong. If the file is correct, stop writing and answer the user directly.]"
+	// MarkerAllArtifactsPresent is the completion steer, emitted once per run
+	// when every artifact named in the task's "Enforced workspace change
+	// contract" section exists on disk.
+	//
+	// It deliberately does NOT end the turn. The exit condition stays "the
+	// model stops calling tools"; this only tells it that stopping is now
+	// justified. p22 is why: the model was still improving its output at turn
+	// 100+ (470 → 514 → 498 bytes), so a hard stop would have cut off work in
+	// progress. Ask first, watch whether it converges, then consider enforcing.
+	MarkerAllArtifactsPresent = "[COMPLETION CONTRACT] All declared artifacts exist. " +
+		"If the work is complete, reply without calling any tool."
+	// Ask mode (VORTEX_COMPLETION_CONTRACT=ask). Same trigger, different
+	// sentence: it asks the model to check the work against its sources instead
+	// of announcing that stopping is justified. The difference is load-bearing —
+	// 011 v70 stopped after writing both artifacts from the request JSON alone
+	// in 5/14 runs, so "the artifacts exist" has to stop meaning "the work is
+	// done" without also meaning "keep spinning".
+	MarkerAllArtifactsAsk = "[COMPLETION CONTRACT] All declared artifacts exist. " +
+		"Before finishing, check them against the source data the task pointed at: " +
+		"if any source file is still unread, or any stated constraint is unchecked, " +
+		"keep working. Otherwise reply without calling any tool."
+	// MarkerDelegationSkipped is the delegation gate response, returned when
+	// the model calls delegate_to_orchestrator but all declared artifacts
+	// already exist on disk. It does NOT return an error — an error would
+	// consume a retry turn and the model might bypass the gate by choosing
+	// a different tool path. (Stage 3, COST_AND_TERMINATION_PLAN §阶段 3.)
+	MarkerDelegationSkipped = "[COMPLETION CONTRACT] All declared artifacts already exist; " +
+		"delegation skipped. Reply with a final answer instead."
 	// MarkerCompressedPlaceholder replaces compressed instruction body.
 	MarkerCompressedPlaceholder = "[... instruction body compressed for brevity ...]"
 	// MarkerHistoryCompressed replaces compressed conversation history.
@@ -62,9 +90,6 @@ const (
 // ── System Prompt Templates ───────────────────────────────────────────
 
 const (
-	// SysPromptIntentClassifier is the system prompt for capability classification.
-	SysPromptIntentClassifier = "You are an intent classifier for an autonomous agent orchestrator."
-
 	// SysPromptChatSummary is the system prompt for conversation summarization.
 	SysPromptChatSummary = "Summarize the following conversation concisely, preserving key decisions, file paths, and constraints."
 

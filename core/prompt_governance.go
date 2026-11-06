@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -92,12 +93,12 @@ const (
 // PromptBudgetEnforcer applies the model-aware System Prompt budget.
 // Construct one per PromptAssembler (or per-call; it is stateless).
 type PromptBudgetEnforcer struct {
-	logger *Logger
+	logger *obs.Logger
 }
 
 // NewPromptBudgetEnforcer creates an enforcer. logger may be nil — the
 // enforcer is a pure transformer and only logs when it actually trims.
-func NewPromptBudgetEnforcer(logger *Logger) *PromptBudgetEnforcer {
+func NewPromptBudgetEnforcer(logger *obs.Logger) *PromptBudgetEnforcer {
 	return &PromptBudgetEnforcer{logger: logger}
 }
 
@@ -336,7 +337,9 @@ func (e *PromptBudgetEnforcer) ProgressiveDisclosureSkills(skills []SkillSummary
 	}
 	var sb strings.Builder
 	sb.WriteString("# Active Skills (Progressive Disclosure)\n\n")
-	sb.WriteString("The following skills are active. Use `skill_view` to load full details on demand.\n\n")
+	// `skill_view` is registered nowhere; pointing agents at it produced
+	// calls that could never succeed. Only the summaries below are available.
+	sb.WriteString("The following skills are active. Each entry shows its trigger and a one-line summary.\n\n")
 	for _, s := range skills {
 		desc := s.Description
 		if desc == "" {
@@ -600,7 +603,7 @@ func (e *PromptBudgetEnforcer) logTrim(original, final, budget int, strategy str
 	if e.logger == nil {
 		return
 	}
-	e.logger.Log(EventCacheInefficiency, "", "", map[string]any{
+	e.logger.Log(obs.EventCacheInefficiency, "", "", map[string]any{
 		"event":           "prompt_budget_trimmed",
 		"strategy":        strategy,
 		"original_tokens": original,

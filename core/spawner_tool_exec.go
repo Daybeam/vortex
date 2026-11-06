@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"fmt"
 	"hash/fnv"
@@ -104,7 +105,7 @@ const (
 // and calling that a loop would be wrong. Pollers are exempt — for them the
 // same payload is not evidence of being stuck.
 func (s *Spawner) steerRepeatedResult(taskID, stepID, tool, md string) string {
-	if s.sieve == nil || md == "" || !isReadTool(tool) || isPollerTool(tool) {
+	if s.sieve == nil || md == "" || !sieve.IsReadTool(tool) || sieve.IsPollerTool(tool) {
 		return md
 	}
 	n := s.sieve.ObserveResult(taskID, stepID, tool, md)
@@ -251,7 +252,7 @@ func (s *Spawner) processToolCalls(
 		// If this exact tool call (same name + same args) has already
 		// been executed in this turn, skip it. This prevents duplicate
 		// execution when a provider returns the same call multiple times.
-		// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
+		// See docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
 		opKey := toolCallKey(call.Name, call.Arguments)
 		if turnCtx.CheckAndMark(opKey) {
 			observability.GetGlobalMetrics().Inc("orchestrator.a1.duplicate_skipped", 1)
@@ -367,6 +368,10 @@ func (s *Spawner) processToolCalls(
 			s.logger.Log("EventSharedContextToolCall", req.TaskID, req.StepID, map[string]any{
 				"tool":   call.Name,
 				"status": status,
+				// Same record as the core path: shared_context_write can carry a
+				// sizable payload, and "which key did it write" is the audit
+				// question here.
+				"args": toolArgsLogString(call.Name, call.Arguments),
 			})
 			continue
 		}
@@ -566,7 +571,7 @@ func (s *Spawner) processToolCalls(
 		// (progress/health/wait) and state-changing tools are excluded. The
 		// model receives the identical previously-computed markdown, so the
 		// repeated call costs zero extra tool execution.
-		if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
+		if s.domainReadCache != nil && sieve.IsReadTool(call.Name) && !sieve.IsPollerTool(call.Name) {
 			if cachedMD, ok := s.domainReadCache.Get(mcpID, call.Name, call.Arguments); ok {
 				log.Printf("[spawner] read_cache HIT task=%s step=%s tool=%s mcp=%s", req.TaskID, req.StepID, call.Name, mcpID)
 				observability.GetGlobalMetrics().Inc("orchestrator.read_cache.hit", 1)
@@ -579,6 +584,25 @@ func (s *Spawner) processToolCalls(
 			}
 		}
 
+		// Every MCP tool call is recorded with its arguments before it runs.
+		// Until now this branch emitted nothing at all: a sub-agent could call
+		// filesystem.delete_file and leave no trace in the jsonl beyond the
+		// result that went into the prompt. Core tools were the only auditable
+		// path, which is why p23's file loss could be bounded in time but never
+		// attributed to a call (铁律 78/131: one concept, two paths, one wired).
+		//
+		// The read-cache replay above returns before this line on purpose: it
+		// reuses an earlier result without executing anything, so it is not a
+		// call and must not inflate the count.
+		if mcpDef.Command != "" || mcpDef.URL != "" {
+			transport := "stdio"
+			if mcpDef.Command == "" {
+				transport = "remote"
+			}
+			s.logger.Log("EventMCPToolCall", req.TaskID, req.StepID,
+				mcpToolCallLogDetail(mcpID, transport, call.Name, call.Arguments))
+		}
+
 		if mcpDef.Command != "" {
 			var finalRes any
 			var execErr error
@@ -586,33 +610,12 @@ func (s *Spawner) processToolCalls(
 			// Tool Execution Timeout (default 120s)
 			toolCtx, cancelTool := context.WithTimeout(ctx, 120*time.Second)
 
-			// Helper to perform the actual call (including SAV verification)
+			// Helper to perform the actual call, so the reconnect retry below can
+			// reuse the same sequence after evicting a dead client.
 			doCall := func() (any, error) {
 				cli, err := s.mcpMgr.ensureMCPClient(toolCtx, mcpDef, req.TaskID)
 				if err != nil {
 					return nil, err
-				}
-
-				verifierID := req.Hub.Registry.GetVerifierID(call.Name)
-				if verifierID != "" {
-					if v, ok := s.verifierRegistry[verifierID]; ok {
-						state, sErr := v.Sense(toolCtx, mcpID, call.Name, s)
-						if sErr == nil {
-							res, err := cli.SendRequest(toolCtx, "tools/call", map[string]any{
-								"name":      call.Name,
-								"arguments": call.Arguments,
-							})
-							if err != nil {
-								return nil, err
-							}
-							success, vErr := v.Verify(toolCtx, mcpID, call.Name, state, res, s)
-							if !success {
-								return v.Recover(toolCtx, mcpID, call.Name, call.Arguments, vErr, s)
-							}
-							return res, nil
-						}
-						return nil, fmt.Errorf("SAV Sense failed: %v", sErr)
-					}
 				}
 
 				return cli.SendRequest(toolCtx, "tools/call", map[string]any{
@@ -658,7 +661,7 @@ func (s *Spawner) processToolCalls(
 				} else {
 					state.toolFailCount[call.Name] = 0
 					interaction.Result = finalRes
-					interaction.Meta = extractMeta(finalRes) // Phase 2: extract structured metadata
+					interaction.Meta = ExtractMeta(finalRes) // Phase 2: extract structured metadata
 					if att, ok := finalRes.(schemas.SubagentOutput); ok {
 						state.turnAttachments = dedupAttachments(state.turnAttachments, att.Attachments)
 					}
@@ -678,7 +681,7 @@ func (s *Spawner) processToolCalls(
 					// #2-universal (eval §23): cache the successful read result
 					// for replay on identical future calls within this server.
 					// Cache the clean md before any repetition warning is prepended.
-					if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
+					if s.domainReadCache != nil && sieve.IsReadTool(call.Name) && !sieve.IsPollerTool(call.Name) {
 						s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
 					}
 					// Egress redaction (I5) + L1 injection marking (input_normalization.go).
@@ -737,7 +740,7 @@ func (s *Spawner) processToolCalls(
 					}
 					// #2-universal (eval §23): cache the successful read result.
 					// Cache the clean md before any repetition warning is prepended.
-					if s.domainReadCache != nil && isReadTool(call.Name) && !isPollerTool(call.Name) {
+					if s.domainReadCache != nil && sieve.IsReadTool(call.Name) && !sieve.IsPollerTool(call.Name) {
 						s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
 					}
 					// Egress redaction (I5) + L1 injection marking (mirrors the local branch).

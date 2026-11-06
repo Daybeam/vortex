@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -37,7 +38,7 @@ func TestEnsureMCPDiscovery_SkipsAlreadyDiscovered(t *testing.T) {
 	spawner := &Spawner{
 		registry: reg,
 		mcpMgr:   NewMCPConnectionManager(reg, nil),
-		logger:   &Logger{},
+		logger:   &obs.Logger{},
 	}
 	hub := NewContextHub(reg, nil, nil)
 	bindings := []config.MCPBinding{{MCPID: "stdio-mcp"}}
@@ -71,7 +72,7 @@ func TestEnsureMCPDiscovery_SkipsRemoteMCPs(t *testing.T) {
 	spawner := &Spawner{
 		registry: reg,
 		mcpMgr:   NewMCPConnectionManager(reg, nil),
-		logger:   &Logger{},
+		logger:   &obs.Logger{},
 	}
 	hub := NewContextHub(reg, nil, nil)
 	bindings := []config.MCPBinding{{MCPID: "remote-mcp"}}
@@ -94,7 +95,7 @@ func TestEnsureMCPDiscovery_SkipsMissingMCP(t *testing.T) {
 	spawner := &Spawner{
 		registry: reg,
 		mcpMgr:   NewMCPConnectionManager(reg, nil),
-		logger:   &Logger{},
+		logger:   &obs.Logger{},
 	}
 	hub := NewContextHub(reg, nil, nil)
 	bindings := []config.MCPBinding{{MCPID: "nonexistent"}}
@@ -139,7 +140,7 @@ func TestEnsureMCPDiscovery_RouteSeesPopulatedTools(t *testing.T) {
 	spawner := &Spawner{
 		registry: reg,
 		mcpMgr:   NewMCPConnectionManager(reg, nil),
-		logger:   &Logger{},
+		logger:   &obs.Logger{},
 	}
 	hub := NewContextHub(reg, nil, nil)
 	bindings := []config.MCPBinding{{MCPID: "appworld"}}

@@ -1,10 +1,10 @@
 package tools
 
 import (
+	cappkg "github.com/daybeam/vortex/core/capability"
 	"context"
 	"fmt"
 
-	"github.com/daybeam/vortex/core"
 )
 
 // subsystems_discovery.go — Register the `discover` MCP tool.
@@ -63,7 +63,7 @@ func registerDiscoverySubsystem(app *App) {
 			isAdmin := EffectiveTier(ctx, app) == TierAdmin
 
 			// Parse scope string into DiscoveryScope.
-			scope, err := core.ParseScope(scopeStr, callerRoleID, isAdmin)
+			scope, err := cappkg.ParseScope(scopeStr, callerRoleID, isAdmin)
 			if err != nil {
 				return nil, err
 			}
@@ -76,10 +76,10 @@ func registerDiscoverySubsystem(app *App) {
 			// If the main agent needs to list roles, use explicit scope=pool
 			// with admin tier, not a silent escalation from self.
 			if scope.Mode == "self" && scope.RoleID == "" {
-				return &core.DiscoveryResult{Total: 0}, nil
+				return &cappkg.DiscoveryResult{Total: 0}, nil
 			}
 
-			result, err := core.DiscoverImpl(app.Registry, scope, dtype, query, page, pageSize)
+			result, err := cappkg.DiscoverImpl(app.Registry, scope, dtype, query, page, pageSize)
 			if err != nil {
 				return nil, err
 			}
@@ -107,7 +107,7 @@ func registerDiscoverySubsystem(app *App) {
 			page := intArg(args, "page", 1)
 			pageSize := intArg(args, "page_size", 20)
 
-			result, err := core.FindSkillsImpl(app.Registry, query, capability, provides, page, pageSize)
+			result, err := cappkg.FindSkillsImpl(app.Registry, query, capability, provides, page, pageSize)
 			if err != nil {
 				return nil, err
 			}

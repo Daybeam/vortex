@@ -179,8 +179,7 @@ func registerCommandList(s *server.MCPServer, app *App) {
 				if err != nil {
 					return errResult(err.Error())
 				}
-				gatedStdout := []byte(skeleton.SummarizeOutput(res.Stdout, cmdName))
-				gatedStderr := []byte(skeleton.SummarizeOutput(res.Stderr, cmdName))
+				gatedStdout, gatedStderr := redactAndGateOutput(res.Stdout, res.Stderr, cmdName)
 				return jsonOK(map[string]any{
 					"status":    res.Status,
 					"stdout":    string(gatedStdout),
@@ -196,9 +195,9 @@ func registerCommandList(s *server.MCPServer, app *App) {
 			return errResult(err.Error())
 		}
 
-		// Apply SummarizeOutput to guard against oversized output hitting the LLM context
-		gatedStdout := []byte(skeleton.SummarizeOutput(res.Stdout, cmdName))
-		gatedStderr := []byte(skeleton.SummarizeOutput(res.Stderr, cmdName))
+		// Apply redact+summarize to guard against oversized output hitting the
+		// LLM context and to strip secrets before they enter that context.
+		gatedStdout, gatedStderr := redactAndGateOutput(res.Stdout, res.Stderr, cmdName)
 
 		resp := map[string]any{
 			"status":    res.Status,
@@ -211,6 +210,22 @@ func registerCommandList(s *server.MCPServer, app *App) {
 		}
 		return jsonOK(resp)
 	})
+}
+
+// redactAndGateOutput strips secrets from raw command stdout/stderr, then
+// applies SummarizeOutput to bound size for the LLM context window.
+//
+// L2 fix (DELEGATION_HANDOVER_REDESIGN.md §12.6 L2): orchestrator_run_command
+// output flows back into the host model's context. Without redaction, a
+// command like `cat .env` returns plaintext API keys to the model vendor.
+// RedactEgress runs BEFORE SummarizeOutput so a truncated tail can never
+// retain a partial secret. Toggled by VORTEX_DISABLE_EGRESS_REDACTION.
+func redactAndGateOutput(stdout, stderr []byte, cmdName string) ([]byte, []byte) {
+	ro := core.RedactEgress(string(stdout))
+	re := core.RedactEgress(string(stderr))
+	gatedOut := []byte(skeleton.SummarizeOutput([]byte(ro), cmdName))
+	gatedErr := []byte(skeleton.SummarizeOutput([]byte(re), cmdName))
+	return gatedOut, gatedErr
 }
 
 // parseRunCommandArgs parses the "args" parameter for orchestrator_run_command.

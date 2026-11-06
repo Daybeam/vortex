@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -23,13 +24,13 @@ type DAGGraphWalker struct {
 	graphs     map[string]*schemas.TaskGraph
 	mu         *sync.RWMutex
 	outputBase string
-	logger     *Logger
+	logger     *obs.Logger
 	registry   *config.Registry
 }
 
 // NewDAGGraphWalker creates a walker that shares the given graph map and mutex
 // with its owning DirectedEngine.
-func NewDAGGraphWalker(graphs map[string]*schemas.TaskGraph, mu *sync.RWMutex, outputBase string, logger *Logger, registry *config.Registry) *DAGGraphWalker {
+func NewDAGGraphWalker(graphs map[string]*schemas.TaskGraph, mu *sync.RWMutex, outputBase string, logger *obs.Logger, registry *config.Registry) *DAGGraphWalker {
 	return &DAGGraphWalker{
 		graphs:     graphs,
 		mu:         mu,

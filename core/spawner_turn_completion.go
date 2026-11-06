@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -93,7 +94,7 @@ func (s *Spawner) completeTurn(
 	if st.consecutiveParseFailures >= maxConsecutiveParseFailures {
 		output.Warnings = append(output.Warnings, fmt.Sprintf(
 			"orchestrator: broke spin loop after %d consecutive parse failures", st.consecutiveParseFailures))
-		s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+		s.logger.Log(obs.EventProviderFallback, req.TaskID, req.StepID, map[string]any{
 			"turn":                       turn,
 			"consecutive_parse_failures": st.consecutiveParseFailures,
 			"action":                     "spin_break",

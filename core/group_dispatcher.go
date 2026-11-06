@@ -321,7 +321,9 @@ func (gd *GroupDispatcher) expandSOP(
 			ContextRefs:      cloneContextRefs(contextRefs),
 			ProviderOverride: s.Provider,
 			ExitCriteria:     s.ExitCriteria, // PROPAGATED (ADDED 2026-09-09)
-			GroupID:          group.ID,
+			// Without this line a SOP's declared checks die at the SOP→StepInput hop.
+			DeterministicChecks: s.DeterministicChecks,
+			GroupID:             group.ID,
 		}
 		inputs = append(inputs, inp)
 	}

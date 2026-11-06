@@ -27,9 +27,97 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/daybeam/vortex/schemas"
 )
+
+// ArtifactProblemReason classifies one way an artifact can fail its contract.
+type ArtifactProblemReason string
+
+const (
+	// ProblemUnreadable means the file could not be read at all.
+	ProblemUnreadable ArtifactProblemReason = "unreadable"
+	// ProblemNotJSON means the bytes are not a JSON object.
+	ProblemNotJSON ArtifactProblemReason = "not-json"
+	// ProblemMissing means a field listed in RequiredFields is absent.
+	ProblemMissing ArtifactProblemReason = "missing-field"
+	// ProblemTypeSchemaAbsent means a field listed only in TypeSchema is absent.
+	ProblemTypeSchemaAbsent ArtifactProblemReason = "type-schema-absent"
+	// ProblemWrongType means the field is present with another JSON type.
+	ProblemWrongType ArtifactProblemReason = "wrong-type"
+)
+
+// ArtifactProblem is a single, addressable breach of an artifact contract.
+//
+// ValidateArtifact needs only "is this artifact acceptable"; the completion
+// contract needs "what exactly is wrong, so the model can fix it". Returning a
+// struct instead of a string keeps the second caller from parsing the first
+// one's prose (→147: a message is not a data structure).
+type ArtifactProblem struct {
+	Field  string                // empty when the problem is the file itself
+	Reason ArtifactProblemReason // one of the constants above
+	Detail string                // underlying error, or the actual JSON type
+}
+
+// InspectArtifact returns every problem with the artifact described by ac, in a
+// deterministic order: file-level first, then RequiredFields in declaration
+// order, then TypeSchema by sorted field name.
+//
+// ValidateArtifact is implemented on top of this rather than beside it. Two
+// implementations of "does this artifact satisfy its fields" is exactly how one
+// of them silently stops being applied after the next edit (→131).
+func InspectArtifact(ac schemas.ArtifactContract) []ArtifactProblem {
+	// Fast path: no constraints declared — nothing to validate
+	if len(ac.RequiredFields) == 0 && len(ac.TypeSchema) == 0 {
+		return nil
+	}
+
+	raw, err := os.ReadFile(ac.Path)
+	if err != nil {
+		return []ArtifactProblem{{Reason: ProblemUnreadable, Detail: err.Error()}}
+	}
+
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return []ArtifactProblem{{Reason: ProblemNotJSON, Detail: err.Error()}}
+	}
+
+	var problems []ArtifactProblem
+	seen := make(map[string]struct{}, len(ac.RequiredFields))
+	for _, field := range ac.RequiredFields {
+		seen[field] = struct{}{}
+		if _, ok := doc[field]; !ok {
+			problems = append(problems, ArtifactProblem{Field: field, Reason: ProblemMissing})
+		}
+	}
+
+	fields := make([]string, 0, len(ac.TypeSchema))
+	for field := range ac.TypeSchema {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	for _, field := range fields {
+		expectedType := ac.TypeSchema[field]
+		val, ok := doc[field]
+		if !ok {
+			if _, declared := seen[field]; declared {
+				continue // already reported as a missing required field
+			}
+			problems = append(problems, ArtifactProblem{Field: field, Reason: ProblemTypeSchemaAbsent})
+			continue
+		}
+		if actualType := jsonGoType(val); actualType != expectedType {
+			problems = append(problems, ArtifactProblem{
+				Field:  field,
+				Reason: ProblemWrongType,
+				Detail: actualType,
+			})
+		}
+	}
+
+	return problems
+}
 
 // ValidateArtifact checks the on-disk file at ac.Path against the constraints
 // declared in ac.RequiredFields and ac.TypeSchema.
@@ -44,49 +132,28 @@ import (
 //   - a field's JSON type doesn't match its declared type
 //   - the file content is not valid JSON (when constraints require JSON-level checks)
 func ValidateArtifact(ac schemas.ArtifactContract) error {
-	// Fast path: no constraints declared — nothing to validate
-	if len(ac.RequiredFields) == 0 && len(ac.TypeSchema) == 0 {
+	problems := InspectArtifact(ac)
+	if len(problems) == 0 {
 		return nil
 	}
 
-	// Read the artifact content
-	raw, err := os.ReadFile(ac.Path)
-	if err != nil {
-		return fmt.Errorf("artifact %s: cannot read file for validation: %w", ac.Path, err)
+	first := problems[0]
+	switch first.Reason {
+	case ProblemUnreadable:
+		return fmt.Errorf("artifact %s: cannot read file for validation: %s", ac.Path, first.Detail)
+	case ProblemNotJSON:
+		return fmt.Errorf("artifact %s: %s: content is not valid JSON: %s",
+			ac.Path, schemas.FailureSchemaViolation, first.Detail)
+	case ProblemWrongType:
+		return fmt.Errorf("artifact %s: %s: field %q expected type %q, got %q",
+			ac.Path, schemas.FailureSchemaViolation, first.Field, ac.TypeSchema[first.Field], first.Detail)
+	case ProblemTypeSchemaAbsent:
+		return fmt.Errorf("artifact %s: %s: field %q declared in type_schema but absent",
+			ac.Path, schemas.FailureSchemaViolation, first.Field)
+	default:
+		return fmt.Errorf("artifact %s: %s: missing required field %q",
+			ac.Path, schemas.FailureSchemaViolation, first.Field)
 	}
-
-	// Parse JSON
-	var doc map[string]interface{}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("artifact %s: %s: content is not valid JSON: %v",
-			ac.Path, schemas.FailureSchemaViolation, err)
-	}
-
-	// Check required fields presence
-	for _, field := range ac.RequiredFields {
-		if _, ok := doc[field]; !ok {
-			return fmt.Errorf("artifact %s: %s: missing required field %q",
-				ac.Path, schemas.FailureSchemaViolation, field)
-		}
-	}
-
-	// Check type schema
-	for field, expectedType := range ac.TypeSchema {
-		val, ok := doc[field]
-		if !ok {
-			// Field missing — already caught by RequiredFields, but be explicit
-			// for cases where TypeSchema declares it but RequiredFields doesn't
-			return fmt.Errorf("artifact %s: %s: field %q declared in type_schema but absent",
-				ac.Path, schemas.FailureSchemaViolation, field)
-		}
-		actualType := jsonGoType(val)
-		if actualType != expectedType {
-			return fmt.Errorf("artifact %s: %s: field %q expected type %q, got %q",
-				ac.Path, schemas.FailureSchemaViolation, field, expectedType, actualType)
-		}
-	}
-
-	return nil
 }
 
 // jsonGoType returns a JSON-type string for the given value:

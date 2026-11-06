@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/pkg/bootmetrics"
 	"github.com/daybeam/vortex/pkg/env"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -69,6 +70,7 @@ func NewRegistry(configPath string) (*Registry, error) {
 	if hint := r.MountPolicyHint(); hint != "" {
 		log.Print(hint)
 	}
+	bootmetrics.Mark("config")
 	return r, nil
 }
 
@@ -194,6 +196,26 @@ func sortedSystemKeys() []string {
 	return keys
 }
 
+// warnNonDeclarativeExitCriteria makes the Q2-4 contract visible at load time:
+// SOP criteria must be "regex:<pattern>", "file:<path>", or "json". Prose still
+// falls through to the legacy substring branch in verifyExitCriteria, so this
+// warning does not change what any existing SOP does — it tells the author which
+// steps have a criterion that is not a real gate.
+func warnNonDeclarativeExitCriteria(sop *schemas.SOP) {
+	var bad []string
+	for stepID, step := range sop.Steps {
+		if !schemas.ExitCriteriaIsDeclarative(step.ExitCriteria) {
+			bad = append(bad, fmt.Sprintf("%s=%q", stepID, step.ExitCriteria))
+		}
+	}
+	if len(bad) == 0 {
+		return
+	}
+	sort.Strings(bad)
+	log.Printf("WARN: config: SOP %q declares %d non-declarative exit_criteria (%s); only regex:<pattern>, file:<path>, and json are legal (Q2-4). Prose still runs the legacy substring check.",
+		sop.ID, len(bad), strings.Join(bad, ", "))
+}
+
 func (r *Registry) loadLocked() error {
 	data, err := os.ReadFile(r.configPath)
 	if err != nil {
@@ -240,6 +262,7 @@ func (r *Registry) loadLocked() error {
 		r.DefaultProvider = "default"
 	}
 	r.DefaultEmbeddingProvider = cfg.DefaultEmbeddingProvider
+	r.GlobalFallback = cfg.GlobalFallback
 	r.ExternalRuntimes = cfg.ExternalRuntimes
 	r.System = cfg.System
 	r.applySystemDefaults()
@@ -265,6 +288,13 @@ func (r *Registry) loadLocked() error {
 	}
 	r.EnableDynamicRoleGen = cfg.EnableDynamicRoleGen
 	r.EnableEphemeralRoleGen = cfg.EnableEphemeralRoleGen
+	// Re-apply the delegation-mode suppression: the two assignments above run
+	// after applySystemDefaults() (which is where the env/config merge happens)
+	// and would otherwise re-enable role gen that a config file turned on
+	// explicitly. Order matters, not the value: delegation mode promises zero
+	// provider out-calls, so role gen cannot stay on. Regression test:
+	// loader_delegation_rolegen_test.go (config with providers + enable flags).
+	r.suppressRoleGenInDelegationMode()
 	r.RequirePlanReview = cfg.RequirePlanReview
 	r.SwarmModeEnabled = cfg.SwarmModeEnabled
 	r.StepPlan = cfg.StepPlan
@@ -321,6 +351,7 @@ func (r *Registry) loadLocked() error {
 		if s.ID == "" {
 			continue // FIX (2026-09-03): restored empty-ID skip, dropped during the loader.go split
 		}
+		warnNonDeclarativeExitCriteria(&s)
 		r.SOPs[s.ID] = &s
 		keepSOPs[s.ID] = true
 	}
@@ -630,6 +661,7 @@ func (r *Registry) buildConfigSnapshotLocked() Config {
 
 	return Config{
 		DefaultProvider:        r.DefaultProvider,
+		GlobalFallback:         r.GlobalFallback,
 		Providers:              providers,
 		Skills:                 skills,
 		MCPs:                   mcps,
@@ -686,8 +718,12 @@ func (r *Registry) bootstrapDefaultsLocked() {
 	if r.System.DefaultTaskTokenBudget == 0 {
 		r.System.DefaultTaskTokenBudget = 200000
 	}
-	if !r.System.MemoryBankEnabled {
-		r.System.MemoryBankEnabled = true
+	// N4 fix: only default to true when unset (nil). Explicit false from
+	// user config is preserved — the *bool pointer distinguishes "omitted"
+	// from "explicit false". See DELEGATION_HANDOVER_REDESIGN.md §11.1.
+	if r.System.MemoryBankEnabled == nil {
+		t := true
+		r.System.MemoryBankEnabled = &t
 	}
 	r.EnableDynamicRoleGen = true
 	r.EnableEphemeralRoleGen = true
@@ -703,6 +739,29 @@ func (r *Registry) bootstrapDefaultsLocked() {
 		"default": "github:anthropics/anthropic-cookbook",
 	}
 	r.registerStandardSkillsLocked()
+}
+
+// suppressRoleGenInDelegationMode enforces delegation mode's zero-outcall
+// contract on the role-resolution path.
+//
+// LogInterceptor (core/builtin_interceptors.go) runs BEFORE tryDelegationMode
+// and, when a step's role is missing, checks EnableEphemeralRoleGen /
+// EnableDynamicRoleGen to decide whether to call provider.Complete(). Both
+// default to true on the bootstrap path, so without this a delegation-mode
+// deployment would still spend a model call just to build a prompt envelope —
+// the one thing delegation mode exists to avoid. Falling through to
+// tryDefaultRoleFallback (orchestrator_default) is enough: delegation only
+// needs a role to shape the envelope, not a generated one.
+//
+// Idempotent and cheap; called from applySystemDefaults (covers the no-config
+// and bootstrap paths) and again after loadLocked's cfg assignments (covers
+// the normal config path, where those assignments would undo it).
+func (r *Registry) suppressRoleGenInDelegationMode() {
+	if !r.System.DelegationMode {
+		return
+	}
+	r.EnableEphemeralRoleGen = false
+	r.EnableDynamicRoleGen = false
 }
 
 func (r *Registry) applySystemDefaults() {
@@ -755,10 +814,19 @@ func (r *Registry) applySystemDefaults() {
 		r.System.DelegationMode = (v == "true" || v == "1")
 	}
 
+	// Delegation mode assumes no provider is available — suppress role
+	// generation that would attempt a provider.Complete() call.
+	// See suppressRoleGenInDelegationMode. Called here as well as in
+	// applySystemDefaults because the cfg assignments below run AFTER it and
+	// would otherwise re-enable the flags that a config file set explicitly
+	// (regression: 2026-11-05, config with providers + enable_*_role_gen=true).
+	r.suppressRoleGenInDelegationMode()
+
 	// MemoryBankEnabled env override (ADDED 2026-10-17).
 	// Env var takes precedence over config.json. Unset = use config value.
 	if v := os.Getenv("VORTEX_MEMORY_BANK_ENABLED"); v != "" {
-		r.System.MemoryBankEnabled = (v == "true" || v == "1")
+		b := (v == "true" || v == "1")
+		r.System.MemoryBankEnabled = &b
 	}
 
 	// ── Feature Flag Env Overrides ───────────────────────────────────

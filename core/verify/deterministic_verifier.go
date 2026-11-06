@@ -155,7 +155,7 @@ func RunDeterministicChecks(ctx context.Context, workdir string, checks []schema
 // Passes if: file exists AND (no checkboxes found OR all checkboxes are [x]).
 // Fails if: file not found OR any checkbox is still unchecked (- [ ]).
 //
-// Design: STEP_PLAN_MODE_DESIGN.md §2.4 item #5 (checkbox-based plan completion).
+// Design: docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §2.4 item #5 (checkbox-based plan completion).
 type PlanCheckboxVerifier struct{}
 
 func (v *PlanCheckboxVerifier) Verify(ctx context.Context, workdir string, criteria map[string]any) (bool, string, error) {
@@ -198,7 +198,7 @@ func (v *PlanCheckboxVerifier) Verify(ctx context.Context, workdir string, crite
 // Passes if: all entities are found in at least one .go file under search_dir.
 // Fails if: any entity is not found anywhere.
 //
-// Design: docs/plan/STEP_PLAN_MODE_DESIGN.md §13.6 (item #17, Intrect-io BS Detector).
+// Design: docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §13.6 (item #17, Intrect-io BS Detector).
 type CodeEntityVerifier struct{}
 
 func (v *CodeEntityVerifier) Verify(ctx context.Context, workdir string, criteria map[string]any) (bool, string, error) {

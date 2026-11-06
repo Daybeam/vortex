@@ -296,10 +296,15 @@ func (c *ACPClient) Close() error {
 		defer c.waitWg.Done()
 		waitErr <- c.cmd.Wait()
 	}()
+	// audit L3: use NewTimer+Stop to avoid time.After timer leak when waitErr
+	// arrives first (the 5s Timer would leak until it fires). Consistent with
+	// the P-8-sibling pattern across the engine tangle.
+	killTimer := time.NewTimer(5 * time.Second)
+	defer killTimer.Stop()
 	var err error
 	select {
 	case err = <-waitErr:
-	case <-time.After(5 * time.Second):
+	case <-killTimer.C:
 		_ = c.cmd.Process.Kill()
 		err = <-waitErr
 	}

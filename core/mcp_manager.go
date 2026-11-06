@@ -16,6 +16,7 @@ import (
 
 	"github.com/daybeam/vortex/client"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/core/sandbox"
 	"github.com/daybeam/vortex/pkg/safelimits"
 	"github.com/daybeam/vortex/schemas"
@@ -58,9 +59,12 @@ func cachedGetenv(key string) string {
 	if v, ok := mcpEnvCache.Load(key); ok {
 		return v.(string)
 	}
-	v := os.Getenv(key)
-	mcpEnvCache.Store(key, v)
-	return v
+	// audit L6: LoadOrStore makes the check-then-act atomic. os.Getenv is
+	// deterministic so both racing callers compute the same value; this just
+	// replaces the non-atomic Load-then-Store idiom. Cache stays effective
+	// (os.Getenv runs only on the miss path).
+	v, _ := mcpEnvCache.LoadOrStore(key, os.Getenv(key))
+	return v.(string)
 }
 
 // MCPConnectionManager isolates all stdio subprocess handling and JSON-RPC
@@ -74,7 +78,7 @@ type MCPConnectionManager struct {
 	handshakeLocks     sync.Map // mcpID -> *sync.Mutex; per-ID handshake serialization (audit H4)
 	discoveryLocks     sync.Map // mcpID -> *sync.Mutex; per-ID FullToolDefinitions serialization (audit H8)
 	registry           *config.Registry
-	logger             *Logger
+	logger             *obs.Logger
 	httpClient         *http.Client // shared for connection pooling (audit H4)
 }
 
@@ -98,7 +102,7 @@ func mcpSessionCacheKey(mcpID, ownerID string) string {
 	return mcpID + "\x00" + ownerID
 }
 
-func NewMCPConnectionManager(registry *config.Registry, logger *Logger) *MCPConnectionManager {
+func NewMCPConnectionManager(registry *config.Registry, logger *obs.Logger) *MCPConnectionManager {
 	return &MCPConnectionManager{
 		processCache:       make(map[string]*client.MCPClient),
 		remoteSessionCache: make(map[string]string),
@@ -243,7 +247,7 @@ func (m *MCPConnectionManager) ensureRemoteMCPSession(ctx context.Context, mcp *
 		return sid
 	}
 
-	sid = m.performRemoteMCPHandshake(ctx, mcp)
+	sid = m.performRemoteMCPHandshake(ctx, mcp, ownerID)
 
 	m.mu.Lock()
 	if m.remoteSessionCache == nil {
@@ -261,19 +265,16 @@ func (m *MCPConnectionManager) ensureRemoteMCPSession(ctx context.Context, mcp *
 	return sid
 }
 
-func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mcp *config.MCPDef) string {
+func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mcp *config.MCPDef, ownerID string) string {
 	resolvedURL, err := resolveMCPURL(mcp)
 	if err != nil {
 		return ""
 	}
 
 	applyAuth := func(req *http.Request) {
-		if mcp.AuthHeaderName == "" || mcp.APIKeyEnv == "" {
-			return
-		}
-		if secret := cachedGetenv(mcp.APIKeyEnv); secret != "" {
-			req.Header.Set(mcp.AuthHeaderName, mcp.AuthHeaderPrefix+secret)
-		}
+		// Best-effort: handshake failures are handled by the caller (returns "").
+		// OAuth errors here will cause the handshake to fail naturally.
+		_ = applyMCPAuth(ctx, req, mcp, ownerID)
 	}
 
 	initBody, _ := json.Marshal(map[string]any{
@@ -363,15 +364,8 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 		req.Header.Set("Mcp-Session-Id", sid)
 	}
 
-	if mcp.AuthHeaderName != "" {
-		if mcp.APIKeyEnv == "" {
-			return nil, fmt.Errorf("discoverRemoteMCPTools: mcp %q has auth_header_name set but no api_key_env configured", mcp.ID)
-		}
-		secret := cachedGetenv(mcp.APIKeyEnv)
-		if secret == "" {
-			return nil, fmt.Errorf("discoverRemoteMCPTools: mcp %q requires env var %q for auth, but it is unset or empty", mcp.ID, mcp.APIKeyEnv)
-		}
-		req.Header.Set(mcp.AuthHeaderName, mcp.AuthHeaderPrefix+secret)
+	if err := applyMCPAuth(ctx, req, mcp, ownerID); err != nil {
+		return nil, fmt.Errorf("discoverRemoteMCPTools: %w", err)
 	}
 
 	httpClient := m.httpClient // audit H4: reuse shared client
@@ -420,6 +414,10 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 			continue
 		}
 		desc, _ := t["description"].(string)
+		// Sanitize invisible Unicode from remote MCP tool metadata
+		// (MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.2).
+		name = sanitizeMCPToolField(name, mcp.ID, "name")
+		desc = sanitizeMCPToolField(desc, mcp.ID, "description")
 		def := schemas.ToolDefinition{Name: name, Description: desc}
 		if is, ok := t["inputSchema"].(map[string]any); ok {
 			def.InputSchema = is
@@ -497,15 +495,8 @@ func (m *MCPConnectionManager) callRemoteMCPTool(ctx context.Context, mcp *confi
 			req.Header.Set("Mcp-Session-Id", sid)
 		}
 
-		if mcp.AuthHeaderName != "" {
-			if mcp.APIKeyEnv == "" {
-				return nil, fmt.Errorf("callRemoteMCPTool: mcp %q has auth_header_name set but no api_key_env configured", mcp.ID)
-			}
-			secret := cachedGetenv(mcp.APIKeyEnv)
-			if secret == "" {
-				return nil, fmt.Errorf("callRemoteMCPTool: mcp %q requires env var %q for auth, but it is unset or empty", mcp.ID, mcp.APIKeyEnv)
-			}
-			req.Header.Set(mcp.AuthHeaderName, mcp.AuthHeaderPrefix+secret)
+		if err := applyMCPAuth(ctx, req, mcp, ownerID); err != nil {
+			return nil, fmt.Errorf("callRemoteMCPTool: %w", err)
 		}
 
 		resp, err := httpClient.Do(req)
@@ -521,8 +512,11 @@ func (m *MCPConnectionManager) callRemoteMCPTool(ctx context.Context, mcp *confi
 		statusCode = resp.StatusCode
 
 		if statusCode == http.StatusUnauthorized && attempt == 0 {
-			// 401: session may be stale. Invalidate and retry with a fresh handshake.
+			// 401: session or token may be stale. Invalidate both and retry
+			// with a fresh handshake + fresh token (R3, OAUTH §4 L2).
+			// A second 401 is returned as an error (no infinite loop).
 			m.invalidateSessionCacheEntry(mcp.ID, ownerID)
+			InvalidateMCPCredential(mcp.ID, ownerID)
 			continue
 		}
 		break

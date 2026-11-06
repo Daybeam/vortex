@@ -166,17 +166,24 @@ func TestFulfillDelegation_UnknownTask(t *testing.T) {
 }
 
 func TestFulfillDelegation_StepNotBlocked(t *testing.T) {
-	engine, reg := newDelegationEngine(t)
-	reg.System.DelegationMode = false
+	engine, _ := newDelegationEngine(t)
 
-	taskID, err := engine.Submit([]schemas.StepInput{
-		{ID: "step_1", RoleID: "worker", Task: "work"},
-	})
-	if err != nil {
-		t.Fatalf("Submit failed: %v", err)
+	// Insert a graph with a non-blocked step directly, without calling
+	// Submit. Submit starts async execution which races with
+	// FulfillDelegation: on Linux -race the goroutine can transition
+	// the step to StepBlocked before FulfillDelegation checks status.
+	taskID := "test_not_blocked"
+	engine.Mu.Lock()
+	engine.graphs[taskID] = &schemas.TaskGraph{
+		TaskID: taskID,
+		Steps: map[string]*schemas.Step{
+			"step_1": {ID: "step_1", RoleID: "worker", Task: "work", Status: schemas.StepPending},
+		},
+		Status: schemas.GraphRunning,
 	}
+	engine.Mu.Unlock()
 
-	err = engine.FulfillDelegation(taskID, "step_1", map[string]any{})
+	err := engine.FulfillDelegation(taskID, "step_1", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for non-blocked step")
 	}

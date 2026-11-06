@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/google/uuid"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/types"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -130,10 +131,10 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 		step.LastError = fmt.Sprintf("%s: confidence %.2f, root cause: %s", output.Status, conf, string(cause))
 		fallback.Status = schemas.StepPending
 		s.Mu.Unlock()
-		s.logger.Log(EventFallbackActivated, taskID, step.ID, map[string]any{
+		s.logger.Log(obs.EventFallbackActivated, taskID, step.ID, map[string]any{
 			"fallback_step": fallback.ID,
 			"root_cause":    string(cause),
-			"confidence":   conf,
+			"confidence":    conf,
 		})
 		// Record substitution: fallback step activated instead of original step
 		graph.RecordSubstitution("fallback_step", step.ID, fallback.ID, fmt.Sprintf("confidence %.2f, root cause: %s", conf, string(cause)), step.ID)
@@ -142,7 +143,7 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	s.Mu.Unlock()
 
 	// ── A3 Outcome Probe + A2/A4 Compensation (ADDED 2026-10-13) ───────
-	// Design ref: docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3
+	// Design ref: docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.3
 	//
 	// Before blocking the step, probe external state for all effects the
 	// step produced and attempt compensation in reverse order. File effects
@@ -180,7 +181,7 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	// E4 fix: enrich step_failed payload with role_id, suggestion, confidence.
 	// All values are already in scope; this is purely additive — the thin
 	// {blocked, root_cause} payload made external observability impossible.
-	s.publishEvent(taskID, step.ID, EventStepFailed, map[string]any{
+	s.publishEvent(taskID, step.ID, obs.EventStepFailed, map[string]any{
 		"root_cause": string(cause),
 		"blocked":    true,
 		"role_id":    step.RoleID,

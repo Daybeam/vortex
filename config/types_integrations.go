@@ -50,6 +50,13 @@ type ExternalRuntimes struct {
 type Config struct {
 	DefaultProvider          string                    `json:"default_provider"`
 	DefaultEmbeddingProvider string                    `json:"default_embedding_provider,omitempty"`
+	// GlobalFallback is a system-wide fallback chain applied to any provider
+	// that does NOT have its own FallbackChain configured. Providers with an
+	// explicit FallbackChain are unaffected (per-provider takes precedence).
+	// Each entry is a ProviderConfig, created via the factory and wrapped with
+	// retry/rate-limit just like a normal provider. Enable by adding one or
+	// more entries here; leave empty/absent for no global fallback (default).
+	GlobalFallback []ProviderConfig `json:"global_fallback,omitempty"`
 	Providers                map[string]ProviderConfig `json:"providers"`
 	Skills                   []Skill                   `json:"skills"`
 	MCPs                     []MCPDef                  `json:"mcps"`

@@ -1,12 +1,14 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -46,7 +48,7 @@ func TestSmartRouted_DecisionResolvedFinalizesExactlyOnce(t *testing.T) {
 		graphs:          make(map[string]*schemas.TaskGraph),
 		doneChans:       make(map[string]chan struct{}),
 		bgWg:            sync.WaitGroup{},
-		sieve:           NewSieve(1),
+		sieve:           sieve.NewSieve(1),
 		spawner:         &Spawner{},
 		notifyChan:      make(chan struct{}),
 		lifecycleCtx:    lifecycleCtx,
@@ -78,7 +80,7 @@ func TestSmartRouted_DecisionResolvedFinalizesExactlyOnce(t *testing.T) {
 
 	var mu sync.Mutex
 	terminals := 0
-	unsub := DefaultBus.SubscribeWithCancel(string(EventTaskCompleted), func(ev AgentEvent) error {
+	unsub := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), func(ev obs.AgentEvent) error {
 		if ev.TaskID != taskID {
 			return nil
 		}
@@ -135,7 +137,7 @@ func TestFinalize_IsIdempotent(t *testing.T) {
 		graphs:          make(map[string]*schemas.TaskGraph),
 		doneChans:       make(map[string]chan struct{}),
 		bgWg:            sync.WaitGroup{},
-		sieve:           NewSieve(1),
+		sieve:           sieve.NewSieve(1),
 		spawner:         &Spawner{},
 		notifyChan:      make(chan struct{}),
 		lifecycleCtx:    lifecycleCtx,
@@ -159,7 +161,7 @@ func TestFinalize_IsIdempotent(t *testing.T) {
 
 	var mu sync.Mutex
 	terminals := 0
-	unsub := DefaultBus.SubscribeWithCancel(string(EventTaskCompleted), func(ev AgentEvent) error {
+	unsub := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), func(ev obs.AgentEvent) error {
 		if ev.TaskID != taskID {
 			return nil
 		}

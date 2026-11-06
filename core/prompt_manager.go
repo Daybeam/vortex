@@ -68,7 +68,9 @@ func (pm *PromptManager) Render(ref string, rawPrompt string, context any) (stri
 
 	if !ok {
 		var err error
-		tmpl, err = template.New(ref).Parse(rawPrompt)
+		// D-PROMPT-4 fix (§4.4): missingkey=error so missing template keys
+		// produce an error instead of silently rendering <no value>.
+		tmpl, err = template.New(ref).Option("missingkey=error").Parse(rawPrompt)
 		if err != nil {
 			return "", fmt.Errorf("failed to parse template %s: %w", ref, err)
 		}

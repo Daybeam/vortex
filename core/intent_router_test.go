@@ -107,3 +107,44 @@ func TestIntentRouter_Route_NoKeywordMatch_NoClient_Returns(t *testing.T) {
 		}
 	}
 }
+
+// blockingEmbeddingClient models an embedding provider that answers slowly.
+type blockingEmbeddingClient struct{ release chan struct{} }
+
+func (b *blockingEmbeddingClient) Embed(ctx context.Context, text string) ([]float32, error) {
+	select {
+	case <-b.release:
+		return []float32{1, 0}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// Regression test (2026-10-31): the web edition warmed all 87 SOP embeddings
+// synchronously at startup, so a slow provider added ~11s before the HTTP
+// listener came up. RefreshEmbeddingsAsync must return immediately and fill
+// the cache in the background.
+func TestIntentRouter_RefreshEmbeddingsAsync_DoesNotBlock(t *testing.T) {
+	reg := makeTestRegistry()
+	client := &blockingEmbeddingClient{release: make(chan struct{})}
+	router := NewIntentRouter(client)
+
+	started := time.Now()
+	router.RefreshEmbeddingsAsync(reg)
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("RefreshEmbeddingsAsync blocked for %v", elapsed)
+	}
+
+	close(client.release)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		router.mu.RLock()
+		ready := len(router.embeddings) == len(reg.SOPs)
+		router.mu.RUnlock()
+		if ready {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background warm-up did not populate embeddings")
+}

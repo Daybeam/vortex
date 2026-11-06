@@ -257,6 +257,16 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 			return "", fmt.Errorf("path is required")
 		}
 		path = ResolveActiveSkillPath(ctx, path)
+		// Landing correction (2026-11-03): a relative path whose first segment
+		// repeats the workspace directory's own name lands in a nested copy of
+		// the workspace, outside the contract, and every layer reports success.
+		// See core/write_landing.go for the measurement and the rule's
+		// narrowness argument.
+		landing := ""
+		if corrected, ok := correctNestedSessionPath(path, validator); ok {
+			landing = writeLandingNote(path, corrected, validator.SessionRoot)
+			path = corrected
+		}
 		fullPath, err := resolvePath(path)
 		if err != nil {
 			return "", err
@@ -274,7 +284,11 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		} else {
 			rel, _ = filepath.Rel(taskDir, fullPath)
 		}
-		return fmt.Sprintf("Written %d bytes to %s\n%s", len(content), rel, writeVerifyHint(rel)), nil
+		head := fmt.Sprintf("Written %d bytes to %s\n", len(content), rel)
+		if landing != "" {
+			head += landing + "\n"
+		}
+		return head + writeVerifyHint(rel), nil
 
 	case "read_file":
 		path, _ := args["path"].(string)
@@ -310,12 +324,9 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		if lang == "" {
 			lang = "python"
 		}
-		// Use workspace (SessionRoot) as cwd so the model can use relative paths.
-		execCwd := ""
-		if validator != nil && validator.SessionRoot != "" {
-			execCwd = validator.SessionRoot
-		} else {
-			execCwd = taskDir
+		execCwd, cwdErr := execCwdFor(validator, taskDir)
+		if cwdErr != nil {
+			return "", cwdErr
 		}
 		result, err := executeCode(ctx, code, lang, execCwd)
 		if err != nil {
@@ -337,6 +348,30 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 	default:
 		return "", fmt.Errorf("unknown core tool: %s", name)
 	}
+}
+
+// execCwdFor picks the working directory for execute_code and makes sure it
+// exists. Preferring SessionRoot keeps the model's relative paths working
+// inside the workspace; taskDir is the fallback.
+//
+// The MkdirAll is the fix, not decoration: nothing on the chat path ever
+// creates outputs/<taskID>. The only two MkdirAll calls for that directory sit
+// in the DAG scheduler (core/scheduler.go persistGraph and the decision
+// finalizer), which a chat turn never reaches — so execute_code handed the OS a
+// non-existent cwd while write_file in the very same turn succeeded because it
+// self-heals its parent directory. See docs/audit/unwired-code-register.md §O11.
+func execCwdFor(validator *SafePathValidator, taskDir string) (string, error) {
+	cwd := taskDir
+	if validator != nil && validator.SessionRoot != "" {
+		cwd = validator.SessionRoot
+	}
+	if cwd == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(cwd, 0755); err != nil {
+		return "", fmt.Errorf("failed to create execution directory %s: %v", cwd, err)
+	}
+	return cwd, nil
 }
 
 // readFileLineRange handles the optional start_line/end_line arguments of
@@ -526,9 +561,19 @@ func allowedDirsStr(validator *SafePathValidator, taskDir string) string {
 // after the script started and includes them in the response. If no changes
 // are found, a hint is added suggesting print() statements.
 //
-// In the 041-capacity-planning task, this fix alone is predicted to cut
-// 38/41 wasted calls (88% reduction) — the script writes 3 deliverables
-// but never prints, so 37 subsequent calls are pure repetition.
+// Status: the 041 hypothesis (38/41 wasted calls cut) was never measured, and
+// 029 does not support it. Measured on 029 (2026-11-05, DELEGATION_ARTIFACT_
+// DELIVERY_REMEDIATION.md §33): the delegated agent received this exact
+// "4 file(s) were modified. Use read_file to verify their contents." payload
+// 25 times in one run — byte-identical apart from the timestamp — and answered
+// every one of them by re-running the whole pipeline, which rewrites the same
+// four files and produces the same payload again. The hint names a tool the
+// model does not use; it verifies by re-running. Read and write are the same
+// action here, so verification cannot terminate.
+//
+// What the payload cannot do is distinguish rewrite #3 from rewrite #25. Any
+// change to it has to give the model something that changes between attempts,
+// otherwise the response stays a fixed point (→200).
 func addSilentSuccessSummary(resp map[string]any, cwd string, startTime time.Time) {
 	stdout, _ := resp["stdout"].(string)
 	if stdout != "" {

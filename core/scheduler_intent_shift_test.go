@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -51,10 +52,10 @@ func intentShiftGraph(nodeEmb, stepEmb []float32, assumptions []string) (*schema
 		Steps:  map[string]*schemas.Step{"s1": step},
 		ContextTree: map[string]*schemas.ContextNode{
 			"root": {
-				ID:       "root",
-				Intent:   "build a REST API",
-				Status:   schemas.NodeActive,
-				Metadata: map[string]any{"project": "demo", "tier": "public"},
+				ID:        "root",
+				Intent:    "build a REST API",
+				Status:    schemas.NodeActive,
+				Metadata:  map[string]any{"project": "demo", "tier": "public"},
 				Embedding: nodeEmb,
 			},
 		},
@@ -73,7 +74,7 @@ func intentShiftGraph(nodeEmb, stepEmb []float32, assumptions []string) (*schema
 
 // waitForBranchEvent drains the subscription until the intent_shift_branch
 // event arrives (other engine events — asset sentry etc. — are skipped).
-func waitForBranchEvent(t *testing.T, ch <-chan LogEvent) LogEvent {
+func waitForBranchEvent(t *testing.T, ch <-chan obs.LogEvent) obs.LogEvent {
 	t.Helper()
 	deadline := time.After(3 * time.Second)
 	for {
@@ -82,7 +83,7 @@ func waitForBranchEvent(t *testing.T, ch <-chan LogEvent) LogEvent {
 			if !ok {
 				t.Fatal("event subscription closed before intent_shift_branch arrived")
 			}
-			if ev.Event == EventIntentShiftBranch {
+			if ev.Event == obs.EventIntentShiftBranch {
 				return ev
 			}
 		case <-deadline:
@@ -95,7 +96,7 @@ func waitForBranchEvent(t *testing.T, ch <-chan LogEvent) LogEvent {
 // the drain window. The decision is synchronous inside transitionContextTree,
 // so a correct no-branch path never emits the event at all; the window only
 // guards against the async writer-goroutine fan-out lag.
-func assertNoBranchEvent(t *testing.T, ch <-chan LogEvent) {
+func assertNoBranchEvent(t *testing.T, ch <-chan obs.LogEvent) {
 	t.Helper()
 	deadline := time.After(500 * time.Millisecond)
 	for {
@@ -104,7 +105,7 @@ func assertNoBranchEvent(t *testing.T, ch <-chan LogEvent) {
 			if !ok {
 				return
 			}
-			if ev.Event == EventIntentShiftBranch {
+			if ev.Event == obs.EventIntentShiftBranch {
 				t.Fatalf("unexpected intent_shift_branch event: %+v", ev)
 			}
 		case <-deadline:

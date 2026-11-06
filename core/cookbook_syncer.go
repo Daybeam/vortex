@@ -9,20 +9,21 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // CookbookSyncer handles periodic background synchronization of cookbook repositories.
 type CookbookSyncer struct {
 	registry       *config.Registry
 	resourceLoader *ResourceLoader
-	logger         *Logger
+	logger         *obs.Logger
 	stopChan       chan struct{}
 	stopOnce       sync.Once
 	ctx            context.Context
 	cancel         context.CancelFunc
 }
 
-func NewCookbookSyncer(reg *config.Registry, loader *ResourceLoader, logger *Logger) *CookbookSyncer {
+func NewCookbookSyncer(reg *config.Registry, loader *ResourceLoader, logger *obs.Logger) *CookbookSyncer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &CookbookSyncer{
 		registry:       reg,

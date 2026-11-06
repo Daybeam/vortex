@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -14,8 +15,12 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/jit"
+	"github.com/daybeam/vortex/core/obs"
+	"github.com/daybeam/vortex/pkg/bootmetrics"
 	"github.com/daybeam/vortex/pkg/interfaces"
 	"github.com/daybeam/vortex/pkg/registry"
+	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -55,22 +60,43 @@ type DirectedEngine struct {
 	graphs      map[string]*schemas.TaskGraph
 	cancelFuncs map[string]context.CancelFunc
 	doneChans   map[string]chan struct{} // For long-polling
+	// stepWGs tracks in-flight step goroutines per task so CancelTask/Clear
+	// can wait for them to drain before proceeding (L-7.3). Without this,
+	// a late persistGraph from a draining step can re-create a zombie task
+	// in the registry after Clear has already deleted it.
+	stepWGs map[string]*sync.WaitGroup
+
+	// H-5 (2026-10-04): Debounce map for persistGraph — taskID → last persist
+	// time. Skips redundant persists within 200ms, eliminating the 3-4× per
+	// step lifecycle marshal overhead. sync.Map for lock-free access.
+	lastPersistAt sync.Map
+
+	// The graph persist fence (register O33, decision Q2-2). Semantics and its
+	// two known limits are in core/scheduler_fence.go.
+	fenceOwner string
+	fences     sync.Map // taskID → graphFence: the token this process last claimed
+	// fenceCancels holds each executor's own cancel func so losing the fence can
+	// stop the goroutine, not only its writes (a muted executor still burns
+	// tokens and still fires external MCP calls).
+	fenceCancels sync.Map // taskID → context.CancelFunc
+	fenceBroken  sync.Map // taskID → struct{}: sticky refuse, cleared only by a fresh claim
 
 	spawner        *Spawner
-	jit            *JITManager
+	jit            *jit.JITManager
 	taskStore      store.ITaskStore
 	expStore       store.IExperienceStore
 	reflection     *ReflectionEngine
-	logger         *Logger
+	logger         *obs.Logger
 	assets         *AssetManager
 	registry       *config.Registry
 	outputBase     string
 	tmpBase        string
 	SignalField    *SignalField
-	sieve          *Sieve
+	sieve          *sieve.Sieve
 	budgetGuard    *BudgetGuard
 	budgetSentinel *BudgetSentinel
 	walker         *DAGGraphWalker
+	drafts         *DraftStore
 
 	// JITSessions holds POC session-scoped JIT interpreter state (design doc
 	// playbook/jit-session-poc-design-2026.md). Nil-safe: set explicitly by
@@ -78,7 +104,7 @@ type DirectedEngine struct {
 	// threaded through the constructor, to avoid breaking the 4 existing
 	// test call sites that construct a DirectedEngine directly. executeStep
 	// checks for nil before use.
-	JITSessions *JITSessionManager
+	JITSessions *jit.JITSessionManager
 
 	// TaskRegistry persists task-level lifecycle state so GetStatus() can answer
 	// for graphs that are absent from the in-process map — which happens under the
@@ -86,7 +112,17 @@ type DirectedEngine struct {
 	// querying process are not the same one.
 	// Nil-safe: set explicitly by main*.go after NewDirectedEngine returns, same
 	// rationale as JITSessions above. All call sites must nil-check before use.
+	// Guarded by taskRegistryMu: the Asset Sentry goroutine (started below, in
+	// this constructor) reads it while main*.go assigns it. Use
+	// taskRegistry()/SetTaskRegistry instead of touching the field directly.
 	TaskRegistry store.TaskRegistry
+	taskRegistryMu sync.RWMutex
+
+	// BaselineStore pins SOP/Role versions at task creation time so resumed
+	// tasks use the pinned version instead of the live registry. Nil-safe:
+	// set explicitly by main*.go after NewDirectedEngine returns. When nil,
+	// task creation skips pinning and resume falls back to current registry.
+	BaselineStore store.BaselineStore
 
 	// Archive is the hot-data memory layer (ContextArchive). Nil-safe: set
 	// explicitly by main*.go after NewDirectedEngine returns. When non-nil,
@@ -100,25 +136,21 @@ type DirectedEngine struct {
 	// When nil (tests, backward compat), the check is skipped.
 	Sessions *SessionManager
 
-	// BaselineStore pins SOP/Role versions at task creation time so resumed
-	// tasks use the same versions as the original run. Nil-safe.
-	BaselineStore store.BaselineStore
-
 	// pathLocks (ADDED 2026-09-13) — fine-grained per-path RWMutex for
 	// concurrent step file-write isolation. See core/path_lock.go.
 	pathLocks *PathLockManager
-	drafts    *DraftStore
 
-	// H-5 (2026-10-04): Debounce map for persistGraph — taskID → last persist
-	// time. Skips redundant persists within 200ms, eliminating the 3-4× per
-	// step lifecycle marshal overhead. sync.Map for lock-free access.
-	lastPersistAt sync.Map
+	UseSwarm bool
 
-	UseSwarm    bool
-	agents      []interfaces.AutonomousProvider
-	convMonitor interfaces.ConvergenceMonitor
-	notifyChan  chan struct{}
-	notifyMu    sync.Mutex
+	// systemOneProvider is the optional System One decision model provider.
+	// Nil-safe: set explicitly by main*.go after NewDirectedEngine returns.
+	// When non-nil, decision gate, tool router, and failure classification
+	// use it for fast probability-based decisions instead of expensive LLM
+	// calls or string matching. Each integration point nil-checks before use.
+	systemOneProvider *providers.SystemOneProvider
+	systemOneCfg      config.SystemOneConfig
+	notifyChan        chan struct{}
+	notifyMu          sync.Mutex
 
 	// lifecycleCtx is cancelled by Stop() to shut down background services
 	// (swarm agents, convergence monitor, parameter adaptor) and async poll
@@ -155,15 +187,20 @@ type DirectedEngine struct {
 	// WireHooks after construction. See core/hook_runner.go.
 	hookRunner *HookRunner
 
-	// recentDecisions (#14): per-step decision timestamp for rate limiting
-	// non-critical auto-resolved decisions (30s cooldown per step).
+	// recentDecisions (#14, ADDED 2026-10-10): per-step decision timestamp
+	// for RiskTier-based rate limiting. Key: "taskID:stepID".
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.3.
 	recentDecisions   map[string]time.Time
 	recentDecisionsMu sync.Mutex
 
-	// auditLogger (#15): tamper-evident SHA-256 hash chain for decisions.
+	// auditLogger (#15, ADDED 2026-10-11): tamper-evident SHA-256 hash chain
+	// for Decision Gate events. Nil-safe: set by main*.go after construction.
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.4.
 	auditLogger *AuditLogger
 
-	// costTracker (#18): per-LLM-call token spend to SQLite.
+	// costTracker (#18, ADDED 2026-10-15): per-LLM-call token spend to SQLite.
+	// Nil-safe: set by main*.go after construction.
+	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.7.
 	costTracker *CostTracker
 }
 
@@ -185,8 +222,8 @@ func NewDirectedEngine(
 	reg *config.Registry,
 	ts store.ITaskStore,
 	es store.IExperienceStore,
-	jit *JITManager,
-	logger *Logger,
+	jit *jit.JITManager,
+	logger *obs.Logger,
 	sf *SignalField,
 	outputBase, tmpBase string,
 	loader *ResourceLoader,
@@ -195,6 +232,8 @@ func NewDirectedEngine(
 		graphs:              make(map[string]*schemas.TaskGraph),
 		cancelFuncs:         make(map[string]context.CancelFunc),
 		doneChans:           make(map[string]chan struct{}),
+		stepWGs:             make(map[string]*sync.WaitGroup),
+		fenceOwner:          fenceOwnerToken(),
 		spawner:             NewSpawner(reg, ts, es, logger, loader, outputBase),
 		jit:                 jit,
 		taskStore:           ts,
@@ -206,16 +245,16 @@ func NewDirectedEngine(
 		outputBase:          outputBase,
 		tmpBase:             tmpBase,
 		SignalField:         sf,
-		sieve:               newSieveFromConfig(reg.System),
+		sieve:               sieve.NewSieveFromConfig(reg.System),
 		budgetGuard:         NewBudgetGuard(0), // Default safety margin
 		budgetSentinel:      NewBudgetSentinel(),
 		pathLocks:           NewPathLockManager(),
 		drafts:              NewDraftStore(),
 		hashCache:           make(map[string]string),
 		maxHashCacheEntries: defaultMaxHashCacheEntries,
-		recentDecisions:     make(map[string]time.Time),
 		UseSwarm:            os.Getenv("ACAIS_MODE") == "1",
 		notifyChan:          make(chan struct{}),
+		recentDecisions:     make(map[string]time.Time),
 	}
 	s.spawner.SignalField = sf
 
@@ -224,15 +263,16 @@ func NewDirectedEngine(
 	// Initialise lifecycle context for background services (cancelled by Stop).
 	s.lifecycleCtx, s.lifecycleCancel = context.WithCancel(context.Background())
 	if s.UseSwarm {
-		// Swarm mode (ACAIS) is not included in this build. Log a warning
-		// and continue in single-agent mode.
-		s.logger.Log("EventSwarmUnavailable", "", "", map[string]any{
-			"message": "ACAIS_MODE=1 but swarm components are not available in the open core; running in single-agent mode",
-		})
+		log.Printf("WARN: swarm mode requested but not available in open core")
 	}
 
-	// Start Asset Sentry
-	s.goBackground(func() { s.assets.Sentry(s.lifecycleCtx, ts) }) // audit L5: use goBackground so Stop() drains
+	// Start Asset Sentry (D-GC-1 fix: pass TaskRegistry, not ITaskStore)
+	// Passed as a getter, not a value: the ledger is wired by main*.go *after*
+	// this constructor returns, so a value captured here would be nil for the
+	// life of the engine (the first tick is an hour away — the bug would never
+	// show in a test run). The getter also reads under the registry mutex,
+	// which is what removes the 2026-11-02 data race.
+	s.goBackground(func() { s.assets.Sentry(s.lifecycleCtx, s.taskRegistry) }) // audit L5: use goBackground so Stop() drains
 
 	// Start terminal-graph evictor to prevent unbounded map growth (audit C4).
 	// Graphs that reached a terminal state are removed from s.graphs,
@@ -246,7 +286,49 @@ func NewDirectedEngine(
 	s.spawner.SetRefBasedHandoffThreshold(int(reg.System.RefBasedHandoffThreshold))
 
 	s.loadGraphs()
+	bootmetrics.Mark("scheduler")
 	return s
+}
+
+// getOrCreateStepWG returns the per-task WaitGroup that tracks in-flight step
+// goroutines. Lazily initialized so we don't need to touch every graph-creation
+// site. (L-7.3)
+func (s *DirectedEngine) getOrCreateStepWG(taskID string) *sync.WaitGroup {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	if s.stepWGs == nil {
+		s.stepWGs = make(map[string]*sync.WaitGroup)
+	}
+	wg, ok := s.stepWGs[taskID]
+	if !ok {
+		wg = &sync.WaitGroup{}
+		s.stepWGs[taskID] = wg
+	}
+	return wg
+}
+
+// waitStepDrain blocks until all in-flight step goroutines for the given task
+// have exited, or the timeout expires. This prevents late persistGraph calls
+// from re-creating zombie tasks after Clear has deleted the registry entry.
+// (L-7.3)
+func (s *DirectedEngine) waitStepDrain(taskID string, timeout time.Duration) {
+	s.Mu.RLock()
+	wg := s.stepWGs[taskID]
+	s.Mu.RUnlock()
+	if wg == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	// audit P-8-sibling: use NewTimer+Stop to avoid time.After timer leak.
+	// The helper goroutine drains when wg reaches 0 (steps exit on ctx cancel);
+	// a hung provider would leak both the step and helper — fix at provider level.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 // WireCapabilityRouting connects the per-model per-capability telemetry store
@@ -274,8 +356,9 @@ func (s *DirectedEngine) WireHooks(hooks []config.HookConfig, runtimes config.Ex
 	}
 	s.hookRunner = NewHookRunner(hooks, runtimes, s.logger)
 
+	// step_post: advisory hook after step completion
 	if len(s.hookRunner.HooksForPoint(HookStepPost)) > 0 {
-		DefaultBus.Subscribe(string(EventStepCompleted), func(ev AgentEvent) error {
+		obs.DefaultBus.Subscribe(string(obs.EventStepCompleted), func(ev obs.AgentEvent) error {
 			s.goBackground(func() {
 				s.hookRunner.Run(s.lifecycleCtx, HookStepPost, HookContext{
 					Point:  HookStepPost,
@@ -288,9 +371,10 @@ func (s *DirectedEngine) WireHooks(hooks []config.HookConfig, runtimes config.Ex
 		})
 	}
 
+	// task_completion: advisory hook after task reaches terminal state
 	if len(s.hookRunner.HooksForPoint(HookTaskCompletion)) > 0 {
-		for _, evt := range []EventType{EventTaskCompleted, EventTaskFailed} {
-			DefaultBus.Subscribe(string(evt), func(ev AgentEvent) error {
+		for _, evt := range []obs.EventType{obs.EventTaskCompleted, obs.EventTaskFailed} {
+			obs.DefaultBus.Subscribe(string(evt), func(ev obs.AgentEvent) error {
 				s.goBackground(func() {
 					s.hookRunner.Run(s.lifecycleCtx, HookTaskCompletion, HookContext{
 						Point:  HookTaskCompletion,
@@ -303,8 +387,9 @@ func (s *DirectedEngine) WireHooks(hooks []config.HookConfig, runtimes config.Ex
 		}
 	}
 
+	// decision_required: suggest auto-resolution for decisions
 	if len(s.hookRunner.HooksForPoint(HookDecisionRequired)) > 0 {
-		DefaultBus.Subscribe(string(EventDecisionRequired), func(ev AgentEvent) error {
+		obs.DefaultBus.Subscribe(string(obs.EventDecisionRequired), func(ev obs.AgentEvent) error {
 			s.goBackground(func() {
 				s.hookRunner.Run(s.lifecycleCtx, HookDecisionRequired, HookContext{
 					Point:  HookDecisionRequired,
@@ -326,12 +411,6 @@ func (s *DirectedEngine) Stop() {
 	if s.lifecycleCancel != nil {
 		s.lifecycleCancel()
 	}
-	for _, a := range s.agents {
-		a.Stop()
-	}
-	if s.convMonitor != nil {
-		s.convMonitor.Stop()
-	}
 	s.Mu.Unlock()
 
 	// Wait for background goroutines (embedding, folding, reflection) to
@@ -344,6 +423,70 @@ func (s *DirectedEngine) Stop() {
 	// by bgWg. They derive from lifecycleCtx so they'll exit promptly.
 	if s.reflection != nil {
 		s.reflection.Wait()
+	}
+}
+
+// SetMemoryBankStore wires the MemoryBankStore into the ReflectionEngine
+// for automatic user profile extraction, and into the Spawner for
+// UserProfile injection into sub-agent prompts.
+// Called after construction. ADDED spawner wiring 2026-10-17.
+// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
+func (s *DirectedEngine) SetMemoryBankStore(mb *store.MemoryBankStore) {
+	if s.reflection != nil {
+		s.reflection.SetMemoryBankStore(mb)
+	}
+	if s.spawner != nil {
+		s.spawner.SetMemoryBankStore(mb)
+	}
+}
+
+// SetCharter sets the TaskCharter on a submitted task's graph.
+// Called after SubmitWithSessionIR returns a task ID. Thread-safe.
+// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.
+func (s *DirectedEngine) SetCharter(taskID string, charter *schemas.TaskCharter) {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	if graph, ok := s.graphs[taskID]; ok && graph != nil {
+		graph.Charter = charter
+	}
+}
+
+// SetSystemOneProvider injects the System One decision model provider and
+// config. Nil-safe: when provider is nil or BaseURL is empty, all integration
+// points use their existing fallback logic (zero behavior change).
+func (s *DirectedEngine) SetSystemOneProvider(p *providers.SystemOneProvider, cfg config.SystemOneConfig) {
+	s.systemOneProvider = p
+	s.systemOneCfg = cfg
+	if s.spawner != nil {
+		s.spawner.systemOneProvider = p
+		if s.spawner.toolRouter != nil && cfg.EnableToolRouter {
+			s.spawner.toolRouter.SetSystemOneProvider(p, cfg.Model)
+		}
+	}
+	if s.sieve != nil && cfg.EnableSieve {
+		s.sieve.SetSystemOneProvider(p, cfg)
+	}
+}
+
+// SetArchive injects the ContextArchive into the engine and propagates it to
+// the spawner for Path D (Regular Step Warm layer Archive query).
+// Nil-safe: when nil, Archive queries are skipped (zero behavior change).
+// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
+func (s *DirectedEngine) SetArchive(a *ContextArchive) {
+	s.Archive = a
+	if s.spawner != nil {
+		s.spawner.SetArchive(a)
+		s.spawner.SetProjectResolver(s.ProjectOf)
+	}
+}
+
+// SetFoldEngine injects the FoldEngine for segment-based incremental fold.
+// Propagates to the spawner and PromptAssembler.
+// Nil-safe: when nil, fold is skipped (zero behavior change).
+// See docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
+func (s *DirectedEngine) SetFoldEngine(fe *FoldEngine) {
+	if s.spawner != nil {
+		s.spawner.SetFoldEngine(fe)
 	}
 }
 
@@ -362,19 +505,37 @@ func (s *DirectedEngine) goBackground(fn func()) {
 	}()
 }
 
+// startGraphExecutor launches the appropriate executor goroutine (run or
+// swarmWatchdog) for a task graph, based on the UseSwarm flag. All sites
+// that transition a graph to GraphRunning and need to (re)start execution
+// MUST call this helper instead of inlining the branch — this prevents the
+// fix-propagation gap where a new site forgets the UseSwarm branch.
+// (audit L-N9: third recurrence of this bug class; L-7.1 → L-N5/N6/N1/N4 → L-N9)
+func (s *DirectedEngine) startGraphExecutor(ctx context.Context, taskID string) {
+	// Q2-2 (register O33): the executor runs under its own child context so that
+	// losing the fence can cancel this executor rather than only muting its writes
+	// — run() returns on ctx.Done() and executeStep/Spawner.Spawn take this same
+	// ctx, so the loser stops spending tokens and stops firing external MCP calls.
+	//
+	// No claim is written here. Stamping happens in persistGraph, with the manifest
+	// the claim protects; a token already on disk is not evidence of a live rival
+	// (crash resume would break), and a background write from this goroutine races
+	// whoever owns the directory — see stampFence.
+	runCtx, cancel := context.WithCancel(ctx)
+	s.fenceCancels.Store(taskID, cancel)
+	executor := s.swarmWatchdog
+	if !s.UseSwarm {
+		executor = s.run
+	}
+	s.goBackground(func() {
+		defer cancel()
+		executor(runCtx, taskID)
+	})
+}
+
 func (s *DirectedEngine) Refresh() error {
 	s.loadGraphs()
 	return nil
-}
-
-// startGraphExecutor launches the appropriate executor goroutine (run or
-// swarmWatchdog) for a task graph, based on the UseSwarm flag.
-func (s *DirectedEngine) startGraphExecutor(ctx context.Context, taskID string) {
-	if !s.UseSwarm {
-		s.goBackground(func() { s.run(ctx, taskID) })
-	} else {
-		s.goBackground(func() { s.swarmWatchdog(ctx, taskID) })
-	}
 }
 
 func (s *DirectedEngine) loadGraphs() {
@@ -391,6 +552,13 @@ func (s *DirectedEngine) loadGraphs() {
 			}
 			var graph schemas.TaskGraph
 			if err := json.Unmarshal(data, &graph); err == nil {
+				// P10: load pinned baseline BEFORE acquiring s.Mu so the
+				// network I/O (GetBaseline + LoadPinnedRole) doesn't block
+				// all graph operations (audit P-6). Safe because graph isn't
+				// in s.graphs yet — no concurrent access to it.
+				if graph.Status == schemas.GraphRunning {
+					s.applyPinnedBaseline(&graph)
+				}
 				s.Mu.Lock()
 				// Check if already in memory to avoid duplicate goroutines and pointer replacement
 				if _, ok := s.graphs[graph.TaskID]; ok {
@@ -409,6 +577,8 @@ func (s *DirectedEngine) loadGraphs() {
 						}
 					}
 
+					// (applyPinnedBaseline already called above, before Lock)
+
 					ctx, cancel := context.WithCancel(s.lifecycleCtx)
 					s.cancelFuncs[graph.TaskID] = cancel
 					// Ensure done channel exists
@@ -421,6 +591,38 @@ func (s *DirectedEngine) loadGraphs() {
 				s.Mu.Unlock()
 			}
 		}
+	}
+}
+
+// applyPinnedBaseline loads the pinned Role version from the archive and
+// injects it into graph.SessionRoles so the spawner uses the pinned version
+// instead of the live registry. Nil-safe: skips when BaselineStore is nil
+// or no baseline row exists. Old tasks (no baseline) fall back gracefully.
+func (s *DirectedEngine) applyPinnedBaseline(graph *schemas.TaskGraph) {
+	if s.BaselineStore == nil {
+		return
+	}
+	ctx := s.lifecycleCtx
+	baseline, err := s.BaselineStore.GetBaseline(ctx, graph.TaskID)
+	if err != nil || baseline == nil {
+		return
+	}
+	if baseline.RoleID != "" && baseline.RoleVersion != "" {
+		role, err := s.BaselineStore.LoadPinnedRole(ctx, baseline.RoleID, baseline.RoleVersion)
+		if err != nil {
+			s.logger.Log("EventBaselineLoadError", graph.TaskID, "", map[string]any{
+				"role_id": baseline.RoleID, "role_version": baseline.RoleVersion,
+				"error": err.Error(),
+			})
+			return
+		}
+		if graph.SessionRoles == nil {
+			graph.SessionRoles = make(map[string]any)
+		}
+		graph.SessionRoles[role.ID] = role
+		s.logger.Log("EventBaselineApplied", graph.TaskID, "", map[string]any{
+			"role_id": role.ID, "role_version": role.Version,
+		})
 	}
 }
 
@@ -453,6 +655,16 @@ func (s *DirectedEngine) detectReadDeps(graph *schemas.TaskGraph, stepID string,
 }
 
 func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
+	// Q2-2 (register O33): compare-before-write. A graph this process no longer
+	// holds means another engine adopted the same outputs/<taskID>, so manifest,
+	// artifacts and the ledger row all belong to that engine's view of reality.
+	// Refusing is not enough on its own — recordFenceLoss cancels the executor,
+	// which is what makes this a stop instead of a mute.
+	if !s.holdsFence(graph.TaskID) {
+		s.recordFenceLoss(graph.TaskID)
+		return
+	}
+
 	// H-5 (2026-10-04): Debounce — skip if the same graph was persisted
 	// < 200ms ago. Eliminates redundant persists at adjacent state
 	// transitions (e.g., scheduler_dag.go:147+162 are < 10ms apart).
@@ -466,28 +678,31 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 	}
 	s.lastPersistAt.Store(graph.TaskID, now)
 
-	// P-H5 fix: marshal under lock, write to disk outside lock.
-	// This unblocks concurrent graph ops that were serializing on
-	// file I/O (10-100ms per persist) after every step state change.
-	s.Mu.Lock()
+	// P-2.1 Step 1: marshal under RLock (read-only) instead of Lock (write).
+	// This allows concurrent readers to proceed during the ~1-3ms marshal,
+	// eliminating ~95% of the global mutex contention. The only write is
+	// graph.Artifacts = artifacts, which gets a brief separate Lock section.
+	// Note: the manifest will contain the PREVIOUS artifacts (marshal happens
+	// before the artifacts write); artifacts.json has the NEW artifacts.
+	s.Mu.RLock()
+	graph.LockDecisionHistory() // P-2.1 Step 2: prevent Spawner from writing DecisionHistory during marshal
 	outDir := filepath.Join(s.outputBase, graph.TaskID)
 	artifacts := s.buildArtifactsLocked(graph)
-	graph.Artifacts = artifacts
-	manifestData, mErr := json.MarshalIndent(graph, "", "  ")
+	manifestData, mErr := json.Marshal(graph) // P-1.8: compact marshal on hot path
 	if mErr != nil {
 		log.Printf("WARN: persistGraph: failed to marshal manifest for task %s: %v", graph.TaskID, mErr)
 	}
 	var artifactsData []byte
 	if len(artifacts) > 0 {
 		var aErr error
-		artifactsData, aErr = json.MarshalIndent(artifacts, "", "  ")
+		artifactsData, aErr = json.Marshal(artifacts)
 		if aErr != nil {
 			log.Printf("WARN: persistGraph: failed to marshal artifacts for task %s: %v", graph.TaskID, aErr)
 		}
 	}
 	var statusData []byte
 	var statusStr string
-	if s.TaskRegistry != nil {
+	if s.taskRegistry() != nil {
 		var sErr error
 		statusData, sErr = json.Marshal(graph.ToStatusDict())
 		if sErr != nil {
@@ -495,6 +710,12 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 		}
 		statusStr = string(graph.Status)
 	}
+	graph.UnlockDecisionHistory()
+	s.Mu.RUnlock()
+
+	// Brief write lock for the artifacts field update only (<1µs).
+	s.Mu.Lock()
+	graph.Artifacts = artifacts
 	s.Mu.Unlock()
 
 	// File I/O outside lock (P-H5)
@@ -504,6 +725,11 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 	if len(manifestData) > 0 {
 		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), manifestData, 0644); werr != nil {
 			log.Printf("WARN: persistGraph: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
+		} else {
+			// Q2-2: this is the stamp point — the claim is published with the state
+			// it protects, so a second engine driving the same directory finds a
+			// token to contend with (see stampFence for why not earlier).
+			s.stampFence(graph.TaskID)
 		}
 	}
 	if len(artifactsData) > 0 {
@@ -511,8 +737,8 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 			log.Printf("WARN: persistGraph: failed to write artifacts.json for task %s: %v", graph.TaskID, werr)
 		}
 	}
-	if s.TaskRegistry != nil && len(statusData) > 0 {
-		if serr := s.TaskRegistry.SaveTask(s.lifecycleCtx, graph.TaskID, statusStr, statusData); serr != nil {
+	if tr := s.taskRegistry(); tr != nil && len(statusData) > 0 {
+		if serr := tr.SaveTask(s.lifecycleCtx, graph.TaskID, statusStr, statusData); serr != nil {
 			log.Printf("WARN: persistTaskState: failed to save task state for %s: %v", graph.TaskID, serr)
 		}
 	}
@@ -548,6 +774,10 @@ func (s *DirectedEngine) buildArtifactsLocked(graph *schemas.TaskGraph) []schema
 			ac.SHA256 = sum
 			s.recordHashCacheEntry(of.Path, sum)
 		} else {
+			// audit L1 (2026-10-29): a failed read produces a hash of
+			// only the bytes read before the error. Do NOT set or cache
+			// it — a partial hash would be silently reused for all future
+			// lookups, poisoning artifact provenance. Leave ac.SHA256 empty.
 			log.Printf("WARN: persistGraph: failed to hash artifact %s: %v", of.Path, hashErr)
 		}
 		// Provenance: source steps that fed this step
@@ -565,7 +795,8 @@ func (s *DirectedEngine) buildArtifactsLocked(graph *schemas.TaskGraph) []schema
 
 // sha256File returns the hex SHA-256 of the file at path. It closes the handle
 // before returning, so callers looping over many artifacts do not accumulate
-// open handles.
+// open handles (a defer inside the loop would hold every handle until the
+// enclosing function returns).
 func sha256File(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -577,46 +808,6 @@ func sha256File(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
-// persistGraphLocked does the actual persist work. Caller MUST hold s.Mu.Lock().
-// Use persistGraph (without "Locked") when the caller does not hold the lock.
-// Note: persistGraph (the hot path) now does file I/O outside the lock (P-H5 fix).
-// This method is only for rare cancel/error paths where the caller already holds the lock.
-func (s *DirectedEngine) persistGraphLocked(graph *schemas.TaskGraph) {
-	outDir := filepath.Join(s.outputBase, graph.TaskID)
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		log.Printf("WARN: persistGraph: failed to create output dir %s: %v", outDir, err)
-	}
-
-	artifacts := s.buildArtifactsLocked(graph)
-
-	// Marshal the graph. Safe because caller holds s.Mu.Lock().
-	graph.Artifacts = artifacts
-	data, err := json.MarshalIndent(graph, "", "  ")
-	if err == nil {
-		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {
-			log.Printf("WARN: persistGraph: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
-		}
-	}
-	// Write artifacts.json as a separate lightweight contract file
-	if len(artifacts) > 0 {
-		artData, aerr := json.MarshalIndent(artifacts, "", "  ")
-		if aerr == nil {
-			if werr := os.WriteFile(filepath.Join(outDir, "artifacts.json"), artData, 0644); werr != nil {
-				log.Printf("WARN: persistGraph: failed to write artifacts.json for task %s: %v", graph.TaskID, werr)
-			}
-		}
-	}
-
-	// Mirror task-level lifecycle state into the registry.
-	if s.TaskRegistry != nil {
-		if data, err := json.Marshal(graph.ToStatusDict()); err == nil {
-			if serr := s.TaskRegistry.SaveTask(s.lifecycleCtx, graph.TaskID, string(graph.Status), data); serr != nil {
-				log.Printf("WARN: persistTaskState: failed to save task state for %s: %v", graph.TaskID, serr)
-			}
-		}
-	}
 }
 
 func (s *DirectedEngine) GetSpawner() *Spawner {
@@ -635,6 +826,37 @@ func (s *DirectedEngine) TaskKnown(taskID string) bool {
 	return ok
 }
 
+// ProjectOf returns the project space identifier for the given task.
+// If the task is unknown or has no project set, it returns "default".
+// This enables search callers to resolve projectScope from a taskID
+// (Project Space & Memory Tiering design Phase 3).
+func (s *DirectedEngine) ProjectOf(taskID string) string {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	return projectOfGraph(s.graphs[taskID])
+}
+
+// projectOfGraph is the lock-free form of ProjectOf, for callers that already
+// hold a *TaskGraph and therefore need no lookup at all.
+//
+// It exists because ProjectOf takes s.Mu.RLock, and sync.RWMutex is not
+// reentrant: a goroutine that already holds s.Mu.Lock and then calls ProjectOf
+// blocks forever waiting on a read lock it can never get — no error, no
+// timeout, no cancellation. tryBacktrack (core/cycle_breaker.go) ran exactly
+// that way after 40617ac0f wired ProjectOf into buildPreviousSummary, which
+// tryBacktrack calls under its own write lock: every cycle-breaker backtrack
+// deadlocked the task.
+//
+// The rule this encodes is worth keeping: a helper that needs one field of a
+// struct the caller already holds should take the field, not re-acquire the
+// lock to look it up.
+func projectOfGraph(graph *schemas.TaskGraph) string {
+	if graph == nil || graph.ProjectID == "" {
+		return "default"
+	}
+	return graph.ProjectID
+}
+
 // ─── Clear ────────────────────────────────────────────────────────────────
 
 func (s *DirectedEngine) Clear(taskID string) error {
@@ -648,11 +870,26 @@ func (s *DirectedEngine) Clear(taskID string) error {
 	if cancel != nil {
 		cancel()
 	}
+
+	// L-7.3: wait for in-flight step goroutines to drain before clearing the
+	// task store, so late persistGraph calls don't re-create a zombie task.
+	s.waitStepDrain(taskID, 5*time.Second)
+
+	s.Mu.Lock()
+	delete(s.stepWGs, taskID)
+	s.Mu.Unlock()
+	s.dropFence(taskID)
+
+	// audit HIGH (2026-10-28): clear EffectTracker — Clear is the catch-all
+	// terminal path, so ensure cleanup even if finalize/cancel was missed.
 	if s.spawner != nil {
 		s.spawner.ClearEffectTracker(taskID)
 	}
+	// audit MEDIUM (2026-10-28): clear lastPersistAt to prevent unbounded
+	// memory growth — sync.Map had Store but no Delete.
 	s.lastPersistAt.Delete(taskID)
-	if _, err := s.taskStore.ClearTask(s.lifecycleCtx, taskID); err != nil {
+
+	if _, err := s.taskStore.ClearTask(s.lifecycleCtx, taskID); err != nil { // audit L-3.2: surface ClearTask error
 		return fmt.Errorf("clear task store for %s: %w", taskID, err)
 	}
 
@@ -695,6 +932,8 @@ func (s *DirectedEngine) evictTerminalGraphs(ctx context.Context) {
 				delete(s.graphs, taskID)
 				delete(s.cancelFuncs, taskID)
 				delete(s.doneChans, taskID)
+				delete(s.stepWGs, taskID) // L-7.3
+				s.dropFence(taskID)
 			}
 		}
 		s.Mu.Unlock()
@@ -710,160 +949,4 @@ func isTerminalStatus(status schemas.GraphStatus) bool {
 		return true
 	}
 	return false
-}
-
-func (s *DirectedEngine) Broadcast() {
-	s.notifyMu.Lock()
-	defer s.notifyMu.Unlock()
-	close(s.notifyChan)
-	s.notifyChan = make(chan struct{})
-}
-
-func (s *DirectedEngine) GetNotifyChan() chan struct{} {
-	s.notifyMu.Lock()
-	defer s.notifyMu.Unlock()
-	return s.notifyChan
-}
-
-func (s *DirectedEngine) CancelTask(taskID string) error {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-	cancel, ok := s.cancelFuncs[taskID]
-	graph, ok2 := s.graphs[taskID]
-	if !ok || !ok2 {
-		return fmt.Errorf("task %q not found or already terminal", taskID)
-	}
-	cancel()
-	graph.Status = schemas.GraphCancelled
-	s.persistGraphLocked(graph) // audit H7: persist cancelled state to prevent zombie tasks on restart
-	return nil
-}
-
-func (s *DirectedEngine) PatchWorkspace(taskID string, data map[string]any) error {
-	s.Mu.Lock()
-	graph, ok := s.graphs[taskID]
-	if !ok {
-		s.Mu.Unlock()
-		return fmt.Errorf("task %q not found", taskID)
-	}
-
-	if graph.GlobalWorkspace == nil {
-		graph.GlobalWorkspace = make(map[string]any)
-	}
-
-	// Merge patch data
-	for k, v := range data {
-		graph.GlobalWorkspace[k] = v
-	}
-	s.Mu.Unlock()
-
-	// Audit Log
-	s.logger.Log("EventWorkspacePatched", taskID, "", map[string]any{
-		"patched_keys": func() []string {
-			keys := make([]string, 0, len(data))
-			for k := range data {
-				keys = append(keys, k)
-			}
-			return keys
-		}(),
-		"reason": "manual_intervention",
-	})
-
-	return nil
-}
-
-func (s *DirectedEngine) recordCoordinationEdge(graph *schemas.TaskGraph, source, target, edgeType string, payload int64) {
-	s.walker.RecordCoordinationEdge(graph, source, target, edgeType, payload)
-}
-
-// GetCrossFamilyVerifier returns a provider ID from a different model family
-// than the given provider (identified by provider ID). Falls back to "" when
-// the provider is unknown or no cross-family provider is available.
-func (e *DirectedEngine) GetCrossFamilyVerifier(providerID string) string {
-	return e.walker.GetCrossFamilyVerifier(providerID)
-}
-
-// SetMemoryBankStore wires the MemoryBankStore into the ReflectionEngine
-// for automatic user profile extraction, and into the Spawner for
-// UserProfile injection into sub-agent prompts.
-func (s *DirectedEngine) SetMemoryBankStore(mb *store.MemoryBankStore) {
-	if s.reflection != nil {
-		s.reflection.SetMemoryBankStore(mb)
-	}
-	if s.spawner != nil {
-		s.spawner.SetMemoryBankStore(mb)
-	}
-}
-
-// SetCharter sets the TaskCharter on a submitted task's graph.
-// Called after SubmitWithSessionIR returns a task ID. Thread-safe.
-func (s *DirectedEngine) SetCharter(taskID string, charter *schemas.TaskCharter) {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-	if graph, ok := s.graphs[taskID]; ok && graph != nil {
-		graph.Charter = charter
-	}
-}
-
-func (s *DirectedEngine) SetArchive(a *ContextArchive) {
-	s.Archive = a
-	if s.spawner != nil {
-		s.spawner.SetArchive(a)
-	}
-}
-
-// SuspendTask pauses a running task by cancelling its execution context and
-// transitioning the graph to GraphSuspended. Unlike CancelTask, the task can
-// be resumed later via ResumeSuspendedTask. This is a Control Plane operation
-// (human/system-facing), NOT exposed as an LLM-facing MCP tool.
-func (s *DirectedEngine) SuspendTask(taskID string) error {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-	cancel, ok := s.cancelFuncs[taskID]
-	graph, ok2 := s.graphs[taskID]
-	if !ok || !ok2 {
-		return fmt.Errorf("task %q not found or already terminal", taskID)
-	}
-	if graph.Status != schemas.GraphRunning {
-		return fmt.Errorf("task %q is not running (status: %s)", taskID, graph.Status)
-	}
-	cancel()
-	graph.Status = schemas.GraphSuspended
-	s.persistGraphLocked(graph)
-	s.logger.Log("EventTaskSuspended", taskID, "", map[string]any{})
-	return nil
-}
-
-// ResumeSuspendedTask resumes a previously suspended task by re-initializing
-// its execution context and respawning the scheduler loop from pending steps.
-// This is a Control Plane operation (human/system-facing).
-func (s *DirectedEngine) ResumeSuspendedTask(taskID string) error {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-	graph, ok := s.graphs[taskID]
-	if !ok {
-		return fmt.Errorf("task %q not found", taskID)
-	}
-	if graph.Status != schemas.GraphSuspended {
-		return fmt.Errorf("task %q is not suspended (status: %s)", taskID, graph.Status)
-	}
-
-	for _, step := range graph.Steps {
-		if step.Status == schemas.StepRunning {
-			step.Status = schemas.StepPending
-		}
-	}
-	graph.Status = schemas.GraphRunning
-	s.persistGraphLocked(graph)
-
-	ctx, cancel := context.WithCancel(s.lifecycleCtx)
-	s.cancelFuncs[graph.TaskID] = cancel
-	if _, ok := s.doneChans[graph.TaskID]; !ok {
-		s.doneChans[graph.TaskID] = make(chan struct{})
-	}
-	if !s.UseSwarm {
-		s.goBackground(func() { s.run(ctx, graph.TaskID) })
-	}
-	s.logger.Log("EventTaskResumed", taskID, "", map[string]any{})
-	return nil
 }

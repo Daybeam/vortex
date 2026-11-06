@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/core/skeleton"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -42,7 +43,7 @@ func (s *Spawner) checkSieveGuardian(taskID, stepID string, turn int, toolCalls 
 			}
 			loopDetail = append(loopDetail, entry)
 		}
-		s.logger.Log(EventTaskFailed, taskID, stepID, map[string]any{
+		s.logger.Log(obs.EventTaskFailed, taskID, stepID, map[string]any{
 			"error":       "Sieve Guardian intercepted",
 			"reason":      reason,
 			"turn":        turn,
@@ -86,7 +87,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 			result = "Error: search_archive is not available (no archive)"
 			herr = fmt.Errorf("archive not available")
 		} else {
-			forest, err := s.archive.SearchForest(query, nil, limit, 0.9, taskID, taskID)
+			forest, err := s.archive.SearchForest(query, nil, limit, 0.9, taskID, s.ProjectOf(taskID), taskID)
 			if err != nil {
 				result = fmt.Sprintf("Search error: %v", err)
 				herr = err
@@ -107,7 +108,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 		// If the tool has RiskLevel=high and supports dry_run, execute with
 		// dry_run=true to preview the operation without committing it.
 		// If high-risk but no dry_run support, log a warning.
-		// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.4.
+		// See docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.4.
 		toolDef := findCoreToolDef(call.Name)
 		if isHighRiskTool(toolDef) {
 			if supportsDryRun(toolDef) {
@@ -118,7 +119,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 					result = dryRunResult(call.Name, dryResult)
 					s.logger.Log("EventA5DryRunPreview", taskID, stepID, map[string]any{
 						"tool":  call.Name,
-						"args":  marshalArgsForLog(call.Arguments),
+						"args":  toolArgsLogString(call.Name, call.Arguments),
 						"phase": "dry_run_preview",
 					})
 				} else {
@@ -130,7 +131,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 				// High-risk tool without dry_run support — log warning, proceed.
 				s.logger.Log("EventA5HighRiskNoDryRun", taskID, stepID, map[string]any{
 					"tool":  call.Name,
-					"args":  marshalArgsForLog(call.Arguments),
+					"args":  toolArgsLogString(call.Name, call.Arguments),
 					"phase": "high_risk_no_dry_run",
 				})
 				result, herr = HandleCoreTool(ctx, call.Name, call.Arguments, s.outputBase, taskID, validator)
@@ -162,12 +163,9 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 		ToolName:  call.Name,
 		Arguments: call.Arguments,
 		Result:    res,
-		Meta:      extractMeta(res), // Phase 2: extract structured metadata
+		Meta:      ExtractMeta(res), // Phase 2: extract structured metadata
 	}
-	s.logger.Log("EventCoreToolCall", taskID, stepID, map[string]any{
-		"tool":   call.Name,
-		"status": status,
-	})
+	s.logger.Log("EventCoreToolCall", taskID, stepID, toolCallLogDetail(call.Name, status, call.Arguments))
 	return res, status, interaction
 }
 
@@ -179,10 +177,10 @@ func (s *Spawner) ClearSieveHistory(taskID string) {
 	}
 }
 
-// extractMeta extracts structured ToolMetadata from a tool result if present.
+// ExtractMeta extracts structured ToolMetadata from a tool result if present.
 // MCP servers may return {"data": ..., "meta": {"truncated": true, ...}}.
 // Returns nil if the result is not a map or has no "meta" key.
-func extractMeta(result any) *store.ToolMetadata {
+func ExtractMeta(result any) *store.ToolMetadata {
 	m, ok := result.(map[string]any)
 	if !ok {
 		return nil

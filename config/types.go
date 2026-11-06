@@ -517,7 +517,7 @@ type SandboxConfig struct {
 }
 
 // RetentionSettings controls dual-mode (headless vs GUI) storage compaction
-// and lifecycle retention. See docs/architecture/STORAGE_COMPACTION_DESIGN.md.
+// and lifecycle retention. See docs/completed/2026-09-17/STORAGE_COMPACTION_DESIGN.md.
 type RetentionSettings struct {
 	Mode                   string `json:"mode,omitempty"`
 	TaskHistoryDays        int    `json:"task_history_days,omitempty"`
@@ -526,6 +526,19 @@ type RetentionSettings struct {
 	MaxPromotionAuditLogs  int    `json:"max_promotion_audit_logs,omitempty"`
 	AutoVacuumIntervalDays int    `json:"auto_vacuum_interval_days,omitempty"`
 	VacuumOnStartup        bool   `json:"vacuum_on_startup,omitempty"`
+	// AssetGC controls file-side cleanup of task output directories.
+	// "off" = no file cleanup; "staging_only" = only .staging TTL (default);
+	// "task_dirs" = identify terminal task dirs older than AssetTTLDays as
+	// deletion candidates (does NOT auto-delete — use orchestrator_cleanup_workspace).
+	// Invalid values default to "staging_only" (conservative).
+	AssetGC string `json:"asset_gc,omitempty"`
+	// AssetTTLDays is the minimum age in days for a terminal task dir to be
+	// a deletion candidate. Only effective when AssetGC == "task_dirs".
+	// Default 365.
+	AssetTTLDays int `json:"asset_ttl_days,omitempty"`
+	// AssetWarnBytes is the StorePath size threshold for a capacity warning
+	// notification. 0 = disabled. Default 5 GiB.
+	AssetWarnBytes int64 `json:"asset_warn_bytes,omitempty"`
 }
 
 // FeatureFlags holds behavior toggles that were previously env-var-only
@@ -618,6 +631,21 @@ type SystemSettings struct {
 	SwarmFallbackDelay        int            `json:"swarm_fallback_delay,omitempty"`
 	SwarmAgentCount           int            `json:"swarm_agent_count,omitempty"` // audit L1: was hardcoded 5
 	DelegationMode            bool           `json:"delegation_mode,omitempty"`
+	// DelegationEnvelopeWaitSeconds controls the synchronous envelope delivery
+	// window in submit_task/submit_decision. Default 30s (envelope compilation
+	// takes 19–26s measured). 0 = disable sync delivery, fall back to
+	// get_task_status polling. See ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §4.2.
+	DelegationEnvelopeWaitSeconds int `json:"delegation_envelope_wait_seconds,omitempty"`
+	// DelegationAnswerTimeoutSeconds is how long a parked delegation may wait
+	// for its answer before get_task_status/wait_task report it as an explicit
+	// error. nil ⇒ default 30m; *0 (or negative) ⇒ never report. Seconds. Report
+	// only — it does NOT abort the step (Q4-6/O20; the O22 constraint).
+	DelegationAnswerTimeoutSeconds *int `json:"delegation_answer_timeout_seconds,omitempty"`
+	// DecisionStaleTimeoutSeconds is how long a step_failed decision may wait
+	// for a human before get_task_status/wait_task//tasks report it as stale.
+	// nil ⇒ default 24h; *0 (or negative) ⇒ never report. Seconds. Report only
+	// — the step stays failed and downstream stays blocked (Q5-5, O22).
+	DecisionStaleTimeoutSeconds *int `json:"decision_stale_timeout_seconds,omitempty"`
 	// NonInteractive enables unattended mode: when a step would block on a
 	// decision (step failure, low confidence, max-turns, autonomous abort),
 	// the engine auto-selects a conservative default instead of blocking
@@ -643,7 +671,12 @@ type SystemSettings struct {
 	// system prompt) and auto-extraction (ReflectionEngine) are active.
 	// Default true (backward compatible). Set to false to disable.
 	// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md.
-	MemoryBankEnabled bool `json:"memory_bank_enabled"`
+	//
+	// N4 fix (DELEGATION_HANDOVER_REDESIGN.md §11.1): *bool distinguishes
+	// "omitted" (nil → default true) from "explicit false" (&false →
+	// preserved). encoding/json handles *bool natively: absent key → nil,
+	// false → &false, true → &true. Backward compatible.
+	MemoryBankEnabled *bool `json:"memory_bank_enabled,omitempty"`
 	// DecisionDeciderRole: when NonInteractive is on and this is set, the engine
 	// spawns this role to evaluate each blocked decision and choose an option,
 	// instead of falling back to hardcoded conservative defaults. The decider
@@ -666,6 +699,11 @@ type SystemSettings struct {
 	// agent loop. 0 = default 2048. (ADDED 2026-10-28: previously hardcoded
 	// to 2048 with no config wiring — harness-bench report §4.1.)
 	ChatMaxOutputTokens int `json:"chat_max_output_tokens,omitempty"`
+	// ChatMaxTurns caps the tool-turn budget of the chat agent loop alone.
+	// 0 = fall back to max_tool_turns, then to chat.DefaultMaxTurns (50).
+	// Added 2026-11-04: max_tool_turns is the DAG step loop's knob, and sharing
+	// it meant a DAG-side change silently re-cut the chat budget.
+	ChatMaxTurns int `json:"chat_max_turns,omitempty"`
 	// ReadinessGateSoft softens the delegation readiness gate language from
 	// "NEVER blindly delegate" to a suggestion. Set true for weak models (≤7B)
 	// that over-apply the hard rule and ask excessive clarifying questions
@@ -1027,4 +1065,16 @@ func (s *SystemSettings) OutputDirOrDefault() string {
 		return s.OutputDir
 	}
 	return "outputs"
+}
+
+// MemoryBankEnabledEffective returns the effective MemoryBankEnabled value.
+// nil (omitted in config) → true (backward-compatible default);
+// &false (explicit false) → false (preserved, not overridden by loader);
+// &true (explicit true) → true.
+// N4 fix (DELEGATION_HANDOVER_REDESIGN.md §11.1).
+func (s *SystemSettings) MemoryBankEnabledEffective() bool {
+	if s == nil || s.MemoryBankEnabled == nil {
+		return true
+	}
+	return *s.MemoryBankEnabled
 }

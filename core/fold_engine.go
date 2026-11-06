@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -65,12 +66,12 @@ type FoldEngine struct {
 	segMgr     *SegmentManager
 	archive    *ContextArchive
 	summarizer func(*MemorySegment) string
-	logger     *Logger
+	logger     *obs.Logger
 }
 
 // NewFoldEngine creates a FoldEngine. segMgr and archive may be nil —
 // the engine will be a no-op in that case.
-func NewFoldEngine(segMgr *SegmentManager, archive *ContextArchive, logger *Logger) *FoldEngine {
+func NewFoldEngine(segMgr *SegmentManager, archive *ContextArchive, logger *obs.Logger) *FoldEngine {
 	return &FoldEngine{
 		states:  make(map[string]*FoldState),
 		segMgr:  segMgr,
@@ -168,7 +169,7 @@ func (f *FoldEngine) FoldSealedSegments(
 	}
 
 	if f.logger != nil {
-		f.logger.Log(EventCacheInefficiency, "", "", map[string]any{
+		f.logger.Log(obs.EventCacheInefficiency, "", "", map[string]any{
 			"event":         "fold_segments",
 			"task_scope":    taskScope,
 			"folded_blocks": len(state.Blocks),
@@ -236,7 +237,7 @@ func (f *FoldEngine) foldTier2Merge(state *FoldState, taskScope string) {
 	state.Blocks = append(state.Blocks, remaining...)
 
 	if f.logger != nil {
-		f.logger.Log(EventCacheInefficiency, "", "", map[string]any{
+		f.logger.Log(obs.EventCacheInefficiency, "", "", map[string]any{
 			"event":           "fold_tier2_merge",
 			"task_scope":      taskScope,
 			"merged_count":    len(toMerge),

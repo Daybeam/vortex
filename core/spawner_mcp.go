@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/jit"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -258,7 +260,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 	cli, err := s.mcpMgr.ensureMCPClient(ctx, mcp, taskID)
 	if err != nil {
 		// FIX (2026-08-30): Log and continue with cached tools if available.
-		s.logger.Log(EventMCPOffline, taskID, "", map[string]any{
+		s.logger.Log(obs.EventMCPOffline, taskID, "", map[string]any{
 			"mcp":          mcp.ID,
 			"error":        err.Error(),
 			"cached_tools": len(mcp.FullToolDefinitions),
@@ -284,7 +286,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 			"mcp", mcp.ID,
 			"error", err.Error(),
 			"task", taskID)
-		s.logger.Log(EventMCPDiscoveryFailed, taskID, "", map[string]any{
+		s.logger.Log(obs.EventMCPDiscoveryFailed, taskID, "", map[string]any{
 			"mcp":   mcp.ID,
 			"error": err.Error(),
 		})
@@ -316,6 +318,11 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 			continue
 		}
 		desc, _ := t["description"].(string)
+		// Sanitize invisible Unicode (TAG block, zero-width, control) from
+		// external MCP tool metadata to prevent hidden prompt injection
+		// (arXiv:2607.05744v1, MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.2).
+		name = sanitizeMCPToolField(name, mcp.ID, "name")
+		desc = sanitizeMCPToolField(desc, mcp.ID, "description")
 		def := schemas.ToolDefinition{
 			Name:        name,
 			Description: desc,
@@ -334,7 +341,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 	if s.toolRouter != nil {
 		s.toolRouter.RefreshToolEmbeddings(ctx, s.registry)
 	}
-	s.logger.Log(EventMCPOnline, taskID, "", map[string]any{
+	s.logger.Log(obs.EventMCPOnline, taskID, "", map[string]any{
 		"mcp":   mcp.ID,
 		"count": len(mcp.FullToolDefinitions),
 	})
@@ -518,7 +525,7 @@ func (s *Spawner) buildMCPServers(
 				if err == nil {
 					mcp.FullToolDefinitions = tools
 					mcp.DiscoveryStatus = config.DiscoveryOK
-					s.logger.Log(EventMCPOnline, taskID, "", map[string]any{
+					s.logger.Log(obs.EventMCPOnline, taskID, "", map[string]any{
 						"mcp":   mcp.ID,
 						"count": len(tools),
 					})
@@ -539,7 +546,7 @@ func (s *Spawner) buildMCPServers(
 						"status", status,
 						"error", errStr,
 						"task", taskID)
-					s.logger.Log(EventMCPDiscoveryFailed, taskID, "", map[string]any{
+					s.logger.Log(obs.EventMCPDiscoveryFailed, taskID, "", map[string]any{
 						"mcp":    mcp.ID,
 						"status": status,
 						"error":  errStr,
@@ -567,7 +574,8 @@ func (s *Spawner) buildMCPServers(
 	return servers
 }
 
-// DirectExecute allows Verifiers to call tools without triggering the SAV loop.
+// DirectExecute calls one MCP tool outside the step pipeline: the proxy
+// subsystem's entry point, and verify.ToolExecutor for the replay scheduler.
 // Moved from spawner.go during god-class split.
 func (s *Spawner) DirectExecute(ctx context.Context, mcpID, toolName string, args map[string]any) (any, error) {
 	hub := NewContextHub(s.registry, nil, s.expStore)
@@ -576,11 +584,11 @@ func (s *Spawner) DirectExecute(ctx context.Context, mcpID, toolName string, arg
 		return nil, fmt.Errorf("MCP server %s not found", mcpID)
 	}
 
-	// Embedded JIT marker: dispatch to the in-process EmbeddedRunner instead
-	// of spawning a host binary. The marker is set by JITManager.
+	// Embedded JIT marker: dispatch to the in-process jit.EmbeddedRunner instead
+	// of spawning a host binary. The marker is set by jit.JITManager.
 	// RegisterEmbeddedTool; the script path is in Args[0]. This is the
 	// zero-dependency execution path for js/lua JIT tools.
-	if strings.HasPrefix(mcpDef.Command, EmbeddedCommandPrefix) {
+	if strings.HasPrefix(mcpDef.Command, jit.EmbeddedCommandPrefix) {
 		return executeEmbeddedMCP(ctx, mcpDef, toolName, args)
 	}
 
@@ -605,13 +613,13 @@ func (s *Spawner) DirectExecute(ctx context.Context, mcpID, toolName string, arg
 }
 
 // executeEmbeddedMCP reads the embedded JIT script from disk and runs it via
-// EmbeddedRunner. The script is expected to define a function named toolName
+// jit.EmbeddedRunner. The script is expected to define a function named toolName
 // (or "run" as default) which is invoked with args. For the common JIT case
 // where the script is a self-contained program, toolName is ignored and the
 // whole script is executed.
 // Moved from spawner.go during god-class split.
 func executeEmbeddedMCP(ctx context.Context, mcpDef *config.MCPDef, toolName string, args map[string]any) (any, error) {
-	lang := strings.TrimPrefix(mcpDef.Command, EmbeddedCommandPrefix)
+	lang := strings.TrimPrefix(mcpDef.Command, jit.EmbeddedCommandPrefix)
 	if len(mcpDef.Args) == 0 {
 		return nil, fmt.Errorf("embedded MCP %s has no script path", mcpDef.ID)
 	}
@@ -619,7 +627,7 @@ func executeEmbeddedMCP(ctx context.Context, mcpDef *config.MCPDef, toolName str
 	if err != nil {
 		return nil, fmt.Errorf("embedded MCP %s: read script: %w", mcpDef.ID, err)
 	}
-	res, err := EmbeddedRunner(ctx, lang, string(scriptBytes))
+	res, err := jit.EmbeddedRunner(ctx, lang, string(scriptBytes))
 	if err != nil {
 		return nil, err
 	}

@@ -21,7 +21,7 @@ import (
 //
 // Reproduction: cancel the caller's context before calling RecordTaskCompletion,
 // then check that persist files appear on disk.
-func TestC14_PersistRunsAfterCallerCancel(t *testing.T) {
+func TestPersistRunsAfterCallerCancel(t *testing.T) {
 	dir := t.TempDir()
 
 	es, err := NewExperienceStore(dir, nil, &config.SystemSettings{}, nil, nil)
@@ -99,7 +99,7 @@ func TestC14_PersistRunsAfterCallerCancel(t *testing.T) {
 // TestC14_PersistSkippedWhenInFlight verifies the debounce: if a persist is
 // already in flight, a second RecordTaskCompletion skips the persist goroutine.
 // This prevents unbounded goroutine spawn under burst task completion.
-func TestC14_PersistSkippedWhenInFlight(t *testing.T) {
+func TestPersistSkippedWhenInFlight(t *testing.T) {
 	dir := t.TempDir()
 
 	es, err := NewExperienceStore(dir, nil, &config.SystemSettings{}, nil, nil)

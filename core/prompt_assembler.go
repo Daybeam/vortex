@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -30,7 +32,7 @@ type PromptAssembler struct {
 	expStore       store.IExperienceStore
 	resourceLoader *ResourceLoader
 	registry       *config.Registry
-	logger         *Logger
+	logger         *obs.Logger
 	budgetEnforcer *PromptBudgetEnforcer
 
 	// archive (ADDED 2026-10-10): ContextArchive for Path D — querying
@@ -38,6 +40,11 @@ type PromptAssembler struct {
 	// Nil-safe: set via SetArchive from Spawner.
 	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
 	archive *ContextArchive
+
+	// projectResolver resolves a taskID to its project space identifier.
+	// Injected by Spawner via SetProjectResolver. Nil-safe: returns
+	// "default" when nil (Phase 3, Project Space & Memory Tiering design).
+	projectResolver func(taskID string) string
 
 	// foldEngine (ADDED 2026-10-13): Segment-Based Incremental Fold engine.
 	// Performs reversible compression of sealed segments before budget enforcement.
@@ -102,6 +109,21 @@ type PromptAssembler struct {
 // Nil-safe: when nil, the Archive query is skipped (zero behavior change).
 func (s *PromptAssembler) SetArchive(a *ContextArchive) {
 	s.archive = a
+}
+
+// SetProjectResolver injects the taskID→projectID resolver.
+// Nil-safe: when nil, ProjectOf returns "default".
+func (s *PromptAssembler) SetProjectResolver(r func(taskID string) string) {
+	s.projectResolver = r
+}
+
+// ProjectOf returns the project space identifier for the given task.
+// Returns "default" when no resolver is wired.
+func (s *PromptAssembler) ProjectOf(taskID string) string {
+	if s.projectResolver == nil {
+		return "default"
+	}
+	return s.projectResolver(taskID)
 }
 
 // SetOutputBase sets the engine's output base directory for D4 (delegation
@@ -196,7 +218,7 @@ func (s *PromptAssembler) getEffectiveWarmBudget() int {
 }
 
 // NewPromptAssembler creates a PromptAssembler with its explicit dependencies.
-func NewPromptAssembler(expStore store.IExperienceStore, loader *ResourceLoader, reg *config.Registry, logger *Logger) *PromptAssembler {
+func NewPromptAssembler(expStore store.IExperienceStore, loader *ResourceLoader, reg *config.Registry, logger *obs.Logger) *PromptAssembler {
 	return &PromptAssembler{
 		expStore:       expStore,
 		resourceLoader: loader,
@@ -241,6 +263,7 @@ func (s *PromptAssembler) Build(
 	taskText string,
 	latestError string,
 	taskID string, // P1-5: for Archive Path D query
+	stepID string, // D-PROMPT-4: for base_role.md template
 ) ([]schemas.ContentBlock, error) {
 	var blocks []schemas.ContentBlock
 	// KV-2 (2026-10-27): volatile blocks (anti-pattern, similar-task,
@@ -269,13 +292,20 @@ func (s *PromptAssembler) Build(
 		tmplCtx := map[string]any{
 			"task": map[string]any{
 				"id":   taskID,
+				"step": stepID,
 				"role": role.Name,
 			},
 			"env": map[string]string{
 				"Time": stablePromptTime(hub).Format(time.RFC3339),
 			},
 		}
-		if rendered, err := s.promptManager.GetAndRender("base_role.md", tmplCtx); err == nil && rendered != "" {
+		// D-PROMPT-4 fix (§4.4): log render errors instead of silently dropping.
+		// With missingkey=error, a missing key now returns an error — we log it
+		// but still skip the block (preserve existing skip behavior, but observable).
+		rendered, renderErr := s.promptManager.GetAndRender("base_role.md", tmplCtx)
+		if renderErr != nil {
+			log.Printf("prompt_assembler: base_role.md render failed for task %s: %v", taskID, renderErr)
+		} else if rendered != "" {
 			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 				Text:         rendered,
 				CacheControl: "ephemeral",
@@ -288,7 +318,15 @@ func (s *PromptAssembler) Build(
 	// tailor output to user expertise/preferences. Only UserProfile is injected
 	// (not full MemoryBank) to avoid token bloat from ActiveContext/Decisions.
 	// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
-	if s.memoryBankStore != nil && s.registry != nil && s.registry.System.MemoryBankEnabled {
+	//
+	// L1 fix (DELEGATION_HANDOVER_REDESIGN.md §12.6): in delegation mode the
+	// assembled prompt is handed to an external subagent (the envelope). The
+	// MemoryBank is a process-global singleton with no owner parameter, so
+	// injecting UserProfile here would leak the operator's (or a prior user's)
+	// expertise/preferences/communication-style to every SaaS caller. Skip
+	// injection in delegation mode; the per-owner path (§12.9.3) is a larger
+	// change that requires plumbing ownerID through Build and is out of scope.
+	if s.memoryBankStore != nil && s.registry != nil && s.registry.System.MemoryBankEnabledEffective() && !s.registry.System.DelegationMode {
 		if mb, err := s.memoryBankStore.Load(); err == nil && mb != nil {
 			up := mb.UserProfile
 			if len(up.Expertise) > 0 || len(up.Preferences) > 0 || up.CommunicationStyle != "" {
@@ -317,7 +355,7 @@ func (s *PromptAssembler) Build(
 	// current observations always win over cached facts. Prevents "epistemic
 	// rigidity" where agents blindly trust outdated API contracts, revoked
 	// preferences, or superseded document states.
-	if s.registry != nil && s.registry.System.MemoryBankEnabled {
+	if s.registry != nil && s.registry.System.MemoryBankEnabledEffective() {
 		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
 			Text: "\n## ⚠️ Epistemic Grounding Rule\n" +
 				"Long-term memory and past experience are heuristics, NOT immutable truth. " +
@@ -579,6 +617,13 @@ func (s *PromptAssembler) Build(
 				if ob != "" {
 					constraintsPart.WriteString(fmt.Sprintf("The absolute path is %q; write deliverables there so later steps can read them.\n", filepath.Join(ob, taskID)))
 				}
+				// D4b (DELEGATION_HANDOVER_REDESIGN.md §4.4): the deliverable
+				// contract. handleStepSuccess registers a step's output file ONLY
+				// when the result carries "output_ref" (a path relative to the task
+				// output directory). Without this line a delegated host writes the
+				// file correctly but graph.output_files stays empty, so the caller
+				// cannot discover the deliverable from get_task_status.
+				constraintsPart.WriteString("If you produce a deliverable file, set \"output_ref\" in your final JSON result to its path relative to the task output directory (e.g. \"report.md\"), optionally alongside \"summary\" and \"format\". The orchestrator registers it as this step's output file.\n")
 			}
 		} else if corePol.restricted {
 			// Restricted to nothing: say so once, without a heading, so the model
@@ -623,7 +668,7 @@ func (s *PromptAssembler) Build(
 	// placing it after the stable blocks prevents it from invalidating the
 	// cacheable prefix.
 	if s.archive != nil && taskID != "" {
-		stepSummaries := s.archive.SearchRecentStepSummaries(taskID, 3)
+		stepSummaries := s.archive.SearchRecentStepSummaries(taskID, s.ProjectOf(taskID), 3)
 		if len(stepSummaries) > 0 {
 			var archivePart strings.Builder
 			archivePart.WriteString("# Recent Step Summaries (Same Task)\n")

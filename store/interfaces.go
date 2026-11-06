@@ -144,6 +144,14 @@ type IExperienceStore interface {
 	GetGeneratedSkillsSnapshot() map[string]*GeneratedSkill
 	UpdateGeneratedSkillVerified(id string, verified bool)
 	IncrementGeneratedSkillUsage(id string)
+	// RecordSkillExposure / TakeSkillExposures hand dynamically retrieved
+	// skills from the spawn path to RecordTaskCompletion's usage credit.
+	RecordSkillExposure(taskID, stepID string, ids []string)
+	TakeSkillExposures(taskID, stepID string) []string
+	// SetSkillLivenessProbe lets the runtime drop generated skills whose
+	// backing tool has expired (JIT tools have a TTL; skill records do not).
+	// Nil disables filtering.
+	SetSkillLivenessProbe(probe func(skillID string) bool)
 
 	// Role Affinity (EvoX)
 	QueryRoleAffinity(ctx context.Context, roleID, taskType string) float64

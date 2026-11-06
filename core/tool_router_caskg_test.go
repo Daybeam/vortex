@@ -2,9 +2,11 @@ package core
 
 import (
 	"context"
-	"github.com/daybeam/vortex/config"
 	"path/filepath"
 	"testing"
+
+	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 func TestToolRouter_CausalBoost(t *testing.T) {
@@ -12,14 +14,14 @@ func TestToolRouter_CausalBoost(t *testing.T) {
 	path := filepath.Join(tmpDir, "caskg.json")
 
 	manager := NewCaSKGManager(path)
-	bus := NewEventBus()
+	bus := obs.NewEventBus()
 	manager.HookEventBus(bus)
 
 	// Train the manager
 	for i := 0; i < 10; i++ {
-		bus.Publish(NewAgentEvent("t1", "s1", string(EventStepCompleted), map[string]any{"skill": "SkillA"}))
-		bus.Publish(NewAgentEvent("t1", "s2", string(EventStepCompleted), map[string]any{"skill": "SkillB"}))
-		bus.Publish(NewAgentEvent("t1", "", string(EventTaskCompleted), nil))
+		bus.Publish(obs.NewAgentEvent("t1", "s1", string(obs.EventStepCompleted), map[string]any{"skill": "SkillA"}))
+		bus.Publish(obs.NewAgentEvent("t1", "s2", string(obs.EventStepCompleted), map[string]any{"skill": "SkillB"}))
+		bus.Publish(obs.NewAgentEvent("t1", "", string(obs.EventTaskCompleted), nil))
 	}
 
 	reg := &config.Registry{

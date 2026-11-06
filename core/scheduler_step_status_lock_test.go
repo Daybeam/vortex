@@ -42,7 +42,7 @@ func (s *stubTaskStore) Claim(ctx context.Context, taskID, stepID string) (bool,
 // of reimplementing the locking in the test. If someone removes s.Mu.Lock()
 // from ClaimStep, `go test -race` will detect the data race.
 // regression for audit TEST-1: old version was tautological (tested the lock, not the code).
-func TestC3_StepStatusWrites_ConcurrentUnderLock(t *testing.T) {
+func TestStepStatusWrites_ConcurrentUnderLock(t *testing.T) {
 	s, _ := newAbortTestEngine(t)
 	defer s.Stop()
 	s.taskStore = &stubTaskStore{} // wire minimal stub so ClaimStep doesn't panic on nil

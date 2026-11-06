@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/daybeam/vortex/core/obs"
 )
 
 func TestCaSKG_TransitionRecording(t *testing.T) {
@@ -13,13 +15,13 @@ func TestCaSKG_TransitionRecording(t *testing.T) {
 	path := filepath.Join(tmpDir, "caskg.json")
 
 	manager := NewCaSKGManager(path)
-	bus := NewEventBus()
+	bus := obs.NewEventBus()
 	manager.HookEventBus(bus)
 
 	// Simulate sequence: SkillA -> SkillB -> Success
-	bus.Publish(NewAgentEvent("task-success", "s1", string(EventStepCompleted), map[string]any{"skill": "SkillA"}))
-	bus.Publish(NewAgentEvent("task-success", "s2", string(EventStepCompleted), map[string]any{"skill": "SkillB"}))
-	bus.Publish(NewAgentEvent("task-success", "", string(EventTaskCompleted), nil))
+	bus.Publish(obs.NewAgentEvent("task-success", "s1", string(obs.EventStepCompleted), map[string]any{"skill": "SkillA"}))
+	bus.Publish(obs.NewAgentEvent("task-success", "s2", string(obs.EventStepCompleted), map[string]any{"skill": "SkillB"}))
+	bus.Publish(obs.NewAgentEvent("task-success", "", string(obs.EventTaskCompleted), nil))
 
 	// Wait for async processing
 	time.Sleep(100 * time.Millisecond)
@@ -33,9 +35,9 @@ func TestCaSKG_TransitionRecording(t *testing.T) {
 	// Add more successful transitions to cross threshold
 	for i := 0; i < 5; i++ {
 		tid := fmt.Sprintf("t-%d", i)
-		bus.Publish(NewAgentEvent(tid, "s1", string(EventStepCompleted), map[string]any{"skill": "SkillA"}))
-		bus.Publish(NewAgentEvent(tid, "s2", string(EventStepCompleted), map[string]any{"skill": "SkillB"}))
-		bus.Publish(NewAgentEvent(tid, "", string(EventTaskCompleted), nil))
+		bus.Publish(obs.NewAgentEvent(tid, "s1", string(obs.EventStepCompleted), map[string]any{"skill": "SkillA"}))
+		bus.Publish(obs.NewAgentEvent(tid, "s2", string(obs.EventStepCompleted), map[string]any{"skill": "SkillB"}))
+		bus.Publish(obs.NewAgentEvent(tid, "", string(obs.EventTaskCompleted), nil))
 	}
 	time.Sleep(200 * time.Millisecond)
 
@@ -47,9 +49,9 @@ func TestCaSKG_TransitionRecording(t *testing.T) {
 	// Simulate sequence: SkillA -> SkillC -> Failure
 	for i := 0; i < 5; i++ {
 		tid := fmt.Sprintf("tf-%d", i)
-		bus.Publish(NewAgentEvent(tid, "s1", string(EventStepCompleted), map[string]any{"skill": "SkillA"}))
-		bus.Publish(NewAgentEvent(tid, "s2", string(EventStepCompleted), map[string]any{"skill": "SkillC"}))
-		bus.Publish(NewAgentEvent(tid, "", string(EventTaskFailed), nil))
+		bus.Publish(obs.NewAgentEvent(tid, "s1", string(obs.EventStepCompleted), map[string]any{"skill": "SkillA"}))
+		bus.Publish(obs.NewAgentEvent(tid, "s2", string(obs.EventStepCompleted), map[string]any{"skill": "SkillC"}))
+		bus.Publish(obs.NewAgentEvent(tid, "", string(obs.EventTaskFailed), nil))
 	}
 	time.Sleep(200 * time.Millisecond)
 
@@ -76,11 +78,11 @@ func TestCaSKG_Save_AutoCreatesDir(t *testing.T) {
 	manager := NewCaSKGManager(path)
 
 	// Record a transition so the graph has data to save.
-	bus := NewEventBus()
+	bus := obs.NewEventBus()
 	manager.HookEventBus(bus)
-	bus.Publish(NewAgentEvent("t1", "s1", string(EventStepCompleted), map[string]any{"skill": "SkillA"}))
-	bus.Publish(NewAgentEvent("t1", "s2", string(EventStepCompleted), map[string]any{"skill": "SkillB"}))
-	bus.Publish(NewAgentEvent("t1", "", string(EventTaskCompleted), nil))
+	bus.Publish(obs.NewAgentEvent("t1", "s1", string(obs.EventStepCompleted), map[string]any{"skill": "SkillA"}))
+	bus.Publish(obs.NewAgentEvent("t1", "s2", string(obs.EventStepCompleted), map[string]any{"skill": "SkillB"}))
+	bus.Publish(obs.NewAgentEvent("t1", "", string(obs.EventTaskCompleted), nil))
 	time.Sleep(100 * time.Millisecond)
 
 	// Save() should auto-create the directory and succeed.

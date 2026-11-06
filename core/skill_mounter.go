@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/capability"
 )
 
 // ActiveSkillDirKey is the context key for the active skill's directory.
@@ -134,7 +135,7 @@ func ResolveActiveSkillPath(ctx context.Context, p string) string {
 // be threaded via ActiveSkillDirKey context to resolve relative paths in
 // file-based tools (read_file, terminal). Returns ("", "") if no skills
 // activated.
-func ActivateTopSkills(reg *config.Registry, candidates []DiscoveryCandidate, topN int) (string, string) {
+func ActivateTopSkills(reg *config.Registry, candidates []capability.DiscoveryCandidate, topN int) (string, string) {
 	reg.Mu.RLock()
 	defer reg.Mu.RUnlock()
 
@@ -142,12 +143,23 @@ func ActivateTopSkills(reg *config.Registry, candidates []DiscoveryCandidate, to
 	count := 0
 	primarySkillDir := ""
 	for _, c := range candidates {
-		if c.Type != CandidateSkill || count >= topN {
+		if c.Type != capability.CandidateSkill || count >= topN {
 			continue
 		}
 		sk, ok := reg.Skills[c.ID]
 		if !ok {
 			continue
+		}
+		// Mount point for dead-reference defense: a JIT tool expires while its
+		// /skills entry persists. Discovery already filters these, but this is
+		// where a dead id would otherwise become prompt text. reg.Mu is held
+		// here, so read the MCP maps directly rather than calling GetMCP.
+		if strings.HasPrefix(c.ID, "jit_") {
+			_, static := reg.MCPs[c.ID]
+			_, dynamic := reg.DynamicMCPs[c.ID]
+			if !static && !dynamic {
+				continue
+			}
 		}
 		mounter := &SkillMounter{}
 		fragment := mounter.Activate(sk)

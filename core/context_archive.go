@@ -30,6 +30,7 @@ const (
 // One item = one ContextNode + its GlobalWorkspace sources + embedding.
 type MemoryItem struct {
 	TaskID         string     `json:"task_id"`
+	ProjectID      string     `json:"project_id,omitempty"` // project space; enables ScopeProject cross-task recall
 	NodeID         string     `json:"node_id"`
 	ParentID       string     `json:"parent_id,omitempty"`
 	Intent         string     `json:"intent"`
@@ -206,20 +207,32 @@ func NewContextArchive(path string) *ContextArchive {
 	return &ContextArchive{path: path}
 }
 
+// Items returns the in-memory items slice. Read-only callers should treat the
+// returned slice as immutable (the archive may mutate it under Lock).
+func (a *ContextArchive) Items() []MemoryItem {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.items
+}
+
 // Append writes one MemoryItem to disk. Called from scheduler.go after step success.
 func (a *ContextArchive) Append(item MemoryItem) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if item.Timestamp.IsZero() {
 		item.Timestamp = time.Now()
 	}
 
+	// audit M5 (2026-11-05): formerly held mu.Lock across json.Marshal +
+	// os.OpenFile + f.Write. Move the marshal (CPU work) outside the lock.
+	// The lock is still needed for items/indexDirty/lastOffset consistency
+	// with the file write, but the marshal no longer blocks readers.
 	// JSON Lines: each item = one line
 	data, err := json.Marshal(item)
 	if err != nil {
 		return err
 	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	a.items = append(a.items, item)
 	if len(a.items) > maxInMemoryItems {
@@ -359,12 +372,14 @@ func (a *ContextArchive) BuildIndex() {
 	a.mu.Unlock()
 }
 
-// filterItemsByTask returns items matching the given taskID, plus any items
-// with team/global scope (cross-task shared knowledge).
+// filterItemsByScope returns items matching the given taskID and projectID,
+// plus any items with team/global scope (cross-task shared knowledge).
 //
-// Scope rules (memory tiering gap A, 2026-10-23):
+// Scope rules (memory tiering, Project Space & Memory Tiering design Phase 3):
 //   - ScopeTeam / ScopeGlobal → always included (cross-task sharing)
-//   - ScopeTask / ScopeProject / empty (legacy) → only if TaskID == taskScope
+//   - ScopeProject → included if ProjectID == projectScope (cross-task sharing
+//     within the same project space)
+//   - ScopeTask / empty (legacy) → only if TaskID == taskScope
 //
 // GUARD (P3.2, 2026-10-22): task_scope is TASK-level isolation, NOT tenant
 // isolation. It answers "which task may recall this memory", never "which
@@ -373,7 +388,7 @@ func (a *ContextArchive) BuildIndex() {
 // by task only). Do NOT treat this filter as evidence of multi-tenancy. The
 // SaaS boundary (per-tenant process isolation + gateway routing) is designed
 // in docs/architecture/SAAS_BOUNDARY_DESIGN.md and deliberately NOT built.
-func filterItemsByTask(items []MemoryItem, taskScope string) []MemoryItem {
+func filterItemsByScope(items []MemoryItem, taskScope, projectScope string) []MemoryItem {
 	out := make([]MemoryItem, 0, len(items))
 	for _, it := range items {
 		// Team and global scope items are shared across all tasks.
@@ -381,7 +396,12 @@ func filterItemsByTask(items []MemoryItem, taskScope string) []MemoryItem {
 			out = append(out, it)
 			continue
 		}
-		// Task, project, and legacy (empty) scope items are filtered by TaskID.
+		// Project scope items are shared across tasks in the same project.
+		if it.Scope == ScopeProject && projectScope != "" && it.ProjectID == projectScope {
+			out = append(out, it)
+			continue
+		}
+		// Task and legacy (empty) scope items are filtered by TaskID.
 		if it.TaskID == taskScope {
 			out = append(out, it)
 		}
@@ -404,12 +424,12 @@ func (it *MemoryItem) Sanitize(currentTaskID string) {
 }
 
 // Search runs RRF hybrid search against the archive.
-func (a *ContextArchive) Search(query string, embedClient EmbeddingClient, k int, taskScope, currentTaskID string) []MemoryItem {
-	return a.SearchWithOptions(query, embedClient, k, taskScope, currentTaskID, QueryOptions{})
+func (a *ContextArchive) Search(query string, embedClient EmbeddingClient, k int, taskScope, projectScope, currentTaskID string) []MemoryItem {
+	return a.SearchWithOptions(query, embedClient, k, taskScope, projectScope, currentTaskID, QueryOptions{})
 }
 
 // SearchWithOptions extends Search with temporal filtering (QueryOptions).
-func (a *ContextArchive) SearchWithOptions(query string, embedClient EmbeddingClient, k int, taskScope, currentTaskID string, opts QueryOptions) []MemoryItem {
+func (a *ContextArchive) SearchWithOptions(query string, embedClient EmbeddingClient, k int, taskScope, projectScope, currentTaskID string, opts QueryOptions) []MemoryItem {
 	// Ensure loaded and indexed (Optimized Lazy Path)
 	a.Load()
 	a.BuildIndex()
@@ -419,9 +439,9 @@ func (a *ContextArchive) SearchWithOptions(query string, embedClient EmbeddingCl
 	copy(items, a.items)
 	a.mu.RUnlock()
 
-	// Pre-filter by task scope BEFORE ranking
+	// Pre-filter by task+project scope BEFORE ranking
 	if taskScope != "" {
-		items = filterItemsByTask(items, taskScope)
+		items = filterItemsByScope(items, taskScope, projectScope)
 	}
 
 	// Pre-filter by temporal window BEFORE ranking
@@ -657,9 +677,9 @@ func (a *ContextArchive) SearchForest(
 	embedClient EmbeddingClient,
 	k int,
 	redundancyThreshold float64,
-	taskScope, currentTaskID string,
+	taskScope, projectScope, currentTaskID string,
 ) (ForestResult, error) {
-	return a.SearchForestWithOptions(query, embedClient, k, redundancyThreshold, taskScope, currentTaskID, QueryOptions{})
+	return a.SearchForestWithOptions(query, embedClient, k, redundancyThreshold, taskScope, projectScope, currentTaskID, QueryOptions{})
 }
 
 // SearchForestWithOptions extends SearchForest with temporal filtering.
@@ -668,14 +688,14 @@ func (a *ContextArchive) SearchForestWithOptions(
 	embedClient EmbeddingClient,
 	k int,
 	redundancyThreshold float64,
-	taskScope, currentTaskID string,
+	taskScope, projectScope, currentTaskID string,
 	opts QueryOptions,
 ) (ForestResult, error) {
 	if len(query) == 0 {
 		return ForestResult{}, nil
 	}
 
-	rrf := a.SearchWithOptions(query, embedClient, k*3, taskScope, currentTaskID, opts) // top-L seeds (L ≈ 3K)
+	rrf := a.SearchWithOptions(query, embedClient, k*3, taskScope, projectScope, currentTaskID, opts) // top-L seeds (L ≈ 3K)
 	if len(rrf) == 0 {
 		return ForestResult{}, nil
 	}
@@ -735,7 +755,10 @@ func (a *ContextArchive) SearchForestWithOptions(
 //
 // Items are sorted by Timestamp descending (most recent first) and limited
 // to N. Only items with non-empty Summary are returned.
-func (a *ContextArchive) SearchRecentStepSummaries(taskID string, n int) []MemoryItem {
+//
+// projectScope enables ScopeProject cross-task recall within the same project
+// space (Phase 3). Pass "" to disable project-level sharing (legacy behavior).
+func (a *ContextArchive) SearchRecentStepSummaries(taskID, projectScope string, n int) []MemoryItem {
 	if a == nil || taskID == "" || n <= 0 {
 		return nil
 	}
@@ -746,7 +769,7 @@ func (a *ContextArchive) SearchRecentStepSummaries(taskID string, n int) []Memor
 	copy(items, a.items)
 	a.mu.RUnlock()
 
-	items = filterItemsByTask(items, taskID)
+	items = filterItemsByScope(items, taskID, projectScope)
 
 	// Filter to only items with summaries.
 	filtered := make([]MemoryItem, 0, len(items))
@@ -770,12 +793,14 @@ func (a *ContextArchive) SearchRecentStepSummaries(taskID string, n int) []Memor
 // SearchAllStepSummaries returns all step summaries for the given task,
 // ranked by BM25 relevance to the query. Used by Path B (Planner Role) —
 // needs full task history for DAG planning.
-func (a *ContextArchive) SearchAllStepSummaries(taskID, query string, n int) []MemoryItem {
+//
+// projectScope enables ScopeProject cross-task recall (Phase 3).
+func (a *ContextArchive) SearchAllStepSummaries(taskID, projectScope, query string, n int) []MemoryItem {
 	if a == nil || taskID == "" || n <= 0 {
 		return nil
 	}
-	// Delegate to existing Search with task scope.
-	return a.Search(query, nil, n, taskID, taskID)
+	// Delegate to existing Search with task+project scope.
+	return a.Search(query, nil, n, taskID, projectScope, taskID)
 }
 
 // SearchSegments returns sealed segment summaries for the given task scope.
@@ -786,7 +811,9 @@ func (a *ContextArchive) SearchAllStepSummaries(taskID, query string, n int) []M
 // returns items with their Summary field as the segment representation.
 // A full SegmentManager integration (Path A) would provide richer segment
 // structures; this method provides the archive-based fallback.
-func (a *ContextArchive) SearchSegments(taskScope string, n int) []MemoryItem {
+//
+// projectScope enables ScopeProject cross-task recall (Phase 3).
+func (a *ContextArchive) SearchSegments(taskScope, projectScope string, n int) []MemoryItem {
 	if a == nil || taskScope == "" || n <= 0 {
 		return nil
 	}
@@ -797,7 +824,7 @@ func (a *ContextArchive) SearchSegments(taskScope string, n int) []MemoryItem {
 	copy(items, a.items)
 	a.mu.RUnlock()
 
-	items = filterItemsByTask(items, taskScope)
+	items = filterItemsByScope(items, taskScope, projectScope)
 
 	// Sort by timestamp descending.
 	sort.Slice(items, func(i, j int) bool {

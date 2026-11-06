@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // TestHandleAdminDeployFile_RejectsPathTraversal is a regression test for
@@ -29,7 +29,7 @@ func TestHandleAdminDeployFile_RejectsPathTraversal(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	logger, err := core.NewLogger(filepath.Join(tempDir, "logs"), nil)
+	logger, err := obs.NewLogger(filepath.Join(tempDir, "logs"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestHandleAdminDeployFile_NormalPathStillWorks(t *testing.T) {
 
 	t.Setenv("VORTEX_DEPLOY_ROOT", tempDir)
 
-	logger, err := core.NewLogger(filepath.Join(tempDir, "logs"), nil)
+	logger, err := obs.NewLogger(filepath.Join(tempDir, "logs"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

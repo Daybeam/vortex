@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/gateway"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/providers"
@@ -108,9 +109,17 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	// (write_file/read_file/execute_code) without any domain MCP calls,
 	// break the turn loop — the model is stuck in a self-proof loop.
 	//
-	// NECESSITY: Premature — no production evidence of this pattern. maxTurns
-	// (default 50) + #11 dedup already bound the problem. The gap this catches
-	// (different fs-only calls each turn, no domain progress) is narrow.
+	// NECESSITY: production evidence now exists (DELEGATION_ARTIFACT_DELIVERY_
+	// REMEDIATION.md §33, 2026-11-05). b6a-v75-029-r2's delegated agent made 28
+	// consecutive fs-only calls, 25 of which rewrote all four deliverables, and
+	// the run ended at the 40-request wall with the numeric rows wrong. The
+	// earlier note ("no production evidence; the gap is narrow") no longer holds.
+	//
+	// BUT it still must not be enabled as a break at 5: of the 16 side-runs that
+	// would be cut, 5 ended at a perfect score, and the artifacts at the cut
+	// point are not recoverable from the stored trace. Counted, not assumed —
+	// see §33.5. If this is ever turned on, it is a steer, not an abort, and it
+	// has to survive an arm first.
 	// Design: measure-first-then-act. Deploy with metrics only (limit=0),
 	// monitor orchestrator.progress.fs_only_streak_max, enable threshold only
 	// if metrics justify it. See docs/completed/2026-10-03/ §#4+#15.
@@ -162,7 +171,7 @@ turnLoop:
 		// Duplicate tool calls within the same turn are skipped to prevent
 		// repeated execution (A1 anomaly). Resets each turn — different
 		// turns may legitimately repeat calls (e.g., after provider retry).
-		// See docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
+		// See docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2.
 		turnCtx := NewTurnIdempotencyContext()
 
 		// VDA: Attach visual context from current state
@@ -196,10 +205,10 @@ turnLoop:
 			if req.Hub != nil && req.Hub.Registry != nil {
 				pid := providers.PoolIDFor(pCfg)
 				if cooling, remaining := req.Hub.Registry.IsCoolingDown(pid); cooling && candIdx < len(candidateConfigs)-1 {
-					s.logger.Log(EventProviderCooldownSkip, req.TaskID, req.StepID, map[string]any{"pool_id": pid, "remaining_sec": remaining.Seconds(), "candidate_idx": candIdx})
+					s.logger.Log(obs.EventProviderCooldownSkip, req.TaskID, req.StepID, map[string]any{"pool_id": pid, "remaining_sec": remaining.Seconds(), "candidate_idx": candIdx})
 					continue
 				} else if req.Hub.Registry.CheckRecovery(pid) {
-					s.logger.Log(EventProviderRecovered, req.TaskID, req.StepID, map[string]any{"pool_id": pid})
+					s.logger.Log(obs.EventProviderRecovered, req.TaskID, req.StepID, map[string]any{"pool_id": pid})
 				}
 			}
 
@@ -224,7 +233,7 @@ turnLoop:
 			}
 
 			// Dynamic Protocol: Re-build prompts and servers for each candidate family
-			systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, mergedContext, toolFewShots, req.Isolation, precedents, req.Task, "", req.TaskID, trace)
+			systemBlocks, err := s.buildSystemPrompt(ctx, req.Hub, role, prunedSkills, role.BaseCapability, pCfg, toolConstraints, mergedContext, toolFewShots, req.Isolation, precedents, req.Task, "", req.TaskID, req.StepID, trace)
 			if err != nil {
 				return s.failedOutput(role.BaseCapability, fmt.Sprintf("failed to render prompt: %v", err)), nil
 			}
@@ -261,7 +270,7 @@ turnLoop:
 			var patternWindow []byte
 			ctxWithTimeout, cancel := context.WithTimeout(ctx, 180*time.Second)
 
-			s.logger.Log(EventProviderCallStarted, req.TaskID, req.StepID, map[string]any{
+			s.logger.Log(obs.EventProviderCallStarted, req.TaskID, req.StepID, map[string]any{
 				"turn":              turn,
 				"provider":          pCfg.Provider,
 				"model":             pCfg.Model,
@@ -287,10 +296,10 @@ turnLoop:
 
 			// --- Sieve Context Management (SOP 3.0) ---
 			reqSieve := &schemas.CompleteRequest{
-				SystemBlocks:    systemBlocks,
-				UserBlocks:      userBlocks,
-				Model:           pCfg.Model,
-				MaxTokens:       s.spawnOutputBudget(req), // 铁律 51-4: the audit needs
+				SystemBlocks: systemBlocks,
+				UserBlocks:   userBlocks,
+				Model:        pCfg.Model,
+				MaxTokens:    s.spawnOutputBudget(req), // 铁律 51-4: the audit needs
 				// the output reserve to see `prompt + max_tokens > window`.
 				CompressionHint: req.CompressionHint,
 			}
@@ -394,12 +403,12 @@ turnLoop:
 			// 51 turns). The decision is now budget-based and EITHER branch emits
 			// exactly one event, so "did not fire" is observable instead of
 			// invisible — the whole point of 铁律 51-3.
-			if err != nil && isContextLimitError(err) {
+			if err != nil && IsContextLimitError(err) {
 				budget := s.contextInputBudget(pCfg, req)
 				cres := compressUserBlocksToBudget(userBlocks, budget)
 				if cres.Changed {
 					observability.GetGlobalMetrics().Inc("orchestrator.context.compressed", 1)
-					s.logger.Log(EventContextCompressed, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventContextCompressed, req.TaskID, req.StepID, map[string]any{
 						"turn":          turn,
 						"provider":      pCfg.Provider,
 						"model":         pCfg.Model,
@@ -437,7 +446,7 @@ turnLoop:
 
 					if err == nil {
 						observability.GetGlobalMetrics().Inc("orchestrator.context.compress_retry_success", 1)
-						s.logger.Log(EventContextCompressRetrySuccess, req.TaskID, req.StepID, map[string]any{
+						s.logger.Log(obs.EventContextCompressRetrySuccess, req.TaskID, req.StepID, map[string]any{
 							"turn":     turn,
 							"provider": pCfg.Provider,
 							"model":    pCfg.Model,
@@ -447,7 +456,7 @@ turnLoop:
 						break // Turn succeeded with compressed context
 					}
 					// Retry also failed — fall through to normal error handling.
-					s.logger.Log(EventContextCompressRetryFailed, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventContextCompressRetryFailed, req.TaskID, req.StepID, map[string]any{
 						"turn":     turn,
 						"provider": pCfg.Provider,
 						"model":    pCfg.Model,
@@ -456,7 +465,7 @@ turnLoop:
 				} else {
 					// Nothing compressible: say so. Retrying the identical request
 					// would 400 again, so fall through instead of burning a call.
-					s.logger.Log(EventContextCompressSkipped, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventContextCompressSkipped, req.TaskID, req.StepID, map[string]any{
 						"turn":     turn,
 						"provider": pCfg.Provider,
 						"model":    pCfg.Model,
@@ -478,7 +487,7 @@ turnLoop:
 				// nothing, burning wall-clock time until orchestrator_wait_task
 				// timeout (90s) kills the step as "partial".
 				if resp.CompletionTokens == 0 && len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Text) == "" {
-					s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventProviderFallback, req.TaskID, req.StepID, map[string]any{
 						"turn":            turn,
 						"failed_provider": pCfg.Provider,
 						"failed_model":    pCfg.Model,
@@ -498,7 +507,7 @@ turnLoop:
 					// server-side empty responses, e.g. Xunfei MaaS §10.4).
 					retry, exhaustErr := shouldRetryEmptyResponse(&emptyRespRetries, maxEmptyRespRetries)
 					if retry {
-						s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+						s.logger.Log(obs.EventProviderFallback, req.TaskID, req.StepID, map[string]any{
 							"error": "empty_response_zero_tokens",
 							"retry": emptyRespRetries,
 							"max":   maxEmptyRespRetries,
@@ -506,7 +515,7 @@ turnLoop:
 						continue turnLoop
 					}
 					// Retries exhausted: fast-fail
-					s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventStepFailed, req.TaskID, req.StepID, map[string]any{
 						"error":   "empty_response_zero_tokens",
 						"details": fmt.Sprintf("all candidates returned 0 completion tokens after %d retries; possible causes: vLLM missing --tool-call-parser, KV cache overflow, safety filter, provider intermittent empty response", maxEmptyRespRetries),
 					})
@@ -522,7 +531,7 @@ turnLoop:
 			// Handle Error & Fallback
 			if isRetryableError(err) {
 				if candIdx < len(candidateConfigs)-1 {
-					s.logger.Log(EventProviderFallback, req.TaskID, req.StepID, map[string]any{
+					s.logger.Log(obs.EventProviderFallback, req.TaskID, req.StepID, map[string]any{
 						"turn":            turn,
 						"failed_provider": pCfg.Provider,
 						"failed_model":    pCfg.Model,
@@ -543,7 +552,7 @@ turnLoop:
 			}
 
 			// Final failure
-			s.logger.Log(EventStepFailed, req.TaskID, req.StepID, map[string]any{
+			s.logger.Log(obs.EventStepFailed, req.TaskID, req.StepID, map[string]any{
 				"error":   "Provider call failed (all candidates exhausted)",
 				"details": err.Error(),
 			})
@@ -587,7 +596,7 @@ turnLoop:
 				detail["visible_output_empty"] = true
 				detail["likely_reasoning_dominated"] = true
 			}
-			s.logger.Log(EventOutputTruncated, req.TaskID, req.StepID, detail)
+			s.logger.Log(obs.EventOutputTruncated, req.TaskID, req.StepID, detail)
 		}
 
 		// Outer-ring accounting (ADDED 2026-10-12): the system-prompt profile is
@@ -605,7 +614,7 @@ turnLoop:
 		// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 1.
 		// Pure observer: never mutates execution flow. Alerting ≠ blocking.
 		if alert, n := s.cacheSentinel.Observe(req.TaskID, req.StepID, resp.PromptTokens, resp.CacheReadTokens); alert {
-			s.logger.Log(EventCacheInefficiency, req.TaskID, req.StepID, map[string]any{
+			s.logger.Log(obs.EventCacheInefficiency, req.TaskID, req.StepID, map[string]any{
 				"consecutive_zero_rounds": n,
 				"prompt_tokens":           resp.PromptTokens,
 				"cache_read_tokens":       resp.CacheReadTokens,
@@ -720,7 +729,7 @@ turnLoop:
 		}
 		if hb.Action == HeartbeatSleep {
 			s.logger.Log("EventHeartbeatSleep", req.TaskID, req.StepID, map[string]any{
-				"turn":         turn,
+				"turn":          turn,
 				"sleep_seconds": hb.SleepSeconds,
 			})
 			// audit LOW (2026-10-28): use NewTimer + Stop instead of time.After

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -45,7 +46,7 @@ func TestContextArchive(t *testing.T) {
 		})
 		archive.BuildIndex()
 
-		results := archive.Search("searchable", nil, 10, "", "")
+		results := archive.Search("searchable", nil, 10, "", "", "")
 		if len(results) == 0 {
 			t.Errorf("expected search results for 'searchable'")
 		}
@@ -77,7 +78,7 @@ func TestContextArchive(t *testing.T) {
 		})
 		archive.BuildIndex()
 
-		results := archive.Search("alpha", nil, 10, "taskA", "")
+		results := archive.Search("alpha", nil, 10, "taskA", "", "")
 		if len(results) == 0 {
 			t.Fatal("expected search results for taskA")
 		}
@@ -157,7 +158,7 @@ func TestContextArchive(t *testing.T) {
 
 	t.Run("Empty Archive Search and Prune", func(t *testing.T) {
 		archive.items = nil
-		results := archive.Search("anything", nil, 10, "", "")
+		results := archive.Search("anything", nil, 10, "", "", "")
 		if len(results) != 0 {
 			t.Errorf("expected empty results, got %d", len(results))
 		}
@@ -219,7 +220,7 @@ func TestArchiveStepIngestion(t *testing.T) {
 
 	s := &DirectedEngine{
 		Archive: archive,
-		logger:  &Logger{},
+		logger:  &obs.Logger{},
 	}
 
 	graph := &schemas.TaskGraph{
@@ -267,17 +268,17 @@ func TestSingleTaskScopeEnforcement(t *testing.T) {
 	archive.Append(MemoryItem{TaskID: "taskB", NodeID: "B1", Intent: "alpha", Summary: "B content"})
 	archive.BuildIndex()
 
-	resultsA := archive.Search("alpha", nil, 10, "taskA", "taskA")
+	resultsA := archive.Search("alpha", nil, 10, "taskA", "", "taskA")
 	if len(resultsA) != 1 || resultsA[0].TaskID != "taskA" {
 		t.Errorf("taskA scope: expected 1 result from taskA, got %v", resultsA)
 	}
 
-	resultsB := archive.Search("alpha", nil, 10, "taskB", "taskB")
+	resultsB := archive.Search("alpha", nil, 10, "taskB", "", "taskB")
 	if len(resultsB) != 1 || resultsB[0].TaskID != "taskB" {
 		t.Errorf("taskB scope: expected 1 result from taskB, got %v", resultsB)
 	}
 
-	resultsAll := archive.Search("alpha", nil, 10, "", "")
+	resultsAll := archive.Search("alpha", nil, 10, "", "", "")
 	if len(resultsAll) != 2 {
 		t.Errorf("empty scope: expected 2 results (all tasks), got %d — handler must reject empty task_scope", len(resultsAll))
 	}

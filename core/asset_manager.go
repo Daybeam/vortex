@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,9 +89,28 @@ func (am *AssetManager) Handle(taskID string, stepID string, data []byte, format
 	}, nil
 }
 
-// Sentry is a background routine that cleans up orphaned assets and staging data.
-// It runs until ctx is cancelled.
-func (am *AssetManager) Sentry(ctx context.Context, ts store.ITaskStore) {
+// sweepStats records the outcome of a single sweep pass (§4.1).
+type sweepStats struct {
+	scanned        int
+	stagingCleaned int
+	candidates     int // deletion candidates (task_dirs mode only)
+	skipped        int // skipped: nil registry, query error, or non-terminal
+}
+
+// Sentry is a background routine that cleans up staging data and identifies
+// deletion candidates. It runs until ctx is cancelled.
+//
+// D-GC-1 fix (§4.1): replaces the old ts.Get(taskID, "") existence check
+// (which always failed with empty stepID → deleted every task dir) with
+// TaskRegistry.LoadTask. Per §3.3, the background sweep NEVER auto-deletes
+// task directories — deletion is via explicit orchestrator_cleanup_workspace.
+// `tr` is a getter, not a value. The ledger is wired by main*.go *after*
+// NewDirectedEngine returns, and this goroutine is started inside that
+// constructor; a captured value would be nil forever (the first tick is an
+// hour away, so nothing would ever notice). Reading it per tick also goes
+// through the engine's registry mutex, which is what the 2026-11-05 race
+// report asked for.
+func (am *AssetManager) Sentry(ctx context.Context, tr func() store.TaskRegistry) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
@@ -100,46 +120,141 @@ func (am *AssetManager) Sentry(ctx context.Context, ts store.ITaskStore) {
 			return
 		case <-ticker.C:
 		}
+		var registry store.TaskRegistry
+		if tr != nil {
+			registry = tr()
+		}
+		stats := am.sweepOnce(ctx, time.Now(), registry)
+		log.Printf("asset_gc: scanned=%d staging_cleaned=%d candidates=%d skipped=%d",
+			stats.scanned, stats.stagingCleaned, stats.candidates, stats.skipped)
+	}
+}
 
-		entries, err := os.ReadDir(am.StorePath)
-		if err != nil {
+// sweepOnce performs a single sweep pass. Extracted from Sentry for testability.
+//
+// Mode behavior:
+//   - off: no file-side cleanup at all.
+//   - staging_only (default): clean .staging via CleanupStaging. Never delete dirs.
+//   - task_dirs: same as staging_only + identify terminal dirs older than
+//     AssetTTLDays as deletion candidates (reported only, NOT auto-deleted).
+//
+// Safety invariants (§3.1–§3.3):
+//   - nil TaskRegistry → skip, never delete (persistence unavailable).
+//   - query error → skip, never delete (DB busy/IO ≠ not-found).
+//   - non-terminal status → skip, never delete.
+func (am *AssetManager) sweepOnce(ctx context.Context, now time.Time, tr store.TaskRegistry) sweepStats {
+	stats := sweepStats{}
+
+	mode := am.assetGCMode()
+	if mode == "off" {
+		return stats
+	}
+
+	entries, err := os.ReadDir(am.StorePath)
+	if err != nil {
+		return stats
+	}
+
+	ttl := am.stagingTTL()
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		stats.scanned++
+
+		taskID := entry.Name()
+		taskPath := filepath.Join(am.StorePath, taskID)
+
+		// Always clean .staging in staging_only and task_dirs modes.
+		sw := NewStagedWorkspace(taskPath)
+		if err := sw.CleanupStaging(ttl, false); err == nil {
+			stats.stagingCleaned++
+		}
+
+		// Only task_dirs mode identifies deletion candidates.
+		if mode != "task_dirs" {
 			continue
 		}
 
-		// Retention policy
-		retentionHours := 24
-		if am.Registry != nil && am.Registry.System.StagingRetentionHours > 0 {
-			retentionHours = am.Registry.System.StagingRetentionHours
+		if tr == nil {
+			stats.skipped++
+			continue
 		}
-		ttl := time.Duration(retentionHours) * time.Hour
 
-		// M-2 (2026-10-04): N+1 ts.Get per directory entry. Acceptable because
-		// this Sentry runs once per hour (not a hot path), and ts.Get with empty
-		// stepID is a lightweight existence check. ITaskStore interface doesn't
-		// expose ListTasks — adding it would change the interface for a non-hot
-		// path. Revisit if task count grows > 10K.
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
+		row, _, err := tr.LoadTask(ctx, taskID)
+		if err != nil {
+			// Query failed (DB busy, IO, etc.) — do NOT assume "not found".
+			stats.skipped++
+			continue
+		}
+		if row == nil {
+			// Deterministic not-found → orphan candidate.
+			stats.candidates++
+			continue
+		}
+		if !isTerminalTaskStatus(row.Status) {
+			// Non-terminal: never a deletion candidate (§3.1).
+			continue
+		}
 
-			taskID := entry.Name()
-			taskPath := filepath.Join(am.StorePath, taskID)
-
-			// Check if task exists in store
-			task, err := ts.Get(ctx, taskID, "")
-			if err != nil || task == nil {
-				// Task not found, delete entire directory
-				_ = os.RemoveAll(taskPath)
-				continue
-			}
-
-			// Task exists: cleanup StagedWorkspace data if expired
-			sw := NewStagedWorkspace(taskPath)
-			// For finished tasks, we can be more aggressive.
-			// For now, use the same TTL for all .staging data.
-			// keepJournal=true for failed tasks could be an optimization.
-			_ = sw.CleanupStaging(ttl, false)
+		// Terminal: check age against AssetTTLDays.
+		ttlDays := am.assetTTLDays()
+		if ttlDays > 0 && taskAgeDays(row.UpdatedAt, now) > ttlDays {
+			stats.candidates++
 		}
 	}
+
+	return stats
+}
+
+// assetGCMode returns the configured asset GC mode, defaulting to "staging_only".
+func (am *AssetManager) assetGCMode() string {
+	if am.Registry == nil {
+		return "staging_only"
+	}
+	mode := am.Registry.System.Retention.AssetGC
+	switch mode {
+	case "off", "staging_only", "task_dirs":
+		return mode
+	default:
+		return "staging_only" // invalid → conservative default
+	}
+}
+
+// stagingTTL returns the .staging cleanup TTL from config (default 24h).
+func (am *AssetManager) stagingTTL() time.Duration {
+	hours := 24
+	if am.Registry != nil && am.Registry.System.StagingRetentionHours > 0 {
+		hours = am.Registry.System.StagingRetentionHours
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+// assetTTLDays returns the configured TTL days, defaulting to 365.
+func (am *AssetManager) assetTTLDays() int {
+	if am.Registry != nil && am.Registry.System.Retention.AssetTTLDays > 0 {
+		return am.Registry.System.Retention.AssetTTLDays
+	}
+	return 365
+}
+
+// isTerminalTaskStatus checks if a string status is terminal (completed/failed/cancelled).
+// Mirrors isTerminalStatus in scheduler.go but works on raw strings from TaskRow.
+func isTerminalTaskStatus(status string) bool {
+	switch status {
+	case "completed", "completed_with_skips", "failed", "cancelled":
+		return true
+	}
+	return false
+}
+
+// taskAgeDays parses a SQLite CURRENT_TIMESTAMP string and returns age in days.
+// Returns 0 on parse failure (conservative: treat as not-old-enough to delete).
+func taskAgeDays(updatedAt string, now time.Time) int {
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", updatedAt, time.Local)
+	if err != nil {
+		return 0
+	}
+	return int(now.Sub(t).Hours() / 24)
 }

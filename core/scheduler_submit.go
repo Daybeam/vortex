@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/observability"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
@@ -319,29 +320,30 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		// was completely invisible to GetStatus (always "not found"),
 		// causing silent-failure from the caller's perspective.
 		step := &schemas.Step{
-			ID:               stepID,
-			RoleID:           inp.RoleID,
-			Task:             inp.Task,
-			Status:           schemas.StepPending,
-			AdditionalSkills: inp.AdditionalSkills,
-			AdditionalMCPs:   inp.AdditionalMCPs,
-			ContextRefs:      inp.ContextRefs,
-			Deliver:          inp.Deliver,
-			ExitCriteria:     inp.ExitCriteria,
-			VerifierModel:    inp.VerifierModel,
-			MaxAutoRefine:    inp.MaxAutoRefine,
-			EnableDebate:     inp.EnableDebate,
-			MaxDebateRounds:  inp.MaxDebateRounds,
-			EnableStepPlan:   inp.EnableStepPlan,
-			SpawnDepth:       inp.SpawnDepth,
-			MaxSpawnDepth:    inp.MaxSpawnDepth,
-		AutoRefineCount:  0,
-		LastWorkedOn:     time.Now(),
-		InputDir:         inp.InputDir,
-		// D3 §10.2: copy these so overlay merge fires for single-step tasks.
-		MergeStrategy: inp.MergeStrategy,
-		TargetKey:     inp.TargetKey,
-	}
+			ID:                  stepID,
+			RoleID:              inp.RoleID,
+			Task:                inp.Task,
+			Status:              schemas.StepPending,
+			AdditionalSkills:    inp.AdditionalSkills,
+			AdditionalMCPs:      inp.AdditionalMCPs,
+			ContextRefs:         inp.ContextRefs,
+			Deliver:             inp.Deliver,
+			ExitCriteria:        inp.ExitCriteria,
+			DeterministicChecks: inp.DeterministicChecks,
+			VerifierModel:       inp.VerifierModel,
+			MaxAutoRefine:       inp.MaxAutoRefine,
+			EnableDebate:        inp.EnableDebate,
+			MaxDebateRounds:     inp.MaxDebateRounds,
+			EnableStepPlan:      inp.EnableStepPlan,
+			SpawnDepth:          inp.SpawnDepth,
+			MaxSpawnDepth:       inp.MaxSpawnDepth,
+			AutoRefineCount:     0,
+			LastWorkedOn:        time.Now(),
+			InputDir:            inp.InputDir,
+			// D3 §10.2: copy these so overlay merge fires for single-step tasks.
+			MergeStrategy: inp.MergeStrategy,
+			TargetKey:     inp.TargetKey,
+		}
 		if step.AdditionalSkills == nil {
 			step.AdditionalSkills = []string{}
 		}
@@ -353,10 +355,11 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		}
 
 		graph := &schemas.TaskGraph{
-			TaskID:  taskID,
-			TraceID: traceID,
-			Steps:   map[string]*schemas.Step{stepID: step},
-			Status:  schemas.GraphRunning, SubmitterIsAdmin: inp.SubmitterIsAdmin,
+			TaskID:    taskID,
+			TraceID:   traceID,
+			ProjectID: defaultProjectID(inp.ProjectID),
+			Steps:     map[string]*schemas.Step{stepID: step},
+			Status:    schemas.GraphRunning, SubmitterIsAdmin: inp.SubmitterIsAdmin,
 			PendingDecisions: []*schemas.Decision{},
 			OutputFiles:      []schemas.OutputFile{},
 			CreatedAt:        time.Now(),
@@ -402,11 +405,42 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		}
 		s.cancelFuncs[taskID] = taskCancel
 		s.doneChans[taskID] = make(chan struct{})
+
+		// D5 P1b (DELEGATION_HANDOVER_REDESIGN.md §4.5): in delegation mode
+		// with planner-first enabled, delegate the PLANNER's prompt to the
+		// host instead of skipping the planner (P1a) or running it locally.
+		// The host produces a plan; FulfillStep injects it via surgery.
+		planDelegated := false
+		if s.registry != nil && s.registry.System.DelegationMode && s.registry.System.EnablePlannerFirst {
+			step.Status = schemas.StepBlocked
+			planPrompt := buildPlanDelegationPrompt(inp.Task, inp.RoleID)
+			graph.PendingDecisions = append(graph.PendingDecisions, &schemas.Decision{
+				ID:     schemas.NewDecisionID(),
+				StepID: stepID,
+				Type:   schemas.DecisionDelegationRequired,
+				Context: map[string]any{
+					"kind":    DelegationKindPlan,
+					"prompt":  planPrompt,
+					"role_id": inp.RoleID,
+				},
+				Options: []string{"fulfill", "skip", "abort"},
+			})
+			planDelegated = true
+		}
+
 		s.Mu.Unlock()
 
 		s.persistGraph(graph) // Re-enabled: needed for task visibility after restart (loadGraphs)
 		s.pinBaseline(taskID, inputs)
 		s.Broadcast()
+
+		if planDelegated {
+			// The step is blocked waiting for the host's plan. Don't spawn.
+			s.logger.Log("plan_delegation_created", taskID, stepID, map[string]any{
+				"kind": DelegationKindPlan,
+			})
+			return taskID, nil
+		}
 
 		hub := NewContextHub(s.registry, graph, s.expStore)
 
@@ -474,8 +508,10 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 						(result.Output.Status == schemas.StatusOK || result.Output.Status == schemas.StatusPartial) {
 						if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
 							if step.AutoRefineCount < step.MaxAutoRefine {
+								s.Mu.Lock() // audit C-3: protect field writes — persistGraph reads under RLock.
 								step.AutoRefineCount++
 								step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Refining...", failType, reason))
+								s.Mu.Unlock()
 								s.logger.Log("EventStepRetrying", graph.TaskID, step.ID, map[string]any{
 									"reason": "exit_criteria_fail", "details": reason,
 									"refine_attempt": step.AutoRefineCount, "fail_type": failType,
@@ -625,9 +661,9 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			isFailed := graph.Status == schemas.GraphFailed
 			s.Mu.Unlock()
 			if isFailed {
-				s.publishEvent(taskID, "", EventTaskFailed, map[string]any{"confidence": conf})
+				s.publishEvent(taskID, "", obs.EventTaskFailed, map[string]any{"confidence": conf})
 			} else {
-				s.publishEvent(taskID, "", EventTaskCompleted, map[string]any{"confidence": conf})
+				s.publishEvent(taskID, "", obs.EventTaskCompleted, map[string]any{"confidence": conf})
 			}
 			s.Broadcast()
 		}) // audit C1: goBackground closing
@@ -663,6 +699,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			Status:                   schemas.StepPending,
 			MaxRetries:               maxRetries,
 			ExitCriteria:             inp.ExitCriteria,
+			DeterministicChecks:      inp.DeterministicChecks,
 			VerifierModel:            inp.VerifierModel,
 			MaxAutoRefine:            inp.MaxAutoRefine,
 			EnableDebate:             inp.EnableDebate,
@@ -704,10 +741,11 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	s.validateWorkspaceKeyCollisions(steps)
 
 	graph := &schemas.TaskGraph{
-		TaskID:  taskID,
-		TraceID: traceID,
-		Steps:   steps,
-		Status:  schemas.GraphRunning, SubmitterIsAdmin: anySubmitterIsAdmin(inputs),
+		TaskID:    taskID,
+		TraceID:   traceID,
+		ProjectID: resolveProjectID(inputs),
+		Steps:     steps,
+		Status:    schemas.GraphRunning, SubmitterIsAdmin: anySubmitterIsAdmin(inputs),
 		PendingDecisions: []*schemas.Decision{},
 		OutputFiles:      []schemas.OutputFile{},
 		CreatedAt:        time.Now(),
@@ -786,10 +824,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	s.pinBaseline(taskID, inputs)
 	s.Broadcast()
 
-	s.logger.Log(EventTaskSubmitted, taskID, "", map[string]any{
-		"step_count":     len(steps),
-		"require_review": requireReview,
-	})
+	s.logger.Log(obs.EventTaskSubmitted, taskID, "", taskSubmittedDetail(len(steps), requireReview, graph))
 
 	if !requireReview {
 		// audit C1: startGraphExecutor handles UseSwarm branching.
@@ -797,6 +832,36 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	}
 
 	return taskID, nil
+}
+
+// taskSubmittedDetail is the task_submitted log payload. It carries a compact
+// dependency snapshot so replay viewers can redraw the execution DAG without
+// reading the (much larger) persisted manifest.
+func taskSubmittedDetail(stepCount int, requireReview bool, graph *schemas.TaskGraph) map[string]any {
+	detail := map[string]any{
+		"step_count":     stepCount,
+		"require_review": requireReview,
+	}
+	if deps := stepDependencySnapshot(graph); len(deps) > 0 {
+		detail["deps"] = deps
+	}
+	return detail
+}
+
+// stepDependencySnapshot keeps only steps that actually declare upstream
+// dependencies; fully parallel plans would otherwise log an empty map.
+func stepDependencySnapshot(graph *schemas.TaskGraph) map[string][]string {
+	var deps map[string][]string
+	for id, step := range graph.Steps {
+		if step == nil || len(step.DependsOn) == 0 {
+			continue
+		}
+		if deps == nil {
+			deps = make(map[string][]string, len(graph.Steps))
+		}
+		deps[id] = append([]string(nil), step.DependsOn...)
+	}
+	return deps
 }
 
 // applySessionAssets records the caller-supplied roles, skills and provider
@@ -933,4 +998,28 @@ func anySubmitterIsAdmin(inputs []schemas.StepInput) bool {
 		}
 	}
 	return false
+}
+
+// defaultProjectID normalizes a project identifier. Empty values fall back to
+// the "default" project space, which preserves backward compatibility for
+// callers that do not opt into project scoping (Phase 2 of the Project Space
+// & Memory Tiering design).
+func defaultProjectID(pid string) string {
+	if pid == "" {
+		return "default"
+	}
+	return pid
+}
+
+// resolveProjectID extracts the project identifier from a batch of submitted
+// steps. The first non-empty ProjectID wins; if none is set, the task is
+// assigned to the "default" project. This mirrors anySubmitterIsAdmin's
+// single-submission-tier assumption.
+func resolveProjectID(inputs []schemas.StepInput) string {
+	for i := range inputs {
+		if inputs[i].ProjectID != "" {
+			return inputs[i].ProjectID
+		}
+	}
+	return "default"
 }

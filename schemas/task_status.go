@@ -50,7 +50,7 @@ const (
 	DecisionRewriteDAG               DecisionType = "rewrite_dag"           // ADDED (2026-09-07): Dynamic DAG surgery
 	DecisionHumanApprovalRequired    DecisionType = "human_approval_required"
 	DecisionAutonomousAbortRequested DecisionType = "autonomous_abort_requested" // ADDED (2026-09-14): cost governance — Main Agent requests abort, user decides
-	DecisionGoalChangeRequested     DecisionType = "goal_change_requested"       // ADDED (2026-10-29): explicit goal/charter change request — see docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P2
+	DecisionGoalChangeRequested      DecisionType = "goal_change_requested"      // ADDED (2026-10-29): explicit goal/charter change request — see docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P2
 )
 
 // VerificationFailureType categorises why a verification failed.
@@ -67,7 +67,7 @@ const (
 
 // DeterministicCheck defines a zero-token hard verification step.
 // Runs before any VerifierModel semantic audit in verifyExitCriteria.
-// See core/deterministic_verifier.go and docs/TIERED_SHORT_CIRCUIT_AUDIT.md
+// See core/verify/deterministic_verifier.go and docs/TIERED_SHORT_CIRCUIT_AUDIT.md
 type DeterministicCheck struct {
 	Type   string         `json:"type"`   // "file_exists", "command_pass"
 	Params map[string]any `json:"params"` // verifier-specific parameters
@@ -165,7 +165,7 @@ func DetermineRiskTier(task string, mcpList []string) (RiskTier, float64) {
 
 // DetermineComplexity (ADDED 2026-10-10): heuristic to determine a step task is complex
 // enough to warrant an explicit planning phase. Zero-cost keyword matching.
-// See docs/plan/STEP_PLAN_MODE_DESIGN.md §9.2 (Option A).
+// See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §9.2 (Option A).
 func DetermineComplexity(task string, stepCount int) bool {
 	lower := strings.ToLower(task)
 	// Multi-file operations → need a plan

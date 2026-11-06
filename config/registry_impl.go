@@ -585,12 +585,6 @@ func (r *Registry) CheckCapabilities(caps []string) []string {
 	return missing
 }
 
-func (r *Registry) GetVerifierID(toolName string) string {
-	r.Mu.RLock()
-	defer r.Mu.RUnlock()
-	return ""
-}
-
 func (r *Registry) CommitOps(ops []PatchOp, actor, taskID string) error {
 	// audit P-MED-4: release lock before WAL append — previously held Lock
 	// during wal.Append (which does f.Sync disk flush), blocking all config

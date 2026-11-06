@@ -63,6 +63,7 @@ Guidelines:
 3. Design a step-by-step DAG with clear dependencies and exit criteria.
 4. Assign appropriate roles to each step. If no suitable role exists, generate one from the cookbook.
 5. Output the SOP as valid JSON and submit via update_sop.
+6. Every exit_criteria must be one of regex:<pattern>, file:<path>, or json. Never write a prose criterion: prose is only substring-matched and is not a gate (Q2-4).
 
 Constraints:
 - You can create dynamic skills and mount dynamic MCPs (unlike task_planner).
@@ -228,15 +229,15 @@ var builtinSOPs = []schemas.SOP{
 			"design": {
 				ID:        "design",
 				Role:      "sop_generator",
-				Task:      "Based on the explored tools, design a workflow DAG for the requested task. Define steps, dependencies, roles, and exit criteria.",
+				Task:      "Based on the explored tools, design a workflow DAG for the requested task. Define steps, dependencies, roles, and exit criteria. Every step's exit criteria must be one of regex:<pattern>, file:<path>, or json; prose criteria are forbidden (they are only substring-matched at runtime and are not a contract).",
 				DependsOn: []string{"explore"},
 			},
 			"save": {
 				ID:           "save",
 				Role:         "sop_generator",
-				Task:         "Convert the designed workflow into a valid SOP JSON and submit it via the update_sop tool.",
+				Task:         "Convert the designed workflow into a valid SOP JSON, write that JSON to workspace/tmp/sop_auto_generate.saved.json (create the directory if needed; 2-space indent; complete and untruncated, at least 1 KB), then submit the same SOP via the update_sop tool.",
 				DependsOn:    []string{"design"},
-				ExitCriteria: "SOP saved successfully and validateSOPDAG passes",
+				ExitCriteria: "file:workspace/tmp/sop_auto_generate.saved.json",
 			},
 		},
 	},

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -21,11 +22,17 @@ func makeCycleID(triggerStepID string, dependsOn []string) string {
 // for delta-backtrack injection. Returns "(no previous output)" if the step
 // has never been executed or no archive is available.
 //
+// projectID is passed in rather than resolved via s.ProjectOf: the only caller,
+// tryBacktrack, holds s.Mu.Lock across this call, and ProjectOf takes
+// s.Mu.RLock. RWMutex is not reentrant, so resolving it here deadlocked every
+// backtrack until 40617ac0f was corrected. Callers holding a graph pass
+// projectOfGraph(graph).
+//
 // See docs/plan/DELTA_BACKTRACK_DESIGN.md §change 3.
-func (s *DirectedEngine) buildPreviousSummary(dep *schemas.Step, taskID string) string {
+func (s *DirectedEngine) buildPreviousSummary(dep *schemas.Step, taskID, projectID string) string {
 	// Source 1: ResultRef — direct output reference via archive search
 	if dep.ResultRef != "" && s.Archive != nil {
-		items := s.Archive.SearchAllStepSummaries(taskID, dep.ResultRef, 1)
+		items := s.Archive.SearchAllStepSummaries(taskID, projectID, dep.ResultRef, 1)
 		if len(items) > 0 && items[0].Summary != "" {
 			return items[0].Summary
 		}
@@ -33,7 +40,7 @@ func (s *DirectedEngine) buildPreviousSummary(dep *schemas.Step, taskID string) 
 
 	// Source 2: Archive step summaries (by step ID, most recent first)
 	if s.Archive != nil {
-		summaries := s.Archive.SearchRecentStepSummaries(taskID, 5)
+		summaries := s.Archive.SearchRecentStepSummaries(taskID, projectID, 5)
 		for _, sm := range summaries {
 			for _, sid := range sm.StepIDs {
 				if sid == dep.ID && sm.Summary != "" {
@@ -97,7 +104,9 @@ func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.St
 			}
 
 			// Delta Backtrack: build previous output summary for injection.
-			previousSummary := s.buildPreviousSummary(dep, graph.TaskID)
+			// projectOfGraph, not s.ProjectOf — this function body runs inside
+			// s.Mu.Lock() and RWMutex is not reentrant.
+			previousSummary := s.buildPreviousSummary(dep, graph.TaskID, projectOfGraph(graph))
 			if previousSummary != "" && !strings.HasPrefix(previousSummary, "(no previous") {
 				hasPrevious = true
 			}
@@ -172,11 +181,11 @@ func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.St
 	}
 
 	s.logger.Log("EventCycleFuse", graph.TaskID, step.ID, map[string]any{
-		"cycle_id":    cycleID,
-		"max_rounds":  step.MaxLoopRounds,
+		"cycle_id":     cycleID,
+		"max_rounds":   step.MaxLoopRounds,
 		"stale_marked": staleCount,
 	})
-	s.publishEvent(graph.TaskID, step.ID, EventStepFailed, map[string]any{"cycle_fuse": cycleID, "suspended": true})
+	s.publishEvent(graph.TaskID, step.ID, obs.EventStepFailed, map[string]any{"cycle_fuse": cycleID, "suspended": true})
 	s.Mu.Unlock()
 
 	// addDecision calls broadcastDone which takes s.Mu.Lock — must NOT

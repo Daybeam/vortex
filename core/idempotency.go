@@ -10,7 +10,7 @@ import (
 
 // ─── Effect Boundary Defense: A1 Idempotency ─────────────────────────────
 //
-// Design ref: docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2
+// Design ref: docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.2
 //
 // TurnIdempotencyContext tracks executed tool calls within a single turn
 // to prevent duplicate execution (A1 anomaly defense). When a provider
@@ -50,7 +50,7 @@ func (c *TurnIdempotencyContext) CheckAndMark(key string) bool {
 
 // ─── Effect Boundary Defense: A5 Dry-Run Pre-Check ──────────────────────
 //
-// Design ref: docs/plan/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.4
+// Design ref: docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.4
 //
 // For tools with RiskLevel=high, attempt a dry_run before real execution.
 // If the tool supports dry_run (has it in InputSchema), execute with

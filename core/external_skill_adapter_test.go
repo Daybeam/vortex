@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/daybeam/vortex/core/capability"
 	"os"
 	"path/filepath"
 	"strings"
@@ -577,7 +578,7 @@ func TestImportSkillDirectory_PendingSkillNotInCapabilityIndex(t *testing.T) {
 	}
 
 	// Build capability index — pending skill should NOT appear
-	idx := NewCapabilityIndex(reg)
+	idx := capability.NewCapabilityIndex(reg)
 	if idx.Tags["data-analysis"] {
 		t.Error("pending skill's capability 'data-analysis' should NOT be in CapabilityIndex tags")
 	}
@@ -630,7 +631,7 @@ func TestPromoteSkill_MovesFromPendingToActive(t *testing.T) {
 	}
 
 	// Verify: skill is now in CapabilityIndex
-	idx := NewCapabilityIndex(reg)
+	idx := capability.NewCapabilityIndex(reg)
 	if !idx.Tags["trading"] {
 		t.Error("promoted skill's capability 'trading' should be in CapabilityIndex tags")
 	}

@@ -55,6 +55,11 @@ type MCPDef struct {
 	AuthHeaderPrefix    string                         `json:"auth_header_prefix,omitempty"`
 	APIKeyEnv           string                         `json:"api_key_env,omitempty"`
 	URLAuthPlaceholder  string                         `json:"url_auth_placeholder,omitempty"`
+	// OAuthClient enables outbound OAuth 2.0 authentication for this MCP.
+	// When set, the orchestrator fetches and refreshes access tokens
+	// automatically and injects them as a Bearer token. Takes precedence
+	// over APIKeyEnv. See config/oauth_client.go and pkg/oauth/client.go.
+	OAuthClient         *OAuthClientConfig             `json:"oauth_client,omitempty"`
 	DiscoveryStatus     string                         `json:"discovery_status,omitempty"`
 	PlatformOverrides   map[string]MCPPlatformOverride `json:"platform_overrides,omitempty"`
 	ToolFilter          filters.ToolFilter             `json:"-"`

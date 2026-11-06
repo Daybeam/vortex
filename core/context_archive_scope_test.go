@@ -6,30 +6,34 @@ import (
 	"time"
 )
 
-// TestFilterItemsByTask_ScopeAware verifies that filterItemsByTask respects
-// the MemoryScope tier (memory tiering gap A, 2026-10-23):
+// TestFilterItemsByScope_ScopeAware verifies that filterItemsByScope respects
+// the MemoryScope tier (Project Space & Memory Tiering design Phase 3):
 //   - team/global items are always included (cross-task sharing)
-//   - task/project/empty items are filtered by TaskID
-func TestFilterItemsByTask_ScopeAware(t *testing.T) {
+//   - project items are included if ProjectID matches projectScope
+//   - task/empty items are filtered by TaskID
+func TestFilterItemsByScope_ScopeAware(t *testing.T) {
 	items := []MemoryItem{
 		{NodeID: "task-item", TaskID: "taskA", Scope: ScopeTask, Intent: "task scoped"},
-		{NodeID: "proj-item", TaskID: "taskA", Scope: ScopeProject, Intent: "project scoped"},
+		{NodeID: "proj-item", TaskID: "taskA", ProjectID: "proj1", Scope: ScopeProject, Intent: "project scoped"},
+		{NodeID: "proj-other", TaskID: "taskB", ProjectID: "proj2", Scope: ScopeProject, Intent: "other project"},
 		{NodeID: "team-item", TaskID: "taskB", Scope: ScopeTeam, Intent: "team convention"},
 		{NodeID: "global-item", TaskID: "taskC", Scope: ScopeGlobal, Intent: "global knowledge"},
 		{NodeID: "legacy-item", TaskID: "taskA", Scope: "", Intent: "legacy no scope"},
 		{NodeID: "other-task", TaskID: "taskB", Scope: ScopeTask, Intent: "other task"},
 	}
 
-	// Querying taskA should return: taskA's task/project/legacy items + team + global
-	got := filterItemsByTask(items, "taskA")
+	// Querying taskA in proj1 should return: taskA's task/legacy items +
+	// proj1's project items + team + global. NOT proj2's project items.
+	got := filterItemsByScope(items, "taskA", "proj1")
 
 	wantIDs := map[string]bool{
-		"task-item":   true,  // ScopeTask, TaskID matches
-		"proj-item":   true,  // ScopeProject, TaskID matches
-		"team-item":   true,  // ScopeTeam, cross-task shared
-		"global-item": true,  // ScopeGlobal, cross-task shared
-		"legacy-item": true,  // empty scope, TaskID matches (backward compat)
+		"task-item":   true, // ScopeTask, TaskID matches
+		"proj-item":   true, // ScopeProject, ProjectID matches proj1
+		"team-item":   true, // ScopeTeam, cross-task shared
+		"global-item": true, // ScopeGlobal, cross-task shared
+		"legacy-item": true, // empty scope, TaskID matches (backward compat)
 		// "other-task" should NOT be included (ScopeTask, TaskID != taskA)
+		// "proj-other" should NOT be included (ScopeProject, ProjectID != proj1)
 	}
 
 	if len(got) != len(wantIDs) {
@@ -48,18 +52,45 @@ func TestFilterItemsByTask_ScopeAware(t *testing.T) {
 	if gotIDs["other-task"] {
 		t.Errorf("other-task (ScopeTask, different TaskID) should not be included")
 	}
+	if gotIDs["proj-other"] {
+		t.Errorf("proj-other (ScopeProject, different ProjectID) should not be included")
+	}
 }
 
-// TestFilterItemsByTask_BackwardCompat verifies that items with empty Scope
+// TestFilterItemsByScope_ProjectCrossTask verifies that ScopeProject items
+// are shared across tasks in the same project (the core Phase 3 feature).
+func TestFilterItemsByScope_ProjectCrossTask(t *testing.T) {
+	items := []MemoryItem{
+		{NodeID: "proj-knowledge", TaskID: "taskA", ProjectID: "proj1", Scope: ScopeProject},
+		{NodeID: "taskB-own", TaskID: "taskB", ProjectID: "proj1", Scope: ScopeTask},
+	}
+
+	// taskB querying in proj1 should see proj-knowledge (from taskA, same project)
+	// AND taskB-own (own task item).
+	got := filterItemsByScope(items, "taskB", "proj1")
+
+	gotIDs := make(map[string]bool)
+	for _, it := range got {
+		gotIDs[it.NodeID] = true
+	}
+	if !gotIDs["proj-knowledge"] {
+		t.Errorf("proj-knowledge (ScopeProject, same ProjectID) should be visible from taskB")
+	}
+	if !gotIDs["taskB-own"] {
+		t.Errorf("taskB-own (ScopeTask, same TaskID) should be visible")
+	}
+}
+
+// TestFilterItemsByScope_BackwardCompat verifies that items with empty Scope
 // (legacy data) are filtered by TaskID exactly as before the Scope feature.
-func TestFilterItemsByTask_BackwardCompat(t *testing.T) {
+func TestFilterItemsByScope_BackwardCompat(t *testing.T) {
 	items := []MemoryItem{
 		{NodeID: "a", TaskID: "taskA"},
 		{NodeID: "b", TaskID: "taskB"},
 		{NodeID: "c", TaskID: "taskA"},
 	}
 
-	got := filterItemsByTask(items, "taskA")
+	got := filterItemsByScope(items, "taskA", "")
 	if len(got) != 2 {
 		t.Fatalf("expected 2 items for taskA, got %d", len(got))
 	}
@@ -70,10 +101,10 @@ func TestFilterItemsByTask_BackwardCompat(t *testing.T) {
 	}
 }
 
-// TestFilterItemsByTask_EmptyTaskScope verifies behavior when taskScope is empty.
+// TestFilterItemsByScope_EmptyTaskScope verifies behavior when taskScope is empty.
 // Team/global items should still be included; task-scoped items with empty
 // TaskID would match (but that's an edge case of the existing behavior).
-func TestFilterItemsByTask_EmptyTaskScope(t *testing.T) {
+func TestFilterItemsByScope_EmptyTaskScope(t *testing.T) {
 	items := []MemoryItem{
 		{NodeID: "task-item", TaskID: "taskA", Scope: ScopeTask},
 		{NodeID: "team-item", TaskID: "taskB", Scope: ScopeTeam},
@@ -81,7 +112,7 @@ func TestFilterItemsByTask_EmptyTaskScope(t *testing.T) {
 		{NodeID: "legacy-item", TaskID: "taskA", Scope: ""},
 	}
 
-	got := filterItemsByTask(items, "")
+	got := filterItemsByScope(items, "", "")
 
 	// With empty taskScope, only team/global items pass (TaskID != "" for others)
 	if len(got) != 2 {
@@ -146,7 +177,7 @@ func TestSearchWithOptions_ScopeAwareRetrieval(t *testing.T) {
 
 	// Search from task-current — should see team-convention + task-result,
 	// but NOT other-task-result.
-	results := archive.Search("parameterized", nil, 10, "task-current", "")
+	results := archive.Search("parameterized", nil, 10, "task-current", "", "")
 
 	found := make(map[string]bool)
 	for _, r := range results {

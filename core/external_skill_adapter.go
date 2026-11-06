@@ -105,7 +105,7 @@ func (a *ExternalSkillAdapter) walkImport(rootPath string, strict bool) (int, er
 
 		a.Registry.Mu.Lock()
 		// TODO-4: External skills go to PendingSkills (staging), not Skills.
-		// This makes them invisible to CapabilityIndex.Rebuild and all retrievers
+		// This makes them invisible to capability.CapabilityIndex.Rebuild and all retrievers
 		// (which only read Skills), so they are not discoverable or injectable
 		// until explicitly promoted via the promote_skill action.
 		// See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-4.

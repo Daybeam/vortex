@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -90,9 +91,9 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	// pending decision must not announce task_completed just because every
 	// step it currently has is non-failed.
 	if finalStatus == schemas.GraphCompleted || finalStatus == schemas.GraphCompletedWithSkips {
-		s.publishEvent(graph.TaskID, "", EventTaskCompleted, map[string]any{"confidence": conf})
+		s.publishEvent(graph.TaskID, "", obs.EventTaskCompleted, map[string]any{"confidence": conf})
 	} else {
-		s.publishEvent(graph.TaskID, "", EventTaskFailed, map[string]any{"confidence": conf})
+		s.publishEvent(graph.TaskID, "", obs.EventTaskFailed, map[string]any{"confidence": conf})
 	}
 
 	// Notify waiters
@@ -117,16 +118,24 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	if err := os.MkdirAll(outDir, 0755); err != nil { // audit L-3.1: log MkdirAll failure
 		log.Printf("WARN: finalizeDecision: failed to create output dir %s: %v", outDir, err)
 	}
-	manifest := graph.ToStatusDict()
-	if data, err := json.Marshal(manifest); err == nil { // P-1.8: compact marshal on hot path
-		if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {
-			log.Printf("WARN: finalizeDecision: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
+	// Q2-2 (register O33): this is the second writer of manifest.json — it marshals
+	// graph.ToStatusDict(), not the graph — so it needs the same compare-before-write
+	// as persistGraph. Without it, a loser finalizing a decision would overwrite the
+	// holder's manifest with its own view of the steps.
+	if !s.holdsFence(graph.TaskID) {
+		s.recordFenceLoss(graph.TaskID)
+	} else {
+		manifest := graph.ToStatusDict()
+		if data, err := json.Marshal(manifest); err == nil { // P-1.8: compact marshal on hot path
+			if werr := os.WriteFile(filepath.Join(outDir, "manifest.json"), data, 0644); werr != nil {
+				log.Printf("WARN: finalizeDecision: failed to write manifest.json for task %s: %v", graph.TaskID, werr)
+			}
 		}
 	}
 
-	event := EventTaskCompleted
+	event := obs.EventTaskCompleted
 	if graph.Status == schemas.GraphFailed || graph.Status == schemas.GraphBlocked {
-		event = EventTaskFailed
+		event = obs.EventTaskFailed
 	}
 	s.logger.LogWithConfidence(event, graph.TaskID, "", conf, map[string]any{
 		"output_files": len(graph.OutputFiles),

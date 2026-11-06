@@ -2,8 +2,10 @@ package core
 
 import (
 	"fmt"
-	"github.com/daybeam/vortex/schemas"
 	"time"
+
+	"github.com/daybeam/vortex/core/obs"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // SurgeryData contains parameters for dynamic topology mutation.
@@ -36,7 +38,7 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 	// 1. Mark target step as deprecated (Dead-end reference)
 	// Specification 2.1: status = deprecated
 	depStep.Status = schemas.StepDeprecated
-	s.logger.Log(EventStepDeprecated, taskID, data.DeprecatedStepID, map[string]any{
+	s.logger.Log(obs.EventStepDeprecated, taskID, data.DeprecatedStepID, map[string]any{
 		"last_error": depStep.LastError,
 	})
 
@@ -61,36 +63,9 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 		}
 	}
 
-	// 1c. Dependency Cleanup (2026-09-07):
-	// When a step is deprecated, release all downstream steps that depend on it
-	// so they can proceed independently. This is the key mechanism that allows
-	// fallback nodes (e.g. s2) to activate after primary path (s1) fails.
-	for _, step := range graph.Steps {
-		if step.ID == data.DeprecatedStepID {
-			continue
-		}
-		// Remove deprecated step from downstream step's DependsOn
-		// audit L-6.1: remove ALL occurrences, not just the first (was `break`).
-		// Duplicate deps would block the step forever since the deprecated step
-		// has StepDeprecated status which fails ReadySteps' satisfaction check.
-		filtered := step.DependsOn[:0]
-		for _, dep := range step.DependsOn {
-			if dep != data.DeprecatedStepID {
-				filtered = append(filtered, dep)
-			}
-		}
-		step.DependsOn = filtered
-		// If a pending step loses its last blocker, it may now be ready
-		if step.Status == schemas.StepPending {
-			if len(step.DependsOn) == 0 {
-				// audit C-11: removed dead inner loop (iterated empty slice, allReady always true).
-				// No remaining deps = step is trivially unblocked.
-				s.logger.Log("dep_cleanup_unblocked", taskID, step.ID, map[string]any{
-					"removed_dep": data.DeprecatedStepID,
-				})
-			}
-		}
-	}
+	// 1c. Release every downstream step from the deprecated ID, and revive the
+	// ones this surgery un-blocked (see releaseDeprecatedDeps).
+	s.releaseDeprecatedDeps(graph, data.DeprecatedStepID)
 
 	// 2. Error Inheritance: Prepare context handover (Specification 2.3)
 	// The failure reference is injected into the replacement steps' prompts.
@@ -137,6 +112,7 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 			AdditionalToolAllowlists: inp.AdditionalToolAllowlists, // T3: preserve tool narrowing across replan
 			ContextRefs:              inp.ContextRefs,
 			ExitCriteria:             inp.ExitCriteria,
+			DeterministicChecks:      inp.DeterministicChecks,
 			VerifierModel:            inp.VerifierModel,
 			MaxAutoRefine:            inp.MaxAutoRefine,
 			EnableDebate:             inp.EnableDebate,
@@ -167,7 +143,7 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 		}
 
 		// Ensure the new step appears in the execution flow
-		s.logger.Log(EventStepInjected, taskID, inp.ID, map[string]any{
+		s.logger.Log(obs.EventStepInjected, taskID, inp.ID, map[string]any{
 			"replaces": data.DeprecatedStepID,
 			"task":     inp.Task,
 		})
@@ -179,4 +155,98 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 	}
 
 	return nil
+}
+
+// releaseDeprecatedDeps strips the deprecated step from every other step's
+// DependsOn and, since the O22 fix, revives the steps that this surgery is the
+// only thing still holding blocked. MUST be called with s.Mu held.
+//
+// The strip has always been here (2026-09-07): it is the mechanism that lets a
+// fallback node activate after the primary path fails. What was missing is the
+// status transition. maybeBlock (core/scheduler_decision_gate.go:73-79) turns
+// every *pending* dependent of a failed step into StepBlocked, and nothing in the
+// engine ever moves StepBlocked back — schemas/task.go:308 counts it terminal.
+// So a step that was blocked because of the very step now being deprecated stayed
+// blocked with an empty DependsOn: ReadySteps only returns pending steps, and the
+// graph silently ended `failed` with the whole downstream DAG forfeited even
+// though surgery had removed the reason for the block (14 such steps observed
+// across the delegation SOP run; O22's measurement is the parallel_hunting →
+// adversarial_verification pair).
+func (s *DirectedEngine) releaseDeprecatedDeps(graph *schemas.TaskGraph, deprecatedStepID string) {
+	for _, step := range graph.Steps {
+		if step.ID == deprecatedStepID {
+			continue
+		}
+		// audit L-6.1: remove ALL occurrences, not just the first (was `break`).
+		// Duplicate deps would block the step forever since the deprecated step
+		// has StepDeprecated status which fails ReadySteps' satisfaction check.
+		filtered := step.DependsOn[:0]
+		removed := 0
+		for _, dep := range step.DependsOn {
+			if dep != deprecatedStepID {
+				filtered = append(filtered, dep)
+			} else {
+				removed++
+			}
+		}
+		step.DependsOn = filtered
+
+		switch step.Status {
+		case schemas.StepPending:
+			if len(step.DependsOn) == 0 {
+				// audit C-11: removed dead inner loop (iterated empty slice, allReady always true).
+				// No remaining deps = step is trivially unblocked.
+				s.logger.Log("dep_cleanup_unblocked", graph.TaskID, step.ID, map[string]any{
+					"removed_dep": deprecatedStepID,
+				})
+			}
+		case schemas.StepBlocked:
+			// `removed > 0` keeps this scoped to the dependency the surgery just
+			// deleted: a step blocked by some other failure must stay blocked,
+			// otherwise deprecating one branch would revive unrelated branches.
+			if removed > 0 && !hasPendingDecisionFor(graph, step.ID) && depsSatisfiedFor(graph, step) {
+				step.Status = schemas.StepPending
+				step.LastError = ""
+				s.logger.Log("dep_cleanup_unblocked", graph.TaskID, step.ID, map[string]any{
+					"removed_dep": deprecatedStepID,
+					"from_status": string(schemas.StepBlocked),
+				})
+			}
+		}
+	}
+}
+
+// hasPendingDecisionFor reports whether an unanswered decision is parked on this
+// step. StepBlocked doubles as "awaiting the host" — a delegation hand-over
+// (handleDelegationRequired), an exhausted token budget, max-turns suspension, a
+// missing role or skill — and reviving such a step would let the run loop execute
+// it while its envelope is still outstanding, which is the failure class the
+// O-series audit keeps hitting. Blocking the revival on a pending decision keeps
+// the resurrection to the steps that are blocked purely by topology.
+func hasPendingDecisionFor(graph *schemas.TaskGraph, stepID string) bool {
+	for _, d := range graph.PendingDecisions {
+		if d.StepID == stepID {
+			return true
+		}
+	}
+	return false
+}
+
+// depsSatisfiedFor mirrors TaskGraph.ReadySteps' dependency rule
+// (schemas/task.go:732-742): OK, Partial and Skipped satisfy a dependency, and a
+// dependency that no longer resolves in the graph is skipped rather than held.
+// Kept local to this file because the revival is the only caller that needs to ask
+// the question about a non-pending step; if ReadySteps' rule ever changes, this is
+// the place that has to change with it.
+func depsSatisfiedFor(graph *schemas.TaskGraph, step *schemas.Step) bool {
+	for _, depID := range step.DependsOn {
+		dep, ok := graph.Steps[depID]
+		if !ok {
+			continue
+		}
+		if dep.Status != schemas.StepOK && dep.Status != schemas.StepPartial && dep.Status != schemas.StepSkipped {
+			return false
+		}
+	}
+	return true
 }

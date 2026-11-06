@@ -12,6 +12,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/store"
 	"github.com/daybeam/vortex/tools"
 )
@@ -53,7 +54,7 @@ func newContractTestApp(t *testing.T) (*tools.App, func()) {
 	}
 
 	// Logger
-	logger, err := core.NewLogger(logDir, nil)
+	logger, err := obs.NewLogger(logDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

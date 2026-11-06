@@ -3,6 +3,8 @@ package core
 import (
 	"testing"
 	"time"
+
+	"github.com/daybeam/vortex/core/obs"
 )
 
 // TestQualityTracker_RecordsAndTrends verifies that the QualityTracker
@@ -57,11 +59,11 @@ func TestQualityTracker_EventBusWiring(t *testing.T) {
 	defer q.Wire()()
 
 	// Publish a step-completed event with role_id + confidence.
-	DefaultBus.Publish(NewAgentEvent("task-qt", "s1", string(EventStepCompleted), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent("task-qt", "s1", string(obs.EventStepCompleted), map[string]any{
 		"confidence": 0.85,
 		"role_id":    "analyst",
 	}))
-	DefaultBus.Publish(NewAgentEvent("task-qt", "s2", string(EventStepFailed), map[string]any{
+	obs.DefaultBus.Publish(obs.NewAgentEvent("task-qt", "s2", string(obs.EventStepFailed), map[string]any{
 		"role_id": "analyst",
 	}))
 
@@ -77,7 +79,7 @@ func TestQualityTracker_EventBusWiring(t *testing.T) {
 // TestQualityTracker_NilSafe verifies nil receiver doesn't panic.
 func TestQualityTracker_NilSafe(t *testing.T) {
 	var q *QualityTracker
-	q.Record("x", QualitySample{})        // must not panic
-	_ = q.GetTrend("x", time.Hour)        // must not panic
-	q.Unwire()                             // must not panic
+	q.Record("x", QualitySample{}) // must not panic
+	_ = q.GetTrend("x", time.Hour) // must not panic
+	q.Unwire()                     // must not panic
 }

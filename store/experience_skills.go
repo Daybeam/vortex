@@ -564,6 +564,67 @@ func tokenize(s string) map[string]int {
 	return words
 }
 
+// skillSemanticFloor is the cosine below which a vector comparison counts as
+// no semantic signal. Raw cosine thresholds are not portable across embedding
+// providers, so the value is rescaled into [0,1] before sharing the lexical
+// threshold. At 0.5, a task-level skill needs cosine >= ~0.72 to surface.
+const skillSemanticFloor = 0.5
+
+// skillLazyEmbedBudget bounds embedding round-trips per query: retrieval runs
+// on the spawn hot path, so the backfill cannot be unbounded.
+const skillLazyEmbedBudget = 3
+
+// SetSkillLivenessProbe wires a predicate reporting whether the tool backing a
+// generated skill is still registered (e.g. registry.GetMCP(id) != nil).
+// Retrieval drops "jit_" records whose tool has expired: injecting one makes
+// the model call a tool that no longer exists, and maybePromoteSkill can never
+// succeed because it resolves the tool through the same registry. Nil (the
+// default) disables filtering.
+func (es *ExperienceStore) SetSkillLivenessProbe(probe func(skillID string) bool) {
+	es.Mu.Lock()
+	defer es.Mu.Unlock()
+	es.skillLiveness = probe
+}
+
+// filterDeadSkillIDs removes "jit_" ids whose backing tool is no longer
+// registered. The probe is invoked after the store lock is released: it takes
+// the config registry's own RWMutex, and nesting store→registry locks on the
+// spawn hot path invites lock-order inversions.
+func filterDeadSkillIDs(ids []string, probe func(string) bool) []string {
+	if probe == nil {
+		return ids
+	}
+	live := ids[:0]
+	for _, id := range ids {
+		if strings.HasPrefix(id, "jit_") && !probe(id) {
+			continue
+		}
+		live = append(live, id)
+	}
+	return live
+}
+
+// filterDeadSkillCandidates is the snapshot counterpart of
+// filterDeadSkillIDs: filtering must happen before embedding and before the
+// limit is applied, otherwise a dead record can consume a result slot and
+// hide a live skill ranked just below it.
+func (es *ExperienceStore) filterDeadSkillCandidates(snaps []skillSnapshot) []skillSnapshot {
+	es.Mu.RLock()
+	probe := es.skillLiveness
+	es.Mu.RUnlock()
+	if probe == nil {
+		return snaps
+	}
+	kept := snaps[:0]
+	for _, s := range snaps {
+		if strings.HasPrefix(s.id, "jit_") && !probe(s.id) {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return kept
+}
+
 // QueryRelevantSkills returns generated skill IDs whose description or
 // capability shares keyword overlap with taskType (which in practice is
 // sometimes a canonical task-type string and sometimes a raw task
@@ -591,40 +652,209 @@ func (es *ExperienceStore) QueryRelevantSkills(ctx context.Context, taskType str
 	if es == nil {
 		return nil
 	}
-	es.Mu.RLock()
-	defer es.Mu.RUnlock()
-
-	if limit <= 0 || len(es.GeneratedSkills) == 0 {
-		return nil
-	}
 	queryTokens := tokenize(taskType)
 	if len(queryTokens) == 0 {
 		return nil
 	}
 
+	if limit <= 0 {
+		return nil
+	}
+
+	// Phase 1 — snapshot under the read lock only. Embedding is network I/O;
+	// doing it here (or mutating gs.Embedding under RLock) stalls every
+	// ExperienceStore writer for the duration and races concurrent readers.
+	cli, snaps := es.snapshotSkillCandidates(queryTokens)
+	snaps = es.filterDeadSkillCandidates(snaps)
+	if len(snaps) == 0 {
+		return nil
+	}
+
+	// Phase 2 — network calls happen outside the lock, bounded to
+	// skillLazyEmbedBudget per query.
+	queryVec, queryModel := embedSkillQuery(ctx, cli, taskType)
+	computed := lazyEmbedSkillCandidates(ctx, cli, snaps, queryVec, queryModel)
+
+	// Phase 3 — write lazy vectors back under the write lock. PersistAll on
+	// the next RecordTaskCompletion flushes them to the backend.
+	es.persistSkillEmbeddings(snaps, computed)
+
+	// Phase 4 — score.
+	return rankSkillCandidates(snaps, queryVec, queryModel, limit)
+}
+
+// skillSnapshot is an immutable view of one generated skill taken under the
+// store read lock, so scoring never runs with a lock held.
+type skillSnapshot struct {
+	id             string
+	text           string
+	haystackLen    int
+	overlapRatio   float64
+	embedding      []float32
+	embeddingModel string
+	usageCount     int
+	successRate    float64
+}
+
+// embeddedVec is a lazily computed embedding plus the model that produced it.
+type embeddedVec struct {
+	vec   []float32
+	model string
+}
+
+func (es *ExperienceStore) snapshotSkillCandidates(queryTokens map[string]int) (IEmbeddingClient, []skillSnapshot) {
+	es.Mu.RLock()
+	defer es.Mu.RUnlock()
+	cli := es.embeddingClient
+	snaps := make([]skillSnapshot, 0, len(es.GeneratedSkills))
+	for id, gs := range es.GeneratedSkills {
+		if gs.OS != "" && gs.OS != runtime.GOOS {
+			continue
+		}
+		text := gs.Capability
+		if gs.Description != "" {
+			text = strings.TrimSpace(gs.Description + " " + text)
+		}
+		haystack := tokenize(text)
+		if len(haystack) == 0 {
+			continue
+		}
+		overlap := 0
+		for t := range queryTokens {
+			if haystack[t] > 0 {
+				overlap++
+			}
+		}
+		// Containment ratio, not Jaccard: a task-level JIT description is
+		// ~100 tokens, so dividing by max(len) made 45%-overlap unreachable
+		// for every real task and silently disabled reuse.
+		denom := len(queryTokens)
+		if len(haystack) < denom {
+			denom = len(haystack)
+		}
+		ratio := 0.0
+		if denom > 0 {
+			ratio = float64(overlap) / float64(denom)
+		}
+		snaps = append(snaps, skillSnapshot{
+			id: id, text: text, haystackLen: len(haystack), overlapRatio: ratio,
+			embedding: gs.Embedding, embeddingModel: gs.EmbeddingModel,
+			usageCount: gs.UsageCount, successRate: gs.SuccessRate,
+		})
+	}
+	return cli, snaps
+}
+
+func embedSkillQuery(ctx context.Context, cli IEmbeddingClient, text string) ([]float32, string) {
+	if cli == nil {
+		return nil, ""
+	}
+	vec, model, err := cli.EmbedWithModel(ctx, text)
+	if err != nil || len(vec) == 0 {
+		return nil, ""
+	}
+	return vec, model
+}
+
+func lazyEmbedSkillCandidates(ctx context.Context, cli IEmbeddingClient, snaps []skillSnapshot, queryVec []float32, queryModel string) map[int]embeddedVec {
+	computed := map[int]embeddedVec{}
+	if len(queryVec) == 0 {
+		return computed
+	}
+	ranked := make([]int, 0, len(snaps))
+	for i := range snaps {
+		if snaps[i].overlapRatio > 0 {
+			ranked = append(ranked, i)
+		}
+	}
+	sort.SliceStable(ranked, func(a, b int) bool {
+		return snaps[ranked[a]].overlapRatio > snaps[ranked[b]].overlapRatio
+	})
+	// Zero-overlap skills still get a chance: paraphrased and CJK tasks
+	// produce no lexical overlap, so lexical-only recall would keep them
+	// permanently unreachable.
+	for i := range snaps {
+		if snaps[i].overlapRatio == 0 {
+			ranked = append(ranked, i)
+		}
+	}
+	budget := skillLazyEmbedBudget
+	for _, i := range ranked {
+		if budget == 0 {
+			break
+		}
+		s := &snaps[i]
+		if len(s.embedding) > 0 && (s.embeddingModel == "" || queryModel == "" || s.embeddingModel == queryModel) {
+			continue
+		}
+		vec, model, err := cli.EmbedWithModel(ctx, s.text)
+		if err != nil || len(vec) != len(queryVec) {
+			continue
+		}
+		s.embedding, s.embeddingModel = vec, model
+		computed[i] = embeddedVec{vec: vec, model: model}
+		budget--
+	}
+	return computed
+}
+
+func (es *ExperienceStore) persistSkillEmbeddings(snaps []skillSnapshot, computed map[int]embeddedVec) {
+	if len(computed) == 0 {
+		return
+	}
+	es.Mu.Lock()
+	defer es.Mu.Unlock()
+	for i, ev := range computed {
+		if gs, ok := es.GeneratedSkills[snaps[i].id]; ok {
+			gs.Embedding, gs.EmbeddingModel = ev.vec, ev.model
+		}
+	}
+}
+
+// scoreSkillCandidate returns the relevance score and whether the candidate
+// clears the specificity-aware threshold.
+func scoreSkillCandidate(s *skillSnapshot, queryVec []float32, queryModel string) (float64, bool) {
+	usableVector := len(queryVec) > 0 && len(s.embedding) == len(queryVec) &&
+		(s.embeddingModel == "" || queryModel == "" || s.embeddingModel == queryModel)
+	var relevance float64
+	switch {
+	case usableVector:
+		// Raw cosine is not portable across embedding providers (unrelated
+		// text sits near 0.1 for some models, 0.7 for others), so rescale it
+		// into the same [0,1] space as the lexical ratio.
+		relevance = (cosineSimilarity(queryVec, s.embedding) - skillSemanticFloor) / (1 - skillSemanticFloor)
+		relevance = math.Max(0, math.Min(1, relevance))
+	case s.overlapRatio > 0:
+		relevance = s.overlapRatio
+	default:
+		return 0, false
+	}
+	// Specificity-aware threshold: broad domain skills need less evidence
+	// than task-shaped memos, but never less than 25%.
+	specificity := math.Min(float64(s.haystackLen)/20.0, 1.0)
+	threshold := 0.25 + specificity*0.20
+	if relevance < threshold {
+		return 0, false
+	}
+	return relevance, true
+}
+
+func rankSkillCandidates(snaps []skillSnapshot, queryVec []float32, queryModel string, limit int) []string {
 	type scored struct {
 		id    string
 		score float64
 	}
-	var candidates []scored
-	for id, gs := range es.GeneratedSkills {
-		// Environment Filter (ADDED 2026-08-16)
-		if gs.OS != "" && gs.OS != runtime.GOOS {
+	candidates := make([]scored, 0, len(snaps))
+	for i := range snaps {
+		s := &snaps[i]
+		relevance, ok := scoreSkillCandidate(s, queryVec, queryModel)
+		if !ok {
 			continue
 		}
-
-		haystack := tokenize(gs.Description + " " + gs.Capability)
-		overlap := 0
-		for t := range queryTokens {
-			if count, ok := haystack[t]; ok && count > 0 {
-				overlap++
-			}
-		}
-		if overlap == 0 {
-			continue
-		}
-		score := float64(overlap) + gs.SuccessRate*0.5
-		candidates = append(candidates, scored{id: id, score: score})
+		// SuccessRate is a tiebreaker only: an unproven skill (UsageCount=0)
+		// must not outrank a proven one just because it was seeded at 1.0.
+		confidence := math.Min(float64(s.usageCount), 10.0) / 10.0
+		candidates = append(candidates, scored{id: s.id, score: relevance + s.successRate*confidence*0.1})
 	}
 	if len(candidates) == 0 {
 		return nil
@@ -655,9 +885,10 @@ func (es *ExperienceStore) QuerySkillsBySignal(ctx context.Context, signal strin
 		return nil
 	}
 	es.Mu.RLock()
-	defer es.Mu.RUnlock()
+	probe := es.skillLiveness
 
 	if signal == "" || len(es.GeneratedSkills) == 0 {
+		es.Mu.RUnlock()
 		return nil
 	}
 
@@ -670,7 +901,8 @@ func (es *ExperienceStore) QuerySkillsBySignal(ctx context.Context, signal strin
 			results = append(results, id)
 		}
 	}
-	return results
+	es.Mu.RUnlock()
+	return filterDeadSkillIDs(results, probe)
 }
 
 // PruneByMetabolicROI scans all generated skills and applies metabolic pruning:

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -63,9 +64,9 @@ func (s *DirectedEngine) finalizeSmartRoutedAfterDecision(
 	*unlocked = true
 	s.persistGraph(graph)
 	if graph.Status == schemas.GraphFailed {
-		s.publishEvent(taskID, stepID, EventTaskFailed, nil)
+		s.publishEvent(taskID, stepID, obs.EventTaskFailed, nil)
 	} else {
-		s.publishEvent(taskID, stepID, EventTaskCompleted, nil)
+		s.publishEvent(taskID, stepID, obs.EventTaskCompleted, nil)
 	}
 	return true
 }

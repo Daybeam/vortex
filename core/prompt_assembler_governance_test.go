@@ -51,7 +51,7 @@ func TestBuild_PrecedentsCappedAtTopN(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
-		precedents, "do the task", "", "",
+		precedents, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -92,7 +92,7 @@ func TestBuild_RoleInstructionCompressed(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
-		nil, "do the task", "", "",
+		nil, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -152,7 +152,7 @@ func TestBuild_TreePathSlidingWindow(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, mergedContext, nil, false,
-		nil, "do the task", "", "",
+		nil, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -205,7 +205,7 @@ func TestBuild_BudgetEnforced(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "llama-3-8b"}, []string{}, mergedContext, nil, false,
-		nil, "do the task", "", "",
+		nil, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -251,7 +251,7 @@ func TestBuild_ProtectedBlocksSurviveBudgetPressure(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{Model: "llama-3-8b"}, []string{}, mergedContext, nil, false,
-		nil, "do the task", "", "",
+		nil, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -291,7 +291,7 @@ func TestBuild_LightModelBudgetTighterThanFlagship(t *testing.T) {
 	lightBlocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "llama-3-8b"}, []string{}, mergedContext, nil, false,
-		nil, "do the task", "", "",
+		nil, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -301,7 +301,7 @@ func TestBuild_LightModelBudgetTighterThanFlagship(t *testing.T) {
 	flagshipBlocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, mergedContext, nil, false,
-		nil, "do the task", "", "",
+		nil, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -331,7 +331,7 @@ func TestBuild_FewShotsTaggedTier3(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, fewShots, false,
-		nil, "do the task", "", "",
+		nil, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -401,7 +401,7 @@ func TestBuild_SingleSkillFullPrompt(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), hub, &config.Role{ID: "r1", Name: "test"}, []string{"s1"}, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
-		nil, "do the task", "", "",
+		nil, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
@@ -452,7 +452,7 @@ func TestBuild_MultipleSkillsProgressiveDisclosure(t *testing.T) {
 	blocks, err := spawner.buildSystemPrompt(
 		context.Background(), hub, &config.Role{ID: "r1", Name: "test"}, []string{"s1", "s2"}, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
-		nil, "do the task", "", "",
+		nil, "do the task", "", "", "",
 		nil,
 	)
 	if err != nil {
