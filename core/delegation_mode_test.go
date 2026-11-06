@@ -133,7 +133,7 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 	finalStatus := graph.Status
 	engine.Mu.RUnlock()
 	if finalStatus != schemas.GraphCompleted {
-		t.Errorf("expected graph completed, got %v", graph.Status)
+		t.Errorf("expected graph completed, got %v", finalStatus)
 	}
 
 	res, _ := ts.Get(context.Background(), taskID, "step_1")
@@ -320,13 +320,17 @@ func fulfillDelegation(t *testing.T, engine *DirectedEngine, taskID, answer stri
 	t.Helper()
 	engine.Mu.RLock()
 	graph := engine.graphs[taskID]
+	hasPending := graph != nil && len(graph.PendingDecisions) > 0
+	var decID string
+	if hasPending {
+		decID = graph.PendingDecisions[0].ID
+	}
 	engine.Mu.RUnlock()
-	if graph == nil || len(graph.PendingDecisions) == 0 {
+	if !hasPending {
 		t.Fatalf("no pending decision to fulfill for task %q", taskID)
 	}
-	dec := graph.PendingDecisions[0]
 	fulfillment := `{"status":"ok","confidence":0.9,"result":{"answer":"` + answer + `"},"capability":"text"}`
-	if err := engine.FulfillStep(taskID, dec.ID, fulfillment); err != nil {
+	if err := engine.FulfillStep(taskID, decID, fulfillment); err != nil {
 		t.Fatalf("FulfillStep failed: %v", err)
 	}
 }
@@ -489,9 +493,10 @@ func TestDelegationMode_ParallelIndependentSteps(t *testing.T) {
 
 	engine.Mu.RLock()
 	graph = engine.graphs[taskID]
+	finalStatus := graph.Status
 	engine.Mu.RUnlock()
-	if graph.Status != schemas.GraphCompleted {
-		t.Errorf("expected graph completed, got %v", graph.Status)
+	if finalStatus != schemas.GraphCompleted {
+		t.Errorf("expected graph completed, got %v", finalStatus)
 	}
 }
 
@@ -543,9 +548,10 @@ func TestDelegationMode_DependencyChain(t *testing.T) {
 
 	engine.Mu.RLock()
 	graph := engine.graphs[taskID]
+	finalStatus := graph.Status
 	engine.Mu.RUnlock()
-	if graph.Status != schemas.GraphCompleted {
-		t.Errorf("expected graph completed, got %v (seen=%v)", graph.Status, seen)
+	if finalStatus != schemas.GraphCompleted {
+		t.Errorf("expected graph completed, got %v (seen=%v)", finalStatus, seen)
 	}
 	if len(seen) != 3 {
 		t.Errorf("expected 3 sequential delegations, got %d (%v)", len(seen), seen)
@@ -585,9 +591,10 @@ func TestDelegationMode_CancelTask(t *testing.T) {
 
 	engine.Mu.RLock()
 	graph = engine.graphs[taskID]
+	cancelStatus := graph.Status
 	engine.Mu.RUnlock()
-	if graph.Status != schemas.GraphCancelled {
-		t.Errorf("expected graph cancelled, got %v", graph.Status)
+	if cancelStatus != schemas.GraphCancelled {
+		t.Errorf("expected graph cancelled, got %v", cancelStatus)
 	}
 	// Double-cancel is idempotent: the graph is already terminal. The observable
 	// contract is that the status remains GraphCancelled (asserted below), NOT
@@ -595,9 +602,10 @@ func TestDelegationMode_CancelTask(t *testing.T) {
 	_ = engine.CancelTask(taskID) // error return is not part of the contract
 	engine.Mu.RLock()
 	graph = engine.graphs[taskID]
+	cancelStatus2 := graph.Status
 	engine.Mu.RUnlock()
-	if graph.Status != schemas.GraphCancelled {
-		t.Errorf("expected graph still cancelled after double-cancel, got %v", graph.Status)
+	if cancelStatus2 != schemas.GraphCancelled {
+		t.Errorf("expected graph still cancelled after double-cancel, got %v", cancelStatus2)
 	}
 }
 

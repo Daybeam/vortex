@@ -44,6 +44,8 @@ func TestFinalize_DoesNotFinalizeWithPendingDecision(t *testing.T) {
 		},
 	}
 
+	t.Cleanup(func() { s.Stop() })
+
 	taskID := "c5dd_pending_decision"
 	graph := &schemas.TaskGraph{
 		TaskID: taskID,
@@ -96,6 +98,8 @@ func TestFinalize_CompletesWithoutPendingDecision(t *testing.T) {
 			System: config.SystemSettings{},
 		},
 	}
+
+	t.Cleanup(func() { s.Stop() })
 
 	taskID := "c5dd_no_pending"
 	graph := &schemas.TaskGraph{
