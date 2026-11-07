@@ -81,6 +81,18 @@ func unionSize(a, b map[string]bool) int {
 	return len(m)
 }
 
+func mostCommon(counts map[string]int) string {
+	best := ""
+	bestCount := -1
+	for k, c := range counts {
+		if c > bestCount {
+			best = k
+			bestCount = c
+		}
+	}
+	return best
+}
+
 func contains(s []string, v string) bool {
 	for _, x := range s {
 		if x == v {

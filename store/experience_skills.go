@@ -177,6 +177,8 @@ func (es *ExperienceStore) QueryDecisionAdvice(ctx context.Context, decisionType
 	defer es.Mu.RUnlock()
 
 	choiceCounts := make(map[string]int)
+	proposerCounts := make(map[string]int)
+	deciderCounts := make(map[string]int)
 	var confSum float64
 	var confCount int
 	var latestTS time.Time
@@ -188,6 +190,12 @@ func (es *ExperienceStore) QueryDecisionAdvice(ctx context.Context, decisionType
 		}
 		found = true
 		choiceCounts[d.Choice]++
+		if d.Proposer != "" {
+			proposerCounts[d.Proposer]++
+		}
+		if d.Decider != "" {
+			deciderCounts[d.Decider]++
+		}
 		if d.FinalConfidence != nil {
 			confSum += *d.FinalConfidence
 			confCount++
@@ -215,6 +223,12 @@ func (es *ExperienceStore) QueryDecisionAdvice(ctx context.Context, decisionType
 		Choice:       bestChoice,
 		Resolved:     true,
 		Timestamp:    latestTS,
+	}
+	if proposerCounts != nil {
+		result.Proposer = mostCommon(proposerCounts)
+	}
+	if deciderCounts != nil {
+		result.Decider = mostCommon(deciderCounts)
 	}
 	if confCount > 0 {
 		avg := confSum / float64(confCount)

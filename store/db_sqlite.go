@@ -341,6 +341,31 @@ func runMigrations(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
 	CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
 
+	-- Chat outbox (ADDED 2026-11-07): durable outbound notifications.
+	-- A delegated task can finish in a hub that does not hold the Telegram bot
+	-- token, and a notification must survive a restart of the hub that does.
+	-- Rows are handed out with the same guarded-UPDATE claim idiom as
+	-- task_steps (SQLiteTaskBackend.Claim), so several hubs -- processes on one
+	-- host, pods on k3s -- can share this table without delivering twice; see
+	-- store.IChatOutbox. claim_expires_at is unix seconds, not a DATETIME, so
+	-- lease comparisons stay numeric on both sides.
+	CREATE TABLE IF NOT EXISTS chat_outbox (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id       TEXT NOT NULL DEFAULT '',
+		kind             TEXT NOT NULL,
+		dedupe_key       TEXT NOT NULL UNIQUE,
+		text             TEXT NOT NULL,
+		meta_json        TEXT NOT NULL DEFAULT '',
+		created_at       DATETIME,
+		status           TEXT NOT NULL DEFAULT 'pending', -- pending | claimed | delivered | dropped
+		claim_holder     TEXT NOT NULL DEFAULT '',
+		claim_expires_at INTEGER NOT NULL DEFAULT 0,
+		delivered_at     DATETIME,
+		attempts         INTEGER NOT NULL DEFAULT 0,
+		last_error       TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX IF NOT EXISTS idx_chat_outbox_claimable ON chat_outbox(status, claim_expires_at, id);
+
 	-- P7 Promotion Audit Log (ADDED 2026-09-15 for A31 DB collapse)
 	CREATE TABLE IF NOT EXISTS promotion_audit (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -66,6 +66,13 @@ type DecisionOutcome struct {
 	Resolved        bool      `json:"resolved"`
 	FinalConfidence *float64  `json:"final_confidence,omitempty"`
 	Timestamp       time.Time `json:"timestamp"`
+
+	// Authority separation (Atria Dawn arXiv:2609.15818):
+	// Proposer = who generated the option; Decider = who picked among options;
+	// Intervention = human intervention type when Decider == "human".
+	Proposer     string `json:"proposer,omitempty"`     // "agent" | "verifier" | "critic" | "human"
+	Decider      string `json:"decider,omitempty"`      // "agent" | "human"
+	Intervention string `json:"intervention,omitempty"` // "informational" | "edit" | "takeover" | ""
 }
 
 type SkillAffinity struct {

@@ -65,6 +65,23 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 		if dt == "" || choice == "" {
 			continue
 		}
+		proposer, _ := d["proposer"].(string)
+		decider, _ := d["decider"].(string)
+		intervention, _ := d["intervention"].(string)
+		if proposer == "" {
+			proposer = "agent"
+		}
+		if decider == "" {
+			switch dt {
+			case "human_approval_required", "autonomous_abort_requested", "goal_change_requested":
+				decider = "human"
+				if intervention == "" {
+					intervention = "informational"
+				}
+			default:
+				decider = "agent"
+			}
+		}
 		do := &DecisionOutcome{
 			DecisionType: dt,
 			RoleID:       rid,
@@ -72,6 +89,9 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 			Choice:       choice,
 			Resolved:     success,
 			Timestamp:    time.Now(),
+			Proposer:     proposer,
+			Decider:      decider,
+			Intervention: intervention,
 		}
 		if success {
 			oc := overallConf
