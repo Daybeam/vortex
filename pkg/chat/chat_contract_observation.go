@@ -33,9 +33,16 @@ func (h *ChatHarness) contractObservation() string {
 	// which says nothing about this run (see chat_harness.go:1080-1086). "na" keeps
 	// that from reading as present=0, i.e. "the run produced nothing".
 	if h.SessionRoot == "" || len(h.declaredArtifacts) == 0 {
-		return "contract_present=na contract_missing=na contract_defects=na"
+		return "contract_present=na contract_missing=na contract_defects=na checks_armed=na"
 	}
 	present, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, h.declaredArtifacts)
 	defects := len(core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields))
-	return fmt.Sprintf("contract_present=%d contract_missing=%d contract_defects=%d", present, missing, defects)
+	// checks_armed, not "checks passed". `contract_defects` above is the TYPE
+	// layer only: it counts "the file parses", never "the file does what the task
+	// asked", so it is 0 on a run whose SQL cannot execute. Without this field a
+	// reader cannot tell that run apart from one where no check was wired at all
+	// (→226, RESULT §33.3) — the per-check outcome now rides in the
+	// `completion_check` events.
+	return fmt.Sprintf("contract_present=%d contract_missing=%d contract_defects=%d checks_armed=%d",
+		present, missing, defects, len(h.armedCompletionChecks()))
 }

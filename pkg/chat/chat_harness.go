@@ -116,12 +116,12 @@ type ChatHarness struct {
 	// When empty, behavior is unchanged (backward compatible).
 	// (ADDED 2026-10-28: harness-bench report §4.2.)
 	SessionRoot string
-	// declaredArtifacts is the parsed completion contract from the task prompt.
-	// Set once at the start of Run; read by execTool to gate delegation when
-	// all declared artifacts already exist. nil = no contract (backward compat).
-	// Not exported — per-request state, safe because ChatHarness is created
-	// fresh per request by the API layer.
+	// declaredArtifacts is the prompt's completion contract, parsed once at the
+	// start of Run. nil = no contract. Per-request state; harness is per request.
 	declaredArtifacts []string
+	// contract: the same section split by column, plus the t=0 workspace
+	// snapshot the extras check diffs against (RESULT §28.7). Zero = inert.
+	contract contractScope
 	// declaredFields is the other half of the same contract: for each declared
 	// JSON artifact, the top-level keys the prompt says it must carry. Parsed
 	// once at the start of Run. nil = the prompt states no fields, which must
@@ -510,7 +510,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	// it needs no new parameter and no harness change. nil means "this prompt
 	// carries no contract" — the ordinary case outside the benchmark — and
 	// must leave behaviour exactly as it was.
-	declaredArtifacts := core.ParseDeclaredArtifacts(query)
+	declaredArtifacts := h.initContract(query)
 	h.declaredArtifacts = declaredArtifacts
 	h.taskPrompt = query
 	LogDelegationSpecOnce()
@@ -1084,16 +1084,16 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				// colliding name announces "all artifacts exist" over an empty
 				// workspace while everything else reads present=0 forever.
 				// Neither answer is about this run, so neither is worth having.
-				if contractSteers == 0 && len(declaredArtifacts) > 0 && h.SessionRoot != "" {
+				if h.contractArmed() && h.SessionRoot != "" {
 					_, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, declaredArtifacts)
-					defects := h.artifactDefects(ctx, taskID)
-					if missing == 0 && len(defects) == 0 {
+					defects := h.artifactDefects(ctx, taskID, emit)
+					if contractSteers == 0 && len(declaredArtifacts) > 0 && missing == 0 && len(defects) == 0 {
 						contractSteers++
 						// The event always fires: "when would the steer have
 						// fired" is the observation arm C needs, and an absent
 						// event cannot be told apart from a contract that was
 						// never satisfiable.
-						emit(ChatEvent{Type: "artifacts_complete", Meta: map[string]any{
+						emit(ChatEvent{Type: EvArtifactsComplete, Meta: map[string]any{
 							"declared": len(declaredArtifacts),
 							"mode":     completionContract.String(),
 						}})
@@ -1107,13 +1107,13 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 						// (→113: a green light over an artifact the scorer will
 						// reject is worse than no signal at all).
 						contractDefectSteers++
-						emit(ChatEvent{Type: "artifacts_incomplete", Meta: map[string]any{
+						emit(ChatEvent{Type: EvArtifactsIncomplete, Meta: map[string]any{
 							"declared": len(declaredArtifacts),
 							"missing":  missing,
 							"defects":  len(defects),
 							"mode":     completionContract.String(),
 						}})
-						if marker := core.ArtifactDefectsMarker(defects); marker != "" {
+						if marker := core.ContractDefectsMarker(defects, h.contract.lastExtra); marker != "" {
 							result += "\n\n" + marker
 						}
 					}

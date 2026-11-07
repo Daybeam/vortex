@@ -14,7 +14,7 @@ func TestCompletionCheckDefects_InertByDefault(t *testing.T) {
 	t.Setenv(completionCheckEnv, "")
 	h := &ChatHarness{SessionRoot: t.TempDir()}
 	h.declaredArtifacts = []string{"report.sql"}
-	if got := h.completionCheckDefects(context.Background(), "task-1"); got != nil {
+	if got := h.completionCheckDefects(context.Background(), "task-1", nil); got != nil {
 		t.Fatalf("expected no checks without a configured dir, got %v", got)
 	}
 }
@@ -30,13 +30,13 @@ func TestCompletionCheckDefects_NoDeclarationOrNoWorkspace(t *testing.T) {
 
 	h := &ChatHarness{SessionRoot: t.TempDir()}
 	h.declaredArtifacts = []string{"report.sql"}
-	if got := h.completionCheckDefects(context.Background(), "task-1"); got != nil {
+	if got := h.completionCheckDefects(context.Background(), "task-1", nil); got != nil {
 		t.Fatalf("no declaration for report.sql should mean no check, got %v", got)
 	}
 
 	h2 := &ChatHarness{} // no workspace: nothing to check against
 	h2.declaredArtifacts = []string{"other.sql"}
-	if got := h2.completionCheckDefects(context.Background(), "task-1"); got != nil {
+	if got := h2.completionCheckDefects(context.Background(), "task-1", nil); got != nil {
 		t.Fatalf("no SessionRoot should mean no check, got %v", got)
 	}
 }
@@ -51,7 +51,7 @@ func TestCompletionCheckDefects_SkipsAbsentArtifact(t *testing.T) {
 	t.Setenv(completionCheckEnv, dir)
 	h := &ChatHarness{SessionRoot: t.TempDir()}
 	h.declaredArtifacts = []string{"report.sql"}
-	if got := h.completionCheckDefects(context.Background(), "task-1"); got != nil {
+	if got := h.completionCheckDefects(context.Background(), "task-1", nil); got != nil {
 		t.Fatalf("absent artifact must not be reported as a check failure, got %v", got)
 	}
 }

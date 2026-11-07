@@ -33,7 +33,7 @@ const contractObservationPrompt = "Produce the report.\n\n" +
 func observationHarness(t *testing.T, root string) *ChatHarness {
 	t.Helper()
 	h := &ChatHarness{SessionRoot: root}
-	h.declaredArtifacts = core.ParseDeclaredArtifacts(contractObservationPrompt)
+	h.declaredArtifacts = core.ParseDeclaredContract(contractObservationPrompt).Create
 	h.declaredFields = core.ParseDeclaredArtifactFields(contractObservationPrompt)
 	if len(h.declaredArtifacts) != 2 {
 		t.Fatalf("setup: prompt must declare 2 artifacts, parsed %v", h.declaredArtifacts)
@@ -66,7 +66,7 @@ func TestContractObservation_CountsPresentMissingAndShape(t *testing.T) {
 	obsWriteArtifact(t, root, "summary.json", `{"count": 3}`)
 
 	got := observationHarness(t, root).contractObservation()
-	want := "contract_present=2 contract_missing=0 contract_defects=1"
+	want := "contract_present=2 contract_missing=0 contract_defects=1 checks_armed=0"
 	if got != want {
 		t.Errorf("contractObservation() = %q, want %q", got, want)
 	}
@@ -81,7 +81,7 @@ func TestContractObservation_CountsAnAbsentArtifactWithoutAFieldDefect(t *testin
 	obsWriteArtifact(t, root, "report.md", "hello\n")
 
 	got := observationHarness(t, root).contractObservation()
-	want := "contract_present=1 contract_missing=1 contract_defects=0"
+	want := "contract_present=1 contract_missing=1 contract_defects=0 checks_armed=0"
 	if got != want {
 		t.Errorf("contractObservation() = %q, want %q", got, want)
 	}
@@ -93,7 +93,7 @@ func TestContractObservation_ReportsBothArtifactsWhenAllClean(t *testing.T) {
 	obsWriteArtifact(t, root, "summary.json", `{"total": 3}`)
 
 	got := observationHarness(t, root).contractObservation()
-	want := "contract_present=2 contract_missing=0 contract_defects=0"
+	want := "contract_present=2 contract_missing=0 contract_defects=0 checks_armed=0"
 	if got != want {
 		t.Errorf("contractObservation() = %q, want %q", got, want)
 	}
@@ -111,12 +111,12 @@ func TestContractObservation_LegacyLayoutAndNoContractAreNotZero(t *testing.T) {
 	obsWriteArtifact(t, root, "summary.json", `{"total": 3}`)
 
 	legacy := observationHarness(t, "")
-	if got, want := legacy.contractObservation(), "contract_present=na contract_missing=na contract_defects=na"; got != want {
+	if got, want := legacy.contractObservation(), "contract_present=na contract_missing=na contract_defects=na checks_armed=na"; got != want {
 		t.Errorf("legacy layout: got %q, want %q", got, want)
 	}
 
 	noContract := &ChatHarness{SessionRoot: root}
-	if got, want := noContract.contractObservation(), "contract_present=na contract_missing=na contract_defects=na"; got != want {
+	if got, want := noContract.contractObservation(), "contract_present=na contract_missing=na contract_defects=na checks_armed=na"; got != want {
 		t.Errorf("no declared contract: got %q, want %q", got, want)
 	}
 }
@@ -178,7 +178,7 @@ func TestChatTurnSummary_CarriesContractObservation(t *testing.T) {
 		"contract_steer=",
 		"contract_defect_steer=0",
 		"fields_declared=1",
-		"contract_present=1 contract_missing=1 contract_defects=0",
+		"contract_present=1 contract_missing=1 contract_defects=0 checks_armed=0",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("summary line missing %q.\nline: %s", want, line)

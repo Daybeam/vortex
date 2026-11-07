@@ -210,3 +210,40 @@ func TestDelegationGate_MalformedArtifactIsNotDone(t *testing.T) {
 		t.Fatalf("delegate calls = %d, want 1", spy.calls())
 	}
 }
+
+// A run can be clean and then get worse. Until →226 the one-shot done latch also
+// switched off defect reporting — `if contractSteers == 0 && …` wrapped both
+// branches — so the sequence "pass the contract, then break the artifact" ended
+// with the model having been told it was finished and never told otherwise. The
+// archive agrees that this was structural rather than rare: across 386
+// events.sse files there are 0 runs with `artifacts_complete` followed by
+// `artifacts_incomplete`, and all 15 mixed runs are the opposite order.
+//
+// Both branches still need their own budget: the done sentence stays once per
+// run (contractSteers), and defects stay capped by maxContractDefectSteers.
+func TestContractSteer_DefectAfterTheDoneSteerStillReachesTheModel(t *testing.T) {
+	p, events := runFieldsPrompt(t, []func() *schemas.ProviderResponse{
+		writeFileWith("b.json", rightPlan), // clean → done steer, latch consumed
+		writeFileWith("b.json", wrongPlan), // broken again, after the latch closed
+		stopWithText(),
+	})
+
+	if n := countEvents(events, "artifacts_complete"); n != 1 {
+		t.Fatalf("artifacts_complete = %d, want exactly 1: the done sentence is still one-shot", n)
+	}
+	if n := countEvents(events, "artifacts_incomplete"); n != 1 {
+		t.Fatalf("artifacts_incomplete = %d, want 1: the done latch must not silence later defects (→226)", n)
+	}
+
+	// Read the requests, not just the events: the event says the sentence was
+	// produced, the request proves the model could see it — and the order is the
+	// whole point here.
+	doneIdx := indexOfCallContaining(p, core.MarkerAllArtifactsPresent)
+	badIdx := indexOfCallContaining(p, "do not satisfy the contract")
+	if doneIdx < 0 || badIdx < 0 {
+		t.Fatalf("done=%d defect=%d, both steers must reach a request\n%s", doneIdx, badIdx, dumpSeen(p))
+	}
+	if badIdx <= doneIdx {
+		t.Errorf("defect report seen on call %d, done sentence on call %d: the report must come after", badIdx, doneIdx)
+	}
+}
