@@ -153,8 +153,8 @@ type DirectedEngine struct {
 	notifyMu          sync.Mutex
 
 	// lifecycleCtx is cancelled by Stop() to shut down background services
-	// (swarm agents, convergence monitor, parameter adaptor) and async poll
-	// goroutines. Replaces context.Background() at service-start sites.
+	// and async poll goroutines. Replaces context.Background() at
+	// service-start sites.
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
 
@@ -186,6 +186,11 @@ type DirectedEngine struct {
 	// (step_post, task_completion, decision_required). Nil-safe: set by
 	// WireHooks after construction. See core/hook_runner.go.
 	hookRunner *HookRunner
+
+	// decSem bounds concurrent NonInteractive decision-resolution goroutines
+	// to prevent unbounded LLM HTTP calls when many steps block in parallel.
+	// (audit NEW-P1: mirrors the crystSem pattern in reflection.go:307.)
+	decSem chan struct{}
 
 	// recentDecisions (#14, ADDED 2026-10-10): per-step decision timestamp
 	// for RiskTier-based rate limiting. Key: "taskID:stepID".
@@ -254,6 +259,7 @@ func NewDirectedEngine(
 		maxHashCacheEntries: defaultMaxHashCacheEntries,
 		UseSwarm:            os.Getenv("ACAIS_MODE") == "1",
 		notifyChan:          make(chan struct{}),
+		decSem:              make(chan struct{}, 5), // audit NEW-P1: bound concurrent decision-resolution goroutines
 		recentDecisions:     make(map[string]time.Time),
 	}
 	s.spawner.SignalField = sf
@@ -402,8 +408,6 @@ func (s *DirectedEngine) WireHooks(hooks []config.HookConfig, runtimes config.Ex
 		})
 	}
 }
-
-// Stop shuts down background monitors and agents.
 
 // Stop shuts down background monitors and agents.
 func (s *DirectedEngine) Stop() {

@@ -250,7 +250,7 @@ func (s *DirectedEngine) verifyExitCriteria(ctx context.Context, graph *schemas.
 			checkOK = re.MatchString(content)
 			checkErr = "output did not match regex pattern: " + pattern
 		} else { // file:
-			path := strings.TrimPrefix(step.ExitCriteria, "file:")
+			path := s.taskRelativePath(graph.TaskID, strings.TrimPrefix(step.ExitCriteria, "file:"))
 			if info, err := os.Stat(path); err == nil && info.Size() > 1024 {
 				checkOK = true
 			} else {

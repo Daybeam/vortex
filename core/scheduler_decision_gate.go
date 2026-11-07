@@ -10,6 +10,7 @@ import (
 
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/observability"
+	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -18,7 +19,7 @@ import (
 // Contains: addDecision, RequestAutonomousAbort, maybeBlock,
 // handleDelegationRequired, handleDefaultFailure.
 
-// DelegationKind* disambiguates the two situations that both surface as
+// DelegationKind* disambiguates the three situations that all surface as
 // DecisionDelegationRequired. They demand opposite reactions from a caller, so
 // without an explicit discriminator a consumer has to guess from the shape of
 // the context — and guessing wrong means either fulfilling a request to split a
@@ -32,6 +33,14 @@ import (
 //	dag_surgery — the step overflowed the model's context and the caller should
 //	  split it. Context carries error/action_required and NO prompt; fulfilling
 //	  it is meaningless, the only sensible answers are skip/abort/rewrite_dag.
+//	plan — the engine has delegated the *plan itself* to the caller (planner-first).
+//	  Context carries only system_prompt/user_prompt from buildPlanDelegationPrompt
+//	  (core/scheduler_planner.go:67), no tool_definitions. The caller answers with
+//	  {"steps":[...]} through the same fulfill call, which branches on this kind and
+//	  routes the payload to ParsePlanDAG + graph surgery instead of writing an output
+//	  (core/scheduler_status.go:392). Register O52: no host-facing text says the
+//	  three payloads differ, and the pinned consumer rule in
+//	  delegation_contract_test.go returns false for this kind.
 const (
 	DelegationKindExternalSubagent = "external_subagent"
 	DelegationKindDAGSurgery       = "dag_surgery"
@@ -306,7 +315,18 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 		"decider_role": deciderRole,
 	})
 	s.goBackground(func() {
- 		choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin, deciderOwnerID)
+		// audit NEW-P1: bound concurrent decision-resolution goroutines
+		// to prevent unbounded LLM HTTP calls when many steps block in
+		// parallel. Non-blocking send — if semaphore is full, skip (the
+		// decision will be resolved on the next addDecision call or by
+		// a human). This mirrors the crystSem pattern in reflection.go.
+		select {
+		case s.decSem <- struct{}{}:
+			defer func() { <-s.decSem }()
+		default:
+			return // semaphore full; skip this resolution attempt
+		}
+		choice := s.resolveNonInteractiveDecision(deciderRole, taskID, decID, step.ID, dtype, ctx, options, deciderSubmitterIsAdmin, deciderOwnerID)
 		if choice == "" {
 			return // must not auto-resolve (e.g. human_approval_required)
 		}
@@ -334,9 +354,19 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	// human_approval_required: legal/compliance gate. Must not auto-resolve
 	// unless explicitly overridden via AllowHumanApprovalAutoResolve.
 	if dtype == schemas.DecisionHumanApprovalRequired &&
- 		s.registry != nil && !s.registry.System.AllowHumanApprovalAutoResolve {
- 		return "" // must wait for a human
- 	}
+		s.registry != nil && !s.registry.System.AllowHumanApprovalAutoResolve {
+		return "" // must wait for a human
+	}
+	// System One strategy: fast probability-based pick (38.8ms vs 2-5s LLM).
+	if s.systemOneProvider != nil && s.systemOneCfg.EnableDecisionGate {
+		if choice, ok := s.askSystemOneForDecision(taskID, stepID, dtype, ctx, options); ok {
+			return choice
+		}
+		s.logger.Log(obs.EventDecisionAutoResolved, taskID, stepID, map[string]any{
+			"decision_id": decID,
+			"fallback":    "systemone_failed_or_low_confidence",
+		})
+	}
 	// Delegate strategy: spawn decider role to choose.
 	if deciderRole != "" && s.spawner != nil {
 		observability.GetGlobalMetrics().Inc("orchestrator.decision_gate.calls", 1)
@@ -460,13 +490,63 @@ func isWordChar(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
 }
 
-// askSystemOneForDecision is stubbed in the open core (no System One provider).
+// askSystemOneForDecision uses the System One decision model to pick an option
+// for a blocked decision. Returns (choice, true) if the model picked a valid
+// option with sufficient confidence, or ("", false) on any error or low
+// confidence. The call has a 3s timeout — on timeout or error, the caller
+// falls back to the LLM decider or conservative defaults.
 func (s *DirectedEngine) askSystemOneForDecision(
 	taskID, stepID string,
 	dtype schemas.DecisionType,
 	decisionCtx map[string]any,
 	options []string,
 ) (string, bool) {
+	state := fmt.Sprintf("Task %s step %s blocked. Decision type: %s. Context: %v. Available options: %s.",
+		taskID, stepID, dtype, decisionCtx, strings.Join(options, ", "))
+
+	questions := map[string]any{
+		"q1": map[string]any{
+			"type":     "choice",
+			"question": "What should the engine do?",
+			"options":  options,
+		},
+	}
+
+	req := providers.CompleteRequest{
+		User:        state,
+		Model:       s.systemOneCfg.Model,
+		MaxTokens:   256,
+		Constraints: map[string]any{"questions": questions},
+	}
+
+	ctx, cancel := context.WithTimeout(s.lifecycleCtx, 3*time.Second)
+	defer cancel()
+
+	resp, err := s.systemOneProvider.Complete(ctx, req)
+	if err != nil {
+		return "", false
+	}
+
+	minConf := s.systemOneCfg.MinConfidence
+	if minConf == 0 {
+		minConf = 0.5
+	}
+
+	for _, tc := range resp.ToolCalls {
+		if tc.Name != "q1" {
+			continue
+		}
+		choice, _ := tc.Arguments["choice"].(string)
+		confidence, _ := tc.Arguments["confidence"].(float64)
+		if confidence < minConf {
+			return "", false
+		}
+		for _, opt := range options {
+			if opt == choice {
+				return opt, true
+			}
+		}
+	}
 	return "", false
 }
 

@@ -529,6 +529,7 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 			Capability:     output.Capability,
 			MissingContext: output.MissingContext,
 			Attachments:    output.Attachments,
+			Usage:          output.Usage, // O56: handleStepSuccess reads this for cost + event; do not drop it again.
 		},
 		Ref: fmt.Sprintf("%s:%s", taskID, stepID),
 	})

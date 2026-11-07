@@ -109,7 +109,7 @@ func TestTruncatePromptForEvent_OldByteCutWouldFail(t *testing.T) {
 	oldUTF8Valid := utf8.ValidString(oldCut)
 
 	if oldJSONErr == nil && oldUTF8Valid {
-		t.Log("unexpected: old byte-cut produced valid JSON and UTF-8 (got lucky with alignment)")
+		t.Fatal("expected old byte-cut to produce invalid JSON or invalid UTF-8, but both were valid")
 	}
 	// In practice, one or both will be invalid — that's the defect D7 fixes.
 }
