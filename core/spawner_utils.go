@@ -859,7 +859,12 @@ func (s *Spawner) resolveContextRefs(ctx context.Context, req *SpawnRequest) map
 // Extracted from spawner.go doSpawn during god-class split.
 func (s *Spawner) fetchDynamicContext(ctx context.Context, taskID, stepID string) map[string]any {
 	envContext := make(map[string]any)
-	for _, cp := range s.contextProviders {
+	// L-RACE-3 fix: copy contextProviders under RLock to synchronize with
+	// potential AddContextProvider calls.
+	s.interceptorsMu.RLock()
+	providers := s.contextProviders
+	s.interceptorsMu.RUnlock()
+	for _, cp := range providers {
 		if c, err := cp.FetchContext(ctx); err == nil {
 			envContext[cp.Name()] = c
 		} else {

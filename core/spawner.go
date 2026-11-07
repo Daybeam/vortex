@@ -54,6 +54,7 @@ type Spawner struct {
 	mcpMgr            *MCPConnectionManager
 	Mu                sync.Mutex
 	refreshWg         sync.WaitGroup // F3: tracks startup embedding-refresh goroutine
+	interceptorsMu    sync.RWMutex   // L-RACE-3: protects interceptors slice
 	interceptors      []Interceptor
 	contextProviders  []ContextProvider
 	outputBase        string
@@ -284,10 +285,11 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 }
 
 // AddInterceptor adds an interceptor to the end of the chain.
-
-// AddInterceptor adds an interceptor to the end of the chain.
+// L-RACE-3 fix: protected by interceptorsMu to synchronize with the read in Spawn.
 func (s *Spawner) AddInterceptor(i Interceptor) {
+	s.interceptorsMu.Lock()
 	s.interceptors = append(s.interceptors, i)
+	s.interceptorsMu.Unlock()
 }
 
 // SetCapabilityProfileStore wires the per-model per-capability telemetry store.
@@ -340,15 +342,12 @@ func (s *Spawner) SetModelRegistry(mr *registry.ModelRegistry) {
 }
 
 // AddContextProvider adds a provider for dynamic prompt injection.
-
-// AddContextProvider adds a provider for dynamic prompt injection.
+// L-RACE-3 fix: protected by interceptorsMu to synchronize with the read in Spawn.
 func (s *Spawner) AddContextProvider(cp ContextProvider) {
+	s.interceptorsMu.Lock()
 	s.contextProviders = append(s.contextProviders, cp)
+	s.interceptorsMu.Unlock()
 }
-
-// SetAssetManager wires in the DirectedEngine's AssetManager so that large
-// upstream contexts can be side-loaded into artifact files. Anti-Cliff
-// (ADDED 2026-08-27).
 
 // SetAssetManager wires in the DirectedEngine's AssetManager so that large
 // upstream contexts can be side-loaded into artifact files. Anti-Cliff
@@ -356,12 +355,6 @@ func (s *Spawner) AddContextProvider(cp ContextProvider) {
 func (s *Spawner) SetAssetManager(am *AssetManager) {
 	s.assets = am
 }
-
-// SetRefBasedHandoffThreshold sets the byte threshold above which an
-// upstream context is side-loaded into an artifact file rather than
-// inlined into the subagent's prompt. Zero or negative means the
-// mechanism is disabled (legacy inline behaviour). Anti-Cliff (ADDED
-// 2026-08-27).
 
 // SetRefBasedHandoffThreshold sets the byte threshold above which an
 // upstream context is side-loaded into an artifact file rather than
@@ -484,8 +477,6 @@ func (s *Spawner) CloseMCPConnections() {
 }
 
 // SpawnResult is the outcome of one subagent call.
-
-// SpawnResult is the outcome of one subagent call.
 type SpawnResult struct {
 	Output        schemas.SubagentOutput
 	ProviderID    string   // actual Provider ID used
@@ -494,9 +485,6 @@ type SpawnResult struct {
 	StatesVisited []string // PGPO: Visited environment states (ADDED 2026-09-08)
 	TurnsUsed     int      // Actual tool-call turns consumed (ADDED 2026-09-13 IRT)
 }
-
-// Spawn executes one step as a subagent call.
-// Does NOT handle retries — that lives in the scheduler.
 
 // Spawn executes one step as a subagent call.
 // Does NOT handle retries — that lives in the scheduler.
@@ -567,7 +555,12 @@ func (s *Spawner) Spawn(ctx context.Context, req *SpawnRequest) (*SpawnResult, e
 		}
 	}
 
-	handler := BuildInterceptorChain(s.interceptors, s.doSpawn)
+	// L-RACE-3 fix: copy interceptors slice under RLock to synchronize with
+	// potential AddInterceptor calls.
+	s.interceptorsMu.RLock()
+	interceptors := s.interceptors
+	s.interceptorsMu.RUnlock()
+	handler := BuildInterceptorChain(interceptors, s.doSpawn)
 	start := time.Now()
 	result, err := handler(ctx, req)
 	// audit L-N12 (fix-propagation gap, 4th occurrence): the interceptor chain
@@ -601,7 +594,5 @@ func shouldRetryEmptyResponse(retries *int, max int) (bool, error) {
 	}
 	return false, fmt.Errorf("empty_response_zero_tokens: exhausted %d retries", max)
 }
-
-// doSpawn is the core spawning logic, wrapped by interceptors.
 
 // doSpawn is the core spawning logic, wrapped by interceptors.

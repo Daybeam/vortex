@@ -318,6 +318,20 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 			continue
 		}
 		desc, _ := t["description"].(string)
+		// Fail-closed: reject tools with invisible Unicode in metadata
+		// (MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.5, audit S-C2).
+		if !VerifyApprovalFidelity(name, desc) {
+			slog.Warn("MCP tool rejected: invisible Unicode detected in name/description (fail-closed)",
+				"mcp", mcp.ID, "tool", name)
+			continue
+		}
+		if is, ok := t["inputSchema"].(map[string]any); ok {
+			if !VerifySchemaFidelity(is) {
+				slog.Warn("MCP tool rejected: invisible Unicode detected in inputSchema (fail-closed)",
+					"mcp", mcp.ID, "tool", name)
+				continue
+			}
+		}
 		// Sanitize invisible Unicode (TAG block, zero-width, control) from
 		// external MCP tool metadata to prevent hidden prompt injection
 		// (arXiv:2607.05744v1, MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.2).
@@ -328,7 +342,7 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 			Description: desc,
 		}
 		if is, ok := t["inputSchema"].(map[string]any); ok {
-			def.InputSchema = is
+			def.InputSchema = SanitizeMCPToolSchema(is)
 		}
 		mcp.FullToolDefinitions = append(mcp.FullToolDefinitions, def)
 		mcp.AvailableTools = append(mcp.AvailableTools, name)

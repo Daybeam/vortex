@@ -675,7 +675,7 @@ func (s *Spawner) processToolCalls(
 					md := env.ToMarkdown(call.Name)
 
 					// Apply Sieve Pruning to reduce token noise for large tool outputs
-					if len(md) > s.processor.MaxBodyChars {
+					if len(md) > s.processor.GetMaxBodyChars() {
 						md = s.sieve.PruneOutput(md, req.Task)
 					}
 					// #2-universal (eval §23): cache the successful read result
@@ -687,7 +687,7 @@ func (s *Spawner) processToolCalls(
 					// Egress redaction (I5) + L1 injection marking (input_normalization.go).
 					// Output bounding: adaptive truncation for oversized results.
 					md = redactAndMarkUntrusted(md, req.OwnerID)
-					if len(md) > s.processor.MaxBodyChars {
+					if len(md) > s.processor.GetMaxBodyChars() {
 						md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
 					noteToolResult(state, callKey, md)
@@ -735,7 +735,7 @@ func (s *Spawner) processToolCalls(
 
 					// Apply Sieve Pruning to reduce token noise for large tool outputs,
 					// mirroring the local (command-based) MCP branch above.
-					if len(md) > s.processor.MaxBodyChars {
+					if len(md) > s.processor.GetMaxBodyChars() {
 						md = s.sieve.PruneOutput(md, req.Task)
 					}
 					// #2-universal (eval §23): cache the successful read result.
@@ -745,7 +745,7 @@ func (s *Spawner) processToolCalls(
 					}
 					// Egress redaction (I5) + L1 injection marking (mirrors the local branch).
 					md = redactAndMarkUntrusted(md, req.OwnerID)
-					if len(md) > s.processor.MaxBodyChars {
+					if len(md) > s.processor.GetMaxBodyChars() {
 						md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
 					noteToolResult(state, callKey, md)
