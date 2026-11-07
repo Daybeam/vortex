@@ -98,6 +98,7 @@ func (l *Loader) Detail(taskID string) (*RunDetail, error) {
 		detail.Artifacts = l.artifactNames(taskID)
 		detail.RunSummary.Artifacts = len(detail.Artifacts)
 		applyGraph(detail, l.graph(taskID))
+		attributeArtifacts(detail.Steps, detail.Artifacts)
 		return detail, nil
 	}
 	artifacts := l.artifactNames(taskID)
@@ -215,6 +216,33 @@ func (l *Loader) artifactNames(taskID string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// attributeArtifacts gives each step its own stored output. Both writers embed
+// the step id in the filename: group dispatch stores the full subagent result as
+// "<stepID>.json", and the side-loader stores oversized results as
+// "<stepID>_<unix>.<format>" (core/asset_manager.go Handle).
+//
+// Telemetry cannot supply this. The step_completed line only ever carried
+// SpawnResult.Ref, which is "taskID:stepID" -- already two fields of the same
+// log line -- and the asset path is not known until after that line is written.
+// Matching filenames instead also reaches every run already on disk, which a
+// producer change could not.
+func attributeArtifacts(steps []Step, names []string) {
+	for i := range steps {
+		var stored, sideLoaded string
+		for _, name := range names {
+			base := strings.TrimSuffix(name, ".json")
+			switch {
+			case base == steps[i].ID:
+				stored = name
+			case strings.HasPrefix(base, steps[i].ID+"_"):
+				// Names arrive sorted, so the newest unix suffix wins.
+				sideLoaded = name
+			}
+		}
+		steps[i].ResultRef = firstNonEmpty(stored, sideLoaded)
+	}
 }
 
 func (l *Loader) artifactOnly(exclude map[string]bool) []ArtifactOnly {

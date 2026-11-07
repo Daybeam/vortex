@@ -372,11 +372,18 @@ func (r *Role) GetBinding(mcpID string) *MCPBinding {
 }
 
 type MCPBinding struct {
-	MCPID         string   `json:"mcp_id"`
+	MCPID string `json:"mcp_id"`
+	// AllowedTools restricts which tools from the bound MCP are exposed.
+	// Empty (nil/zero-length) means ALL tools are exposed — no restriction.
+	// This is by design: if you don't want any tools from an MCP, don't bind it.
+	// IsRestricted() returns true only when this list is non-empty.
 	AllowedTools  []string `json:"allowed_tools"`
 	AlwaysInclude []string `json:"always_include,omitempty"`
 }
 
+// IsRestricted reports whether the binding limits tool exposure to a specific
+// subset. Returns false when AllowedTools is empty, meaning all MCP tools are
+// exposed (the default convenience semantics).
 func (b *MCPBinding) IsRestricted() bool { return len(b.AllowedTools) > 0 }
 
 type RoleFallback struct {

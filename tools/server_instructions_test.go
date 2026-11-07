@@ -3,9 +3,11 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
+	"github.com/daybeam/vortex/core"
 )
 
 // TestResolveServerInstructions_NilRegistryFallsBackToDefault confirms this
@@ -70,6 +72,41 @@ func TestResolveServerInstructions_OverridePreferredAndTierIsolated(t *testing.T
 	// admin override or return empty.
 	if got := ResolveServerInstructions(reg, true); got != ServerInstructionsPublic {
 		t.Fatalf("public=true: expected default ServerInstructionsPublic (admin override must not leak across tiers), got %q", got)
+	}
+}
+
+// O52: a type=delegation decision carries a context.kind discriminator with three
+// values, and for the two that offer fulfill the accepted payload differs --
+// SubagentOutput for external_subagent, the plan DAG itself for plan. Until
+// 2026-11-07 nothing host-facing said so: this file described "its output JSON",
+// one shape, singular. The asymmetric direction is the reason that mattered --
+// answering a plan delegation with a SubagentOutput errors loudly, but answering
+// an external_subagent delegation with plan JSON falls through schemas.ParseOutput
+// into result.raw and FulfillStep still marks the step ok.
+//
+// "plan" is deliberately not matched as a bare word (it appears in unrelated
+// prose); the steps shape stands in for it. A fourth kind has to be added to
+// core's const block and named here, which is the point.
+func TestServerInstructions_NamesEveryDelegationKind(t *testing.T) {
+	required := []string{
+		"context.kind",
+		core.DelegationKindExternalSubagent,
+		core.DelegationKindDAGSurgery,
+		`{"steps":[`,
+		"SubagentOutput",
+	}
+	for _, surface := range []struct {
+		name string
+		text string
+	}{
+		{"ServerInstructions", ServerInstructions},
+		{"ServerInstructionsPublic", ServerInstructionsPublic},
+	} {
+		for _, want := range required {
+			if !strings.Contains(surface.text, want) {
+				t.Errorf("%s does not mention %q -- a host reading only the tool surface cannot know that the fulfill payload shape depends on the delegation kind (O52)", surface.name, want)
+			}
+		}
 	}
 }
 
