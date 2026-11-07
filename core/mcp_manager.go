@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -414,13 +415,27 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 			continue
 		}
 		desc, _ := t["description"].(string)
+		// Fail-closed: reject tools with invisible Unicode in metadata
+		// (MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.5, audit S-C2).
+		if !VerifyApprovalFidelity(name, desc) {
+			slog.Warn("MCP tool rejected: invisible Unicode detected in name/description (fail-closed)",
+				"mcp", mcp.ID, "tool", name)
+			continue
+		}
+		if is, ok := t["inputSchema"].(map[string]any); ok {
+			if !VerifySchemaFidelity(is) {
+				slog.Warn("MCP tool rejected: invisible Unicode detected in inputSchema (fail-closed)",
+					"mcp", mcp.ID, "tool", name)
+				continue
+			}
+		}
 		// Sanitize invisible Unicode from remote MCP tool metadata
 		// (MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.2).
 		name = sanitizeMCPToolField(name, mcp.ID, "name")
 		desc = sanitizeMCPToolField(desc, mcp.ID, "description")
 		def := schemas.ToolDefinition{Name: name, Description: desc}
 		if is, ok := t["inputSchema"].(map[string]any); ok {
-			def.InputSchema = is
+			def.InputSchema = SanitizeMCPToolSchema(is)
 		}
 		out = append(out, def)
 	}

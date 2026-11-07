@@ -105,7 +105,7 @@ func TestPromptManager_CookbookTemplating(t *testing.T) {
 // Before fix: render output contained "<no value>" (from {{.user_name}} with
 // default missingkey=invalid). After fix: all keys are provided, no "<no value>".
 //
-// See: docs/plan/ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §6
+// See: docs/completed/2026-11-05/ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §6
 func TestBaseRoleRender_NoNoValue(t *testing.T) {
 	pm := NewPromptManager("../prompts", nil)
 
@@ -141,7 +141,7 @@ func TestBaseRoleRender_NoNoValue(t *testing.T) {
 // Before fix: Render succeeds, output contains "<no value>". After fix: Render
 // returns an error.
 //
-// See: docs/plan/ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §6
+// See: docs/completed/2026-11-05/ASSET_GC_AND_DELEGATION_R2_REMEDIATION.md §6
 func TestPromptManagerMissingKeyErrors(t *testing.T) {
 	pm := NewPromptManager("", nil)
 

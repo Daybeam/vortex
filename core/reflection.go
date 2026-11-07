@@ -184,6 +184,8 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 				"decision_type": schemas.DecisionStepFailed,
 				"role_id":       step.RoleID,
 				"choice":        "skip",
+				"proposer":      "agent",
+				"decider":       "agent",
 			})
 		}
 

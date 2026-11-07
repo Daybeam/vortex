@@ -153,3 +153,39 @@ func ArtifactDefectsMarker(defects []string) string {
 	b.WriteString(". The task states these fields itself — fix the artifacts, then reply.")
 	return b.String()
 }
+
+// ContractDefectsMarker picks the sentence that matches the violation, because
+// the two violations need different repairs.
+//
+// extraPaths is non-empty only on the tasks whose contract creates nothing
+// (`Create: none` + `Modify: X`): there, "the artifacts exist" is true at t=0 and
+// says nothing, and the only thing a workspace can get wrong is what it added
+// (→221). Reusing ArtifactDefectsMarker there would tell the model to "fix the
+// artifacts" — but nothing is wrong with the artifact; the leftovers are.
+//
+// The remediation is quoted from the contract paragraph the controller appends
+// to every prompt ("Put persistent scratch helpers in `/runtime` and single-round
+// temporary files in `/tmp`"), so the steer names the move the task already
+// asked for rather than inventing a policy (→185: a gate may only enforce what
+// the task text says).
+func ContractDefectsMarker(defects, extraPaths []string) string {
+	if len(extraPaths) == 0 {
+		return ArtifactDefectsMarker(defects)
+	}
+	const maxListedPaths = 6
+	listed := extraPaths
+	more := 0
+	if len(listed) > maxListedPaths {
+		more = len(listed) - maxListedPaths
+		listed = listed[:maxListedPaths]
+	}
+	var b strings.Builder
+	b.WriteString("[COMPLETION CONTRACT] This task's contract allows no created paths, but the workspace holds ")
+	fmt.Fprintf(&b, "%d that were not there when the run started: ", len(extraPaths))
+	b.WriteString(strings.Join(listed, ", "))
+	if more > 0 {
+		fmt.Fprintf(&b, " and %d more", more)
+	}
+	b.WriteString(". Move helpers to `/runtime` and single-round temporaries to `/tmp`, remove these, then reply.")
+	return b.String()
+}

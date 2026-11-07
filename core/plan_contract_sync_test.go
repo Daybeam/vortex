@@ -23,7 +23,7 @@ import (
 // RunDeterministicChecks — pinned by core/verify/deterministic_verifier_test.go:127
 // — so a planner that invents one gets a pass it never earned, which is why the
 // contract names the list explicitly.
-var legalVerifierTypes = []string{"file_exists", "command_pass", "plan_checkboxes", "code_entities"}
+var legalVerifierTypes = []string{"file_exists", "command_pass", "plan_checkboxes", "code_entities", "read_coverage"}
 
 func TestPlanContract_AdvertisesDeterministicChecks(t *testing.T) {
 	field, ok := reflect.TypeOf(schemas.PlanStep{}).FieldByName("DeterministicChecks")

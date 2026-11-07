@@ -15,11 +15,11 @@ import (
 // return the answer. This pins that envelope at the level the caller actually
 // sees it — the pending decision, not the internal SpawnResult.
 //
-// It also pins the discriminator. DecisionDelegationRequired covers two
+// It also pins the discriminator. DecisionDelegationRequired covers three
 // situations that look identical from outside but demand opposite reactions:
-// "run this for me" and "this step is too big, split it". A consumer that cannot
-// tell them apart will fulfil a split request with a subagent answer (nonsense)
-// or skip a step that only it could have answered (a guaranteed zero).
+// "run this for me", "this step is too big, split it", and (kind=plan) "produce
+// the plan yourself". The consumer rule below only recognises the first; the
+// plan kind is fulfillable too and is left unasserted — register O52.
 func TestDelegationDecision_PayloadIsCallerComplete(t *testing.T) {
 	providers.ClearCache()
 

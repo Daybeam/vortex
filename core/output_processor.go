@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daybeam/vortex/config"
@@ -15,6 +16,7 @@ import (
 
 // OutputProcessor handles the transformation and summarization of tool results.
 type OutputProcessor struct {
+	mu           sync.RWMutex
 	MaxBodyChars int
 }
 
@@ -37,13 +39,22 @@ func NewOutputProcessor(maxBodyChars int) *OutputProcessor {
 
 // SetMaxBodyChars updates the truncation limit. Used by Spawner.SetModelRegistry
 // to apply a model-registry-derived dynamic default after the model registry is
-// wired (which happens post-construction). Thread-safe via the Spawner's
-// guarantee that SetModelRegistry is called once during startup before any
-// tool execution begins.
+// wired (which happens post-construction). Thread-safe: protected by an RWMutex
+// because truncate() reads from concurrent tool-execution goroutines.
 func (p *OutputProcessor) SetMaxBodyChars(n int) {
 	if n > 0 {
+		p.mu.Lock()
 		p.MaxBodyChars = n
+		p.mu.Unlock()
 	}
+}
+
+// GetMaxBodyChars returns the current truncation limit. Thread-safe.
+func (p *OutputProcessor) GetMaxBodyChars() int {
+	p.mu.RLock()
+	v := p.MaxBodyChars
+	p.mu.RUnlock()
+	return v
 }
 
 // getMaxToolResultChars resolves the tool result truncation limit.
@@ -135,14 +146,17 @@ func (p *OutputProcessor) Wrap(toolName string, raw any, status string, source s
 }
 
 func (p *OutputProcessor) truncate(s string) string {
-	if len(s) <= p.MaxBodyChars {
+	p.mu.RLock()
+	max := p.MaxBodyChars
+	p.mu.RUnlock()
+	if len(s) <= max {
 		return s
 	}
 
 	// JSON-aware path: keeps the payload parseable. This is not cosmetic -- a
 	// JSON document cut at an arbitrary byte offset cannot be parsed at all, so
 	// the model receives noise rather than a shorter answer.
-	if truncated, ok := truncateJSONFields(s, p.MaxBodyChars); ok {
+	if truncated, ok := truncateJSONFields(s, max); ok {
 		return truncated
 	}
 
@@ -150,17 +164,17 @@ func (p *OutputProcessor) truncate(s string) string {
 	// own cut: it is not one document, so the previous attempt above rejects it,
 	// and slicing it at an arbitrary byte offset breaks every line that
 	// straddles the cut.
-	if truncated, ok := truncateJSONLines(s, p.MaxBodyChars); ok {
+	if truncated, ok := truncateJSONLines(s, max); ok {
 		return truncated
 	}
 
 	// Fallback for content that genuinely is not JSON: CLI stdout, plain text,
 	// stack traces. head+tail is the right shape there because the informative
 	// parts of such output usually sit at both ends.
-	head := s[:p.MaxBodyChars/2]
-	tail := s[len(s)-p.MaxBodyChars/2:]
+	head := s[:max/2]
+	tail := s[len(s)-max/2:]
 
-	return fmt.Sprintf("%s\n\n... [TRUNCATED %d characters - Content side-loaded to outputs/ directory] ...\n\n%s", head, len(s)-p.MaxBodyChars, tail)
+	return fmt.Sprintf("%s\n\n... [TRUNCATED %d characters - Content side-loaded to outputs/ directory] ...\n\n%s", head, len(s)-max, tail)
 }
 
 // truncateJSONFields fits a single JSON document within maxChars while keeping
