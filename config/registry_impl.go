@@ -353,9 +353,13 @@ func (r *Registry) GetHealthyModelsSummary() []map[string]any {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
+	now := time.Now()
 	var summary []map[string]any
 	for id, pc := range r.Providers {
 		if pc == nil {
+			continue
+		}
+		if !pc.IsWithinValidity(now) {
 			continue
 		}
 		summary = append(summary, map[string]any{

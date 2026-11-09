@@ -75,6 +75,10 @@ func buildRun(taskID string, files []logFile, now time.Time) (*RunDetail, error)
 		LogFiles:   logPaths(files),
 	}
 	applySubmittedDeps(detail.Steps, events)
+	// Recover the explicit graph from the compact task_submitted snapshot.
+	// This is a read-side change only: no new on-disk format, and historical
+	// runs without a snapshot simply keep a nil Graph.
+	detail.Graph = buildSubmittedGraph(detail.Steps, events)
 	return detail, nil
 }
 
@@ -120,6 +124,114 @@ func applySubmittedDeps(steps []Step, events []rawEvent) {
 			sort.Strings(target.DependsOn)
 		}
 	}
+}
+
+// buildSubmittedGraph rebuilds the explicit graph from the compact
+// task_submitted payload. It returns nil when the submission carried no graph
+// information at all, so viewers can tell "a known plan with no edges" apart
+// from "no plan was ever recorded".
+//
+// Two snapshot keys exist:
+//   - step_ids: every planned node, including dependency-free parallel roots.
+//     New submissions always write it; older logs do not have it.
+//   - deps: inbound edges, written only for nodes that declare them.
+//
+// When step_ids is absent, the executed step IDs become the node set so
+// historical runs with deps still get a usable graph. With neither key we
+// return nil instead of inventing nodes: such a run must stay on the
+// time-overlap inference path.
+func buildSubmittedGraph(steps []Step, events []rawEvent) *Graph {
+	if len(steps) == 0 {
+		return nil
+	}
+	var ids []string
+	deps := make(map[string][]string)
+	found := false
+	for _, event := range events {
+		if event.Event != "task_submitted" {
+			continue
+		}
+		if rawIDs, ok := event.Detail["step_ids"].([]any); ok {
+			list := make([]string, 0, len(rawIDs))
+			seen := make(map[string]bool, len(rawIDs))
+			for _, item := range rawIDs {
+				id, ok := item.(string)
+				if !ok || id == "" || seen[id] {
+					continue
+				}
+				seen[id] = true
+				list = append(list, id)
+			}
+			if len(list) > 0 {
+				sort.Strings(list)
+				ids = list
+				found = true
+			}
+		}
+		if rawDeps, ok := event.Detail["deps"].(map[string]any); ok {
+			for id, value := range rawDeps {
+				items, ok := value.([]any)
+				if !ok {
+					continue
+				}
+				seen := make(map[string]bool, len(items))
+				list := make([]string, 0, len(items))
+				for _, item := range items {
+					dep, ok := item.(string)
+					if !ok || dep == "" || dep == id || seen[dep] {
+						continue
+					}
+					seen[dep] = true
+					list = append(list, dep)
+				}
+				if len(list) > 0 {
+					sort.Strings(list)
+					deps[id] = list
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	// Planned nodes can include steps that never produced telemetry. A join
+	// node cancelled before dispatch is the common case: run 390fbe51 logs
+	// {"s6": ["s1".."s5"]} but only s1..s5 appear in the executed steps.
+	// Dropping s6 would silently turn a five-way join into five unrelated
+	// parallel roots, so every declared deps key belongs in the node set.
+	nodeSet := make(map[string]bool, len(ids)+len(deps)+len(steps))
+	for _, id := range ids {
+		nodeSet[id] = true
+	}
+	for id := range deps {
+		nodeSet[id] = true
+	}
+	if len(ids) == 0 {
+		// Older logs have no step_ids: executed steps plus declared nodes are
+		// the most honest reconstruction available. When step_ids IS present,
+		// telemetry-only nodes (e.g. retries) stay out of the planned graph.
+		for i := range steps {
+			nodeSet[steps[i].ID] = true
+		}
+	}
+	ids = make([]string, 0, len(nodeSet))
+	for id := range nodeSet {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	known := nodeSet
+	graph := &Graph{Steps: make([]GraphStep, 0, len(ids))}
+	for _, id := range ids {
+		node := GraphStep{ID: id}
+		for _, dep := range deps[id] {
+			if known[dep] {
+				node.DependsOn = append(node.DependsOn, dep)
+			}
+		}
+		graph.Steps = append(graph.Steps, node)
+	}
+	return graph
 }
 
 func logPaths(files []logFile) []string {

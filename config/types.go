@@ -134,6 +134,8 @@ type ProviderConfig struct {
 	SupportsVision         *bool              `json:"supports_vision,omitempty"`
 	Instances              []ProviderInstance `json:"instances,omitempty"`
 	PoolID                 string             `json:"pool_id,omitempty"`
+	ValidFrom              *time.Time         `json:"valid_from,omitempty"`
+	ValidUntil             *time.Time         `json:"valid_until,omitempty"`
 	// FallbackChain is an ordered list of provider configs to try as fallbacks
 	// when the primary provider fails. Each is created via the factory and
 	// wrapped with its own retry/rate-limit. The FallbackProvider tries
@@ -145,10 +147,40 @@ type ProviderConfig struct {
 }
 
 type ProviderInstance struct {
-	ID        string `json:"id"`
-	APIKey    string `json:"api_key,omitempty"`
-	APIKeyEnv string `json:"api_key_env,omitempty"`
-	BaseURL   string `json:"base_url,omitempty"`
+	ID        string     `json:"id"`
+	APIKey    string     `json:"api_key,omitempty"`
+	APIKeyEnv string     `json:"api_key_env,omitempty"`
+	BaseURL   string     `json:"base_url,omitempty"`
+	ValidFrom  *time.Time `json:"valid_from,omitempty"`
+	ValidUntil *time.Time `json:"valid_until,omitempty"`
+}
+
+// IsWithinValidity reports whether the provider config's key is within its
+// configured validity window. nil timestamps mean unbounded on that side.
+func (p *ProviderConfig) IsWithinValidity(now time.Time) bool {
+	if p.ValidFrom != nil && now.Before(*p.ValidFrom) {
+		return false
+	}
+	if p.ValidUntil != nil && now.After(*p.ValidUntil) {
+		return false
+	}
+	return true
+}
+
+// IsWithinValidity reports whether the instance's key is within its configured
+// validity window. Falls back to the parent ProviderConfig's window if the
+// instance has no own validity settings.
+func (p *ProviderInstance) IsWithinValidity(now time.Time, parent *ProviderConfig) bool {
+	if p.ValidFrom != nil && now.Before(*p.ValidFrom) {
+		return false
+	}
+	if p.ValidUntil != nil && now.After(*p.ValidUntil) {
+		return false
+	}
+	if p.ValidFrom == nil && p.ValidUntil == nil && parent != nil {
+		return parent.IsWithinValidity(now)
+	}
+	return true
 }
 
 type RateLimit struct {
@@ -780,6 +812,23 @@ type SystemSettings struct {
 	// Flash), not the primary task-execution provider -- see
 	// docs/completed/2026-09-06/architecture/FMC_DESIGN.md §4.2/§8 (Phase 2).
 	FMCWeakModel string `json:"fmc_weak_model,omitempty"`
+	// StaleTaskAutoFailHours is how long a running task may go without any
+	// progress (no status change, no step status change, no retry count
+	// change) before being auto-failed with GraphFailed. nil ⇒ default 24h;
+	// *0 (or negative) ⇒ disabled. Hours. Unlike the stale_decision_report
+	// (Q5-5, report-only), this actually changes the task status to failed.
+	StaleTaskAutoFailHours *int `json:"stale_task_auto_fail_hours,omitempty"`
+
+	// LogRetentionDays controls how many days of log files to keep before
+	// automatic purge. Default 7. Applies to both structured JSONL logs and
+	// the rotating app.log capture. 0 = use default.
+	LogRetentionDays int `json:"log_retention_days,omitempty"`
+
+	// LogTotalSizeCapMB is the total size cap for the log directory in MB.
+	// When exceeded, oldest compressed log files are removed first.
+	// Default 1024 (1GB). 0 = use default.
+	LogTotalSizeCapMB int `json:"log_total_size_cap_mb,omitempty"`
+
 	// FMCBatchIntervalHours controls how often the FMC batch ticker runs.
 	// Defaults to 6 hours if unset/zero, matching the design doc's guidance.
 	FMCBatchIntervalHours int                `json:"fmc_batch_interval_hours,omitempty"`
@@ -808,6 +857,11 @@ type SystemSettings struct {
 	// lifecycle points (chat and DAG). See docs/completed/2026-09-28/UNIFIED_HOOK_ARCHITECTURE_DESIGN.md.
 	// Each hook declares a point, script path, timeout, and optional filter.
 	Hooks []HookConfig `json:"hooks,omitempty"`
+
+	// CommandGuards (ADDED 2026-11-08): external scripts that inspect and
+	// can block commands before execution. Closes bypass paths in
+	// execute_code and RunViaTempScript. See docs/completed/2026-11-08/COMMAND_GUARD_PLUGIN_DESIGN.md.
+	CommandGuards []CommandGuardConfig `json:"command_guards,omitempty"`
 
 	// WorkspacePolicy (ADDED 2026-10-13): tier-gated workspace scope.
 	// When Enabled, Public tier callers have workspace_root forced to
@@ -927,6 +981,33 @@ type SystemSettings struct {
 	// admin can see shared sessions, "approve" = admin must approve actions.
 	// See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md.
 	OversightMode string `json:"oversight_mode,omitempty"`
+
+	// DiscoverySources (ADDED 2026-11-09) configures external discovery
+	// sources for skills and MCPs. Each source has a name, type, kind
+	// (skill/mcp), and source-specific params. Sources are fetched on
+	// startup and periodically (see DiscoverySyncIntervalHours).
+	// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md.
+	DiscoverySources []DiscoverySourceConfig `json:"discovery_sources,omitempty"`
+
+	// DiscoverySyncIntervalHours (ADDED 2026-11-09) controls how often
+	// discovery sources are re-fetched. Default 24h. 0 = only on startup.
+	DiscoverySyncIntervalHours int `json:"discovery_sync_interval_hours,omitempty"`
+}
+
+// DiscoverySourceConfig configures a single external discovery source.
+// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.
+type DiscoverySourceConfig struct {
+	Name    string            `json:"name"`              // human-readable identifier
+	Type    string            `json:"type"`              // "github" | "http" | "local"
+	Kind    string            `json:"kind"`              // "skill" | "mcp"
+	URL     string            `json:"url,omitempty"`     // for "github" and "http" types
+	Path    string            `json:"path,omitempty"`    // for "local" type
+	Headers map[string]string `json:"headers,omitempty"` // optional auth headers for HTTP sources
+	// Trusted controls the ingestion path: trusted sources register directly;
+	// untrusted sources stage in PendingSkills (skills) or apply admin_only
+	// mount policy (MCPs). Default false (untrusted). Local sources are
+	// always treated as trusted regardless of this field.
+	Trusted bool `json:"trusted,omitempty"`
 }
 
 // UpstreamSummarizerConfig controls upstream context semantic compression
@@ -1002,6 +1083,18 @@ type SystemOneConfig struct {
 	EnableFailureClassify bool    `json:"enable_failure_classify,omitempty"`
 	EnableSieve           bool    `json:"enable_sieve,omitempty"`
 	MinConfidence         float64 `json:"min_confidence,omitempty"`
+}
+
+// CommandGuardConfig declares an external command guard script that can
+// block or allow commands before execution. Mode "deny" means the script
+// acts as a blocklist (exit 0 = allow, non-zero = block); mode "allow"
+// means it acts as an allowlist (exit 0 = allow, non-zero = block — same
+// exit-code semantics, but timeout/exception defaults differ).
+type CommandGuardConfig struct {
+	Name      string `json:"name"`                // human-readable identifier
+	Script    string `json:"script"`               // path to guard script
+	TimeoutMs int    `json:"timeout_ms,omitempty"` // 0 = 500ms default
+	Mode      string `json:"mode,omitempty"`       // "deny" (default) | "allow"
 }
 
 // HookConfig declares a single automated hook. Point determines when it fires;

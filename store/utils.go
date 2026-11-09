@@ -85,7 +85,7 @@ func mostCommon(counts map[string]int) string {
 	best := ""
 	bestCount := -1
 	for k, c := range counts {
-		if c > bestCount {
+		if c > bestCount || (c == bestCount && k < best) {
 			best = k
 			bestCount = c
 		}

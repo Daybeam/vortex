@@ -260,10 +260,17 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req CompleteRequest
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if len(line) == 0 || !bytes.HasPrefix(line, []byte("data: ")) {
+		if len(line) == 0 || !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}
-		payload := bytes.TrimPrefix(line, []byte("data: "))
+		// SSE allows an optional space after the colon. Some OpenAI-compatible
+		// gateways (Ant Ling among them) emit `data:{...}` and `data:[DONE]`
+		// without it. Requiring "data: " silently drops every frame, so
+		// StreamComplete sees an empty reply and falls back to a second,
+		// non-streaming request -- one extra provider call per turn, and a
+		// turn budget that is spent twice as fast as the caller realises.
+		// TrimSpace also absorbs the CRLF/tab variants seen from proxies.
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
 		if bytes.Equal(payload, []byte("[DONE]")) {
 			break
 		}

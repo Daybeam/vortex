@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
@@ -286,6 +287,108 @@ func registerConfigSubsystem(app *App) {
 			app.Registry.Mu.Unlock()
 
 			return map[string]any{"ok": true}, nil
+		},
+	}
+
+	s.Actions["promote_to_sop"] = Action{
+		Name:        "promote_to_sop",
+		Description: "Promote a completed task's step sequence into a reusable SOP. Pulls step definitions (role, task, skills, MCPs, dependencies) from the task graph and saves via SOPManager with DAG validation.",
+		Parameters: map[string]any{
+			"task_id":     "string (required) - ID of the completed task to promote",
+			"sop_id":      "string (required) - unique SOP identifier for the new SOP",
+			"description": "string - SOP description",
+			"tags":        "[]string - SOP tags for categorization",
+			"triggers":    "[]string - keyword triggers for automatic SOP matching",
+		},
+		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
+			if EffectiveTier(ctx, app) == TierPublic {
+				return nil, fmt.Errorf("permission denied: public tier cannot promote tasks to SOPs")
+			}
+			taskID := strArg(args, "task_id")
+			sopID := strArg(args, "sop_id")
+			if taskID == "" {
+				return nil, fmt.Errorf("promote_to_sop: 'task_id' is required")
+			}
+			if sopID == "" {
+				return nil, fmt.Errorf("promote_to_sop: 'sop_id' is required")
+			}
+			if app.SOPManager == nil {
+				return nil, fmt.Errorf("promote_to_sop: SOPManager not initialized")
+			}
+
+			graph := app.Scheduler.GetTaskGraph(taskID)
+			if graph == nil {
+				return nil, fmt.Errorf("promote_to_sop: task %q not found or evicted from memory", taskID)
+			}
+			if len(graph.Steps) == 0 {
+				return nil, fmt.Errorf("promote_to_sop: task %q has no steps", taskID)
+			}
+
+			steps := make(map[string]schemas.SOPStep, len(graph.Steps))
+			for id, step := range graph.Steps {
+				if step == nil {
+					continue
+				}
+				steps[id] = schemas.SOPStep{
+					ID:                  step.ID,
+					Role:                step.RoleID,
+					Task:                step.Task,
+					Skills:              step.AdditionalSkills,
+					MCPs:                step.AdditionalMCPs,
+					Provider:            step.ProviderOverride,
+					DependsOn:           step.DependsOn,
+					ExitCriteria:        step.ExitCriteria,
+					DeterministicChecks: step.DeterministicChecks,
+				}
+			}
+
+			var triggers []schemas.SOPTrigger
+			if kwList, ok := args["triggers"].([]any); ok {
+				kws := make([]string, 0, len(kwList))
+				for _, k := range kwList {
+					if s, ok := k.(string); ok && s != "" {
+						kws = append(kws, s)
+					}
+				}
+				if len(kws) > 0 {
+					triggers = append(triggers, schemas.SOPTrigger{Keywords: kws})
+				}
+			}
+
+			var tags []string
+			if tagList, ok := args["tags"].([]any); ok {
+				for _, t := range tagList {
+					if s, ok := t.(string); ok && s != "" {
+						tags = append(tags, s)
+					}
+				}
+			}
+
+			sop := schemas.SOP{
+				ID:             sopID,
+				Version:        "1",
+				Author:         "system",
+				MutableByAgent: true,
+				Description:    strArg(args, "description"),
+				Tags:           tags,
+				Triggers:       triggers,
+				Steps:          steps,
+				Metadata: map[string]any{
+					"source_task_id": taskID,
+					"promoted_at":    time.Now().Format(time.RFC3339),
+				},
+			}
+
+			if err := app.SOPManager.SaveSOP(ctx, sop, true, false); err != nil {
+				return nil, fmt.Errorf("promote_to_sop: failed to save SOP: %w", err)
+			}
+
+			return map[string]any{
+				"ok":      true,
+				"sop_id":  sopID,
+				"steps":   len(steps),
+				"task_id": taskID,
+			}, nil
 		},
 	}
 
