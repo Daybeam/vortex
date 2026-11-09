@@ -266,6 +266,32 @@ func (r *Registry) loadLocked() error {
 	r.ExternalRuntimes = cfg.ExternalRuntimes
 	r.System = cfg.System
 	r.applySystemDefaults()
+
+	// Backward compat: convert legacy SkillSyncSources to DiscoverySources.
+	// Each "category": "owner/repo" entry becomes a DiscoverySourceConfig
+	// with type=github, kind=skill. Entries are appended only if no
+	// DiscoverySource with the same Name already exists (avoids duplicates
+	// when both formats are used in the same config).
+	// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.2.
+	if len(cfg.SkillSyncSources) > 0 {
+		existingNames := make(map[string]bool)
+		for _, ds := range r.System.DiscoverySources {
+			existingNames[ds.Name] = true
+		}
+		for category, sourceURL := range cfg.SkillSyncSources {
+			legacyName := "legacy-" + category
+			if existingNames[legacyName] {
+				continue
+			}
+			r.System.DiscoverySources = append(r.System.DiscoverySources, DiscoverySourceConfig{
+				Name: legacyName,
+				Type: "github",
+				Kind: "skill",
+				URL:  sourceURL,
+			})
+		}
+	}
+	r.SkillSyncSources = cfg.SkillSyncSources
 	// RiskTier keyword overrides (2026-10-18). nil = keep engine defaults;
 	// present-empty (`[]`) = that tier's keyword matching is turned off.
 	// SetRiskTierKeywords treats empty as "leave alone", so the explicit
@@ -518,7 +544,9 @@ func (r *Registry) StartCompactor(ctx context.Context) {
 }
 
 func (r *Registry) StartWatcher(ctx context.Context) {
+	r.watcherWg.Add(1) // audit LEAK-2: track goroutine lifecycle
 	go func() {
+		defer r.watcherWg.Done() // audit LEAK-2: ensure StopWatcher can wait for exit
 		defer func() {
 			if r := recover(); r != nil {
 				fmt.Fprintf(os.Stderr, "[config-watcher] goroutine panic: %v\n%s", r, debug.Stack())
@@ -572,6 +600,13 @@ func (r *Registry) StartWatcher(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// StopWatcher waits for the config watcher goroutine to fully exit after
+// its context has been cancelled (audit LEAK-2: was goroutine leak — caller
+// had no way to know when the watcher actually stopped).
+func (r *Registry) StopWatcher() {
+	r.watcherWg.Wait()
 }
 
 func (r *Registry) Persist() error {
