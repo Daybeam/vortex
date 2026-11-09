@@ -348,6 +348,7 @@ type DecisionNode struct {
 	// speculative ones. Confidence is the 0.0-1.0 certainty at decision time.
 	Source     string  `json:"source,omitempty"`     // "user" | "model" | "verifier"
 	Confidence float64 `json:"confidence,omitempty"` // 0.0-1.0
+	Domain     string  `json:"domain,omitempty"`     // topic facet (design §4: frozen at write time)
 }
 
 // ─── OutputFile ───────────────────────────────────────────────────────────

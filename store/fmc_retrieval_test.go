@@ -158,7 +158,7 @@ func TestRetrieveRelevantExperience_NoReranker_CoarseOrderPreserved(t *testing.T
 	}
 	es.rebuildNodeIndexLocked()
 
-	results := es.RetrieveRelevantExperience(context.Background(), query, "coding", "", 1000)
+	results := es.RetrieveRelevantExperience(context.Background(), query, "coding", "", "", 1000)
 	if len(results) == 0 {
 		t.Fatal("expected non-empty results")
 	}
@@ -213,7 +213,7 @@ func TestRetrieveRelevantExperience_WithReranker_AppliesRRF(t *testing.T) {
 	reranker := &mockReranker{scores: []float64{3.0, 9.0, 5.0}}
 	es.SetRerankerClient(reranker)
 
-	results := es.RetrieveRelevantExperience(context.Background(), query, "coding", "", 1000)
+	results := es.RetrieveRelevantExperience(context.Background(), query, "coding", "", "", 1000)
 
 	if !reranker.called {
 		t.Fatal("expected reranker to be called")
@@ -255,7 +255,7 @@ func TestRetrieveRelevantExperience_RerankerFailure_GracefulDegradation(t *testi
 	reranker := &mockReranker{err: context.DeadlineExceeded}
 	es.SetRerankerClient(reranker)
 
-	results := es.RetrieveRelevantExperience(context.Background(), query, "coding", "", 1000)
+	results := es.RetrieveRelevantExperience(context.Background(), query, "coding", "", "", 1000)
 
 	if !reranker.called {
 		t.Fatal("expected reranker to be called even on error")
@@ -294,6 +294,7 @@ func TestRetrieveRelevantExperience_SingleResult_NoReranking(t *testing.T) {
 		nil, // no embedding query → skip Tier 2
 		"coding",
 		"timeout", // triggers Tier 1
+		"",
 		1000,
 	)
 
@@ -332,7 +333,7 @@ func TestRetrieveRelevantExperience_RerankerScoreCountMismatch_GracefulDegradati
 	reranker := &mockReranker{scores: []float64{5.0}} // only 1 score for 2 docs
 	es.SetRerankerClient(reranker)
 
-	results := es.RetrieveRelevantExperience(context.Background(), query, "coding", "", 1000)
+	results := es.RetrieveRelevantExperience(context.Background(), query, "coding", "", "", 1000)
 
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
@@ -372,7 +373,7 @@ func TestRetrieveRelevantExperience_RerankerQueryText(t *testing.T) {
 	reranker := &mockReranker{scores: []float64{5.0, 5.0}}
 	es.SetRerankerClient(reranker)
 
-	es.RetrieveRelevantExperience(context.Background(), query, "coding", "rate_limit_hit", 1000)
+	es.RetrieveRelevantExperience(context.Background(), query, "coding", "rate_limit_hit", "", 1000)
 
 	// Reranker should receive the errorSignal as query text.
 	if reranker.querySeen != "rate_limit_hit" {
@@ -416,7 +417,7 @@ func TestRebuildNodeIndex_AfterDirectMutation(t *testing.T) {
 	// but hierarchical relaxation (design §2.4) finds the node via linear scan.
 	// This is expected: relaxation is the fallback when the index is empty.
 	results := es.RetrieveRelevantExperience(
-		context.Background(), nil, "coding", "timeout", 1000,
+		context.Background(), nil, "coding", "timeout", "", 1000,
 	)
 	if len(results) == 0 {
 		t.Fatal("expected relaxation to find results even without index, got 0")
@@ -425,7 +426,7 @@ func TestRebuildNodeIndex_AfterDirectMutation(t *testing.T) {
 	// Rebuild and verify Tier 1 strict lookup now finds the seeded node via O(1) index.
 	es.RebuildNodeIndex()
 	results = es.RetrieveRelevantExperience(
-		context.Background(), nil, "coding", "timeout", 1000,
+		context.Background(), nil, "coding", "timeout", "", 1000,
 	)
 	if len(results) == 0 {
 		t.Fatal("expected results after RebuildNodeIndex, got 0")
@@ -453,7 +454,7 @@ func TestRetrieveRelevantExperience_Tier1Relaxation_FailureModeOnly(t *testing.T
 	}
 	es.RebuildNodeIndex()
 
-	results := es.RetrieveRelevantExperience(context.Background(), nil, "coding", "timeout", 1000)
+	results := es.RetrieveRelevantExperience(context.Background(), nil, "coding", "timeout", "", 1000)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result from FailureMode-only relaxation, got %d", len(results))
 	}
@@ -479,7 +480,7 @@ func TestRetrieveRelevantExperience_Tier1Relaxation_CapabilityOnly(t *testing.T)
 	}
 	es.RebuildNodeIndex()
 
-	results := es.RetrieveRelevantExperience(context.Background(), nil, "coding", "timeout", 1000)
+	results := es.RetrieveRelevantExperience(context.Background(), nil, "coding", "timeout", "", 1000)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result from Capability-only relaxation, got %d", len(results))
 	}
@@ -510,7 +511,7 @@ func TestRetrieveRelevantExperience_Tier1Strict_NoRelaxationNeeded(t *testing.T)
 	}
 	es.RebuildNodeIndex()
 
-	results := es.RetrieveRelevantExperience(context.Background(), nil, "coding", "timeout", 1000)
+	results := es.RetrieveRelevantExperience(context.Background(), nil, "coding", "timeout", "", 1000)
 	// Strict match should be found. Relaxed_only should NOT be found because
 	// strict already returned results, so relaxation is skipped.
 	ids := make(map[string]bool)

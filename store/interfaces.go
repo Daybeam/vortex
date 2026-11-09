@@ -124,7 +124,7 @@ type IExperienceStore interface {
 	AddGeneratedSkill(ctx context.Context, skill *GeneratedSkill) error
 	QueryRoleAdvice(ctx context.Context, roleID string) map[string]any
 	// Experience Graph Memory (docs/architecture/EXPERIENCE_GRAPH_DESIGN.md)
-	RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal string, tokenBudget int) []*ExperienceNode
+	RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal, domain string, tokenBudget int) []*ExperienceNode
 	QuerySimilarPatterns(ctx context.Context, capabilities []string, limit int) []TaskPattern
 	QueryRelevantSkills(ctx context.Context, taskType string, limit int) []string
 	QuerySkillsBySignal(ctx context.Context, signal string) []string

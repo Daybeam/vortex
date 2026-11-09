@@ -300,6 +300,7 @@ func runMigrations(db *sql.DB) error {
 		failure_mode  TEXT,
 		critique      TEXT,
 		confidence    REAL DEFAULT 0,
+		domain        TEXT,
 		source_text   TEXT,
 		embedding     BLOB,
 		embedding_model TEXT,
@@ -308,6 +309,7 @@ func runMigrations(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_exp_nodes_task ON experience_nodes(task_id);
 	CREATE INDEX IF NOT EXISTS idx_exp_nodes_capability ON experience_nodes(capability);
 	CREATE INDEX IF NOT EXISTS idx_exp_nodes_outcome ON experience_nodes(outcome);
+	CREATE INDEX IF NOT EXISTS idx_exp_nodes_domain ON experience_nodes(domain);
 
 	CREATE TABLE IF NOT EXISTS experience_edges (
 		source_id TEXT NOT NULL,
