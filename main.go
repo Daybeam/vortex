@@ -385,6 +385,14 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 	syncer.Start()
 	defer syncer.Stop()
 
+	// ── Discovery Syncer ─────────────────────────────────────────────────
+	discoverySyncer := core.NewDiscoverySyncer(reg, loader, logger)
+	if discoverySyncer.SourceCount() > 0 {
+		discoverySyncer.Start()
+		defer discoverySyncer.Stop()
+		log.Printf("[discovery] %d source(s) configured, syncer started", discoverySyncer.SourceCount())
+	}
+
 	// ── Signal Field ──────────────────────────────────────────────────────
 	sf := core.NewSignalField(0.95, 10*time.Second)
 	sf.Start()
