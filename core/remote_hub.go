@@ -31,6 +31,9 @@ type RemoteTaskHub struct {
 
 	// stopChan stops the background pulse goroutine (audit: was goroutine leak)
 	stopChan chan struct{}
+	// wg tracks the pulse goroutine so Stop() can wait for it to exit
+	// (audit LEAK-1: was goroutine leak — Stop() returned before goroutine exited)
+	wg sync.WaitGroup
 }
 
 var _ interfaces.TaskHubInterface = (*RemoteTaskHub)(nil)
@@ -45,7 +48,9 @@ func NewRemoteTaskHub(baseURL, apiKey string, spawner *Spawner) *RemoteTaskHub {
 		stopChan:   make(chan struct{}),
 	}
 	// Background "pulse" to trigger sensing if Hub doesn't support push notifications yet
+	h.wg.Add(1)
 	go func() {
+		defer h.wg.Done() // audit LEAK-1: track goroutine lifecycle
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[remote_hub] pulse goroutine panic: %v\n%s", r, debug.Stack())
@@ -68,9 +73,11 @@ func NewRemoteTaskHub(baseURL, apiKey string, spawner *Spawner) *RemoteTaskHub {
 	return h
 }
 
-// Stop terminates the background pulse goroutine (audit: was goroutine leak).
+// Stop terminates the background pulse goroutine and waits for it to exit
+// (audit LEAK-1: was goroutine leak — Stop() returned before goroutine exited).
 func (h *RemoteTaskHub) Stop() {
 	close(h.stopChan)
+	h.wg.Wait()
 }
 
 func (h *RemoteTaskHub) GetSignalField() interfaces.SignalFieldInterface {

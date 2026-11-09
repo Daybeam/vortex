@@ -172,7 +172,7 @@ func (l *ResourceLoader) Fetch(ctx context.Context, source string) (string, erro
 
 // FetchRepoContents lists files in a GitHub repository folder.
 func (l *ResourceLoader) FetchRepoContents(ctx context.Context, owner, repo, path string) ([]RepoFile, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents", owner, repo)
+	url := fmt.Sprintf("%s/repos/%s/%s/contents", l.githubAPIBase, owner, repo)
 	if path != "" {
 		url = fmt.Sprintf("%s/%s", url, path)
 	}

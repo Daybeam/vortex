@@ -14,7 +14,7 @@ type mockExpStore struct {
 	lastBudget int // records the tokenBudget passed to RetrieveRelevantExperience
 }
 
-func (m *mockExpStore) RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal string, tokenBudget int) []*store.ExperienceNode {
+func (m *mockExpStore) RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal, domain string, tokenBudget int) []*store.ExperienceNode {
 	m.lastBudget = tokenBudget
 	return m.nodes
 }

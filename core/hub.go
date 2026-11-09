@@ -37,20 +37,16 @@ type ContextHub struct {
 	// (DELEGATION_AND_SUBMIT_DEFECTS.md §2.2): allows runtime dynamic MCP
 	// injection without pre-registration in config.json.
 	//
-	// PRODUCTION STATUS (audit M3, 2026-11-04): intentionally nil in all
-	// production code paths. NewContextHub never assigns this field. The
-	// nil-checks at validator.go:290 and validator.go:481 guard the call,
-	// so unknown MCP IDs always fail with "unknown MCP id" error.
-	// Wiring this callback is a feature addition that requires:
-	//   1. A discovery source (config file, registry, or remote service)
-	//   2. Security validation — auto-mounting unknown MCPs is dangerous:
-	//      an attacker could reference a malicious MCP ID and have it
-	//      auto-mounted with full tool access.
-	//   3. A deliberate design decision and security review.
-	// The seam is tested in delegation_defects_test.go and
-	// mount_policy_multitenant_test.go with test-specific implementations.
-	// See guard test TestOnUnknownMCP_NilInProduction and gap G7 in
-	// CALL_CHAINS.md §8.
+	// PRODUCTION STATUS (2026-11-09): NewContextHub now wires this callback
+	// by default to look up DynamicMCPs in the registry. This enables the
+	// DiscoverySyncer to populate DynamicMCPs from external discovery sources
+	// (HTTP APIs, GitHub repos), and OnUnknownMCP resolves them at request
+	// time from the in-memory cache — no network calls in the request path.
+	//
+	// Security: discovered MCPs always carry MountPolicy=admin_only and
+	// Source=external_dynamic, so the existing mount-policy gate in
+	// validator.go still applies. ServerRiskyMCP checks remain in effect.
+	// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.6 and §5.2.
 	OnUnknownMCP func(mcpID string) *config.MCPDef
 
 	// Circuit breaker for embedding providers: track non-retryable failures per provider
@@ -62,13 +58,31 @@ type ContextHub struct {
 }
 
 func NewContextHub(reg *config.Registry, graph *schemas.TaskGraph, exp store.IExperienceStore) *ContextHub {
-	return &ContextHub{
+	hub := &ContextHub{
 		Registry:       reg,
 		Graph:          graph,
 		Exp:            exp,
 		circuitBroken:  make(map[string]int),
 		circuitMaxFail: 3,
 	}
+
+	// Wire OnUnknownMCP to look up DynamicMCPs in the registry. This enables
+	// the DiscoverySyncer to populate DynamicMCPs from external sources, and
+	// OnUnknownMCP resolves them at request time from the in-memory cache.
+	// No network calls in the request path — discovery is async (DiscoverySyncer).
+	// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.6.
+	if reg != nil {
+		hub.OnUnknownMCP = func(mcpID string) *config.MCPDef {
+			reg.Mu.RLock()
+			defer reg.Mu.RUnlock()
+			if def, ok := reg.DynamicMCPs[mcpID]; ok {
+				return def
+			}
+			return nil
+		}
+	}
+
+	return hub
 }
 
 // resetCircuitBreaker clears all embedding circuit breaker state.

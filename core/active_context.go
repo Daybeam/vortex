@@ -80,7 +80,7 @@ func (a *ActiveContextAssembler) Assemble(
 			}
 		}
 
-		nodes := a.Graph.RetrieveRelevantExperience(ctx, query, capability, latestError, warmBudget)
+		nodes := a.Graph.RetrieveRelevantExperience(ctx, query, capability, latestError, "", warmBudget)
 		if len(nodes) > 0 {
 			sb.WriteString("\n\n" + MarkerLearnedExperience + "\n")
 			for _, n := range nodes {

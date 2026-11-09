@@ -76,19 +76,15 @@ func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventTy
 	body, _ := json.Marshal(payload)
 
 	for _, route := range matchingRoutes {
-		go func(route config.NotificationRoute) {
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Fprintf(os.Stderr, "[webhook] panic for %s: %v\n", route.TargetURL, r)
-				}
-			}()
+		route := route // capture per-iteration for closure
+		s.goBackground(func() {
 			// audit fix C: acquire semaphore slot to bound concurrency. If all
 			// slots are taken, this goroutine blocks until one frees — providing
 			// backpressure instead of unbounded goroutine spawn.
 			webhookSem <- struct{}{}
 			defer func() { <-webhookSem }()
 			sendWebhook(route.TargetURL, route.SecretEnv, body)
-		}(route)
+		})
 	}
 }
 
