@@ -159,6 +159,14 @@ type ChatHarness struct {
 	PendingSteer string
 	SteerLock    sync.Mutex
 
+	// Delegation drift detection (ADDED 2026-11-08): counts read-only
+	// exploratory tool calls per turn to detect when the model is
+	// "hard-sustaining" instead of delegating. Per-turn because
+	// cloneHarnessForRequest zero-initializes these fields. See
+	// docs/completed/2026-11-08/CHAT_HARNESS_DELEGATION_DRIFT_DESIGN.md.
+	fileReadCalls     int
+	delegationSteered bool
+
 	// ReadinessGateSoft (ADDED 2026-10-10): when true, softens the
 	// delegation readiness gate language from "NEVER blindly delegate"
 	// to a suggestion. Weak models (≤7B) over-apply the hard rule and
@@ -938,6 +946,28 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				}
 			}
 
+			// Delegation drift detection: count read-only exploratory
+			// tool calls (not cache hits — a cached replay means
+			// revisiting, not exploring new ground). When the count
+			// reaches the threshold, inject a steer suggesting
+			// delegation. See docs/completed/2026-11-08/CHAT_HARNESS_DELEGATION_DRIFT_DESIGN.md.
+			if tc.Name == "read_file" || tc.Name == "grep" || tc.Name == "find" {
+				h.fileReadCalls++
+				if h.fileReadCalls >= 6 && h.fileReadCalls < 15 && !h.delegationSteered {
+					h.SteerLock.Lock()
+					if h.PendingSteer == "" {
+						h.PendingSteer = fmt.Sprintf(
+							"[DELEGATION DRIFT] You have called file-reading/grep tools %d times. "+
+								"If this task spans multiple files, sources, or sub-questions (see WHEN TO DELEGATE), "+
+								"consider using delegate_to_orchestrator. If you are already finishing up, answer directly.",
+							h.fileReadCalls)
+						h.delegationSteered = true
+						emit(ChatEvent{Type: "delegation_drift", Data: tc.Name})
+					}
+					h.SteerLock.Unlock()
+				}
+			}
+
 			result, derr := h.execTool(ctx, tc.Name, tc.Arguments, taskID)
 			if derr != nil {
 				// Track error messages (not just count) so we can inject them
@@ -1087,7 +1117,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				if h.contractArmed() && h.SessionRoot != "" {
 					_, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, declaredArtifacts)
 					defects := h.artifactDefects(ctx, taskID, emit)
-					if contractSteers == 0 && len(declaredArtifacts) > 0 && missing == 0 && len(defects) == 0 {
+					if contractSteers == 0 && len(declaredArtifacts) > 0 && missing == 0 && len(defects) == 0 && (h.DelegateStatus == nil || h.isDelegatedTaskTerminal(taskID)) {
 						contractSteers++
 						// The event always fires: "when would the steer have
 						// fired" is the observation arm C needs, and an absent
@@ -1306,7 +1336,7 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 		if strings.TrimSpace(id) == "" {
 			return "", fmt.Errorf("orchestrator_task_status: 'task_id' is required")
 		}
-		wait := 0.0
+		wait := 15.0 // D2 fix: default to 15s blocking so polling is not the default behavior
 		if w, ok := args["wait_seconds"].(float64); ok && w > 0 {
 			wait = w
 			if wait > 60 {

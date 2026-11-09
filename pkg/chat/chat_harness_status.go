@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/schemas"
@@ -41,6 +42,42 @@ func formatTaskStatus(id string, st map[string]any, declared []string) string {
 	root, _ := st["workspace_root"].(string)
 	if root != "" {
 		b.WriteString("workspace_root: " + root + "\n")
+	}
+	// Progress summary: computed from the full view's steps map, because the
+	// full view (which DelegateStatus returns) does not carry the summary
+	// view's top-level "progress" or "active_step_id" fields. Without this,
+	// a model polling a running task sees per-step statuses but no concise
+	// "how far along" signal, so it cannot distinguish early progress from
+	// near-completion (harness-bench D1, 2026-11-08).
+	if steps, ok := st["steps"].(map[string]any); ok && len(steps) > 0 {
+		completed := 0
+		var activeStepID string
+		for _, sv := range steps {
+			sm, ok := sv.(map[string]any)
+			if !ok {
+				continue
+			}
+			s, _ := sm["status"].(string)
+			switch s {
+			case "ok", "partial", "skipped":
+				completed++
+			case "running", "blocked":
+				activeStepID = sm["id"].(string)
+			}
+		}
+		b.WriteString(fmt.Sprintf("progress: %d/%d", completed, len(steps)))
+		if activeStepID != "" {
+			b.WriteString(" active_step: " + activeStepID)
+		}
+		b.WriteString("\n")
+	}
+	// Elapsed time from task creation. Gives the model a sense of whether the
+	// task just started or has been running long enough to expect completion.
+	if created, _ := st["created_at"].(string); created != "" {
+		if t, err := time.Parse(time.RFC3339, created); err == nil {
+			elapsed := time.Since(t)
+			b.WriteString("elapsed: " + formatDuration(elapsed) + "\n")
+		}
 	}
 	if steps, ok := st["steps"].(map[string]any); ok && len(steps) > 0 {
 		ids := make([]string, 0, len(steps))
@@ -157,4 +194,22 @@ func isTerminalChatStatus(status string) bool {
 		return true
 	}
 	return false
+}
+
+// formatDuration renders a duration in a compact human-readable form suitable
+// for a status line: "3m", "1h5m", "12s". Sub-second precision is dropped.
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) - h*60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
 }
