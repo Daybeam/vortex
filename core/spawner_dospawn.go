@@ -194,6 +194,13 @@ turnLoop:
 			pCfg := s.resolveCandidateConfig(req.Hub, role, cand.providerID, cand.model)
 			currentPCfg = pCfg
 
+			if !pCfg.IsWithinValidity(time.Now()) && candIdx < len(candidateConfigs)-1 {
+				s.logger.Log(obs.EventProviderCooldownSkip, req.TaskID, req.StepID, map[string]any{
+					"pool_id": providers.PoolIDFor(pCfg), "reason": "key_validity_expired",
+				})
+				continue
+			}
+
 			// FIX (2026-08-16/17): the global rate-limit cooldown set by
 			// scheduler.go's SetCooldown() was write-only -- nothing ever
 			// consulted Registry.IsCoolingDown(), so a provider marked as

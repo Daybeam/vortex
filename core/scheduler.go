@@ -192,6 +192,11 @@ type DirectedEngine struct {
 	// (audit NEW-P1: mirrors the crystSem pattern in reflection.go:307.)
 	decSem chan struct{}
 
+	// staleTaskSnapshots tracks the last known progress state of each running
+	// task for the stale-task auto-fail monitor. Keyed by taskID. Only
+	// accessed from the monitor's background goroutine while holding s.Mu.
+	staleTaskSnapshots map[string]*staleTaskState
+
 	// recentDecisions (#14, ADDED 2026-10-10): per-step decision timestamp
 	// for RiskTier-based rate limiting. Key: "taskID:stepID".
 	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.3.
@@ -260,6 +265,7 @@ func NewDirectedEngine(
 		UseSwarm:            os.Getenv("ACAIS_MODE") == "1",
 		notifyChan:          make(chan struct{}),
 		decSem:              make(chan struct{}, 5), // audit NEW-P1: bound concurrent decision-resolution goroutines
+		staleTaskSnapshots:  make(map[string]*staleTaskState),
 		recentDecisions:     make(map[string]time.Time),
 	}
 	s.spawner.SignalField = sf
@@ -292,6 +298,7 @@ func NewDirectedEngine(
 	s.spawner.SetRefBasedHandoffThreshold(int(reg.System.RefBasedHandoffThreshold))
 
 	s.loadGraphs()
+	s.startStaleTaskMonitor()
 	bootmetrics.Mark("scheduler")
 	return s
 }
@@ -821,6 +828,12 @@ func (s *DirectedEngine) GetSpawner() *Spawner {
 func (s *DirectedEngine) GetStepResult(taskID, stepID string) *store.StepResult {
 	res, _ := s.taskStore.Get(s.lifecycleCtx, taskID, stepID)
 	return res
+}
+
+func (s *DirectedEngine) GetTaskGraph(taskID string) *schemas.TaskGraph {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	return s.graphs[taskID]
 }
 
 func (s *DirectedEngine) TaskKnown(taskID string) bool {

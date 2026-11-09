@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -845,7 +846,32 @@ func taskSubmittedDetail(stepCount int, requireReview bool, graph *schemas.TaskG
 	if deps := stepDependencySnapshot(graph); len(deps) > 0 {
 		detail["deps"] = deps
 	}
+	// A fully parallel plan has no dependency edges at all, so `deps` alone
+	// cannot tell replay that its steps are one explicit fan-out. Record the
+	// complete planned node set: an edge-less graph is still a graph, and its
+	// dependency-free nodes are exactly the parallel roots.
+	if ids := stepIDSnapshot(graph); len(ids) > 0 {
+		detail["step_ids"] = ids
+	}
 	return detail
+}
+
+// stepIDSnapshot lists every planned step, including dependency-free roots
+// that stepDependencySnapshot deliberately omits. Sorted so the log payload is
+// stable across runs with the same plan.
+func stepIDSnapshot(graph *schemas.TaskGraph) []string {
+	if graph == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(graph.Steps))
+	for id, step := range graph.Steps {
+		if step == nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // stepDependencySnapshot keeps only steps that actually declare upstream

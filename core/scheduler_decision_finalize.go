@@ -81,6 +81,36 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 			finalStatus = schemas.GraphCompleted
 		}
 	}
+	// Snapshot output data for the terminal event payload while still holding
+	// the lock. ACP consumers (and any future event subscriber) need the
+	// actual task result, not just a confidence number.
+	var resultSummary string
+	outputFileList := make([]map[string]any, 0, len(graph.OutputFiles))
+	for _, of := range graph.OutputFiles {
+		outputFileList = append(outputFileList, map[string]any{
+			"path":       of.Path,
+			"summary":    of.Summary,
+			"format":     of.Format,
+			"is_primary": of.IsPrimary,
+		})
+		if of.IsPrimary && of.Summary != "" {
+			resultSummary = of.Summary
+		}
+	}
+	// Fall back to last completed step's partial output if no primary file.
+	if resultSummary == "" {
+		for _, step := range graph.Steps {
+			if step.Status == schemas.StepOK && step.PartialOutput != "" {
+				resultSummary = step.PartialOutput
+			}
+		}
+	}
+	// Cap to prevent oversized ACP notifications (4 MB JSON-RPC line limit).
+	const maxResultLen = 10000
+	if len(resultSummary) > maxResultLen {
+		resultSummary = resultSummary[:maxResultLen] + "...[truncated]"
+	}
+
 	s.Mu.Unlock()
 	s.setGraphStatus(graph, finalStatus)
 
@@ -91,7 +121,14 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	// pending decision must not announce task_completed just because every
 	// step it currently has is non-failed.
 	if finalStatus == schemas.GraphCompleted || finalStatus == schemas.GraphCompletedWithSkips {
-		s.publishEvent(graph.TaskID, "", obs.EventTaskCompleted, map[string]any{"confidence": conf})
+		payload := map[string]any{"confidence": conf}
+		if resultSummary != "" {
+			payload["result"] = resultSummary
+		}
+		if len(outputFileList) > 0 {
+			payload["output_files"] = outputFileList
+		}
+		s.publishEvent(graph.TaskID, "", obs.EventTaskCompleted, payload)
 	} else {
 		s.publishEvent(graph.TaskID, "", obs.EventTaskFailed, map[string]any{"confidence": conf})
 	}
