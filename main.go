@@ -120,6 +120,22 @@ func main() {
 	}
 	defer logger.Close()
 
+	logger.StartPurgeTicker(rootCtx, 24*time.Hour)
+
+	rotWriter, rwErr := obs.NewRotatingWriter(logDir,
+		reg.System.MaxLogSizeMB,
+		reg.System.LogRetentionDays,
+		reg.System.LogTotalSizeCapMB)
+	if rwErr != nil {
+		log.Printf("[warning] failed to init rotating stderr capture: %v (continuing without)", rwErr)
+	} else {
+		defer rotWriter.Close()
+		log.SetOutput(rotWriter)
+		restoreStderr := rotWriter.StartStderrCapture()
+		defer restoreStderr()
+		fmt.Fprintln(rotWriter, "[vortex] stderr capture enabled")
+	}
+
 	// ── Runtime DB (SQLite) ───────────────────────────────────────────────
 	dbPath := getenv("VORTEX_DB_PATH", filepath.Join(root, "orchestrator_runtime.db"))
 	db, err := store.InitDB(dbPath)
@@ -243,6 +259,7 @@ func runExec(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase
 	modelRegistry := registry.NewModelRegistry()
 	scheduler.WireCapabilityRouting(capProfileStore, modelRegistry)
 	scheduler.WireHooks(reg.System.Hooks, reg.ExternalRuntimes)
+	core.RegisterExternalGuards(reg.System.CommandGuards, reg.ExternalRuntimes)
 
 	scheduler.JITSessions = jit.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.SetTaskRegistry(s.TaskRegistry)
