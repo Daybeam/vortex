@@ -612,5 +612,96 @@ func (h *APIHandler) StepResultHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// PromoteSOPHandler handles POST /api/tasks/promote-sop — promotes a completed
+// task's step sequence into a reusable SOP via SOPManager.SaveSOP (with DAG
+// validation and immutability guards).
+func (h *APIHandler) PromoteSOPHandler(w http.ResponseWriter, r *http.Request) {
+	if h.App == nil || h.App.SOPManager == nil {
+		http.Error(w, "SOPManager not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		TaskID      string   `json:"task_id"`
+		SOPID       string   `json:"sop_id"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+		Triggers    []string `json:"triggers"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.TaskID == "" {
+		http.Error(w, "task_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.SOPID == "" {
+		http.Error(w, "sop_id is required", http.StatusBadRequest)
+		return
+	}
+
+	graph := h.App.Scheduler.GetTaskGraph(req.TaskID)
+	if graph == nil {
+		http.Error(w, fmt.Sprintf("task %q not found or evicted from memory", req.TaskID), http.StatusNotFound)
+		return
+	}
+	if len(graph.Steps) == 0 {
+		http.Error(w, fmt.Sprintf("task %q has no steps", req.TaskID), http.StatusBadRequest)
+		return
+	}
+
+	steps := make(map[string]schemas.SOPStep, len(graph.Steps))
+	for id, step := range graph.Steps {
+		if step == nil {
+			continue
+		}
+		steps[id] = schemas.SOPStep{
+			ID:                  step.ID,
+			Role:                step.RoleID,
+			Task:                step.Task,
+			Skills:              step.AdditionalSkills,
+MCPs:              step.AdditionalMCPs,
+			Provider:            step.ProviderOverride,
+			DependsOn:           step.DependsOn,
+			ExitCriteria:        step.ExitCriteria,
+			DeterministicChecks: step.DeterministicChecks,
+		}
+	}
+
+	var triggers []schemas.SOPTrigger
+	if len(req.Triggers) > 0 {
+		triggers = append(triggers, schemas.SOPTrigger{Keywords: req.Triggers})
+	}
+
+	sop := schemas.SOP{
+		ID:             req.SOPID,
+		Version:        "1",
+		Author:         "human_expert",
+		MutableByAgent: false,
+		Description:    req.Description,
+		Tags:           req.Tags,
+		Triggers:       triggers,
+		Steps:          steps,
+		Metadata: map[string]any{
+			"source_task_id": req.TaskID,
+			"promoted_at":    time.Now().Format(time.RFC3339),
+		},
+	}
+
+	if err := h.App.SOPManager.SaveSOP(r.Context(), sop, false, false); err != nil {
+		http.Error(w, "failed to save SOP: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"sop_id":  req.SOPID,
+		"steps":   len(steps),
+		"task_id": req.TaskID,
+	})
+}
+
 // Ensure schemas.SOP is used (avoids unused import if struct changes)
 var _ = schemas.SOP{}

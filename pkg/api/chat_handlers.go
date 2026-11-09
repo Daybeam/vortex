@@ -822,6 +822,12 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 			return nil
 		})
 		if (err == nil || chat.IsMaxTurnsPartial(err)) && final != "" {
+			if err != nil {
+				// MaxTurnsPartial: the turn hit the turn ceiling but still
+				// produced output. Log it so the partial is traceable.
+				fmt.Fprintf(os.Stderr, "[chat] session=%s task=%s turn ended with partial result: %v\n",
+					sessionID, taskID, err)
+			}
 			if err == nil && h.hookRunner != nil {
 				postResult := h.hookRunner.Run(runCtx, core.HookChatPostTurn, core.HookContext{
 					Point:     core.HookChatPostTurn,
@@ -866,6 +872,14 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 					fmt.Fprintf(os.Stderr, "[chat] WARN: failed to index turn in ContextArchive: %v\n", aerr)
 				}
 			}
+		} else if err != nil {
+			// Non-partial error (e.g. context deadline exceeded, provider
+			// failure). Previously this was silently dropped — the turn
+			// produced no output and no log line, so the only trace was a
+			// hanging SSE stream. The RotatingWriter now captures stderr,
+			// but an explicit log line makes the cause searchable.
+			fmt.Fprintf(os.Stderr, "[chat] session=%s task=%s turn failed: %v\n",
+				sessionID, taskID, err)
 		}
 	}()
 

@@ -337,12 +337,19 @@ func (h *ChatHandler) cleanupTaskChatState(taskID string) {
 		}
 		return true
 	})
-	h.followUpSeen.Range(func(k, _ any) bool {
-		if strings.Contains(k.(string), needle) {
-			h.followUpSeen.Delete(k)
-		}
-		return true
-	})
+	// followUpSeen is deliberately NOT reclaimed here (D7).
+	//
+	// notifyTaskTerminal claims the (session, task, reason) slot and then calls
+	// this function at its end, so deleting the entry here removed the record
+	// the same call had just written: a redelivered terminal event found an
+	// empty dedupe table and started another follow-up turn. Measured in a real
+	// run: nine "engine started a turn (task_done)" lines for one task and no
+	// result for eight minutes; pinned by
+	// TestFollowUpTurn_SecondTerminalEventStartsNoSecondTurn.
+	//
+	// The entry is per (session, task, reason) and is reclaimed by
+	// cleanupSessionChatState when the session is cleared, which is the only
+	// event after which "this task was already answered" stops being true.
 }
 
 // cleanupSessionChatState removes all chat-handler bookkeeping entries scoped
