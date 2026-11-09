@@ -3,10 +3,12 @@ package obs
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/daybeam/vortex/config"
 )
@@ -111,5 +113,34 @@ func TestCompressFile_ErrorOnInvalidDestination(t *testing.T) {
 
 	if err := logger.compressFile(srcPath, dstPath); err == nil {
 		t.Fatal("compressFile should return error for invalid destination, got nil")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Regression test for the shutdown deadlock found 2026-11-09 while debugging
+// the ACP transport (orchestrator-acp.exe never exited on stdin EOF, in every
+// transport mode). Logger.Close waited on l.wg, which also tracks the
+// StartPurgeTicker goroutine, but that goroutine only exited on the caller's
+// ctx.Done(). main.go registers defer rootCancel() before defer logger.Close(),
+// so LIFO runs rootCancel last: Close blocked forever on the ticker.
+// Before fix: Close deadlocks unless the caller cancels ctx first.
+// After fix:  Close closes purgeStop itself; caller ctx ordering is irrelevant.
+// -----------------------------------------------------------------------------
+func TestLoggerClose_StopsPurgeTickerWithoutCtxCancel(t *testing.T) {
+	logger, err := NewLogger(t.TempDir(), &config.SystemSettings{})
+	if err != nil {
+		t.Fatalf("NewLogger failed: %v", err)
+	}
+	logger.StartPurgeTicker(context.Background(), time.Hour)
+
+	done := make(chan struct{})
+	go func() {
+		logger.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Logger.Close deadlocked: purge ticker outlives Close when caller ctx is never cancelled")
 	}
 }

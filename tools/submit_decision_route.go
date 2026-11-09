@@ -106,8 +106,10 @@ func handleSubmitDecision(app *App, ctx context.Context, req mcp.CallToolRequest
 
 	args := map[string]any{}
 	if req.Params.Arguments != nil {
-		for k, v := range req.Params.Arguments.(map[string]any) {
-			args[k] = v
+		if typedArgs, ok := req.Params.Arguments.(map[string]any); ok {
+			for k, v := range typedArgs {
+				args[k] = v
+			}
 		}
 	}
 	humanApproval, _ := args["human_approval"].(map[string]any)

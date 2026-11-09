@@ -48,7 +48,7 @@ func (f *fakeExperienceStore) AddGeneratedSkill(ctx context.Context, skill *stor
 func (f *fakeExperienceStore) QueryRoleAdvice(ctx context.Context, roleID string) map[string]any {
 	return nil
 }
-func (f *fakeExperienceStore) RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal string, tokenBudget int) []*store.ExperienceNode {
+func (f *fakeExperienceStore) RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal, domain string, tokenBudget int) []*store.ExperienceNode {
 	return nil
 }
 func (f *fakeExperienceStore) QuerySimilarPatterns(ctx context.Context, capabilities []string, limit int) []store.TaskPattern {
