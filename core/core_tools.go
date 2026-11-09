@@ -459,15 +459,28 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 	execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	var resolvedPath string
 	for _, c := range candidates {
 		if path, err := exec.LookPath(c); err == nil {
-			cmd = exec.CommandContext(execCtx, path, "-c", code)
+			resolvedPath = path
 			break
 		}
 	}
-	if cmd == nil {
+	if resolvedPath == "" {
 		return nil, fmt.Errorf("%s runtime not found on PATH", lang)
 	}
+
+	// Command guard: inspect code before execution (closes bypass path 1 —
+	// execute_code was previously completely unguarded).
+	guard := CheckAll(resolvedPath, []string{"-c", code}, code)
+	if guard.Block {
+		return nil, fmt.Errorf("blocked by command guard: %s", guard.Message)
+	}
+	if guard.RewrittenBody != "" {
+		code = guard.RewrittenBody
+	}
+
+	cmd = exec.CommandContext(execCtx, resolvedPath, "-c", code)
 
 	// Set working directory so the model can use relative paths.
 	if cwd != "" {

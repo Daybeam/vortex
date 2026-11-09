@@ -123,6 +123,11 @@ type Logger struct {
 	wg       sync.WaitGroup
 	closed   bool
 	closedMu sync.RWMutex
+	// purgeStop lets Close drain the purge ticker without relying on the
+	// caller's ctx: main defers rootCancel after Close (LIFO), so a ctx-only
+	// ticker deadlocks wg.Wait.
+	purgeStop chan struct{}
+	purgeOnce sync.Once
 	System   *config.SystemSettings
 	// droppedEvents counts log events dropped because the channel was full
 	// (audit finding H6 — non-blocking send prevents deadlock under backpressure).
@@ -156,6 +161,7 @@ func NewLogger(logDir string, sys *config.SystemSettings) (*Logger, error) {
 		dirCache:                make(map[string]bool),
 		fileSizeCache:           make(map[string]int64),
 		maxFileSizeCacheEntries: defaultMaxFileSizeCacheEntries,
+		purgeStop:               make(chan struct{}),
 	}
 
 	// Purge old logs on startup (keep last 7 days)
@@ -256,6 +262,7 @@ func (l *Logger) Close() {
 	l.closed = true
 	close(l.ch)
 	l.closedMu.Unlock()
+	l.purgeOnce.Do(func() { close(l.purgeStop) })
 	l.wg.Wait()
 }
 
@@ -593,6 +600,37 @@ func SplitLines(data []byte) [][]byte {
 		lines = append(lines, data[start:])
 	}
 	return lines
+}
+
+// StartPurgeTicker launches a background goroutine that periodically purges
+// old log directories. The interval defaults to 24h. The retention period
+// defaults to 7 days (matching the startup purge). Both can be overridden via
+// SystemSettings. The goroutine is tracked by l.wg so Close() drains it.
+func (l *Logger) StartPurgeTicker(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+	daysToKeep := 7
+	if l.System != nil && l.System.LogRetentionDays > 0 {
+		daysToKeep = l.System.LogRetentionDays
+	}
+
+	l.wg.Add(1)
+	go func() {
+		defer l.wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-l.purgeStop:
+				return
+			case <-ticker.C:
+				l.PurgeLogs(daysToKeep)
+			}
+		}
+	}()
 }
 
 // PurgeLogs removes log directories older than daysToKeep.

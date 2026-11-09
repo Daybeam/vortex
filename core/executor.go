@@ -77,8 +77,8 @@ func NewControlledExecutor() *ControlledExecutor {
 }
 
 func (e *ControlledExecutor) Run(ctx context.Context, command string, args []string, cwd string, input []byte) (*ExecutionResult, error) {
-	// Command guard: block TUI tools, auto-inject git --no-pager
-	guard := CheckCommand(command, args)
+	// Command guard: block TUI tools, auto-inject git --no-pager, run external guards
+	guard := CheckAll(command, args, "")
 	if guard.Block {
 		return &ExecutionResult{
 			Status: "error",
@@ -467,6 +467,24 @@ func (e *ControlledExecutor) verifyRobustness(ctx context.Context, directRes *Ex
 }
 
 func (e *ControlledExecutor) RunViaTempScript(ctx context.Context, shellType, body, cwd string) (*ExecutionResult, error) {
+	// Guard: inspect script body before execution (closes bypass path 2).
+	var guardCmd string
+	if shellType == "powershell" {
+		guardCmd = "powershell"
+	} else {
+		guardCmd = "bash"
+	}
+	guard := CheckAll(guardCmd, nil, body)
+	if guard.Block {
+		return &ExecutionResult{
+			Status: "error",
+			Error:  fmt.Errorf("blocked by command guard: %s", guard.Message),
+		}, nil
+	}
+	if guard.RewrittenBody != "" {
+		body = guard.RewrittenBody
+	}
+
 	ext := ".sh"
 	if shellType == "powershell" {
 		ext = ".ps1"
