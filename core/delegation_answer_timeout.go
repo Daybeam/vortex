@@ -7,8 +7,8 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-// Q4-6 (register O20, answered 2026-11-05): 「把"分钟级无回传"显式化为错误，超时值做成
-// 可配置，默认给宽」.
+// Q4-6 (register O20, answered 2026-11-05): "Make 'minute-level no response' an
+// explicit error, make the timeout configurable, and default to a generous window".
 //
 // O20 measured the ambiguity: an envelope appeared after get_task_status had
 // already answered pending=none, and a second submission never came back within
@@ -100,6 +100,9 @@ func oldestWaitSeconds(stale []StaleDecision) int {
 // what is still reachable so nobody reads it as "already lost" — including the
 // warning that cancel destroys the parked envelope (O20's operator error).
 func delegationAnswerError(stale []StaleDecision, timeout time.Duration) string {
+	if len(stale) == 0 {
+		return ""
+	}
 	oldest := stale[0]
 	for _, d := range stale[1:] {
 		if d.WaitingSeconds > oldest.WaitingSeconds {

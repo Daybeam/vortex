@@ -306,7 +306,7 @@ turnLoop:
 				SystemBlocks: systemBlocks,
 				UserBlocks:   userBlocks,
 				Model:        pCfg.Model,
-				MaxTokens:    s.spawnOutputBudget(req), // 铁律 51-4: the audit needs
+				MaxTokens:    s.spawnOutputBudget(req), // Iron Rule 51-4: the audit needs
 				// the output reserve to see `prompt + max_tokens > window`.
 				CompressionHint: req.CompressionHint,
 			}
@@ -398,7 +398,7 @@ turnLoop:
 				}, nil
 			}
 
-			// #20 (eval §8.46) + 铁律 51 (2026-10-27): Reactive context
+			// #20 (eval §8.46) + Iron Rule 51 (2026-10-27): Reactive context
 			// compression. When the provider returns a context-limit error the
 			// conversation history is shrunk to fit the call's input budget and
 			// the same provider is retried once.
@@ -409,7 +409,7 @@ turnLoop:
 			// without logging anything at all (aw19: 0 compression events across
 			// 51 turns). The decision is now budget-based and EITHER branch emits
 			// exactly one event, so "did not fire" is observable instead of
-			// invisible — the whole point of 铁律 51-3.
+			// invisible — the whole point of Iron Rule 51-3.
 			if err != nil && IsContextLimitError(err) {
 				budget := s.contextInputBudget(pCfg, req)
 				cres := compressUserBlocksToBudget(userBlocks, budget)
@@ -700,7 +700,7 @@ turnLoop:
 		// Parse VCP-inspired heartbeat directives from the agent's response.
 		// The agent can self-pace background tasks: sleep while waiting for
 		// CI, explicitly complete/fail, or customize the next wakeup prompt.
-		// See docs/plan/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md §2.
+		// See docs/completed/2026-10-30/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md §2.
 		hb := parseHeartbeat(resp.Text)
 		if hb.Action == HeartbeatComplete {
 			s.logger.Log("EventHeartbeatComplete", req.TaskID, req.StepID, map[string]any{

@@ -18,7 +18,7 @@ import (
 // on the sync-envelope wait and no progress signal in the status, so "slow
 // delegation" and "my answer was lost" were the same observable.
 //
-// The operator's answer: 「把"分钟级无回传"显式化为错误，超时值做成可配置，默认给宽」.
+// The operator's answer: "Make 'minute-level no response' an explicit error, make the timeout configurable, and default to a generous window".
 // These tests pin the three properties that answer depends on — that the report
 // appears past the window, that the window is configurable, and that the report
 // is a report: O22 forbids a timer from resolving a delegated step, so nothing
@@ -133,7 +133,7 @@ func TestDelegationAnswerTimeout_SilentInsideWindow(t *testing.T) {
 	}
 }
 
-// TestDelegationAnswerTimeout_Configurable covers the "超时值做成可配置" half:
+// TestDelegationAnswerTimeout_Configurable covers the "timeout value made configurable" half:
 // system.delegation_answer_timeout_seconds sets the window, 0 or less turns the
 // report off, and an explicit value does not inherit the default.
 func TestDelegationAnswerTimeout_Configurable(t *testing.T) {

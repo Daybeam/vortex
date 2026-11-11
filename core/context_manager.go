@@ -163,7 +163,7 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 		tokenLimit = effectiveMaxCtx
 	}
 
-	// 铁律 52 (2026-10-28): an unset ceiling does not fail loudly — it silently
+	// Iron Rule 52 (2026-10-28): an unset ceiling does not fail loudly — it silently
 	// makes a judgement permanent. EffectiveContextWindow is only ever populated
 	// by hand (config_windows.json sets it for two HF providers); every other
 	// deployment, including the AppWorld harness (kernel.py writes only
@@ -193,7 +193,7 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 
 	effCtx = applyCompressionHint(effCtx, effectiveMaxCtx, req.CompressionHint)
 
-	// 铁律 51-4 (2026-10-27): the reply reserve and this call's max_tokens are
+	// Iron Rule 51-4 (2026-10-27): the reply reserve and this call's max_tokens are
 	// not the same number, and OpenAI-compatible servers reject
 	// `prompt + max_tokens > window`. The reserve only covers the output if it
 	// happens to be at least max_tokens; when it is not, the real input capacity
@@ -392,7 +392,7 @@ func (cm *ContextManager) Squeeze(ctx context.Context, provider providers.Provid
 		volatileSystem = protectedConcat + "\n\n" + volatileSystem
 	}
 
-	// 铁律 51-1 (2026-10-27): rebuild the BLOCK structure.
+	// Iron Rule 51-1 (2026-10-27): rebuild the BLOCK structure.
 	//
 	// The original implementation only produced the flat System/User strings and
 	// left SystemBlocks/UserBlocks nil. The spawner then had to reconstruct

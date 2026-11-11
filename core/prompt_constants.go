@@ -78,7 +78,7 @@ const (
 	// the model calls delegate_to_orchestrator but all declared artifacts
 	// already exist on disk. It does NOT return an error — an error would
 	// consume a retry turn and the model might bypass the gate by choosing
-	// a different tool path. (Stage 3, COST_AND_TERMINATION_PLAN §阶段 3.)
+	// a different tool path. (Stage 3, COST_AND_TERMINATION_PLAN §stage 3.)
 	MarkerDelegationSkipped = "[COMPLETION CONTRACT] All declared artifacts already exist; " +
 		"delegation skipped. Reply with a final answer instead."
 	// MarkerCompressedPlaceholder replaces compressed instruction body.

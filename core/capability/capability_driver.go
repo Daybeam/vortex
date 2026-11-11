@@ -88,7 +88,7 @@ func (d *RemoteSSEDriver) Inspect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("inspect %q: %w", d.def.ID, err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	return nil
 }
 

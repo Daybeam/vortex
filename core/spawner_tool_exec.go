@@ -589,7 +589,7 @@ func (s *Spawner) processToolCalls(
 		// filesystem.delete_file and leave no trace in the jsonl beyond the
 		// result that went into the prompt. Core tools were the only auditable
 		// path, which is why p23's file loss could be bounded in time but never
-		// attributed to a call (铁律 78/131: one concept, two paths, one wired).
+		// attributed to a call (Iron Rule 78/131: one concept, two paths, one wired).
 		//
 		// The read-cache replay above returns before this line on purpose: it
 		// reuses an earlier result without executing anything, so it is not a

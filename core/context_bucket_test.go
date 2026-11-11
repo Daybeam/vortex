@@ -11,7 +11,7 @@ import (
 // the number of observation blocks is within the budget, no compaction
 // occurs. This is the baseline — short tasks must behave exactly as before.
 //
-// See docs/plan/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md §3 Bucket 2.
+// See docs/completed/2026-10-30/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md §3 Bucket 2.
 func TestCompactOldObservations_NoCompactionWithinBudget(t *testing.T) {
 	blocks := []schemas.ContentBlock{
 		{Text: "I will run the tests."},
@@ -144,6 +144,58 @@ func TestCompactOldObservations_DoesNotMutateInput(t *testing.T) {
 	for i, expected := range originalTexts {
 		if original[i].Text != expected {
 			t.Errorf("input block %d was mutated: got %q, want %q", i, original[i].Text, expected)
+		}
+	}
+}
+
+// TestCompactOldObservations_IdempotentAcrossTurns reproduces F6 of the
+// 2026-11-10 Telegram/VCP investigation
+// (docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md):
+// appendTurnObservation calls this every turn on a slice that still carries the
+// previous turns' summaries. A summary still starts with MarkerEnvObservation,
+// so it was selected and compacted again -- nesting "(summarized," once per turn
+// and overwriting the original size with the summary's own length.
+func TestCompactOldObservations_IdempotentAcrossTurns(t *testing.T) {
+	const rounds = 12
+	payload := strings.Repeat("x", 4096)
+
+	blocks := make([]schemas.ContentBlock, 0, rounds*2)
+	for i := 1; i <= rounds; i++ {
+		blocks = append(blocks, schemas.ContentBlock{Text: "turn " + itoa(i)})
+		blocks = append(blocks, schemas.ContentBlock{
+			Text: MarkerEnvObservation + "\nrun_command: step" + itoa(i) + "\n" + payload,
+		})
+		blocks = CompactOldObservations(blocks, MaxFullObservations)
+	}
+
+	// The oldest observation is the one that has been through every round.
+	oldest := blocks[1].Text
+	if n := strings.Count(oldest, "(summarized,"); n != 1 {
+		t.Errorf("oldest observation carries %d nested summary markers, want 1: %q", n, oldest)
+	}
+	if !strings.HasPrefix(oldest, MarkerEnvObservation+" (summarized, 4KB) ") {
+		t.Errorf("oldest observation no longer reports the size of the original output: %q", oldest)
+	}
+	if !strings.HasSuffix(oldest, "run_command: step1") {
+		t.Errorf("oldest observation lost the original first line: %q", oldest)
+	}
+
+	// The rolling budget must still hold: exactly MaxFullObservations in full.
+	full := 0
+	for _, b := range blocks {
+		if strings.HasPrefix(b.Text, MarkerEnvObservation) && !strings.Contains(b.Text, "(summarized,") {
+			full++
+		}
+	}
+	if full != MaxFullObservations {
+		t.Errorf("kept %d observations in full, want %d", full, MaxFullObservations)
+	}
+
+	// A second pass over an already-compacted slice must change nothing.
+	again := CompactOldObservations(blocks, MaxFullObservations)
+	for i := range blocks {
+		if again[i].Text != blocks[i].Text {
+			t.Fatalf("block %d changed on a second pass:\n got %q\nwant %q", i, again[i].Text, blocks[i].Text)
 		}
 	}
 }

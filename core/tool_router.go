@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -685,13 +684,40 @@ func (r *ToolRouter) estimateToolTokens(toolName string, mcpDef *config.MCPDef) 
 			if dt.Name == toolName {
 				rough := len(dt.Name) + len(dt.Description)
 				if dt.InputSchema != nil {
-					rough += len(fmt.Sprintf("%v", dt.InputSchema))
+					rough += jsonSchemaApproxSize(dt.InputSchema)
 				}
-				return rough/4 + 8 // ~4 chars/token + 8 overhead
+				return rough/4 + 8
 			}
 		}
 	}
 	return len(toolName)/4 + 8
+}
+
+// jsonSchemaApproxSize estimates the byte size of a JSON schema map without
+// allocating a formatted string (audit H9: replaces fmt.Sprintf("%v", ...) which
+// was called per-tool per-Route invocation).
+func jsonSchemaApproxSize(schema any) int {
+	switch v := schema.(type) {
+	case map[string]any:
+		n := 2 // {}
+		for k, val := range v {
+			n += len(k) + 3 // "key":
+			n += jsonSchemaApproxSize(val)
+		}
+		return n
+	case []any:
+		n := 2 // []
+		for _, val := range v {
+			n += jsonSchemaApproxSize(val)
+		}
+		return n
+	case string:
+		return len(v) + 2
+	case nil:
+		return 4
+	default:
+		return 8
+	}
 }
 
 func isDiscoveryTool(name string) bool {
@@ -703,6 +729,18 @@ func isDiscoveryTool(name string) bool {
 		}
 	}
 	return false
+}
+
+// toolAffinity maps task-domain keywords to tool-name patterns for relevance
+// matching. Package-level to avoid per-call allocation in isRelevant (audit H5).
+var toolAffinity = map[string][]string{
+	"file":    {"read", "write", "list", "fs", "path", "mkdir", "rm", "cp", "mv"},
+	"browser": {"navigate", "click", "type", "screenshot", "scroll", "back", "forward"},
+	"code":    {"analyze", "intel", "lint", "search", "grep", "ast", "find", "patch", "refactor"},
+	"git":     {"clone", "commit", "push", "pull", "log", "checkout", "branch"},
+	"network": {"get", "post", "request", "fetch", "curl", "http"},
+	"process": {"run", "exec", "kill", "ps", "top"},
+	"shell":   {"command", "sh", "bash", "cmd"},
 }
 
 func (r *ToolRouter) isRelevant(task, tool string) bool {
@@ -721,18 +759,8 @@ func (r *ToolRouter) isRelevant(task, tool string) bool {
 		}
 	}
 
-	// 3. Keyword affinity mapping.
-	affinity := map[string][]string{
-		"file":    {"read", "write", "list", "fs", "path", "mkdir", "rm", "cp", "mv"},
-		"browser": {"navigate", "click", "type", "screenshot", "scroll", "back", "forward"},
-		"code":    {"analyze", "intel", "lint", "search", "grep", "ast", "find", "patch", "refactor"},
-		"git":     {"clone", "commit", "push", "pull", "log", "checkout", "branch"},
-		"network": {"get", "post", "request", "fetch", "curl", "http"},
-		"process": {"run", "exec", "kill", "ps", "top"},
-		"shell":   {"command", "sh", "bash", "cmd"},
-	}
-
-	for key, patterns := range affinity {
+	// 3. Keyword affinity mapping (uses package-level toolAffinity).
+	for key, patterns := range toolAffinity {
 		if containsWholeWord(task, key) {
 			for _, p := range patterns {
 				for _, tok := range toolTokens {

@@ -65,10 +65,10 @@ const (
 	EventToolPromoted            EventType = "tool_promoted"
 	EventHumanApprovalAttached   EventType = "human_approval_attached"
 	EventFallbackActivated       EventType = "fallback_activated"
-	// Context-compression events (铁律 51, 2026-10-27). These were string
+	// Context-compression events (Iron Rule 51, 2026-10-27). These were string
 	// literals at the call site, which violated the "event names are a schema"
-	// rule (铁律 29). The three legacy names keep their original PascalCase wire
-	// values so existing dashboards / judges do not silently break (铁律 24);
+	// rule (Iron Rule 29). The three legacy names keep their original PascalCase wire
+	// values so existing dashboards / judges do not silently break (Iron Rule 24);
 	// the new skipped event uses snake_case, which is the table convention.
 	EventContextCompressed           EventType = "EventContextCompressed"
 	EventContextCompressRetrySuccess EventType = "EventContextCompressRetrySuccess"
