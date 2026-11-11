@@ -134,6 +134,9 @@ func (h *ChatHandler) ArtifactHandler(w http.ResponseWriter, r *http.Request) {
 // HistoryHandler handles GET /api/chat/history?session_id=... — returns the
 // message tree (active branch path) for a chat session so the frontend can
 // restore past conversations on page reload or tab switch.
+//
+// Supports cursor-based reverse pagination via ?limit=N&before=<msg_id>.
+// Without pagination params, returns the full active path (backward compatible).
 func (h *ChatHandler) HistoryHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -144,14 +147,115 @@ func (h *ChatHandler) HistoryHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"messages": []any{}, "session_id": ""})
 		return
 	}
+	limit := 0
+	before := r.URL.Query().Get("before")
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	if before != "" && limit == 0 {
+		limit = 50
+	}
 	session := h.Store.GetOrCreate(sessionID)
-	msgs := session.SnapshotMessages()
+	var msgs []chat.ChatMessage
+	var hasMore bool
+	var oldestID string
+	if limit > 0 || before != "" {
+		msgs, hasMore, oldestID = session.SnapshotMessagesWindow(limit, before)
+	} else {
+		msgs = session.SnapshotMessages()
+	}
 	if msgs == nil {
 		msgs = []chat.ChatMessage{}
 	}
-	// branch_points: messages on the active path that have more than one
-	// child in the tree — i.e. points where the conversation was forked.
-	// Computed on read (not persisted) so the UI can mark fork origins.
+	var branchPoints []string
+	for _, m := range msgs {
+		if len(session.ListBranches(m.ID)) > 1 {
+			branchPoints = append(branchPoints, m.ID)
+		}
+	}
+	resp := map[string]any{
+		"session_id":    sessionID,
+		"messages":      msgs,
+		"branch_points": branchPoints,
+	}
+	if limit > 0 || before != "" {
+		resp["has_more"] = hasMore
+		resp["oldest_id"] = oldestID
+	}
+	writeJSON(w, resp)
+}
+
+// MetaHandler handles GET /api/chat/messages/meta?session_id=X&ids=a,b,c —
+// returns lightweight metadata (role + preview) for a batch of message IDs.
+// Used by the frontend to resolve quote/fork previews for messages outside
+// the currently loaded pagination window.
+func (h *ChatHandler) MetaHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		writeJSON(w, map[string]any{"meta": []any{}})
+		return
+	}
+	idsParam := r.URL.Query().Get("ids")
+	if idsParam == "" {
+		writeJSON(w, map[string]any{"meta": []any{}})
+		return
+	}
+	ids := strings.Split(idsParam, ",")
+	session := h.Store.GetOrCreate(sessionID)
+	meta := session.GetMessagesMeta(ids)
+	if meta == nil {
+		meta = []chat.MessageMeta{}
+	}
+	writeJSON(w, map[string]any{
+		"session_id": sessionID,
+		"meta":       meta,
+	})
+}
+
+// AnchorHandler handles GET /api/chat/history/anchor?session_id=X&target_id=Y&limit=50
+// — returns a window of messages centered on target_id on the active branch
+// path. Used by the frontend to jump to a message that is not currently
+// loaded in the pagination window. Returns 404 if the target is not on the
+// active path (e.g. it was on a forked-off branch).
+func (h *ChatHandler) AnchorHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		http.Error(w, "session_id required", http.StatusBadRequest)
+		return
+	}
+	targetID := r.URL.Query().Get("target_id")
+	if targetID == "" {
+		http.Error(w, "target_id required", http.StatusBadRequest)
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	session := h.Store.GetOrCreate(sessionID)
+	msgs, hasMoreOlder, hasMoreNewer, oldestID, err := session.SnapshotMessagesAnchor(targetID, limit)
+	if err != nil {
+		writeJSON(w, map[string]any{
+			"session_id": sessionID,
+			"error":      err.Error(),
+		})
+		return
+	}
+	if msgs == nil {
+		msgs = []chat.ChatMessage{}
+	}
 	var branchPoints []string
 	for _, m := range msgs {
 		if len(session.ListBranches(m.ID)) > 1 {
@@ -159,9 +263,12 @@ func (h *ChatHandler) HistoryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{
-		"session_id":    sessionID,
-		"messages":      msgs,
-		"branch_points": branchPoints,
+		"session_id":      sessionID,
+		"messages":        msgs,
+		"branch_points":   branchPoints,
+		"has_more_older":  hasMoreOlder,
+		"has_more_newer":  hasMoreNewer,
+		"oldest_id":       oldestID,
 	})
 }
 

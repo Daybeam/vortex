@@ -26,6 +26,8 @@ func (c *HTTPChannel) Start(_ context.Context) error {
 	c.mux.HandleFunc("/api/chat/artifacts", c.handler.ArtifactsHandler)
 	c.mux.HandleFunc("/api/chat/artifact", c.handler.ArtifactHandler)
 	c.mux.HandleFunc("/api/chat/history", c.handler.HistoryHandler)
+	c.mux.HandleFunc("/api/chat/history/anchor", c.handler.AnchorHandler)
+	c.mux.HandleFunc("/api/chat/messages/meta", c.handler.MetaHandler)
 	c.mux.HandleFunc("/api/chat/sessions", c.handler.SessionsHandler)
 	return nil
 }

@@ -372,6 +372,11 @@ func (h *ChatHandler) cleanupSessionChatState(sessionID string) {
 		}
 		return true
 	})
+	// A cleared session must not inherit the previous conversation's hand-offs:
+	// the poll lever would otherwise keep locking checks for tasks the user has
+	// already walked away from.
+	h.forgetDelegatedTasks(sessionID)
+	h.forgetSessionHarness(sessionID)
 }
 
 // deliverPendingWake starts a follow-up turn for the oldest wake that was

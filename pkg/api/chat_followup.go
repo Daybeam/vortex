@@ -192,15 +192,29 @@ func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, tr
 		defer cancel()
 		defer h.cancelFuncs.Delete(sessionID)
 
-		// Same per-request clone the request path uses: ChatHarness carries a
-		// mutex, so the shared instance must not be driven concurrently.
-		hCopy := cloneHarnessForRequest(h.Harness)
+		// Clone the harness the session's last request actually ran on, not the
+		// shared one: a role-bound request builds its own harness and leaves
+		// `h.Harness` roleless, so cloning the shared one made every wake turn
+		// resume on the default identity and the default model — measured in
+		// 8/8 runs of both arms before harnessForWake existed. See
+		// chat_session_harness.go.
+		hCopy := cloneHarnessForRequest(h.harnessForWake(sessionID))
+		// A wake turn is a fresh harness: without this it cannot see the tasks
+		// earlier turns handed off, so the poll lever neither counts nor locks
+		// the checks that happen here — and this is where they happen.
+		hCopy.SeedDelegatedTasks(h.delegatedTasksFor(sessionID))
 		isAdmin, _ := h.lastSubmitterAdmin.Load(sessionID)
 		admin, _ := isAdmin.(bool)
 		hCopy.Delegate = func(prompt string) (string, error) {
-			return h.submitChatTask(
+			id, err := h.submitChatTask(
 				[]schemas.StepInput{{ID: "s1", Task: prompt, SubmitterIsAdmin: admin}},
 				sessionID)
+			// A wake turn can hand off again (measured up to 6 in one run), and
+			// that id must join the same ledger the next wake is seeded from.
+			if err == nil {
+				h.noteDelegatedTask(sessionID, id)
+			}
+			return id, err
 		}
 		// A follow-up that delegates again is itself a turn that can consume a
 		// result; without this it would re-deliver a wake queued behind it.
@@ -230,7 +244,7 @@ func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, tr
 			session.AddEvent(ev)
 			return nil
 		})
-		if err != nil && !chat.IsMaxTurnsPartial(err) {
+		if err != nil && !chat.IsPartialRun(err) {
 			fmt.Fprintf(os.Stderr, "[chat-followup] session=%s task=%s turn failed: %v\n", sessionID, taskID, err)
 			return
 		}

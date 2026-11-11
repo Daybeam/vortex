@@ -30,9 +30,9 @@ import (
 // model itself writes `[[Heartbeat::Sleep::N]]` into its response text, and
 // that protocol is documented nowhere the model can see it — no system prompt,
 // no tool description, no injected instruction. Grep across the whole tree
-// returns only heartbeat.go's own comments and docs/plan/VCP_HEARTBEAT_AND_
-// CONTEXT_TIERING_DESIGN.md. A protocol the model was never told about is
-// emitted zero times, so in practice the heartbeat has never fired.
+// returns only heartbeat.go's own comments and docs/completed/2026-10-30/VCP_
+// HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md. A protocol the model was never told
+// about is emitted zero times, so in practice the heartbeat has never fired.
 //
 // This file adds the half that does not depend on model behaviour: the engine's
 // own per-task events (every step transition, every provider round) are already

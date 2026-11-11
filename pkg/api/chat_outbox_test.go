@@ -18,7 +18,7 @@ import (
 	"github.com/daybeam/vortex/tools"
 )
 
-// The 2026-11-06 report was "好像收不到通知" while the tasks themselves ran. The
+// The 2026-11-06 report was "seems like notifications aren't received" while the tasks themselves ran. The
 // notifications were produced: they were written into the session's in-memory
 // event ring, which only forwardEvents reads, and that only runs during the
 // user's own turn. A task that outlived the turn, a decision that arrived after
@@ -224,6 +224,49 @@ func TestNotifyTaskTerminal_WebSessionStaysHistoryOnly(t *testing.T) {
 	}
 	if rows := hubA.rows(); len(rows) != 0 {
 		t.Errorf("a non-Telegram session queued %d rows, want none: %+v", len(rows), rows)
+	}
+}
+
+// TestNotifyTaskTerminal_QueuesWhenSessionIsNotLoaded reproduces F14
+// (docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md, measured on the
+// live hub 2026-11-10): the F10 sweep closed task_eb209a68, this path dropped
+// the notification with reason=session_not_loaded_in_this_process, and the
+// outbox stayed empty -- so the ledger said 'failed' and no human ever heard it.
+// The session id survives the session object, and outboxRecipient resolves a
+// recipient from that id alone (or falls back to the operator), so the row must
+// exist even though nothing in this process holds the session.
+func TestNotifyTaskTerminal_QueuesWhenSessionIsNotLoaded(t *testing.T) {
+	hubA := newHub(t, filepath.Join(t.TempDir(), "hub.db"))
+	hubA.register("task_gone", "s_not_loaded", schemas.GraphFailed)
+
+	if err := hubA.h.notifyTaskTerminal(obs.NewAgentEvent("task_gone", "", string(obs.EventTaskFailed), nil)); err != nil {
+		t.Fatalf("notifyTaskTerminal: %v", err)
+	}
+
+	rows := hubA.rows()
+	if len(rows) != 1 {
+		t.Fatalf("a bound task whose session is not loaded queued %d rows, want 1: %+v", len(rows), rows)
+	}
+	if rows[0].sessionID != "s_not_loaded" {
+		t.Errorf("session id = %q, want s_not_loaded so the drainer can pick the recipient", rows[0].sessionID)
+	}
+	if rows[0].dedupeKey != "task_callback|task_gone" {
+		t.Errorf("dedupe key = %q, want the same key the live-session path uses", rows[0].dedupeKey)
+	}
+}
+
+// TestNotifyTaskTerminal_UnboundCompletionStaysLogOnly pins the boundary of the
+// change above: no session id at all means nobody was waiting, so the completion
+// is logged (never silently dropped) but not pushed.
+func TestNotifyTaskTerminal_UnboundCompletionStaysLogOnly(t *testing.T) {
+	hubA := newHub(t, filepath.Join(t.TempDir(), "hub.db"))
+	hubA.register("task_unbound", "", schemas.GraphFailed)
+
+	if err := hubA.h.notifyTaskTerminal(obs.NewAgentEvent("task_unbound", "", string(obs.EventTaskFailed), nil)); err != nil {
+		t.Fatalf("notifyTaskTerminal: %v", err)
+	}
+	if rows := hubA.rows(); len(rows) != 0 {
+		t.Errorf("an unbound completion queued %d rows, want none: %+v", len(rows), rows)
 	}
 }
 

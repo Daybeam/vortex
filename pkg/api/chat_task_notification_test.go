@@ -1,6 +1,8 @@
 package api
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -130,5 +132,93 @@ func TestCollectTaskOutcome_PicksTheWeakestPartialStep(t *testing.T) {
 	o := collectTaskOutcome("task_x", "x", string(obs.EventTaskCompleted), statusData)
 	if o.GapStep != "s2" || o.GapConf == nil || *o.GapConf != 0.20 {
 		t.Fatalf("the lowest known confidence should be the one named, got step=%q conf=%v", o.GapStep, o.GapConf)
+	}
+}
+
+// contractTask is a delegated step prompt in the shape the benchmark controller
+// appends: the files the workspace must contain live in the contract section.
+const contractTask = "write the report\n\n## Enforced workspace change contract\n\n" +
+	"- Create: `report.md`, `findings.json`\n- Modify: none\n- Delete: none\n"
+
+// Regression test for the delivery gap measured on chat delegations: the
+// sub-agent writes its deliverable with file tools, which never reach
+// graph.OutputFiles (that list is appended only from a step's structured
+// output_ref, scheduler_decision_success.go:126). The notification therefore
+// said "No output files were produced" over a workspace that had the files.
+// The status view does carry workspace_root and the step task text, so the
+// notification must check the declared contract before claiming nothing exists.
+func TestTaskOutcomeSummary_ListsDeclaredArtifactsTheGraphNeverSaw(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "report.md"), []byte("# done"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	statusData := map[string]any{
+		"status":         string(schemas.GraphCompleted),
+		"workspace_root": root,
+		"steps": map[string]any{
+			"s1": map[string]any{
+				"status": string(schemas.StepOK),
+				"task":   contractTask,
+			},
+		},
+		"output_files": []map[string]any{},
+	}
+
+	o := collectTaskOutcome("task_delivery", "write the report", string(obs.EventTaskCompleted), statusData)
+	got := o.summary()
+	if strings.Contains(got, "No output files") {
+		t.Errorf("the graph saw no output_ref, but the deliverable is on disk:\n%s", got)
+	}
+	if !strings.Contains(got, "report.md") {
+		t.Errorf("the present artifact must be named:\n%s", got)
+	}
+	if !strings.Contains(got, "Still missing: findings.json") {
+		t.Errorf("the missing half of the contract must be named too:\n%s", got)
+	}
+}
+
+func TestTaskOutcomeSummary_DeclaredContractWithNothingOnDisk(t *testing.T) {
+	statusData := map[string]any{
+		"status":         string(schemas.GraphCompleted),
+		"workspace_root": t.TempDir(),
+		"steps": map[string]any{
+			"s1": map[string]any{
+				"status": string(schemas.StepOK),
+				"task":   contractTask,
+			},
+		},
+	}
+
+	got := collectTaskOutcome("task_empty", "write the report", string(obs.EventTaskCompleted), statusData).summary()
+	if !strings.Contains(got, "No declared artifacts were produced") {
+		t.Errorf("an empty workspace must say so about the declared names:\n%s", got)
+	}
+	for _, want := range []string{"report.md", "findings.json"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the declared name %q must appear so the reader knows what was asked for:\n%s", want, got)
+		}
+	}
+}
+
+// Without a contract there is no name to stat, so the notification must not
+// claim "none": it names the workspace instead, which is the only thing it
+// actually knows.
+func TestTaskOutcomeSummary_NoContractNamesTheWorkspace(t *testing.T) {
+	root := t.TempDir()
+	statusData := map[string]any{
+		"status":         string(schemas.GraphCompleted),
+		"workspace_root": root,
+		"steps": map[string]any{
+			"s1": map[string]any{"status": string(schemas.StepOK), "task": "free-form work"},
+		},
+	}
+
+	got := collectTaskOutcome("task_free", "free-form work", string(obs.EventTaskCompleted), statusData).summary()
+	if strings.Contains(got, "No output files were produced") {
+		t.Errorf("the graph cannot see file-tool writes, so 'none produced' is a lie:\n%s", got)
+	}
+	if !strings.Contains(got, root) {
+		t.Errorf("the workspace root is the only pointer the reader has:\n%s", got)
 	}
 }

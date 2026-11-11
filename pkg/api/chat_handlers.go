@@ -1,10 +1,10 @@
 package api
 
 import (
-	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/daybeam/vortex/core/sieve"
 	"log"
 	"net/http"
 	"os"
@@ -125,6 +125,18 @@ type ChatHandler struct {
 	// result that turn already delivered is dropped instead of answered twice.
 	// Cleared when the session's next turn claims the slot.
 	consumedTasks sync.Map // "sessionID|taskID" → struct{}
+	// delegatedTasks records "sessionID|taskID" for every task a turn in this
+	// session handed off. The poll lever needs the whole SET, not the latest id
+	// (a turn can delegate twice), and the wake turn needs it too — but the
+	// harness that delegated is gone by then, so the ledger lives here.
+	// See chat_delegated_tasks.go and post_deleg_lockout.go.
+	delegatedTasks sync.Map // "sessionID|taskID" → struct{}
+	// sessionHarness keeps the harness this session's last request ran on.
+	// A role-bound request builds a NEW harness (role's provider/model/system
+	// prompt) instead of mutating the shared one, so `h.Harness` never carries
+	// a role; a wake turn that clones it would resume on the default identity.
+	// See chat_session_harness.go for the measurement that found this.
+	sessionHarness sync.Map // sessionID → *chat.ChatHarness
 	// lastSubmitterAdmin lets a follow-up turn delegate with the same
 	// authority as the turn that spawned it, instead of guessing.
 	lastSubmitterAdmin sync.Map // sessionID → bool
@@ -742,10 +754,22 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	// shared pointer fields and a fresh mutex (vet-safe: avoids copying
 	// the sync.Mutex in ChatHarness.SteerLock).
 	hCopy := cloneHarnessForRequest(harness)
+	// Remember WHICH harness answered this turn (role-bound or default) so the
+	// wake turn that this turn may schedule resumes as the same agent. Set
+	// before Run: the completion callback can fire while the turn is still
+	// executing, and a wake turn that starts first would otherwise read nothing.
+	h.noteSessionHarness(sessionID, harness)
 	hCopy.Delegate = func(prompt string) (string, error) {
-		return h.submitChatTask(
+		id, err := h.submitChatTask(
 			[]schemas.StepInput{{ID: "s1", Task: prompt, SubmitterIsAdmin: chatIsAdmin}},
 			sessionID)
+		// The ledger, not the harness, is what a later wake turn reads: this
+		// harness is discarded when the turn ends. Recorded only on success —
+		// an id that was never handed off must not unlock (or lock) anything.
+		if err == nil {
+			h.noteDelegatedTask(sessionID, id)
+		}
+		return id, err
 	}
 	// Record which finished tasks this turn actually read. A follow-up wake
 	// queued while this turn was in flight is then suppressed instead of
@@ -821,10 +845,11 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 			session.AddEvent(ev)
 			return nil
 		})
-		if (err == nil || chat.IsMaxTurnsPartial(err)) && final != "" {
+		if (err == nil || chat.IsPartialRun(err)) && final != "" {
 			if err != nil {
-				// MaxTurnsPartial: the turn hit the turn ceiling but still
-				// produced output. Log it so the partial is traceable.
+				// Partial (turn ceiling or exploration ceiling): the run stopped
+				// deliberately but still produced output. Log it so the partial
+				// is traceable.
 				fmt.Fprintf(os.Stderr, "[chat] session=%s task=%s turn ended with partial result: %v\n",
 					sessionID, taskID, err)
 			}

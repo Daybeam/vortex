@@ -47,6 +47,7 @@ const (
 	eventNotificationQueued      = "EventNotificationQueued"
 	eventNotificationDuplicate   = "EventNotificationDuplicate"
 	eventNotificationDropped     = "EventNotificationDropped"
+	eventNotificationDelivered   = "EventNotificationDelivered"
 	eventNotificationFailed      = "EventNotificationFailed"
 	eventNotificationUnconfirmed = "EventNotificationUnconfirmed"
 	eventNotificationDowngraded  = "EventNotificationDowngraded"
@@ -100,14 +101,13 @@ func (h *ChatHandler) resolveSessionForTask(taskID string) sessionRef {
 func (h *ChatHandler) notifyTaskTerminal(ev obs.AgentEvent) error {
 	taskID := ev.TaskID
 	ref := h.resolveSessionForTask(taskID)
-	if ref.session == nil {
-		// An unbound completion is logged, not pushed: nobody is waiting for a
-		// task that was never attached to a conversation.
+	statusData := ref.statusData
+	if statusData == nil {
+		// This hub cannot see the task at all, so there is nothing to report --
+		// only a reason worth recording.
 		h.logNotificationDrop(taskID, kindTaskCallback, ref.dropReason, ref.sessionID)
 		return nil
 	}
-	session := ref.session
-	statusData := ref.statusData
 
 	taskStatus, _ := statusData["status"].(string)
 	taskDesc, _ := statusData["task"].(string)
@@ -137,12 +137,45 @@ func (h *ChatHandler) notifyTaskTerminal(ev obs.AgentEvent) error {
 	if len(outcome.Files) > 0 {
 		meta["output_files"] = outcome.Files
 	}
+	if outcome.WorkspaceRoot != "" {
+		meta["workspace_root"] = outcome.WorkspaceRoot
+	}
+	if len(outcome.Declared) > 0 {
+		meta["declared_artifacts"] = outcome.Declared
+	}
 	if outcome.ResultRef != "" {
 		meta["result_ref"] = outcome.ResultRef
 	}
 	if outcome.LastError != "" {
 		meta["last_error"] = outcome.LastError
 	}
+
+	if ref.session == nil {
+		// The task is bound to a conversation this process does not hold -- after
+		// a restart, in another hub, or a session that is gone entirely. The
+		// history writes below need the live object and are skipped, but the
+		// queue does not: outboxRecipient resolves the recipient from the session
+		// id alone and falls back to the operator, which is how
+		// notifyDecisionRequired has always reached a human for a task nobody in
+		// this process is watching.
+		//
+		// Only an *evicted* session is queued. A completion with no session id at
+		// all stays log-only: nobody was waiting for a task that was never
+		// attached to a conversation.
+		//
+		// Measured 2026-11-10: the F10 sweep closed task_eb209a68 and this path
+		// dropped its notification with reason=session_not_loaded_in_this_process,
+		// so the ledger said 'failed' and no human ever heard it.
+		// See docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md F14.
+		h.logNotificationDrop(taskID, kindTaskCallback, ref.dropReason, ref.sessionID)
+		if ref.dropReason == dropSessionEvicted {
+			h.queueNotification(taskID, ref.sessionID, kindTaskCallback, "task_callback|"+taskID, summary, meta)
+		}
+		h.progressLast.Delete(taskID)
+		h.cleanupTaskChatState(taskID)
+		return nil
+	}
+	session := ref.session
 
 	session.AddEvent(chat.ChatEvent{Type: kindTaskCallback, Data: summary, Meta: meta})
 	session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: summary}, "")
@@ -174,7 +207,7 @@ func (h *ChatHandler) notifyTaskTerminal(ev obs.AgentEvent) error {
 
 // notifyHeartbeat forwards the spawner's VCP-style heartbeat events into the
 // session so a waiting user sees what a delegated task is doing.
-// See docs/plan/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md §2.
+// See docs/completed/2026-10-30/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md §2.
 func (h *ChatHandler) notifyHeartbeat(ev obs.AgentEvent) error {
 	ref := h.resolveSessionForTask(ev.TaskID)
 	if ref.session == nil {

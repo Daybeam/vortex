@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
@@ -37,6 +38,18 @@ type taskOutcome struct {
 	GapNotes string
 
 	Files []map[string]any
+
+	// WorkspaceRoot is where the step agents' core tools resolved relative
+	// paths (ToStatusDictView "full"). Empty means the legacy per-task layout,
+	// whose declared names cannot be resolved without guessing.
+	WorkspaceRoot string
+	// Declared is the completion contract parsed out of the steps' task text,
+	// first-seen order. It exists because graph.OutputFiles is appended only
+	// from a step's structured output_ref (scheduler_decision_success.go:126):
+	// a delegated agent that writes its deliverable with file tools contributes
+	// nothing there, so an empty Files list says nothing about what landed on
+	// disk. formatTaskStatus has used the same contract since it was written.
+	Declared []string
 }
 
 // collectTaskOutcome reads what this notification needs out of the scheduler's
@@ -49,12 +62,26 @@ func collectTaskOutcome(taskID, taskDesc, evType string, statusData map[string]a
 	}
 	o.Status, _ = statusData["status"].(string)
 	o.Files, _ = statusData["output_files"].([]map[string]any)
+	o.WorkspaceRoot, _ = statusData["workspace_root"].(string)
 
+	seenDeclared := make(map[string]struct{})
 	steps, _ := statusData["steps"].(map[string]any)
 	for id, sv := range steps {
 		sm, ok := sv.(map[string]any)
 		if !ok {
 			continue
+		}
+		// A chat delegation is one step whose Task is the whole delegated
+		// prompt; a multi-step task may carry the contract in any step. Only
+		// the section is read, so unioning harmless steps adds nothing.
+		if task, _ := sm["task"].(string); task != "" {
+			for _, name := range core.ParseDeclaredContract(task).Create {
+				if _, dup := seenDeclared[name]; dup {
+					continue
+				}
+				seenDeclared[name] = struct{}{}
+				o.Declared = append(o.Declared, name)
+			}
 		}
 		if rr, _ := sm["result_ref"].(string); rr != "" {
 			o.ResultRef = rr
@@ -135,27 +162,62 @@ func (o taskOutcome) reachedCompletion() bool {
 // filesClause names the deliverable, because "completed" without a path is not
 // something the reader can check.
 func (o taskOutcome) filesClause() string {
-	if len(o.Files) == 0 {
-		if o.ResultRef != "" {
-			return " No output files; last result reference: " + o.ResultRef + "."
+	if len(o.Files) > 0 {
+		var names []string
+		for _, f := range o.Files {
+			path, _ := f["path"].(string)
+			if path == "" {
+				continue
+			}
+			primary, _ := f["is_primary"].(bool)
+			if primary {
+				path += " (primary)"
+			}
+			names = append(names, path)
 		}
-		return " No output files were produced."
+		if len(names) > 0 {
+			return " Output files: " + strings.Join(names, ", ") + "."
+		}
 	}
 
-	var names []string
-	for _, f := range o.Files {
-		path, _ := f["path"].(string)
-		if path == "" {
-			continue
+	// A delegated agent's file-tool writes never reach graph.OutputFiles (that
+	// list is appended only from a step's structured output_ref), so an empty
+	// Files list is not evidence that nothing was produced. When the prompt
+	// carried a completion contract, check the declared names under the
+	// workspace root -- the same check formatTaskStatus already makes.
+	if len(o.Declared) > 0 && o.WorkspaceRoot != "" {
+		missing := core.MissingArtifacts(o.WorkspaceRoot, o.Declared)
+		absent := make(map[string]bool, len(missing))
+		for _, name := range missing {
+			absent[name] = true
 		}
-		primary, _ := f["is_primary"].(bool)
-		if primary {
-			path += " (primary)"
+		var present []string
+		for _, name := range o.Declared {
+			if !absent[name] {
+				present = append(present, name)
+			}
 		}
-		names = append(names, path)
+		switch {
+		case len(present) > 0:
+			clause := " Artifacts present in the workspace: " + strings.Join(present, ", ") + "."
+			if len(missing) > 0 {
+				clause += " Still missing: " + strings.Join(missing, ", ") + "."
+			}
+			return clause
+		default:
+			return fmt.Sprintf(" No declared artifacts were produced (%d declared: %s).",
+				len(o.Declared), strings.Join(o.Declared, ", "))
+		}
 	}
-	if len(names) == 0 {
-		return " No output files were produced."
+
+	if o.ResultRef != "" {
+		return " No output files; last result reference: " + o.ResultRef + "."
 	}
-	return " Output files: " + strings.Join(names, ", ") + "."
+	if o.WorkspaceRoot != "" {
+		// Without a contract there is no name to check, and claiming "none"
+		// would repeat the lie this clause exists to stop: the agent may have
+		// written files with tools the graph never sees.
+		return " No output files were reported; the delegated agent's workspace is " + o.WorkspaceRoot + "."
+	}
+	return " No output files were produced."
 }
