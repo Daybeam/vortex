@@ -85,6 +85,7 @@ func (p *lifecycleProvider) Embed(_ context.Context, _ string) ([]float32, error
 func newLifecycleEngine(t *testing.T) *DirectedEngine {
 	t.Helper()
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	reg := &config.Registry{
 		DefaultProvider: "life",

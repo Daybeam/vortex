@@ -625,8 +625,9 @@ func TestSpawnRequest_TaskID_PassedToBuildSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSystemPrompt failed: %v", err)
 	}
-	// Just verify it returns blocks without error.
-	_ = blocks
+	if len(blocks) == 0 {
+		t.Fatal("expected non-empty blocks from buildSystemPrompt")
+	}
 }
 
 // ── Integration: Archive + PromptAssembler ────────────────────────────────

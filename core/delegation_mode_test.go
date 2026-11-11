@@ -31,6 +31,7 @@ func mkdirTemp(t *testing.T) string {
 
 func TestDelegationMode_SingleStepTask(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	reg := &config.Registry{
 		DefaultProvider: "nonexistent",
@@ -151,6 +152,7 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 
 func TestDelegationMode_MultiStepTask(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	reg := &config.Registry{
 		DefaultProvider: "nonexistent",
@@ -259,6 +261,7 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 func newDelegationEngine(t *testing.T) (*DirectedEngine, *config.Registry) {
 	t.Helper()
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	reg := &config.Registry{
 		DefaultProvider: "nonexistent",

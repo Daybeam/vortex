@@ -7,8 +7,10 @@ import (
 )
 
 func TestAutoDeposit_NilGraph(t *testing.T) {
-	// Should not panic
+	// Should not panic AND should be a true no-op (no side effects).
 	AutoDepositResult(nil, "s1", map[string]any{"key": "val"})
+	// If we reach here, no panic occurred. The nil graph means there is
+	// nothing to verify for side effects — the function must be a no-op.
 }
 
 func TestAutoDeposit_EmptyStepID(t *testing.T) {

@@ -313,7 +313,10 @@ func TestDiscoverySyncer_EmptySources(t *testing.T) {
 		registry: reg,
 		sources:  []DiscoverySource{},
 	}
-	d.SyncAll() // should not panic
+	d.SyncAll()
+	if len(reg.PendingSkills) != 0 {
+		t.Fatalf("expected 0 pending skills with empty sources, got %d", len(reg.PendingSkills))
+	}
 }
 
 func TestDiscoverySyncer_NilItems(t *testing.T) {

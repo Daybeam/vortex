@@ -9,7 +9,7 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-// O16 regression (2026-11-04, 实测 twice in the register): in delegation mode the
+// O16 regression (2026-11-04, measured twice in the register): in delegation mode the
 // Spawner never calls a provider — it returns the assembled prompt with
 // StatusDelegationRequired (core/spawner_utils.go:1095) — and the DAG loop
 // flattened that map with %v and ran the output-loop Guardian over it. Every

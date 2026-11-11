@@ -22,6 +22,7 @@ import (
 // plan kind is fulfillable too and is left unasserted — register O52.
 func TestDelegationDecision_PayloadIsCallerComplete(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	reg := &config.Registry{
 		DefaultProvider: "nonexistent",

@@ -64,4 +64,15 @@ func TestCheckApprovalAuthority_NoRaceOnPendingDecisions(t *testing.T) {
 	}()
 
 	wg.Wait()
+
+	// Verify the graph is still in a consistent state after concurrent access.
+	s.Mu.RLock()
+	g := s.graphs["task-race"]
+	if g == nil {
+		t.Fatal("graph should still exist after concurrent access")
+	}
+	if len(g.PendingDecisions) == 0 {
+		t.Fatal("PendingDecisions should not be empty after writer appended entries")
+	}
+	s.Mu.RUnlock()
 }
