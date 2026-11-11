@@ -28,6 +28,20 @@ type TaskRegistry interface {
 	ListTasks(ctx context.Context, limit int) ([]TaskRow, error)
 }
 
+// StaleTaskSweeper is an optional capability of a TaskRegistry: close task rows
+// left 'running' by a process that no longer exists. Optional for the same reason
+// batchLoader is — file mode has no task ledger at all, and a mock registry
+// should not have to implement a sweep nobody will ask it for. Consumers detect
+// it by type assertion and skip when it is absent.
+type StaleTaskSweeper interface {
+	// SweepStaleRunning fails rows still 'running' whose last write predates
+	// cutoff and returns the task IDs this call actually closed. The UPDATE
+	// carries the same predicate as the SELECT, so a row a live hub touched in
+	// between is left alone, and two hubs sweeping at once cannot both report
+	// the same ID.
+	SweepStaleRunning(ctx context.Context, cutoff time.Time) ([]string, error)
+}
+
 // BaselineStore pins and retrieves SOP/Role versions at task creation time.
 // Nil-safe: consumers must nil-check before use (mirrors TaskRegistry pattern).
 // See docs/BASELINE_VERSION_PINNING_DESIGN.md

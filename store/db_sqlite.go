@@ -42,6 +42,21 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to ping sqlite db: %w", err)
 	}
 
+	// Backfill columns added to a CREATE TABLE IF NOT EXISTS whose table already
+	// exists on disk: the CREATE silently skips it, so the column never lands.
+	// This must precede runMigrations — idx_exp_nodes_domain lives inside that
+	// one multi-statement Exec, and its failure aborts the whole schema, making
+	// InitDB return nil and every entry point fall back to file mode with a nil
+	// task registry (measured on the live hub 2026-11-10). The best-effort block
+	// below runs after runMigrations, so it can only carry columns no index
+	// needs. Errors are ignored: on a fresh DB these tables do not exist yet and
+	// the CREATE defines the columns anyway.
+	_, _ = db.Exec(`ALTER TABLE experience_nodes ADD COLUMN domain TEXT`)
+	_, _ = db.Exec(`ALTER TABLE generated_skills ADD COLUMN token_cost_total INTEGER DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE generated_skills ADD COLUMN avg_latency_ms REAL DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE generated_skills ADD COLUMN metabolic_roi REAL DEFAULT 1.0`)
+	_, _ = db.Exec(`ALTER TABLE generated_skills ADD COLUMN skill_status TEXT DEFAULT 'active'`)
+
 	// Run schema migrations
 	if err := runMigrations(db); err != nil {
 		db.Close() // audit M8: prevent connection pool leak on migration failure

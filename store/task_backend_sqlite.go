@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/daybeam/vortex/schemas"
 )
@@ -219,4 +220,64 @@ func (b *SQLiteTaskBackend) ListTasks(ctx context.Context, limit int) ([]TaskRow
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+var _ StaleTaskSweeper = (*SQLiteTaskBackend)(nil)
+
+// staleRunningPredicate is the one definition of "this row may be closed":
+// still running, and nobody has written it since the cutoff. The SELECT and the
+// guarded UPDATE both splice it in, so a close can never rest on a row the
+// SELECT was not allowed to name. Same shape as claimablePredicate in
+// chat_outbox_sqlite.go, and it needs no holder column: updated_at is already
+// the row's liveness signal, because every SaveTask/UpdateTaskStatus bumps it.
+const staleRunningPredicate = `status = 'running' AND updated_at < ?`
+
+// SweepStaleRunning closes ledger rows orphaned by a dead process. The engine's
+// in-process monitor walks its own graph map, so after a restart these rows are
+// invisible to it and the frontend keeps polling a task that will never finish.
+func (b *SQLiteTaskBackend) SweepStaleRunning(ctx context.Context, cutoff time.Time) ([]string, error) {
+	// updated_at is written by CURRENT_TIMESTAMP, i.e. UTC text in this
+	// fixed-width layout, so the comparison is lexicographic. Binding a local
+	// time would shift the cutoff by the host offset and close rows that are
+	// not stale yet — on a +08:00 host, eight hours early.
+	cutoffText := cutoff.UTC().Format("2006-01-02 15:04:05")
+
+	rows, err := b.db.QueryContext(ctx, `
+		SELECT task_id FROM tasks WHERE `+staleRunningPredicate+` ORDER BY updated_at
+	`, cutoffText)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var closed []string
+	for _, taskID := range ids {
+		res, err := b.db.ExecContext(ctx, `
+			UPDATE tasks SET status = 'failed', updated_at = CURRENT_TIMESTAMP
+			WHERE task_id = ? AND `+staleRunningPredicate, taskID, cutoffText)
+		if err != nil {
+			return closed, err
+		}
+		// Zero rows means a live hub persisted progress, or another hub's sweep
+		// closed it, between the SELECT and this UPDATE. Skipping is the whole
+		// multi-hub guarantee: no mutex is involved, so it holds across
+		// processes sharing this file.
+		if n, _ := res.RowsAffected(); n != 1 {
+			continue
+		}
+		closed = append(closed, taskID)
+	}
+	return closed, nil
 }
