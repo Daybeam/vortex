@@ -173,7 +173,7 @@ type App struct {
 
 // WireQualityTracker creates a QualityTracker, assigns it to app, and returns
 // the unsubscribe closure to be deferred by the caller. Keeps caller bodies
-// short (size-gate friendly). Design §2.4 方案 D.
+// short (size-gate friendly). Design §2.4 scheme D.
 func (app *App) WireQualityTracker() func() {
 	qt := core.NewQualityTracker()
 	app.QualityTracker = qt

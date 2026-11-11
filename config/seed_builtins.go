@@ -21,15 +21,15 @@ func writeIfAbsent(path string, data []byte) (bool, error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
 		if os.IsExist(err) {
-			return false, nil // file already exists — skip
+			return false, nil
 		}
 		return false, err
 	}
+	defer f.Close()
 	if _, err := f.Write(data); err != nil {
-		f.Close()
 		return false, err
 	}
-	return true, f.Close()
+	return true, nil
 }
 
 // SeedBuiltins writes built-in roles, SOPs, and skills to disk if they don't

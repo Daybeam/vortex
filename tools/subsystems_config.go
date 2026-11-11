@@ -316,30 +316,31 @@ func registerConfigSubsystem(app *App) {
 				return nil, fmt.Errorf("promote_to_sop: SOPManager not initialized")
 			}
 
-			graph := app.Scheduler.GetTaskGraph(taskID)
-			if graph == nil {
+			var steps map[string]schemas.SOPStep
+			found := app.Scheduler.WithTaskGraph(taskID, func(graph *schemas.TaskGraph) {
+				steps = make(map[string]schemas.SOPStep, len(graph.Steps))
+				for id, step := range graph.Steps {
+					if step == nil {
+						continue
+					}
+					steps[id] = schemas.SOPStep{
+						ID:                  step.ID,
+						Role:                step.RoleID,
+						Task:                step.Task,
+						Skills:              step.AdditionalSkills,
+						MCPs:                step.AdditionalMCPs,
+						Provider:            step.ProviderOverride,
+						DependsOn:           step.DependsOn,
+						ExitCriteria:        step.ExitCriteria,
+						DeterministicChecks: step.DeterministicChecks,
+					}
+				}
+			})
+			if !found {
 				return nil, fmt.Errorf("promote_to_sop: task %q not found or evicted from memory", taskID)
 			}
-			if len(graph.Steps) == 0 {
+			if len(steps) == 0 {
 				return nil, fmt.Errorf("promote_to_sop: task %q has no steps", taskID)
-			}
-
-			steps := make(map[string]schemas.SOPStep, len(graph.Steps))
-			for id, step := range graph.Steps {
-				if step == nil {
-					continue
-				}
-				steps[id] = schemas.SOPStep{
-					ID:                  step.ID,
-					Role:                step.RoleID,
-					Task:                step.Task,
-					Skills:              step.AdditionalSkills,
-					MCPs:                step.AdditionalMCPs,
-					Provider:            step.ProviderOverride,
-					DependsOn:           step.DependsOn,
-					ExitCriteria:        step.ExitCriteria,
-					DeterministicChecks: step.DeterministicChecks,
-				}
 			}
 
 			var triggers []schemas.SOPTrigger

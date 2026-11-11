@@ -11,8 +11,8 @@ import (
 
 // submit_decision routing (Q4-5, answered 2026-11-05).
 //
-// The operator's ruling: 「按 decision_id 路由，同时保留按载荷存在与否路由作兜底。
-// 这条路径报错信息误导过人，值得修，但要保持 MCP 面向后兼容。」
+// The operator's ruling: "Route by decision_id, while keeping payload-presence routing as fallback.
+// The error messages on this path have misled people, so it's worth fixing, but MCP must stay backward-compatible."
 //
 // So: the parked decision's own type is the primary key for choosing the engine
 // entry point, and the old payload-presence rule (shouldRouteToFulfill) survives

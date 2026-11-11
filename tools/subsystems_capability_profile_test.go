@@ -18,8 +18,8 @@ import (
 // what it had learned. "Is the router actually learning anything?" was
 // answerable only by opening the SQLite file by hand.
 //
-// The operator's ruling: 「加只读的 exp.get_capability_profile，成本是 1 个 action 加
-// 1 个 handler」. Read-only, one action, one handler -- and the part these tests
+// The operator's ruling: "Add a read-only exp.get_capability_profile, cost is 1 action plus
+// 1 handler". Read-only, one action, one handler -- and the part these tests
 // pin hardest: a process that never wired the routing must say "not wired", not
 // return an empty list. An empty list reads as "no runs yet", which is a
 // different fact and would have hidden the runHub gap this batch surfaced.

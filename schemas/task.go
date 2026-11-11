@@ -342,7 +342,7 @@ type DecisionNode struct {
 	Embedding      []float32 `json:"embedding,omitempty"`
 	EmbeddingModel string    `json:"embedding_model,omitempty"`
 
-	// Memory tiering & observability (design §1.4 方案 B, 2026-10-23):
+	// Memory tiering & observability (design §1.4 scheme B, 2026-10-23):
 	// Source classifies whether this decision is user-confirmed, model-guessed,
 	// or verifier-audited — so retrieval can rank trusted decisions above
 	// speculative ones. Confidence is the 0.0-1.0 certainty at decision time.

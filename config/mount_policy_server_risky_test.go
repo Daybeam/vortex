@@ -220,7 +220,7 @@ func TestMountPolicyHintCountsOnlyOmissions(t *testing.T) {
 // Wiring test: MountPolicyHint being correct is not enough — it has to be
 // PRINTED once by NewRegistry, or the operator never learns the rule. (Same
 // class as the round that was lost to a criterion that existed but was never
-// called: §28.6 / 铁律 31.)
+// called: §28.6 / Iron Rule 31.)
 func TestNewRegistryPrintsMountPolicyHintOnce(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config_test.json")
 
