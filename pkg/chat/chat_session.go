@@ -318,6 +318,38 @@ func (s *ChatSession) GetMessage(msgID string) *ChatMessage {
 	return &cp
 }
 
+// MessageMeta is the lightweight metadata returned by GetMessagesMeta.
+type MessageMeta struct {
+	ID      string `json:"id"`
+	Role    string `json:"role"`
+	Preview string `json:"preview"`
+}
+
+// GetMessagesMeta returns lightweight metadata (role + truncated preview)
+// for a batch of message IDs. Messages not found in the session are omitted
+// from the result. Thread-safe, single lock for the entire batch.
+func (s *ChatSession) GetMessagesMeta(ids []string) []MessageMeta {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result []MessageMeta
+	for _, id := range ids {
+		m := s.Messages[id]
+		if m == nil {
+			continue
+		}
+		preview := m.Content
+		if len(preview) > 60 {
+			preview = preview[:60]
+		}
+		result = append(result, MessageMeta{
+			ID:      m.ID,
+			Role:    m.Role,
+			Preview: preview,
+		})
+	}
+	return result
+}
+
 // SnapshotMessages returns the active branch path (root → ActiveLeafID).
 func (s *ChatSession) SnapshotMessages() []ChatMessage {
 	s.mu.Lock()
@@ -326,6 +358,93 @@ func (s *ChatSession) SnapshotMessages() []ChatMessage {
 		return nil
 	}
 	return s.getPathLocked(s.ActiveLeafID)
+}
+
+// SnapshotMessagesWindow returns up to limit messages from the active branch
+// path, starting from the newest. If before is non-empty, the window starts
+// from the parent of the message with that ID (exclusive of before itself).
+// Returns messages in chronological order (oldest first), whether more older
+// messages exist beyond this window (hasMore), and the ID of the oldest
+// message in the window (oldestID). If limit <= 0, returns all messages
+// from the starting point to root.
+func (s *ChatSession) SnapshotMessagesWindow(limit int, before string) (msgs []ChatMessage, hasMore bool, oldestID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ActiveLeafID == "" {
+		return nil, false, ""
+	}
+	startID := s.ActiveLeafID
+	if before != "" {
+		m := s.Messages[before]
+		if m == nil {
+			return nil, false, ""
+		}
+		startID = m.ParentID
+		if startID == "" {
+			return nil, false, ""
+		}
+	}
+	var path []ChatMessage
+	cur := s.Messages[startID]
+	for cur != nil {
+		path = append(path, *cur)
+		if limit > 0 && len(path) >= limit {
+			break
+		}
+		if cur.ParentID == "" {
+			break
+		}
+		cur = s.Messages[cur.ParentID]
+	}
+	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+		path[i], path[j] = path[j], path[i]
+	}
+	if len(path) > 0 {
+		oldestID = path[0].ID
+		hasMore = path[0].ParentID != ""
+	}
+	return path, hasMore, oldestID
+}
+
+// SnapshotMessagesAnchor returns a window of messages centered on targetID
+// on the active branch path. If targetID is not on the active path, returns
+// an error. The window contains up to limit messages, with the target at the
+// center. Returns hasMoreOlder (messages exist before the window), hasMoreNewer
+// (messages exist after the window), and oldestID (cursor for loading older).
+func (s *ChatSession) SnapshotMessagesAnchor(targetID string, limit int) (msgs []ChatMessage, hasMoreOlder bool, hasMoreNewer bool, oldestID string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ActiveLeafID == "" {
+		return nil, false, false, "", fmt.Errorf("session has no active leaf")
+	}
+	path := s.getPathLocked(s.ActiveLeafID)
+	targetIdx := -1
+	for i, m := range path {
+		if m.ID == targetID {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx == -1 {
+		return nil, false, false, "", fmt.Errorf("target not on active path")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	half := limit / 2
+	start := targetIdx - half
+	if start < 0 {
+		start = 0
+	}
+	end := targetIdx + half + (limit % 2) - 1
+	if end >= len(path) {
+		end = len(path) - 1
+	}
+	window := path[start : end+1]
+	hasMoreOlder = start > 0
+	hasMoreNewer = end < len(path)-1
+	oldestID = window[0].ID
+	return window, hasMoreOlder, hasMoreNewer, oldestID, nil
 }
 
 // Clear resets the session to an empty state, removing all messages,

@@ -42,9 +42,37 @@ func markTruncated(text string, maxTurns int) string {
 }
 
 // IsMaxTurnsPartial reports whether a Run error is the turn ceiling rather than
-// a real failure. This is the only gate a caller needs to keep the partial.
+// a real failure. Callers that keep only max-turns partials use this; new code
+// should prefer IsPartialRun, which also keeps the exploration ceiling.
 func IsMaxTurnsPartial(err error) bool {
 	return errors.Is(err, ErrMaxTurnsExceeded)
+}
+
+// IsPartialRun reports whether a Run error is one of the deliberate ceilings —
+// the turn budget or the opt-in exploration ceiling — rather than a real
+// failure. Callers use it to keep the partial text; the two ceilings share that
+// contract but have different causes and different markers.
+func IsPartialRun(err error) bool {
+	return errors.Is(err, ErrMaxTurnsExceeded) || errors.Is(err, ErrExplorationExhausted)
+}
+
+// ErrExplorationExhausted is the sentinel the opt-in escalate arm returns when
+// a run keeps exploring without writing a file past the last threshold. It is
+// not a failure: the partial text is the only evidence the run produced and
+// must be kept exactly like a max-turns wreck.
+var ErrExplorationExhausted = errors.New("chat exploration budget exhausted without a write")
+
+// ExplorationTruncatedPrefix labels an exploration-ceiling partial. The reason
+// is part of the text because the follow-up turn reads only this string.
+const ExplorationTruncatedPrefix = "[PARTIAL — exploration ceiling reached"
+
+// markExplorationTruncated labels an exploration-ceiling partial. An empty
+// wreck stays empty for the same reason as markTruncated.
+func markExplorationTruncated(text string, calls int) string {
+	if text == "" {
+		return text
+	}
+	return fmt.Sprintf("%s: %d calls without a write] %s", ExplorationTruncatedPrefix, calls, text)
 }
 
 // IsTruncated reports whether a final text is a marked partial. Retrieval

@@ -11,9 +11,9 @@ import (
 //
 // Option A would have made the engine reject a handover whose artifacts are
 // incomplete and spend the parent's retry budget on it. The user declined
-// (2026-11-04, "Q0-1 选 B（只观测）"), so this function only measures. It is the
+// (2026-11-04, "Q0-1 chose B (observe only)"), so this function only measures. It is the
 // other half of that same answer: observation needs a declaration channel, which
-// is why Q1-1 came first ("A 是 B 的前提").
+// is why Q1-1 came first ("A is a prerequisite for B").
 //
 // Why the shape half rides along with present/missing: chat_harness.go's own
 // comment on declaredFields records 9 of 35 harness-bench failures whose

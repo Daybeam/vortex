@@ -16,7 +16,6 @@ import (
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/core/sieve"
-	"github.com/daybeam/vortex/core/skeleton"
 	"github.com/daybeam/vortex/core/stream"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
@@ -159,12 +158,7 @@ type ChatHarness struct {
 	PendingSteer string
 	SteerLock    sync.Mutex
 
-	// Delegation drift detection (ADDED 2026-11-08): counts read-only
-	// exploratory tool calls per turn to detect when the model is
-	// "hard-sustaining" instead of delegating. Per-turn because
-	// cloneHarnessForRequest zero-initializes these fields. See
-	// docs/completed/2026-11-08/CHAT_HARNESS_DELEGATION_DRIFT_DESIGN.md.
-	fileReadCalls     int
+	fileReadCalls     int // delegation drift: per-turn read-only tool call count
 	delegationSteered bool
 
 	// ReadinessGateSoft (ADDED 2026-10-10): when true, softens the
@@ -174,6 +168,7 @@ type ChatHarness struct {
 	// false = strict (current behavior for strong models).
 	// See eval-kit/docs/28-engine-path-analysis.md §2 claim ②.
 	ReadinessGateSoft bool
+	pd                postDelegState // post-delegation lockout, see post_deleg_lockout.go
 
 	// MaxContextWindow is the model's context window size (in tokens),
 	// from the provider config. Used for input size estimation: when
@@ -187,271 +182,6 @@ type ChatHarness struct {
 	// the core.SegmentManager for topic segmentation (STAY/SEAL decisions).
 	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
 	Segments *core.SegmentManager
-}
-
-// thinkingExtractor detects imd/} tags in a chunk stream and separates
-// thinking content from regular content. Handles tags split across chunks.
-// Used by ChatHarness to emit "thinking" events separately from "delta" events,
-// enabling Telegram/web clients to display reasoning collapsibly.
-type thinkingExtractor struct {
-	inThinking bool
-	pending    string // buffer for partial tag detection
-}
-
-const (
-	thinkOpenTag  = "<think>"
-	thinkCloseTag = "</think>"
-)
-
-// Process takes a chunk and returns (content, thinking) strings.
-// content should be emitted as "delta", thinking as "thinking".
-// Both may be empty if the chunk is buffered for tag detection.
-func (te *thinkingExtractor) Process(chunk string) (content, thinking string) {
-	te.pending += chunk
-	for len(te.pending) > 0 {
-		if !te.inThinking {
-			idx := strings.Index(te.pending, thinkOpenTag)
-			if idx == -1 {
-				// No tag found. Keep last (len-1) chars as pending
-				// in case the tag is split across chunks.
-				safe := len(te.pending) - (len(thinkOpenTag) - 1)
-				if safe <= 0 {
-					return content, thinking
-				}
-				content += te.pending[:safe]
-				te.pending = te.pending[safe:]
-			} else {
-				if idx > 0 {
-					content += te.pending[:idx]
-				}
-				te.pending = te.pending[idx+len(thinkOpenTag):]
-				te.inThinking = true
-			}
-		} else {
-			idx := strings.Index(te.pending, thinkCloseTag)
-			if idx == -1 {
-				safe := len(te.pending) - (len(thinkCloseTag) - 1)
-				if safe <= 0 {
-					return content, thinking
-				}
-				thinking += te.pending[:safe]
-				te.pending = te.pending[safe:]
-			} else {
-				if idx > 0 {
-					thinking += te.pending[:idx]
-				}
-				te.pending = te.pending[idx+len(thinkCloseTag):]
-				te.inThinking = false
-			}
-		}
-	}
-	return content, thinking
-}
-
-// Flush returns any remaining buffered content. Call at the end of the stream.
-func (te *thinkingExtractor) Flush() (content, thinking string) {
-	if te.inThinking {
-		thinking = te.pending
-	} else {
-		content = te.pending
-	}
-	te.pending = ""
-	return content, thinking
-}
-
-func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
-	// Copy before mutating: core.CoreToolDefinitions() returns a shared package-level
-	// var (audit fix P1). ToolDefinitions() mutates Description fields when
-	// SessionRoot is set, so it must operate on a copy.
-	src := core.CoreToolDefinitions()
-	tools := make([]schemas.ToolDefinition, len(src))
-	copy(tools, src)
-	// Filter out decompress — it requires a FoldEngine which the ChatHarness
-	// doesn't have. decompress is only available to subagents via the Spawner.
-	filtered := tools[:0]
-	for _, t := range tools {
-		if t.Name != "decompress" {
-			filtered = append(filtered, t)
-		}
-	}
-	tools = filtered
-	// When SessionRoot is set, adapt tool descriptions to reflect the real
-	// workspace root and clarify execute_code is not a shell. (harness-bench
-	// report §3 defect 3: descriptions contradicted actual permissions.)
-	if h.SessionRoot != "" {
-		for i := range tools {
-			switch tools[i].Name {
-			case "write_file":
-				tools[i].Description = "Write content to a file. Path is relative to the workspace root (" +
-					h.SessionRoot + "). Can write anywhere under the workspace."
-			case "read_file":
-				tools[i].Description = "Read content from a file. Path is relative to the workspace root (" +
-					h.SessionRoot + ")."
-			case "execute_code":
-				tools[i].Description = "Execute code in a sandboxed environment. Supports: python, node, bun, lua. " +
-					"Returns stdout, stderr, and exit code.\n\n" +
-					"IMPORTANT: The 'code' parameter is SOURCE CODE, not shell commands. " +
-					"Do NOT pass 'git fetch', 'ls -F', or other shell commands — they will fail with SyntaxError. " +
-					"Use python/node code only.\n\n" +
-					"PREFER execute_code over multiple read_file calls when:\n" +
-					"- Counting functions/lines/patterns across many files\n" +
-					"- Extracting structured data from logs/JSON/CSV\n" +
-					"- Comparing or aggregating file contents\n" +
-					"One script replaces N read_file calls and saves Nx context."
-			}
-		}
-	}
-	tools = append(tools, schemas.ToolDefinition{
-		Name: "delegate_to_orchestrator",
-		Description: "Delegate a complex, multi-step task to the orchestrator (role-based subagent execution). " +
-			"USE THIS when the request spans several files/sources/sub-questions, needs several independent " +
-			"tool rounds, needs a specialized role, or is long enough that the user would rather get a task id " +
-			"now and follow up. Prefer execute_code for anything one script can finish. " +
-			"Returns immediately with a task id and the task's current status; the work continues in the " +
-			"background, and this session is resumed automatically when it finishes so the result can be " +
-			"delivered then. Use orchestrator_task_status only when the answer cannot wait for that. " +
-			"READINESS GATE (mandatory): Before calling this tool, verify the task is fully specified — " +
-			"all required parameters present, no algorithmic ambiguity, no path/identifier contradictions, " +
-			"and the expected outcome is concrete. If ANY of these is unclear, ask the user clarifying " +
-			"questions FIRST instead of delegating an ambiguous task. Delegating a vague prompt pollutes " +
-			"the downstream weak-model executor and wastes retry budget.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"prompt": map[string]any{
-					"type": "string",
-					"description": "Fully-specified task description to delegate. MUST include: (1) the concrete objective, " +
-						"(2) any required inputs/paths/identifiers, (3) the expected output format or success criteria. " +
-						"Do NOT delegate prompts containing placeholders like <TBD>, unspecified file paths, or unresolved " +
-						"parameter choices — clarify with the user first.",
-				},
-				"readiness_self_check": map[string]any{
-					"type": "boolean",
-					"description": "Set to true to confirm you have verified: no missing parameters, no algorithmic ambiguity, " +
-						"no path contradictions. Omit or set false only if you have already asked the user and received " +
-						"clarification. This flag is the gateway's audit signal — delegating without it true is a protocol violation.",
-				},
-			},
-			"required": []string{"prompt"},
-		},
-	})
-	tools = append(tools, schemas.ToolDefinition{
-		Name: "orchestrator_task_status",
-		Description: "Check a delegated task started by delegate_to_orchestrator. Returns the task's status, " +
-			"its steps, the error if it failed, and the output files it produced. Use this to answer " +
-			"\"how is it going\" and to collect the result once status is completed / failed / " +
-			"completed_with_skips. Set wait_seconds to block briefly (e.g. 20) instead of polling in a loop.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"task_id": map[string]any{
-					"type":        "string",
-					"description": "The task id returned by delegate_to_orchestrator (form: task_xxxx).",
-				},
-				"wait_seconds": map[string]any{
-					"type": "number",
-					"description": "0 (default) = return the current status immediately. 1-60 = block up to " +
-						"this many seconds for a terminal status. Keep it small: the chat turn is waiting.",
-				},
-			},
-			"required": []string{"task_id"},
-		},
-	})
-	tools = append(tools, schemas.ToolDefinition{
-		Name: "orchestrator_help",
-		Description: "Query the system manual to understand available tools, configuration, and safety rules. " +
-			"Use this when you need to know what the system can do, how a tool works, or what configuration is in effect. " +
-			"Returns tier-filtered information: guests see less than admins. No secrets (API keys/tokens) are ever exposed.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"topic": map[string]any{
-					"type": "string",
-					"description": "Which section of the manual to read: \"overview\" (default), \"tools\", \"config\", or \"safety\". " +
-						"overview = system identity + capabilities; tools = tool catalog + usage; config = current settings; safety = danger classification + host protection rules.",
-					"enum": []string{"overview", "tools", "config", "safety"},
-				},
-			},
-		},
-	})
-	return tools
-}
-
-// buildSystem composes the system prompt from context-tree and memory-bank state.
-// buildSystem returns the system prompt.
-//
-// It takes no arguments on purpose. This string is the first thing in every
-// request, so anything that varies between turns — a retrieval result keyed on
-// the latest user message, a timestamp, a task id — makes the whole prefix
-// uncacheable and forces the provider to reprocess the entire conversation on
-// every round. It used to take (query, taskID) and inject an archive search
-// keyed on the query, which changed on every user turn; measured cache hit rate
-// on the harness-bench traces was 4–13% of input tokens.
-//
-// Per-turn context belongs in buildTurnContext, which is appended to the tail
-// of the last user message: appending at the tail keeps the cached prefix intact
-// and only invalidates the new bytes.
-func (h *ChatHarness) buildSystem() string {
-	var b strings.Builder
-
-	// Role system prompt injection — mirrors prompt_assembler.go:66-72.
-	// When a role is set, its Instruction defines the persona; the base
-	// prompt below provides safety guardrails on top.
-	if h.Role != nil && h.Role.Instruction != "" {
-		b.WriteString(fmt.Sprintf(core.ChatHarnessRolePrefix, h.Role.Name, h.Role.Instruction))
-	}
-
-	b.WriteString(core.ChatHarnessDefaultIdentity)
-	b.WriteString(core.ChatHarnessToolsetDesc)
-	b.WriteString(core.ChatHarnessUsageGuidance)
-
-	// Positive triggers first, prohibitions second. See core.ChatHarnessWhenToDelegate
-	// for the measurement that made the ordering matter.
-	b.WriteString(core.ChatHarnessWhenToDelegate)
-
-	// ── Readiness Gate (Two-Tier Clarification Design, Module 1) ──────────────
-	// Hard rule: the strong model (this harness) is the user-facing gateway. It
-	// MUST perform Pre-codification Readiness Assessment before delegating to the
-	// downstream weak-model orchestrator. Delegating an ambiguous task pollutes
-	// the executor and burns retry budget on garbage inputs. See
-	// docs/architecture/TWO_TIER_CLARIFICATION_AND_READINESS_DESIGN.md
-	b.WriteString("\n## DELEGATION READINESS GATE (HARD RULE)\n")
-	b.WriteString(core.ChatHarnessDelegatePrefix)
-	b.WriteString(core.ChatHarnessDelegateRule1)
-	b.WriteString(core.ChatHarnessDelegateRule2)
-	b.WriteString(core.ChatHarnessDelegateRule3)
-	b.WriteString("4. The expected outcome / success criteria is explicit.\n")
-	if h.ReadinessGateSoft {
-		b.WriteString("If any of these are unclear, consider asking the user for clarification before delegating.\n")
-	} else {
-		b.WriteString("If ANY of these fail, ask the user clarifying questions FIRST. NEVER blindly delegate a vague task.\n")
-	}
-
-	if h.MemoryBank != nil {
-		if mb, err := h.MemoryBank.Load(); err == nil {
-			if mb.ProductContext != "" {
-				b.WriteString("\n## Product context\n" + mb.ProductContext + "\n")
-			}
-			if len(mb.ActiveContext.Goals) > 0 {
-				b.WriteString("Goals: " + strings.Join(mb.ActiveContext.Goals, "; ") + "\n")
-			}
-			// User profile injection — helps the gateway agent disambiguate
-			// vague intents and delegate precisely based on user expertise/preferences.
-			if len(mb.UserProfile.Expertise) > 0 || len(mb.UserProfile.Preferences) > 0 || mb.UserProfile.CommunicationStyle != "" {
-				b.WriteString("\n## User Profile\n")
-				if len(mb.UserProfile.Expertise) > 0 {
-					b.WriteString("Expertise: " + strings.Join(mb.UserProfile.Expertise, ", ") + "\n")
-				}
-				if len(mb.UserProfile.Preferences) > 0 {
-					b.WriteString("Preferences: " + strings.Join(mb.UserProfile.Preferences, ", ") + "\n")
-				}
-				if mb.UserProfile.CommunicationStyle != "" {
-					b.WriteString("Communication style: " + mb.UserProfile.CommunicationStyle + "\n")
-				}
-			}
-		}
-	}
-	return b.String()
 }
 
 // buildTurnContext returns the per-turn retrieval block, or "".
@@ -513,7 +243,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 	}
 
-	// ── Completion contract (阶段 2c) ────────────────────────────────────
+	// ── Completion contract (stage 2c) ────────────────────────────────────
 	// The declared artifact list is already inside the task prompt, so parsing
 	// it needs no new parameter and no harness change. nil means "this prompt
 	// carries no contract" — the ordinary case outside the benchmark — and
@@ -541,8 +271,6 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	core.LogCompletionContractOnce()
 
 	system := h.buildSystem()
-	tools := h.ToolDefinitions()
-	mcpServers := []schemas.MCPServerDef{{Name: "core", Tools: tools}}
 
 	messages := make([]ChatMessage, 0, len(history)+maxTurns)
 	if h.Memory != nil {
@@ -666,12 +394,8 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	// and a tool-driven trajectory never produces prose by design, so the
 	// predicate was true for the whole run (iron law 32: an unsatisfiable /
 	// always-true predicate is not a guard).
-	noTextNudged := false    // latched once per run
-	lastTurnToolsOK := false // did the previous turn land >=1 non-empty tool result?
-	// writeCounts counts successful writes per (tool, normalized path) inside
-	// this turn. Signature-based guards cannot see a rewrite (the content
-	// changes every time), so the target path is the only stable key. D7.
-	writeCounts := make(map[string]int)
+	noTextNudged := false                // latched once per run
+	lastTurnToolsOK := false             // did the previous turn land >=1 non-empty tool result?
 	overflowRetried := false             // Tier 2: ensure context overflow retry happens only once
 	var lastToolMeta *store.ToolMetadata // Phase 3: last tool's structured metadata for truncation guard
 
@@ -689,14 +413,12 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	// REMEDIATION.md §4.3). execute_code cannot be counted by writeTargetOf, so
 	// the streak is the only thing that can see a loop on it.
 	execGuardMode, execStreakLimit := codeExecGuardSettings()
-	codeExecStreak := 0
-	codeExecStreakMax := 0
-	codeExecSteers := 0
-	codeExecSteered := false // latched: one correction per run
-	writeTotal := 0
-	writeTargets := make(map[string]struct{})
+	// Guard counters live in a struct so afterToolCall can mutate them without
+	// Run carrying the branches (Q6-1). writeCounts keys successful writes per
+	// (tool, normalized path): a rewrite changes content but not the path, and
+	// that is the only stable key a signature guard could use. D7.
+	eg := exploreGuard{writeTargets: make(map[string]struct{}), writeCounts: make(map[string]int)}
 	noTextSteers := 0
-	repeatedWriteSteers := 0
 	exitReason := "" // "" ⇒ derive from err; "done" / "max_turns" set explicitly
 
 	log.Printf("[chat-harness] task=%s sieve_nil=%v turns=%d", taskID, h.Sieve == nil, maxTurns)
@@ -714,10 +436,10 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 		log.Printf("[chat-turn-summary] task=%s exit=%s turns=%d tool_calls=%d code_exec=%d "+
 			"writes=%d distinct_targets=%d steer_no_text=%d repeated_write=%d contract_declared=%d contract_steer=%d "+
-			"contract_defect_steer=%d fields_declared=%d code_exec_streak_max=%d code_exec_steer=%d elapsed=%.1fs %s",
-			taskID, reason, turnsUsed, toolCallsUsed, codeExecCalls, writeTotal,
-			len(writeTargets), noTextSteers, repeatedWriteSteers, len(declaredArtifacts), contractSteers,
-			contractDefectSteers, len(declaredFields), codeExecStreakMax, codeExecSteers,
+			"contract_defect_steer=%d fields_declared=%d explore_streak_max=%d explore_steer=%d explore_level=%d post_deleg=%s post_deleg_blocked=%d calls_after_deleg=%d delegated=%d post_deleg_polls=%d post_deleg_poll_blocked=%d elapsed=%.1fs %s",
+			taskID, reason, turnsUsed, toolCallsUsed, codeExecCalls, eg.writeTotal,
+			len(eg.writeTargets), noTextSteers, eg.repeatedWriteSteers, len(declaredArtifacts), contractSteers,
+			contractDefectSteers, len(declaredFields), eg.streakMax, eg.steers, eg.level, h.pd.arm, h.pd.blocked, h.pd.after, h.pd.delegations, h.pd.polls, h.pd.pollBlocked,
 			time.Since(runStart).Seconds(), h.contractObservation())
 	}()
 
@@ -743,7 +465,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			User:        flattenChatMessages(messages),
 			Model:       h.Model,
 			MaxTokens:   maxOutputTokens,
-			MCPServers:  mcpServers,
+			MCPServers:  []schemas.MCPServerDef{{Name: "core", Tools: h.ToolDefinitions()}},
 			Attachments: h.Attachments,
 		}
 
@@ -918,19 +640,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			}
 			emit(ChatEvent{Type: "tool_call", Data: tc.Name, Meta: map[string]any{"args": tc.Arguments}})
 
-			// Plan drift detection (#4 + #10, ADDED 2026-10-10):
-			// Check the first tool call in the batch against the step
-			// plan. If drift is detected, set PendingSteer — it will be
-			// appended to the last tool result below.
-			// See docs/plan/STEP_PLAN_MODE_DESIGN.md §10.3.
-			if i == 0 && h.Sieve != nil && h.PendingSteer == "" {
-				if msg := h.Sieve.DetectPlanDrift(taskID, tc); msg != "" {
-					h.SteerLock.Lock()
-					h.PendingSteer = msg
-					h.SteerLock.Unlock()
-					emit(ChatEvent{Type: "plan_drift", Data: tc.Name})
-				}
-			}
+			h.checkPlanDrift(i, taskID, tc, emit)
 
 			// Cache replay: if this exact read was executed before, return
 			// the cached result instead of re-executing. Breaks repetition
@@ -946,28 +656,11 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				}
 			}
 
-			// Delegation drift detection: count read-only exploratory
-			// tool calls (not cache hits — a cached replay means
-			// revisiting, not exploring new ground). When the count
-			// reaches the threshold, inject a steer suggesting
-			// delegation. See docs/completed/2026-11-08/CHAT_HARNESS_DELEGATION_DRIFT_DESIGN.md.
-			if tc.Name == "read_file" || tc.Name == "grep" || tc.Name == "find" {
-				h.fileReadCalls++
-				if h.fileReadCalls >= 6 && h.fileReadCalls < 15 && !h.delegationSteered {
-					h.SteerLock.Lock()
-					if h.PendingSteer == "" {
-						h.PendingSteer = fmt.Sprintf(
-							"[DELEGATION DRIFT] You have called file-reading/grep tools %d times. "+
-								"If this task spans multiple files, sources, or sub-questions (see WHEN TO DELEGATE), "+
-								"consider using delegate_to_orchestrator. If you are already finishing up, answer directly.",
-							h.fileReadCalls)
-						h.delegationSteered = true
-						emit(ChatEvent{Type: "delegation_drift", Data: tc.Name})
-					}
-					h.SteerLock.Unlock()
-				}
+			if h.beforeToolCall(tc, taskID, emit, &messages) {
+				continue
 			}
 
+			var rule toolAfterRule
 			result, derr := h.execTool(ctx, tc.Name, tc.Arguments, taskID)
 			if derr != nil {
 				// Track error messages (not just count) so we can inject them
@@ -1027,55 +720,18 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 					result = h.externalizeArtifact(result, tc.Name, taskID)
 				}
 
-				// ── Write-side repetition guard (D7) ─────────────────
-				// A rewrite carries different `content` every time, so no
-				// signature-based guard can see it: cache replay and
-				// CheckResultRepetition are read-only, InspectToolCalls needs
-				// identical arguments, and the no-text nudge does not latch.
-				// Key on the target path instead. Measured on 026
-				// (2026-10-30): 11 successive writes to one path, every guard
-				// silent, budget exhausted. See T2-STALL-RESUME §16.3.
+				// ── Write-repetition (D7) + no-output exploration (P1) ──
+				// Both guards live in afterToolCall: the write-repetition steer
+				// was measured on 026 (11 successive writes to one path, every
+				// signature guard silent), and the exploration streak is the
+				// only thing that can see execute_code/search_archive, which
+				// never yield a write target. Extracted so the escalate arm can
+				// stop the batch or the run without growing Run (Q6-1).
 				//
 				// Placed after externalization so the steer is never swapped
 				// out for a skeleton, and inside the success branch so a
-				// failed write (which overwrote nothing) does not count.
-				if target := h.writeTargetOf(tc.Name, tc.Arguments); target != "" {
-					writeTotal++
-					writeTargets[target] = struct{}{}
-					// Any real write breaks the no-output streak: the model is
-					// producing files again, which is exactly what the guard
-					// wants it to do.
-					codeExecStreak = 0
-					if n, steer := writeGuardSteer(writeCounts, tc.Name, target); steer != "" {
-						repeatedWriteSteers++
-						emit(ChatEvent{Type: "repeated_write", Data: target, Meta: map[string]any{"tool": tc.Name, "count": n}})
-						result += "\n\n" + steer
-					}
-				}
-
-				// ── Consecutive no-output code execution (P1-1) ───────
-				// Placed outside the write block above because execute_code
-				// never yields a write target: that is the whole gap.
-				if tc.Name == "execute_code" && execGuardMode != codeExecGuardOff {
-					codeExecStreak++
-					if codeExecStreak > codeExecStreakMax {
-						codeExecStreakMax = codeExecStreak
-					}
-					if !codeExecSteered && codeExecStreak >= execStreakLimit {
-						codeExecSteered = true
-						codeExecSteers++
-						missing := []string(nil)
-						if h.SessionRoot != "" && len(declaredArtifacts) > 0 {
-							missing = core.MissingArtifacts(h.SessionRoot, declaredArtifacts)
-						}
-						emit(ChatEvent{Type: "code_exec_steer", Meta: map[string]any{
-							"streak": codeExecStreak, "mode": execGuardMode.String(), "missing": len(missing),
-						}})
-						if execGuardMode == codeExecGuardSteer {
-							result += "\n\n" + codeExecSteerText(codeExecStreak, missing)
-						}
-					}
-				}
+				// failed call (which changed nothing) does not count.
+				rule = h.afterToolCall(tc, &result, &eg, execGuardMode, execStreakLimit, declaredArtifacts, emit)
 			}
 
 			// Phase 2: extract structured metadata from tool result for
@@ -1097,7 +753,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				}
 				h.SteerLock.Unlock()
 
-				// ── Completion contract steer (阶段 2c) ──────────────
+				// ── Completion contract steer (stage 2c) ──────────────
 				// Emitted at most once per run, on the last tool result of a
 				// turn — the same placement as PendingSteer, because that is
 				// where the model looks next.
@@ -1152,6 +808,22 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 
 			emit(ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": tc.Name}})
 			messages = append(messages, ChatMessage{Role: "tool", Content: fmt.Sprintf("[tool %s result]\n%s", tc.Name, result)})
+
+			// Escalate arm only: level 2 stops the rest of this turn's
+			// exploration, unless the batch already queued a write (stopping
+			// there would swallow the very action the steer asks for). Level 3
+			// ends the run; the partial is kept with its own marker, because
+			// this is a deliberate ceiling, not a provider failure.
+			if rule.stopBatch && !h.batchHasWrite(resp.ToolCalls[i+1:]) {
+				skipRemainingCalls(resp.ToolCalls[i+1:], emit, &messages)
+				break
+			}
+			if rule.endRun {
+				exitReason = "exploration_exhausted"
+				emit(ChatEvent{Type: "error", Data: fmt.Sprintf("exploration ceiling: %d calls without a write", eg.streak)})
+				return markExplorationTruncated(finalText.String(), eg.streak),
+					fmt.Errorf("exploration ceiling reached (%d calls without a write): %w", eg.streak, ErrExplorationExhausted)
+			}
 		}
 		// Carry this turn's tool health into the next iteration, where the
 		// no-text check decides whether the model is spinning or working.
@@ -1243,313 +915,4 @@ func (h *ChatHarness) indexTurn(ctx context.Context, sessionID, userQuery, assis
 			Timestamp: time.Now(),
 		}, "chat_"+sessionID)
 	}
-}
-
-// noteTerminalTask reports a task state the model has just been shown, but only
-// when it is terminal: a running task that the model polled once has not been
-// "delivered", and suppressing the follow-up for it would re-introduce the
-// silent loss this signal exists to prevent.
-//
-// Terminal detection is shared with formatTaskStatus (isTerminalChatStatus) so
-// a renamed GraphStatus cannot make one of the two disagree with the other.
-func (h *ChatHarness) noteTerminalTask(id string, st map[string]any) {
-	if h == nil || h.OnTerminalTaskSeen == nil || st == nil {
-		return
-	}
-	if s, _ := st["status"].(string); isTerminalChatStatus(s) {
-		h.OnTerminalTaskSeen(id)
-	}
-}
-
-// delegateReceipt is what the model sees right after delegating. It must answer
-// three questions in one shot: what was created, is it actually running, and
-// what do I do next to get the answer.
-//
-// The "next" line used to say "collect the result, do not just tell the user it
-// is running". That was true when it was written — the turn was the only thing
-// that could produce an answer — and it caused a 300 s turn to be spent polling
-// (trial 026: 34 status calls in 40 turns). Now that the completion callback
-// starts a follow-up turn (chat_followup.go, segment ④), the honest instruction
-// is the opposite one: replying now is correct, and cheaper, because the result
-// gets delivered by that second turn. The loop warning stays — the failure mode
-// has not disappeared, only its necessity.
-func (h *ChatHarness) delegateReceipt(id string) string {
-	var b strings.Builder
-	b.WriteString("delegated task_id=" + id + " status=accepted\n")
-	b.WriteString("The orchestrator is running it in the background, as its own task with its own plan.\n")
-	if h.DelegateStatus != nil {
-		if st, ok := h.DelegateStatus(id, 0); ok && st != nil {
-			if s, _ := st["status"].(string); s != "" {
-				b.WriteString("current status: " + s + "\n")
-			}
-			h.noteTerminalTask(id, st)
-		}
-		b.WriteString("next: reply to the user now with the state you have — this session is resumed " +
-			"automatically when the task finishes, and the result is delivered then. " +
-			"If the answer is useless without the result, call orchestrator_task_status(task_id=\"" + id +
-			"\", wait_seconds=20) instead; call it at most a couple of times and never loop on it.\n")
-	} else {
-		b.WriteString("next: the result arrives as a task_callback event in this session.\n")
-	}
-	return b.String()
-}
-
-func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string]any, taskID string) (string, error) {
-	if name == "delegate_to_orchestrator" {
-		if h.Delegate == nil {
-			return "", fmt.Errorf("delegate is not available")
-		}
-		prompt, ok := args["prompt"].(string)
-		if !ok || prompt == "" {
-			return "", fmt.Errorf("delegate_to_orchestrator: missing or empty 'prompt' argument")
-		}
-		// Stage 3: Delegation gate — if all declared artifacts already exist,
-		// skip delegation and tell the model to reply directly. Do NOT return
-		// error (would consume a retry turn and the model might bypass).
-		if len(h.declaredArtifacts) > 0 && h.SessionRoot != "" {
-			if _, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, h.declaredArtifacts); missing == 0 &&
-				len(core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields)) == 0 {
-				return core.MarkerDelegationSkipped, nil
-			}
-		}
-		// Hand the sub-agent the same words the parent was given. The parent's
-		// summary is a re-encoding, and it loses clauses that the grader scores
-		// (iron law 178); this append is the only step that can restore them.
-		prompt = h.delegatedPromptWithSpec(prompt)
-		id, err := h.Delegate(prompt)
-		if err != nil {
-			return "", err
-		}
-		// Return a receipt, not just an id. The tool is asynchronous by design
-		// (the user wanted a task id they can follow up on), but "Delegated to
-		// orchestrator task X" alone leaves the model with nothing to act on:
-		// it cannot see progress and cannot see the result, while execute_code
-		// hands back its stdout in the same turn. That asymmetry — not the
-		// model's judgement — is why delegation measured 0/104.
-		return h.delegateReceipt(id), nil
-	}
-	if name == "orchestrator_task_status" {
-		if h.DelegateStatus == nil {
-			return "", fmt.Errorf("orchestrator_task_status: task status is not wired in this deployment")
-		}
-		id, _ := args["task_id"].(string)
-		if strings.TrimSpace(id) == "" {
-			return "", fmt.Errorf("orchestrator_task_status: 'task_id' is required")
-		}
-		wait := 15.0 // D2 fix: default to 15s blocking so polling is not the default behavior
-		if w, ok := args["wait_seconds"].(float64); ok && w > 0 {
-			wait = w
-			if wait > 60 {
-				wait = 60 // a chat turn is waiting; do not let the model park it for minutes
-			}
-		}
-		if st, ok := h.DelegateStatus(id, time.Duration(wait*float64(time.Second))); ok && st != nil {
-			h.noteTerminalTask(id, st)
-			return formatTaskStatus(id, st, h.declaredArtifacts), nil
-		}
-		return "", fmt.Errorf("orchestrator_task_status: task %s not found", id)
-	}
-	if name == "orchestrator_help" {
-		if h.HelpProvider == nil {
-			return "", fmt.Errorf("orchestrator_help: system manual is not wired in this deployment")
-		}
-		topic, _ := args["topic"].(string)
-		return h.HelpProvider(topic), nil
-	}
-	if name == "search_archive" {
-		query, _ := args["query"].(string)
-		limit := 5
-		if l, ok := args["limit"].(float64); ok && int(l) > 0 && int(l) <= 10 {
-			limit = int(l)
-		}
-		if query == "" {
-			return "", fmt.Errorf("search_archive: query is required")
-		}
-		if h.Archive == nil {
-			return "", fmt.Errorf("search_archive: archive not available")
-		}
-		forest, err := h.Archive.SearchForest(query, h.Embed, limit, 0.9, taskID, h.ProjectOf(taskID), taskID)
-		if err != nil {
-			return "", fmt.Errorf("search_archive: %v", err)
-		}
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Found %d matching items:\n\n", len(forest.Nodes)))
-		for i, n := range forest.Nodes {
-			sb.WriteString(fmt.Sprintf("## %d. [%s] %s\n", i+1, n.NodeID, n.Intent))
-			if n.Summary != "" {
-				sb.WriteString(n.Summary + "\n\n")
-			}
-			// If this is an externalized artifact, show the file path for
-			// direct read_file recall.
-			if len(n.SourceKeys) > 0 {
-				sb.WriteString(fmt.Sprintf("File: %s (use read_file to access)\n\n", n.SourceKeys[0]))
-			}
-		}
-		return sb.String(), nil
-	}
-	// When SessionRoot is set, pass a SafePathValidator so relative paths
-	// resolve against the workspace root instead of outputs/<taskID>.
-	// When SessionRoot is empty, no validator is passed — backward compatible
-	// with the legacy safeJoin behavior. (harness-bench report §4.2.)
-	if h.SessionRoot != "" {
-		taskDir := filepath.Join(h.OutputBase, taskID)
-		validator := core.NewSafePathValidator(taskDir, h.SessionRoot, []string{h.SessionRoot})
-		return core.HandleCoreTool(ctx, name, args, h.OutputBase, taskID, validator)
-	}
-	return core.HandleCoreTool(ctx, name, args, h.OutputBase, taskID)
-}
-
-func flattenChatMessages(msgs []ChatMessage) string {
-	var b strings.Builder
-	for _, m := range msgs {
-		switch m.Role {
-		case "user":
-			b.WriteString("User: " + m.Content + "\n")
-		case "assistant":
-			b.WriteString("Assistant: " + m.Content + "\n")
-		default:
-			b.WriteString(m.Content + "\n")
-		}
-	}
-	return b.String()
-}
-
-// toolCallSignature returns a deterministic string fingerprint of a set of
-// tool calls. Used by the loop-guard to detect identical repeated calls.
-func toolCallSignature(calls []schemas.ToolCall) string {
-	if len(calls) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, c := range calls {
-		b.WriteString(c.Name)
-		b.WriteByte('|')
-		// Control args (`_reason`) are stripped from the payload, so they must
-		// not distinguish two otherwise identical calls here either.
-		data, _ := json.Marshal(sieve.CanonicalToolArgs(c.Arguments))
-		b.Write(data)
-		b.WriteByte(';')
-	}
-	return b.String()
-}
-
-// artifactThreshold is the byte size above which ChatHarness tool results are
-// externalized to a file and replaced with a structural skeleton + path reference.
-// Below this, the result stays inline (no overhead). Above it, the content is
-// written to a file and replaced with a FileSkeleton + path reference.
-// Intentionally lower than AdaptiveOutputResult's 8KB because chat models have
-// tighter context budgets (no task-level compression).
-const artifactThreshold = 2 * 1024 // 2 KB
-
-// readPassthroughCeiling is the size above which even a read_file result gets
-// externalized. Reads are the model's deliberate recall, so they bypass the
-// 2 KB externalization threshold — but not without bound, because read_file
-// itself has no output cap and a 5 MB read would flood the window.
-// 32 KB ≈ 8k tokens: small against the 200k windows these runs use, and a file
-// larger than that can still be paged with read_file(start_line, end_line).
-const readPassthroughCeiling = 32 * 1024
-
-// shouldExternalize reports whether a tool result should be swapped for an
-// artifact pointer + skeleton instead of being passed to the model verbatim.
-//
-// read_file is treated differently on purpose. It *is* the recall path: the
-// pointer ends with "[Use read_file ... to read it.]". Replacing a read result
-// with a skeleton therefore closes the loop on itself — the model asks for the
-// content, receives a skeleton of field NAMES, and the only way to see the
-// values is another read, which is externalized again.
-//
-// Measured on harness-bench 026 (v60, 2026-10-30): the delegated sub-agent wrote
-// a 6 KB review_findings.json, the parent read it back and got
-// `L14: "id": string / L15: "severity": string / ...`, then answered from that
-// (oracle 0.35, failed_core 2). Before this, every tool result over 2 KB was
-// invisible to the model no matter which tool produced it.
-func (h *ChatHarness) shouldExternalize(toolName, result string) bool {
-	if h.OutputBase == "" || len(result) <= artifactThreshold {
-		return false
-	}
-	if sieve.IsReadTool(toolName) {
-		return len(result) > readPassthroughCeiling
-	}
-	return true
-}
-
-// sanitizeToolName replaces non-alphanumeric characters with underscores for
-// safe use in filenames.
-func sanitizeToolName(name string) string {
-	var b strings.Builder
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('_')
-		}
-	}
-	return b.String()
-}
-
-// externalizeArtifact writes a large tool result to a file and returns a
-// skeleton + path reference for in-context use. The full content remains
-// accessible via read_file and is indexed in the core.ContextArchive for
-// search_archive recall. On any error, returns the original result.
-func (h *ChatHarness) externalizeArtifact(result, toolName, taskID string) string {
-	if h.OutputBase == "" {
-		return result
-	}
-	artDir := filepath.Join(h.OutputBase, taskID, "artifacts")
-	if err := os.MkdirAll(artDir, 0755); err != nil {
-		return result
-	}
-	filename := fmt.Sprintf("art_%d_%s.txt", time.Now().UnixNano(), sanitizeToolName(toolName))
-	fullPath := filepath.Join(artDir, filename)
-	if err := os.WriteFile(fullPath, []byte(result), 0644); err != nil {
-		return result
-	}
-	absPath, _ := filepath.Abs(fullPath)
-
-	skel := skeleton.DetectAndSkeletonize([]byte(result), toolName)
-
-	// Never bloat. The full payload is already on disk, so the only thing the
-	// skeleton has to do is cost less context than the original — that is the
-	// entire point of externalizing. jsonSkeleton prints every key of every
-	// array element, so a long array of objects can produce a "skeleton" that
-	// is larger than the payload it replaces (observed: 3102 bytes of skeleton
-	// for a 2521-byte JSON result). The other two summarizers in this package
-	// are already covered by NeverBloat tests; this entry point was not.
-	if len(skel) >= len(result) {
-		if alt := skeleton.SummarizeOutput([]byte(result), toolName); len(alt) < len(result) {
-			skel = alt
-		} else {
-			skel = fmt.Sprintf("[%d bytes, %d lines; skeleton omitted because it would not be smaller than the content]",
-				len(result), strings.Count(result, "\n")+1)
-		}
-	}
-
-	// Index in core.ContextArchive for search_archive recall.
-	if h.Archive != nil {
-		summary := skel
-		if len(summary) > 500 {
-			summary = summary[:500] + "\n... (skeleton truncated, see file)"
-		}
-		// audit fix L3: surface Archive.Append failure — previously swallowed,
-		// so recall silently missed indexed artifacts with no signal.
-		if aerr := h.Archive.Append(core.MemoryItem{
-			TaskID:     taskID,
-			NodeID:     fmt.Sprintf("artifact_%s_%d", taskID, time.Now().UnixNano()),
-			Intent:     fmt.Sprintf("[artifact: %s]", toolName),
-			Summary:    summary,
-			SourceKeys: []string{absPath},
-			Timestamp:  time.Now(),
-		}); aerr != nil {
-			fmt.Fprintf(os.Stderr, "[chat-harness] WARN: failed to index artifact in core.ContextArchive: %v\n", aerr)
-		}
-	}
-
-	// The pointer must be actionable: read_file takes an absolute path (the
-	// artifact dir is under TaskDir, which IsAllowed covers) and start_line /
-	// end_line page through anything larger than the passthrough ceiling.
-	return fmt.Sprintf(
-		"[Artifact externalized: %d KB. Skeleton below. Full content at: %s]\n%s\n"+
-			"[Use read_file on that path to read the full content; add start_line/end_line to page through a large file.]",
-		len(result)/1024, absPath, skel,
-	)
 }
