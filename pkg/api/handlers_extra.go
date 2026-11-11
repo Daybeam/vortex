@@ -641,32 +641,33 @@ func (h *APIHandler) PromoteSOPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	graph := h.App.Scheduler.GetTaskGraph(req.TaskID)
-	if graph == nil {
+	var steps map[string]schemas.SOPStep
+	found := h.App.Scheduler.WithTaskGraph(req.TaskID, func(graph *schemas.TaskGraph) {
+		steps = make(map[string]schemas.SOPStep, len(graph.Steps))
+		for id, step := range graph.Steps {
+			if step == nil {
+				continue
+			}
+			steps[id] = schemas.SOPStep{
+				ID:                  step.ID,
+				Role:                step.RoleID,
+				Task:                step.Task,
+				Skills:              step.AdditionalSkills,
+				MCPs:                step.AdditionalMCPs,
+				Provider:            step.ProviderOverride,
+				DependsOn:           step.DependsOn,
+				ExitCriteria:        step.ExitCriteria,
+				DeterministicChecks: step.DeterministicChecks,
+			}
+		}
+	})
+	if !found {
 		http.Error(w, fmt.Sprintf("task %q not found or evicted from memory", req.TaskID), http.StatusNotFound)
 		return
 	}
-	if len(graph.Steps) == 0 {
+	if len(steps) == 0 {
 		http.Error(w, fmt.Sprintf("task %q has no steps", req.TaskID), http.StatusBadRequest)
 		return
-	}
-
-	steps := make(map[string]schemas.SOPStep, len(graph.Steps))
-	for id, step := range graph.Steps {
-		if step == nil {
-			continue
-		}
-		steps[id] = schemas.SOPStep{
-			ID:                  step.ID,
-			Role:                step.RoleID,
-			Task:                step.Task,
-			Skills:              step.AdditionalSkills,
-MCPs:              step.AdditionalMCPs,
-			Provider:            step.ProviderOverride,
-			DependsOn:           step.DependsOn,
-			ExitCriteria:        step.ExitCriteria,
-			DeterministicChecks: step.DeterministicChecks,
-		}
 	}
 
 	var triggers []schemas.SOPTrigger
