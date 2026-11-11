@@ -23,7 +23,7 @@ import (
 func TestTruncatePromptForEvent_MultiByteUTF8(t *testing.T) {
 	// Build a prompt with multi-byte UTF-8 content (Chinese characters, 3 bytes
 	// each in UTF-8). 3000 chars × 3 bytes = 9000 bytes > 8192.
-	// Each '中' is 3 bytes in UTF-8.
+	// Each CJK character in the test data is 3 bytes in UTF-8.
 	bigString := strings.Repeat("中", 3000)
 
 	prompt := map[string]any{

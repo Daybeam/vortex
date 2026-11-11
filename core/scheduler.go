@@ -830,10 +830,29 @@ func (s *DirectedEngine) GetStepResult(taskID, stepID string) *store.StepResult 
 	return res
 }
 
+// GetTaskGraph returns the in-memory task graph for the given task ID, or nil
+// if the task is unknown or has been evicted. Callers must treat the returned
+// graph as read-only and must NOT iterate graph.Steps or other maps without
+// holding s.Mu. For safe read access under the lock, use WithTaskGraph instead.
 func (s *DirectedEngine) GetTaskGraph(taskID string) *schemas.TaskGraph {
 	s.Mu.RLock()
 	defer s.Mu.RUnlock()
 	return s.graphs[taskID]
+}
+
+// WithTaskGraph executes fn while holding RLock on the graph for taskID.
+// If the task is unknown or evicted, fn is not called and the method returns false.
+// Callers must treat the graph as read-only inside fn and must not retain
+// references to the graph or its sub-maps after fn returns.
+func (s *DirectedEngine) WithTaskGraph(taskID string, fn func(graph *schemas.TaskGraph)) bool {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	g, ok := s.graphs[taskID]
+	if !ok {
+		return false
+	}
+	fn(g)
+	return true
 }
 
 func (s *DirectedEngine) TaskKnown(taskID string) bool {
@@ -951,6 +970,7 @@ func (s *DirectedEngine) evictTerminalGraphs(ctx context.Context) {
 				delete(s.doneChans, taskID)
 				delete(s.stepWGs, taskID) // L-7.3
 				s.dropFence(taskID)
+				s.cleanRecentDecisions(taskID)
 			}
 		}
 		s.Mu.Unlock()
@@ -966,4 +986,17 @@ func isTerminalStatus(status schemas.GraphStatus) bool {
 		return true
 	}
 	return false
+}
+
+// cleanRecentDecisions removes all recentDecisions entries for the given taskID.
+// Called from evictTerminalGraphs to prevent unbounded growth of recentDecisions.
+func (s *DirectedEngine) cleanRecentDecisions(taskID string) {
+	prefix := taskID + ":"
+	s.recentDecisionsMu.Lock()
+	for key := range s.recentDecisions {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+			delete(s.recentDecisions, key)
+		}
+	}
+	s.recentDecisionsMu.Unlock()
 }

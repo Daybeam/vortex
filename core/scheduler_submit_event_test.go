@@ -31,6 +31,7 @@ import (
 
 func TestSubmit_SingleStepPublishesTerminalEvent(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
 
@@ -111,7 +112,7 @@ func TestSubmit_SingleStepPublishesTerminalEvent(t *testing.T) {
 }
 
 // TestSubmit_SingleStepPartialReachesTerminal is the C5DD-T1 regression test
-// (PREREG-C5DD §7.4 / 铁律 42: 先跑出红再改).
+// (PREREG-C5DD §7.4 / Iron Rule 42: red-before-green).
 //
 // Bug: a single-step (smart_route) task whose step returned a self-declared
 // StatusPartial (not a ParseOutput fallback) raised a step_failed decision
@@ -130,6 +131,7 @@ func TestSubmit_SingleStepPublishesTerminalEvent(t *testing.T) {
 // Green after fix: EventTaskFailed published, graph "failed", step "partial".
 func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
 
@@ -233,7 +235,7 @@ func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 }
 
 // TestSubmitDecision_SmartRoutedSkipReachesTerminal is the C5DD-T2 regression
-// test (PREREG-C5DD §7.2 / 铁律 42: 先跑出红再改).
+// test (PREREG-C5DD §7.2 / Iron Rule 42: red-before-green).
 //
 // Bug: a single-step (smart_route) task whose step returned
 // StatusDelegationRequired raised a DecisionDelegationRequired and returned
@@ -251,6 +253,7 @@ func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 // Green after fix: doneChan closed, graph "completed_with_skips".
 func TestSubmitDecision_SmartRoutedSkipReachesTerminal(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
 

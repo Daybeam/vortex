@@ -9,7 +9,7 @@ import (
 )
 
 // scheduler_wait_view_test.go — D2 regression tests
-// (DELEGATION_HANDOVER_REDESIGN.md §4.1, "顺带" wait_task auto-switch).
+// (DELEGATION_HANDOVER_REDESIGN.md §4.1, "incidental" wait_task auto-switch).
 //
 // Bug: wait_task defaults to view="summary", which only includes
 // pending_decision_count (an integer) — not the decision envelopes

@@ -20,6 +20,7 @@ import (
 
 func TestScheduler_ProactiveRateLimiting(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
 

@@ -12,9 +12,9 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-// Regression tests for Q5-5 (answered 2026-11-06): 「step_failed 等人裁决的 24 小时
-// 判"已陈旧"，… 到期只新增一个信号，在 /tasks 和 get_task_status 里显示，不自动
-// abort」.
+// Regression tests for Q5-5 (answered 2026-11-06): "A step_failed awaiting human
+// decision is marked 'stale' after 24 hours; on expiry only a signal is added,
+// shown in /tasks and get_task_status, without auto-abort".
 //
 // The delegation half (30 minutes) is pinned by delegation_answer_timeout_test.go.
 // These tests cover the second window: a failed step whose decision nobody has
@@ -111,7 +111,7 @@ func TestStaleDecisionReport_SilentInsideWindow(t *testing.T) {
 	}
 }
 
-// TestStaleDecisionReport_Configurable pins "两个值都做成配置项": the override
+// TestStaleDecisionReport_Configurable pins "both values made configurable": the override
 // sets the window, 0/negative turns it off, and nil keeps 24h.
 func TestStaleDecisionReport_Configurable(t *testing.T) {
 	cases := []struct {

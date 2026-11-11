@@ -7,8 +7,9 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-// Q5-5 (answered 2026-11-06): 「step_failed 等人裁决的 24 小时判"已陈旧"… 到期只新增
-// 一个信号，在 /tasks 和 get_task_status 里显示，不自动 abort」.
+// Q5-5 (answered 2026-11-06): "A step_failed awaiting human decision is marked
+// 'stale' after 24 hours; on expiry only a signal is added, shown in /tasks and
+// get_task_status, without auto-abort".
 //
 // O22 is why this is a report and not a timer: a step_failed decision parked
 // for a day is still the only handle on a step that failed, and resolving it

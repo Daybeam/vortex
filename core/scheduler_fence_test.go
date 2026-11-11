@@ -7,11 +7,12 @@ package core
 // pending decision's pd=1 survived, which only happens if it read the manifest the
 // other process had been writing.
 //
-// operator's decision, verbatim: "Q2-2 的 A′（epoch/fence）能做，但要写清两点。
-// 重读令牌再写 manifest 之间有 TOCTOU 窗口，所以它只能挡掉大部分冲突，不是强保证。
-// ledger 行若能放进同一个 SQLite 事务里做比较再写，会更稳。" and
-// "'输的一方退出执行器'要真的停掉 goroutine，只拒写不够，否则它会继续烧 token 和
-// 触发外部 MCP 调用。"
+// operator's decision, verbatim: "Q2-2's A' (epoch/fence) can be done, but two points must be made clear.
+// There is a TOCTOU window between re-reading the token and writing the manifest, so it can only block
+// most conflicts, not a strong guarantee. If the ledger row can be placed in the same SQLite transaction
+// for comparison before writing, it would be more stable." and
+// "'The losing side exits the executor' must actually stop the goroutine; just refusing writes is not
+// enough, otherwise it will continue burning tokens and triggering external MCP calls."
 //
 // So the tests below pin three things: claiming preempts, the loser writes nothing
 // (manifest, artifacts row AND ledger), and losing cancels the executor's context.
