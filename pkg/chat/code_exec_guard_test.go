@@ -13,14 +13,16 @@ import (
 
 func TestParseCodeExecGuardMode(t *testing.T) {
 	ok := map[string]codeExecGuardMode{
-		"":      codeExecGuardSteer, // default: the defect is a hard 0.00
-		"steer": codeExecGuardSteer,
-		"STEER": codeExecGuardSteer,
-		" log ": codeExecGuardLog,
-		"count": codeExecGuardLog,
-		"off":   codeExecGuardOff,
-		"none":  codeExecGuardOff,
-		"quiet": codeExecGuardOff,
+		"":         codeExecGuardSteer, // default: the defect is a hard 0.00
+		"steer":    codeExecGuardSteer,
+		"STEER":    codeExecGuardSteer,
+		" log ":    codeExecGuardLog,
+		"count":    codeExecGuardLog,
+		"off":      codeExecGuardOff,
+		"none":     codeExecGuardOff,
+		"quiet":    codeExecGuardOff,
+		"escalate": codeExecGuardEscalate,
+		"ESCALATE": codeExecGuardEscalate,
 	}
 	for raw, want := range ok {
 		got, parsed := parseCodeExecGuardMode(raw)
@@ -36,8 +38,11 @@ func TestParseCodeExecGuardMode(t *testing.T) {
 
 func TestCodeExecSteerText(t *testing.T) {
 	out := codeExecSteerText(7, []string{"customer_reply.md"})
-	if !strings.Contains(out, "7 consecutive execute_code") {
-		t.Errorf("the count is the evidence, so it must be stated, got:\n%s", out)
+	if !strings.Contains(out, "7 consecutive") || !strings.Contains(out, "execute_code") {
+		t.Errorf("the count and the tool family are the evidence, so both must be stated, got:\n%s", out)
+	}
+	if !strings.Contains(out, "search_archive") {
+		t.Errorf("the streak counts search_archive too (P1), so the text must not name only code, got:\n%s", out)
 	}
 	if !strings.Contains(out, "customer_reply.md") {
 		t.Errorf("the steer must name a concrete target, got:\n%s", out)
