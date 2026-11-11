@@ -100,6 +100,7 @@ func TestSpawner_SessionProviderFallback(t *testing.T) {
 
 func TestSpawner_OrdinaryTaskFallback(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	// Mock server that returns 401 for the broken provider
 	brokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

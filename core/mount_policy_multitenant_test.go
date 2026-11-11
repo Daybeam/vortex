@@ -11,9 +11,10 @@ import (
 //
 // The rule under test, verbatim from the operator:
 //
-//	"没配置的默认admin，如果都列出来那么日志太多，提示一句没显式public的不会暴露，
-//	 对public的处理按多租户，他们自己也能完成一个闭环，但是任何可能使服务器处于风险的
-//	 部分是由admin管理"
+//	"Unconfigured default admin — listing all of them would produce too many logs;
+//	 note that anything not explicitly public will not be exposed.
+//	 Public mounts follow multi-tenant rules so tenants can form their own closed loop,
+//	 but anything that could put the server at risk is admin-managed."
 //
 // Translated into two properties that must BOTH hold, or the rule is worthless:
 //

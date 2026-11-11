@@ -25,6 +25,7 @@ import (
 func newDelegationTestEngine(t *testing.T) *DirectedEngine {
 	t.Helper()
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	reg := &config.Registry{
 		DefaultProvider: "nonexistent",

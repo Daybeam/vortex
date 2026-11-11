@@ -12,7 +12,7 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-// Q5-2 (2026-11-05): "没有真生产者就删链和面板。死 UI 比没有 UI 更糟."
+// Q5-2 (2026-11-05): "If there's no real producer, delete the chain and the panel. Dead UI is worse than no UI."
 //
 // The SAV chain it refers to was Sense/Verify/Recover wrapped around every stdio
 // MCP tool call. It could never run: config.Registry.GetVerifierID returned ""

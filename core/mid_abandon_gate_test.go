@@ -16,8 +16,8 @@ import (
 // (read-only calls land in the trace → noToolCallsYet=false), hits friction,
 // then emits a PARSEABLE partial and stops while turns remain. Before the
 // gate: the partial was accepted as-is right after the gates (1 tool call +
-// 1 give-up turn = step done). The v20 shape: "调了 3 次工具、遇到一次 422、
-// 然后停手" — three reads, one 422, then giving up, with every gate silent.
+// 1 give-up turn = step done). The v20 shape: "called 3 tools, hit one 422,
+// then gave up" — three reads, one 422, then giving up, with every gate silent.
 
 // midAbandonProvider replays the exact shape:
 //

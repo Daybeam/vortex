@@ -72,7 +72,7 @@ Goal: Write a Lua script.`, "task with "+secret, "test_cap", traceJSON)
 // before sending to the LLM for classification.
 func TestCapabilityNavigator_ScrubsSecretsFromQuery(t *testing.T) {
 	providers.ClearCache()
-	defer providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	mock := &capturingMockProvider{}
 

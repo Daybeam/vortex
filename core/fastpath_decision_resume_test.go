@@ -100,6 +100,7 @@ type fastPathHarness struct {
 func newFastPathHarness(t *testing.T, maxTurns int) *fastPathHarness {
 	t.Helper()
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	logDir := t.TempDir()
 	outDir := t.TempDir()
