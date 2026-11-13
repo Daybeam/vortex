@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -42,12 +41,8 @@ func TestCancelTask_SwarmProviderLoopNotKilledButTaskInvisible(t *testing.T) {
 		Status: schemas.GraphRunning,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.cancelFuncs[graph.TaskID] = cancel
-	s.doneChans[graph.TaskID] = make(chan struct{})
-	s.Mu.Unlock()
+	ctx, cancel := injectRunningTestGraph(t, s, graph)
+	defer cancel()
 
 	runDone := make(chan struct{})
 	go func() {
@@ -105,12 +100,8 @@ func TestCancelTask_StagingGoroutineReceivesContextCancellation(t *testing.T) {
 		Status: schemas.GraphRunning,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.cancelFuncs[graph.TaskID] = cancel
-	s.doneChans[graph.TaskID] = make(chan struct{})
-	s.Mu.Unlock()
+	ctx, cancel := injectRunningTestGraph(t, s, graph)
+	defer cancel()
 
 	stepCtxCancelled := make(chan struct{})
 	go func() {

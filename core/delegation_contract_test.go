@@ -54,11 +54,9 @@ func TestDelegationDecision_PayloadIsCallerComplete(t *testing.T) {
 	var dec *schemas.Decision
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		engine.Mu.RLock()
-		if g := engine.graphs[taskID]; g != nil && len(g.PendingDecisions) > 0 {
+		if g := engine.GetTaskGraph(taskID); g != nil && len(g.PendingDecisions) > 0 {
 			dec = g.PendingDecisions[0]
 		}
-		engine.Mu.RUnlock()
 		if dec != nil {
 			break
 		}

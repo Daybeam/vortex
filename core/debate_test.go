@@ -34,20 +34,16 @@ func TestDebateFields_PropagatedFromStepInput(t *testing.T) {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
-	s.Mu.RLock()
-	graph := s.graphs[taskID]
+	graph := s.GetTaskGraph(taskID)
 	if graph == nil {
-		s.Mu.RUnlock()
 		t.Fatalf("graph not found")
 	}
 	step := graph.Steps["debate-step"]
 	if step == nil {
-		s.Mu.RUnlock()
 		t.Fatalf("step not found")
 	}
 	enableDebate := step.EnableDebate
 	maxDebateRounds := step.MaxDebateRounds
-	s.Mu.RUnlock()
 
 	if !enableDebate {
 		t.Errorf("expected EnableDebate=true on Step")
@@ -76,12 +72,10 @@ func TestDebateFields_DefaultZero(t *testing.T) {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
-	s.Mu.RLock()
-	graph := s.graphs[taskID]
+	graph := s.GetTaskGraph(taskID)
 	step := graph.Steps["plain-step"]
 	enableDebate := step.EnableDebate
 	maxDebateRounds := step.MaxDebateRounds
-	s.Mu.RUnlock()
 
 	if enableDebate {
 		t.Errorf("expected EnableDebate=false by default")

@@ -65,7 +65,7 @@ func TestDelegationAnswerTimeout_ReportsPastDefaultWindow(t *testing.T) {
 	s, _ := newAnswerTestEngine(t)
 	taskID := "q46_default_window"
 	graph := newDelegationGraph(taskID, 31*time.Minute)
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	status, ok := s.GetStatus(taskID)
 	if !ok {
@@ -126,7 +126,7 @@ func mustStatus(t *testing.T, s *DirectedEngine, taskID string) map[string]any {
 func TestDelegationAnswerTimeout_SilentInsideWindow(t *testing.T) {
 	s, _ := newAnswerTestEngine(t)
 	taskID := "q46_inside_window"
-	s.graphs[taskID] = newDelegationGraph(taskID, time.Minute)
+	injectTestGraph(t, s, newDelegationGraph(taskID, time.Minute))
 
 	if report := waitReport(t, mustStatus(t, s, taskID)); report != nil {
 		t.Errorf("1-minute delegation reported as stale: %+v", report)
@@ -155,7 +155,7 @@ func TestDelegationAnswerTimeout_Configurable(t *testing.T) {
 			s, _ := newAnswerTestEngine(t)
 			s.registry.System.DelegationAnswerTimeoutSeconds = tc.setting
 			taskID := "q46_" + tc.name
-			s.graphs[taskID] = newDelegationGraph(taskID, tc.waiting)
+			injectTestGraph(t, s, newDelegationGraph(taskID, tc.waiting))
 
 			report := waitReport(t, mustStatus(t, s, taskID))
 			if !tc.wantOK {
@@ -186,7 +186,7 @@ func TestDelegationAnswerTimeout_OnlyDelegationsAreReported(t *testing.T) {
 		{ID: "dec_step_failed", StepID: "s1", Type: schemas.DecisionStepFailed, Created: time.Now().Add(-3 * 24 * time.Hour)},
 		{ID: "dec_approval", StepID: "s1", Type: schemas.DecisionHumanApprovalRequired, Created: time.Now().Add(-3 * 24 * time.Hour)},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	if report := waitReport(t, mustStatus(t, s, taskID)); report != nil {
 		t.Errorf("non-delegation decisions reported as a delegation wait: %+v", report)
@@ -201,7 +201,7 @@ func TestDelegationAnswerTimeout_SkipsZeroCreated(t *testing.T) {
 	taskID := "q46_zero_created"
 	graph := newDelegationGraph(taskID, time.Minute)
 	graph.PendingDecisions[0].Created = time.Time{}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	if report := waitReport(t, mustStatus(t, s, taskID)); report != nil {
 		t.Errorf("zero Created reported as stale: %+v", report)
@@ -218,7 +218,7 @@ func TestDelegationAnswerTimeout_NamesTheOldestOfMany(t *testing.T) {
 		ID: "dec_deleg_newer", StepID: "s2", Type: schemas.DecisionDelegationRequired,
 		Created: time.Now().Add(-35 * time.Minute),
 	})
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	report := waitReport(t, mustStatus(t, s, taskID))
 	if report == nil {
@@ -241,7 +241,7 @@ func TestDelegationAnswerTimeout_WaitTaskCarriesIt(t *testing.T) {
 	s, _ := newAnswerTestEngine(t)
 	taskID := "q46_wait_task"
 	graph := newDelegationGraph(taskID, 31*time.Minute)
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	// The fast path (pending decisions > 0) returns without waiting.

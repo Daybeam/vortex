@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -40,15 +39,11 @@ func TestRequestAutonomousAbort_CreatesDecision(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-abort-1"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	s.RequestAutonomousAbort("task-abort-1", "s1", FailureClassCostOverrun, "cache 0% for 5 consecutive rounds")
 
-	s.Mu.RLock()
-	g := s.graphs["task-abort-1"]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph("task-abort-1")
 
 	if len(g.PendingDecisions) != 1 {
 		t.Fatalf("expected 1 pending decision, got %d", len(g.PendingDecisions))
@@ -86,11 +81,7 @@ func TestSubmitDecision_ConfirmAbort_CancelsTask(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 	graph.Steps["s1"] = step
 
-	ctx, cancel := context.WithCancel(context.Background())
-	s.Mu.Lock()
-	s.graphs["task-abort-2"] = graph
-	s.cancelFuncs["task-abort-2"] = cancel
-	s.Mu.Unlock()
+	ctx, _ := injectRunningTestGraph(t, s, graph)
 
 	s.RequestAutonomousAbort("task-abort-2", "s1", FailureClassCostOverrun, "budget trajectory exceeds limit")
 
@@ -126,9 +117,7 @@ func TestSubmitDecision_Continue_ResumesTask(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-abort-3"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	s.RequestAutonomousAbort("task-abort-3", "s1", FailureClassCostOverrun, "false alarm")
 	decID := graph.PendingDecisions[0].ID

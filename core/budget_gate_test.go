@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -116,12 +115,7 @@ func setupRunningTask(t *testing.T, s *DirectedEngine, taskID string) {
 		},
 		Status: schemas.GraphRunning,
 	}
-	_, cancel := context.WithCancel(context.Background())
-	s.Mu.Lock()
-	s.graphs[taskID] = graph
-	s.cancelFuncs[taskID] = cancel
-	s.doneChans[taskID] = make(chan struct{})
-	s.Mu.Unlock()
+	injectRunningTestGraph(t, s, graph)
 }
 
 func TestBudgetGate_PerTaskThresholdSuspends(t *testing.T) {
@@ -160,9 +154,7 @@ func TestBudgetGate_PerTaskThresholdSuspends(t *testing.T) {
 	}
 
 	// Verify the graph status changed to suspended.
-	s.Mu.RLock()
-	status := s.graphs[taskID].Status
-	s.Mu.RUnlock()
+	status := s.GetTaskGraph(taskID).Status
 	if status != schemas.GraphSuspended {
 		t.Fatalf("expected graph status %q, got %q", schemas.GraphSuspended, status)
 	}

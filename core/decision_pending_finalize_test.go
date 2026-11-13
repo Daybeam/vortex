@@ -63,7 +63,7 @@ func TestFinalize_DoesNotFinalizeWithPendingDecision(t *testing.T) {
 			Options: []string{"skip", "abort", "retry", "refine_and_retry"},
 		}},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	s.finalize(graph)
@@ -110,7 +110,7 @@ func TestFinalize_CompletesWithoutPendingDecision(t *testing.T) {
 		},
 		PendingDecisions: []*schemas.Decision{},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	s.finalize(graph)

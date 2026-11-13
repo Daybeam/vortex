@@ -32,9 +32,7 @@ func TestCheckApprovalAuthority_ApproverLevels(t *testing.T) {
 				Context: map[string]any{"approval_required_mounts": []string{"owner_mcp"}}, Options: []string{"approve", "reject"}},
 		},
 	}
-	s.Mu.Lock()
-	s.graphs["task-auth"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// admin-level: non-admin rejected; admin OK.
 	if err := s.checkApprovalAuthority("task-auth", "dec-admin", Resolver{IsAdmin: false}); err == nil {
@@ -76,9 +74,7 @@ func TestCheckApprovalAuthority_Expiry(t *testing.T) {
 			Options: []string{"approve", "reject"},
 		}},
 	}
-	s.Mu.Lock()
-	s.graphs["task-exp"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// expiry disabled → old decision still approvable.
 	if err := s.checkApprovalAuthority("task-exp", "dec-old", Resolver{OwnerID: "owner-1"}); err != nil {
