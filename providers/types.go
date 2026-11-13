@@ -27,6 +27,34 @@ type BadRequestError struct{ Msg string }
 
 func (e *BadRequestError) Error() string { return "bad request: " + e.Msg }
 
+// BudgetExhaustedError is a 400 whose body says the caller's *allowance* ran
+// out, not that the request was malformed.
+//
+// D3 (fixed 2026-11-11): every provider funnelled all 400s into
+// BadRequestError, so a gateway refusing further requests ("maximum provider
+// request budget of N was reached") read as `bad request: {...}`. That string
+// is not merely ugly — two behaviours keyed off it were wrong:
+//
+//   - the DAG step path treats BadRequestError as "this request will never
+//     succeed, degrade gracefully" and SKIPS the step, silently dropping its
+//     output, when in fact the step was fine and the run had merely spent its
+//     allowance;
+//   - retrying is pointless in a different way: the allowance does not grow
+//     between attempts, so the step burned attempts against a wall.
+//
+// Evidence: 223 twice and 030 off r3 (2026-11-11), each looking like a broken
+// mechanism rather than an exhausted budget.
+type BudgetExhaustedError struct{ Msg string }
+
+func (e *BudgetExhaustedError) Error() string {
+	return "provider request budget exhausted: " + e.Msg
+}
+
+// String marker for the flattened form, so callers that only hold the message
+// (step.LastError after SanitizeError) still classify it correctly — the same
+// reason rate limits carry a string fallback in core/failure_classify.go.
+const BudgetExhaustedMarker = "provider request budget exhausted"
+
 type ProviderError struct{ Msg string }
 
 func (e *ProviderError) Error() string { return "provider error: " + e.Msg }

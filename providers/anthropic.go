@@ -147,7 +147,7 @@ func (p *AnthropicProvider) StreamComplete(ctx context.Context, req CompleteRequ
 			return nil, &RateLimitError{Msg: string(b), RetryAfter: parseRetryAfter(resp.Header)}
 		}
 		if resp.StatusCode == 400 {
-			return nil, &BadRequestError{Msg: string(b)}
+			return nil, classifyBadRequest(b)
 		}
 		return nil, &ProviderError{Msg: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(b))}
 	}
@@ -387,7 +387,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompleteRequest) (
 		return nil, &RateLimitError{Msg: string(respBody), RetryAfter: parseRetryAfter(headers)}
 	}
 	if status == 400 {
-		return nil, &BadRequestError{Msg: string(respBody)}
+		return nil, classifyBadRequest(respBody)
 	}
 	if status >= 400 {
 		return nil, &ProviderError{Msg: fmt.Sprintf("HTTP %d: %s", status, respBody)}
