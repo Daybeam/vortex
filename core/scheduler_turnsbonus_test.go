@@ -36,9 +36,7 @@ func TestSubmitDecision_TurnsBudgetBonusCapped(t *testing.T) {
 	}
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 	graph.Steps["s1"] = step
-	s.Mu.Lock()
-	s.graphs[taskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// Resume the same step far past the cap. Each call needs a fresh pending
 	// decision (SubmitDecision removes it after processing).

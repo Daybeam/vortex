@@ -1,11 +1,13 @@
 package core
 
 import (
+	"context"
 	"os"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core/obs"
+	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -62,4 +64,38 @@ func mustNewExperienceStore(
 		t.Fatalf("NewExperienceStore(%q, ...) failed: %v", dir, err)
 	}
 	return es
+}
+
+// injectTestGraph inserts a task graph into the scheduler's internal map
+// under the proper mutex. Use this instead of directly accessing s.graphs
+// to avoid 搬龙门 (test-coupled-to-implementation) patterns.
+//
+// Usage:
+//
+//	injectTestGraph(t, s, graph)
+func injectTestGraph(t *testing.T, s *DirectedEngine, graph *schemas.TaskGraph) {
+	t.Helper()
+	s.Mu.Lock()
+	s.graphs[graph.TaskID] = graph
+	s.Mu.Unlock()
+}
+
+// injectRunningTestGraph inserts a task graph with a cancel func and done
+// channel, simulating a fully running task. Returns the context and cancel
+// func so tests can assert on context cancellation. Use this instead of
+// directly accessing s.graphs/s.cancelFuncs/s.doneChans.
+//
+// Usage:
+//
+//	ctx, cancel := injectRunningTestGraph(t, s, graph)
+//	defer cancel()
+func injectRunningTestGraph(t *testing.T, s *DirectedEngine, graph *schemas.TaskGraph) (context.Context, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	s.Mu.Lock()
+	s.graphs[graph.TaskID] = graph
+	s.cancelFuncs[graph.TaskID] = cancel
+	s.doneChans[graph.TaskID] = make(chan struct{})
+	s.Mu.Unlock()
+	return ctx, cancel
 }

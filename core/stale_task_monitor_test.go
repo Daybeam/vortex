@@ -118,7 +118,7 @@ func TestFailStaleTasks_AutoFailsStaleTask(t *testing.T) {
 			"s1": {ID: "s1", Status: schemas.StepRunning, RetryCount: 0},
 		},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	// First call: records the snapshot (progress seen).
 	s.failStaleTasks(time.Hour)
@@ -157,7 +157,7 @@ func TestFailStaleTasks_NoFalsePositiveOnProgress(t *testing.T) {
 			"s1": {ID: "s1", Status: schemas.StepRunning, RetryCount: 0},
 		},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	// First call: records the snapshot.
 	s.failStaleTasks(time.Hour)
@@ -202,7 +202,7 @@ func TestFailStaleTasks_SkipsNonRunningTasks(t *testing.T) {
 				"s1": {ID: "s1", Status: schemas.StepOK, RetryCount: 0},
 			},
 		}
-		s.graphs[taskID] = graph
+		injectTestGraph(t, s, graph)
 	}
 
 	// Should not create any snapshots for non-running tasks.
@@ -218,8 +218,9 @@ func TestFailStaleTasks_SkipsNonRunningTasks(t *testing.T) {
 		if _, exists := s.staleTaskSnapshots[taskID]; exists {
 			t.Errorf("non-running task %s should not have a snapshot", taskID)
 		}
-		if s.graphs[taskID].Status != status {
-			t.Errorf("task %s status changed from %s to %s", taskID, status, s.graphs[taskID].Status)
+		g := s.GetTaskGraph(taskID)
+		if g.Status != status {
+			t.Errorf("task %s status changed from %s to %s", taskID, status, g.Status)
 		}
 	}
 }
@@ -273,7 +274,7 @@ func TestStaleTaskMonitor_Integration(t *testing.T) {
 			"s1": {ID: "s1", Status: schemas.StepRunning, RetryCount: 0},
 		},
 	}
-	s.graphs[staleID] = staleGraph
+	injectTestGraph(t, s, staleGraph)
 
 	// Progressing task: running, will change state.
 	progressID := "progress_integration"
@@ -284,7 +285,7 @@ func TestStaleTaskMonitor_Integration(t *testing.T) {
 			"s1": {ID: "s1", Status: schemas.StepRunning, RetryCount: 0},
 		},
 	}
-	s.graphs[progressID] = progressGraph
+	injectTestGraph(t, s, progressGraph)
 
 	// First check: both get snapshots.
 	s.failStaleTasks(time.Hour)
@@ -361,7 +362,7 @@ func TestStaleTaskMonitor_SweepsOrphanedLedgerRow(t *testing.T) {
 	s, db := newLedgerSweepEngine(t)
 	const taskID = "task_orphan"
 	seedAgedRunningRow(t, db, taskID)
-	if _, held := s.graphs[taskID]; held {
+	if g := s.GetTaskGraph(taskID); g != nil {
 		t.Fatal("the row must not be in s.graphs — that absence is the whole of F10")
 	}
 
@@ -387,7 +388,7 @@ func TestStaleTaskMonitor_SweepReconcilesInMemoryGraph(t *testing.T) {
 		Status: schemas.GraphRunning,
 		Steps:  map[string]*schemas.Step{"s1": {ID: "s1", Status: schemas.StepRunning}},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 	cancelled := false
 	s.cancelFuncs = map[string]context.CancelFunc{taskID: func() { cancelled = true }}
 

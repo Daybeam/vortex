@@ -68,7 +68,7 @@ func TestMarkTaskAborted_WritesTerminalStatusLedgerOnly(t *testing.T) {
 	if write.taskID != "taskA" || write.status != "aborted" {
 		t.Errorf("expected (taskA, aborted), got (%q, %q)", write.taskID, write.status)
 	}
-	if got := s.graphs["taskA"].Status; got != schemas.GraphRunning {
+	if got := s.GetTaskGraph("taskA").Status; got != schemas.GraphRunning {
 		t.Errorf("in-memory graph must stay running (ledger-only transition), got %q", got)
 	}
 }

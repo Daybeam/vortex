@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"testing"
 
 	"github.com/daybeam/vortex/schemas"
@@ -21,20 +20,13 @@ func TestSuspendTask_RunningTask_GetsSuspended(t *testing.T) {
 		Status: schemas.GraphRunning,
 	}
 
-	_, cancel := context.WithCancel(context.Background())
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.cancelFuncs[graph.TaskID] = cancel
-	s.doneChans[graph.TaskID] = make(chan struct{})
-	s.Mu.Unlock()
+	injectRunningTestGraph(t, s, graph)
 
 	if err := s.SuspendTask("task-suspend-1"); err != nil {
 		t.Fatalf("SuspendTask failed: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs["task-suspend-1"]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph("task-suspend-1")
 
 	if g.Status != schemas.GraphSuspended {
 		t.Fatalf("expected status %q, got %q", schemas.GraphSuspended, g.Status)
@@ -51,12 +43,7 @@ func TestSuspendTask_NonRunningTask_ReturnsError(t *testing.T) {
 		Status: schemas.GraphCompleted,
 	}
 
-	_, cancel := context.WithCancel(context.Background())
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.cancelFuncs[graph.TaskID] = cancel
-	s.doneChans[graph.TaskID] = make(chan struct{})
-	s.Mu.Unlock()
+	injectRunningTestGraph(t, s, graph)
 
 	err := s.SuspendTask("task-suspend-2")
 	if err == nil {
@@ -86,17 +73,13 @@ func TestResumeSuspendedTask_SuspendedTask_GetsRunning(t *testing.T) {
 		Status: schemas.GraphSuspended,
 	}
 
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	if err := s.ResumeSuspendedTask("task-resume-1"); err != nil {
 		t.Fatalf("ResumeSuspendedTask failed: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs["task-resume-1"]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph("task-resume-1")
 
 	if g.Status != schemas.GraphRunning {
 		t.Fatalf("expected status %q, got %q", schemas.GraphRunning, g.Status)
@@ -113,9 +96,7 @@ func TestResumeSuspendedTask_NonSuspendedTask_ReturnsError(t *testing.T) {
 		Status: schemas.GraphRunning,
 	}
 
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	err := s.ResumeSuspendedTask("task-resume-2")
 	if err == nil {
@@ -145,32 +126,23 @@ func TestSuspendThenResume_RoundTrip(t *testing.T) {
 		Status: schemas.GraphRunning,
 	}
 
-	_, cancel := context.WithCancel(context.Background())
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.cancelFuncs[graph.TaskID] = cancel
-	s.doneChans[graph.TaskID] = make(chan struct{})
-	s.Mu.Unlock()
+	injectRunningTestGraph(t, s, graph)
 
 	// Suspend
 	if err := s.SuspendTask("task-roundtrip-1"); err != nil {
 		t.Fatalf("SuspendTask failed: %v", err)
 	}
-	s.Mu.RLock()
-	if s.graphs["task-roundtrip-1"].Status != schemas.GraphSuspended {
+	if g := s.GetTaskGraph("task-roundtrip-1"); g.Status != schemas.GraphSuspended {
 		t.Fatal("expected GraphSuspended after suspend")
 	}
-	s.Mu.RUnlock()
 
 	// Resume
 	if err := s.ResumeSuspendedTask("task-roundtrip-1"); err != nil {
 		t.Fatalf("ResumeSuspendedTask failed: %v", err)
 	}
-	s.Mu.RLock()
-	if s.graphs["task-roundtrip-1"].Status != schemas.GraphRunning {
+	if g := s.GetTaskGraph("task-roundtrip-1"); g.Status != schemas.GraphRunning {
 		t.Fatal("expected GraphRunning after resume")
 	}
-	s.Mu.RUnlock()
 }
 
 func TestResumeSuspendedTask_ResetsZombieSteps(t *testing.T) {
@@ -186,17 +158,13 @@ func TestResumeSuspendedTask_ResetsZombieSteps(t *testing.T) {
 		Status: schemas.GraphSuspended,
 	}
 
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	if err := s.ResumeSuspendedTask("task-zombie-1"); err != nil {
 		t.Fatalf("ResumeSuspendedTask failed: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs["task-zombie-1"]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph("task-zombie-1")
 
 	// StepRunning should have been reset to StepPending.
 	if g.Steps["s1"].Status != schemas.StepPending {
