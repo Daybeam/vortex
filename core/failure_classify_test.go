@@ -114,3 +114,47 @@ func TestClassifyError_RateLimit_StringFallback_CaseInsensitive(t *testing.T) {
 		t.Fatalf("expected %s for a case-varied 'rate limit' string, got %s", FailureClassRateLimit, got)
 	}
 }
+
+// D3 (2026-11-11): a spent provider-request allowance is a governance abort,
+// not malformed input. It used to arrive as *providers.BadRequestError, so the
+// DAG step path skipped the step and the reason read `bad request: {...}`.
+func TestClassifyError_BudgetExhausted(t *testing.T) {
+	err := &providers.BudgetExhaustedError{
+		Msg: `{"error":{"type":"max_agent_turns_exceeded","message":"HarnessBench maximum provider request budget of 40 was reached"}}`,
+	}
+	if got := classifyError(err); got != FailureClassCostOverrun {
+		t.Fatalf("expected %s for an exhausted budget, got %s", FailureClassCostOverrun, got)
+	}
+}
+
+func TestClassifyError_BudgetExhausted_ThroughWrapping(t *testing.T) {
+	wrapped := fmt.Errorf("step step-1 failed: %w",
+		&providers.BudgetExhaustedError{Msg: "maximum provider request budget of 40 was reached"})
+	if got := classifyError(wrapped); got != FailureClassCostOverrun {
+		t.Fatalf("expected %s for a wrapped budget error, got %s", FailureClassCostOverrun, got)
+	}
+}
+
+// The end of executeStep re-classifies `errors.New(step.LastError)` — a plain
+// string with no live type to unwrap. Without the string fallback an exhausted
+// budget would come back as transient there and be retried against a wall.
+func TestClassifyError_BudgetExhausted_StringFallback_Flattened(t *testing.T) {
+	cases := []string{
+		`provider request budget exhausted: {"error":{"type":"max_agent_turns_exceeded"}}`,
+		`bad request: {"error":{"type":"max_agent_turns_exceeded","message":"HarnessBench maximum provider request budget of 40 was reached"}}`,
+	}
+	for _, msg := range cases {
+		if got := classifyError(errors.New(msg)); got != FailureClassCostOverrun {
+			t.Fatalf("expected %s for flattened %q, got %s", FailureClassCostOverrun, msg, got)
+		}
+	}
+}
+
+// The distinction has to survive in both directions: an ordinary 400 is still
+// a bad request, not a budget abort.
+func TestClassifyError_BadRequest_IsNotCostOverrun(t *testing.T) {
+	err := &providers.BadRequestError{Msg: `{"error":{"message":"messages[0].role must be one of user, assistant"}}`}
+	if got := classifyError(err); got != FailureClassBadRequest {
+		t.Fatalf("expected %s, got %s", FailureClassBadRequest, got)
+	}
+}

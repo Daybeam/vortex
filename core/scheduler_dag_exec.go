@@ -448,6 +448,30 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 				continue
 			}
 
+			// D3 (2026-11-11): the run's provider-request allowance is spent.
+			// Two things were wrong while this shared BadRequestError's branch:
+			// the step's request was well-formed, so "graceful degradation"
+			// skipped it and silently dropped output the graph still needs; and
+			// the recorded reason said `bad request: {...}`. Retrying cannot
+			// help either -- the allowance does not grow between attempts -- so
+			// fail fast and name the cause, the same shape as the auth circuit
+			// breaker below.
+			var be *providers.BudgetExhaustedError
+			if errors.As(err, &be) {
+				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
+					"error":      "Provider request budget exhausted",
+					"details":    be.Msg,
+					"root_cause": string(FailureClassCostOverrun),
+				})
+				s.Mu.Lock()
+				step.LastError = store.SanitizeError(be.Error())
+				if step.TriggerError == "" {
+					step.TriggerError = step.LastError // Capture first failure signal
+				}
+				s.Mu.Unlock()
+				break
+			}
+
 			var br *providers.BadRequestError
 			if errors.As(err, &br) {
 				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{

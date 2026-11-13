@@ -1,8 +1,11 @@
 package core
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/daybeam/vortex/providers"
 )
@@ -107,7 +110,27 @@ func classifyError(err error) FailureClass {
 		return FailureClassBadRequest
 	}
 
+	// D3 (2026-11-11): a gateway refusing further requests because the run's
+	// allowance is spent is a budget abort, not a malformed request. Checked
+	// before the BadRequestError branch above would have caught it, because it
+	// used to BE a BadRequestError -- which made the DAG path skip the step as
+	// "unfixable input" and made the chat path print `bad request: {...}`.
+	// cost_overrun is the existing class for exactly this: a governance abort
+	// the replay scheduler already treats as unfixable.
+	var be *providers.BudgetExhaustedError
+	if errors.As(err, &be) {
+		return FailureClassCostOverrun
+	}
+
 	msg := err.Error()
+
+	// Flattened-form fallback for the same class: by the time LastError is read
+	// back (post-SanitizeError, or a re-classification of the stored string at
+	// the end of executeStep) the typed error is gone and only this text
+	// remains. Without it an exhausted budget would re-classify as transient.
+	if strings.Contains(msg, providers.BudgetExhaustedMarker) || strings.Contains(msg, "max_agent_turns_exceeded") {
+		return FailureClassCostOverrun
+	}
 
 	// FIX (2026-08-07): the typed *providers.RateLimitError check above only
 	// catches rate limits at the point they're first raised inside a
@@ -137,6 +160,59 @@ func classifyError(err error) FailureClass {
 	return FailureClassTransient
 }
 
+// classifyErrorWithSystemOne wraps classifyError with an optional System One
+// refinement. When the initial classification is FailureClassTransient (the
+// catch-all) and System One is wired with EnableFailureClassify, it asks the
+// model for a more specific class. If System One returns a valid class with
+// confidence > 0.7, it overrides; otherwise the original transient class is
+// kept. On any error or timeout, falls back to the original classification.
 func (s *DirectedEngine) classifyErrorWithSystemOne(err error, stepID, roleID, stepTask string) FailureClass {
-	return classifyError(err)
+	initial := classifyError(err)
+	if initial != FailureClassTransient {
+		return initial
+	}
+	if s.systemOneProvider == nil || !s.systemOneCfg.EnableFailureClassify {
+		return initial
+	}
+	allClasses := []string{
+		"rate_limit", "bad_request", "auth_permission", "missing_dependency",
+		"role_missing", "transient", "context_deficit", "capability_required",
+		"contract_violation", "cost_overrun", "deterministic_tool_refusal",
+	}
+	state := fmt.Sprintf("Step %s role %s failed. Error: %s. Task: %s.", stepID, roleID, err.Error(), stepTask)
+	questions := map[string]any{
+		"q1": map[string]any{
+			"type":     "choice",
+			"question": "What failure class is this?",
+			"options":  allClasses,
+		},
+	}
+	req := providers.CompleteRequest{
+		User:        state,
+		Model:       s.systemOneCfg.Model,
+		MaxTokens:   256,
+		Constraints: map[string]any{"questions": questions},
+	}
+	ctx, cancel := context.WithTimeout(s.lifecycleCtx, 3*time.Second)
+	defer cancel()
+	resp, rerr := s.systemOneProvider.Complete(ctx, req)
+	if rerr != nil {
+		return initial
+	}
+	for _, tc := range resp.ToolCalls {
+		if tc.Name != "q1" {
+			continue
+		}
+		choice, _ := tc.Arguments["choice"].(string)
+		confidence, _ := tc.Arguments["confidence"].(float64)
+		if confidence < 0.7 {
+			return initial
+		}
+		for _, c := range allClasses {
+			if c == choice {
+				return FailureClass(c)
+			}
+		}
+	}
+	return initial
 }

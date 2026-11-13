@@ -103,6 +103,12 @@ const (
 	// docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §3.4 and
 	// behavior contract B11.
 	EventIntentShiftBranch EventType = "intent_shift_branch"
+	// Command execution events (ADDED 2026-11-12): emitted by background
+	// run_command goroutines. Webhook routes must opt-in via trigger_on;
+	// default routes only cover task_completed/task_failed.
+	EventCommandStarted   EventType = "command_started"
+	EventCommandCompleted EventType = "command_completed"
+	EventCommandTimeout   EventType = "command_timeout"
 )
 
 type LogEvent struct {

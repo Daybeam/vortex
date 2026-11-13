@@ -274,8 +274,12 @@ func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mc
 
 	applyAuth := func(req *http.Request) {
 		// Best-effort: handshake failures are handled by the caller (returns "").
-		// OAuth errors here will cause the handshake to fail naturally.
-		_ = applyMCPAuth(ctx, req, mcp, ownerID)
+		// OAuth errors here will cause the handshake to fail naturally, but we
+		// log the error so auth misconfiguration is visible in logs rather than
+		// silently swallowed.
+		if err := applyMCPAuth(ctx, req, mcp, ownerID); err != nil {
+			slog.Warn("MCP handshake auth failed", "mcp_id", mcp.ID, "owner", ownerID, "err", err)
+		}
 	}
 
 	initBody, _ := json.Marshal(map[string]any{
