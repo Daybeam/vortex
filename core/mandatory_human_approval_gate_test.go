@@ -46,7 +46,7 @@ func TestMandatoryHumanApprovalGate_SubmitDecisionChoices(t *testing.T) {
 			},
 		},
 	}
-	engine.graphs["task_human_1"] = graph
+	injectTestGraph(t, engine, graph)
 	engine.doneChans["task_human_1"] = make(chan struct{})
 
 	// 1. Test "approve"

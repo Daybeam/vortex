@@ -50,16 +50,12 @@ func TestDispatchGroup_WithSessionIR(t *testing.T) {
 	}
 
 	// 5. Verify the generated graph has the session role
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
-	engine.Mu.RUnlock()
+	graph := engine.GetTaskGraph(taskID)
 
 	if graph == nil {
 		for i := 0; i < 20; i++ {
 			time.Sleep(50 * time.Millisecond)
-			engine.Mu.RLock()
-			graph = engine.graphs[taskID]
-			engine.Mu.RUnlock()
+			graph = engine.GetTaskGraph(taskID)
 			if graph != nil {
 				break
 			}

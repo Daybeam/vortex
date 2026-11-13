@@ -174,21 +174,18 @@ func TestDeterministicChecks_SurviveReplanSurgery(t *testing.T) {
 	}
 
 	graph := fixtureGraph(t, string(payload))
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	if err := s.SubmitDecisionWithPayload(graph.TaskID, "dec-1", "replan", ""); err != nil {
 		t.Fatalf("replan: %v", err)
 	}
 
-	s.Mu.RLock()
-	step := s.graphs[graph.TaskID].Steps["r1"]
+	g := s.GetTaskGraph(graph.TaskID)
+	step := g.Steps["r1"]
 	var checks []schemas.DeterministicCheck
 	if step != nil {
 		checks = append(checks, step.DeterministicChecks...)
 	}
-	s.Mu.RUnlock()
 
 	if step == nil {
 		t.Fatal("replanned step r1 not injected")

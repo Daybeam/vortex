@@ -56,15 +56,9 @@ func newDelegationTestEngine(t *testing.T) *DirectedEngine {
 func waitForDelegationDecision(t *testing.T, engine *DirectedEngine, taskID string) *schemas.Decision {
 	t.Helper()
 	for i := 0; i < 20; i++ {
-		engine.Mu.RLock()
-		graph := engine.graphs[taskID]
-		blocked := graph != nil && len(graph.PendingDecisions) > 0
-		engine.Mu.RUnlock()
-		if blocked {
-			engine.Mu.RLock()
-			dec := engine.graphs[taskID].PendingDecisions[0]
-			engine.Mu.RUnlock()
-			return dec
+		graph := engine.GetTaskGraph(taskID)
+		if graph != nil && len(graph.PendingDecisions) > 0 {
+			return graph.PendingDecisions[0]
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -99,10 +93,8 @@ func TestFulfillStep_WritesGlobalWorkspace(t *testing.T) {
 		t.Fatalf("FulfillStep failed: %v", err)
 	}
 
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
+	graph := engine.GetTaskGraph(taskID)
 	gw := graph.GlobalWorkspace
-	engine.Mu.RUnlock()
 
 	if gw == nil || len(gw) == 0 {
 		t.Fatal("D3 regression: GlobalWorkspace is empty after FulfillStep; " +
@@ -148,11 +140,9 @@ func TestFulfillStep_LowConfidenceStillSucceeds(t *testing.T) {
 		t.Fatalf("FulfillStep failed: %v", err)
 	}
 
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
+	graph := engine.GetTaskGraph(taskID)
 	stepStatus := graph.Steps["step_1"].Status
 	pendingCount := len(graph.PendingDecisions)
-	engine.Mu.RUnlock()
 
 	if stepStatus != schemas.StepOK {
 		t.Fatalf("D3 regression: step status=%s after low-confidence fulfill; "+
@@ -187,10 +177,8 @@ func TestFulfillStep_RegistersOutputFiles(t *testing.T) {
 		t.Fatalf("FulfillStep failed: %v", err)
 	}
 
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
+	graph := engine.GetTaskGraph(taskID)
 	outputFiles := graph.OutputFiles
-	engine.Mu.RUnlock()
 
 	if len(outputFiles) == 0 {
 		t.Fatal("D3 regression: graph.OutputFiles is empty after FulfillStep with output_ref; " +
@@ -221,9 +209,8 @@ func TestFulfillStep_SetsResultRef(t *testing.T) {
 		t.Fatalf("FulfillStep failed: %v", err)
 	}
 
-	engine.Mu.RLock()
-	step := engine.graphs[taskID].Steps["step_1"]
-	engine.Mu.RUnlock()
+	graph := engine.GetTaskGraph(taskID)
+	step := graph.Steps["step_1"]
 
 	if step.ResultRef == "" {
 		t.Fatal("D3 regression: step.ResultRef is empty after FulfillStep; " +

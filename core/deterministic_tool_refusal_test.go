@@ -52,9 +52,7 @@ func TestHandleStepFailure_RepeatedToolFailure_NoFollowUp(t *testing.T) {
 	}
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning, RoleID: "r1", Task: "exchange a non-delivered order"}
 	graph.Steps["s1"] = step
-	s.Mu.Lock()
-	s.graphs["task-e23-det"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// Simulate a tool that failed 3 times at the task level.
 	for i := 0; i < toolFailCircuitBreakerThreshold; i++ {
@@ -99,9 +97,7 @@ func TestHandleStepFailure_NoRepeatedFailure_SpawnsFollowUp(t *testing.T) {
 	}
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning, RoleID: "r1", Task: "explore an uncertain task"}
 	graph.Steps["s1"] = step
-	s.Mu.Lock()
-	s.graphs["task-e23-gen"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	result := &SpawnResult{Output: schemas.SubagentOutput{
 		Status:     schemas.StatusPartial,

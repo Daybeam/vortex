@@ -156,9 +156,7 @@ type graphSnapshot struct {
 }
 
 func (h *fastPathHarness) snapshot(taskID string) graphSnapshot {
-	h.engine.Mu.RLock()
-	defer h.engine.Mu.RUnlock()
-	g := h.engine.graphs[taskID]
+	g := h.engine.GetTaskGraph(taskID)
 	if g == nil {
 		return graphSnapshot{}
 	}

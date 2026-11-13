@@ -68,11 +68,8 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 
 	var graph *schemas.TaskGraph
 	for i := 0; i < 20; i++ {
-		engine.Mu.RLock()
-		graph = engine.graphs[taskID]
-		blocked := graph != nil && len(graph.PendingDecisions) > 0
-		engine.Mu.RUnlock()
-		if blocked {
+		graph = engine.GetTaskGraph(taskID)
+		if graph != nil && len(graph.PendingDecisions) > 0 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -120,11 +117,8 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		engine.Mu.RLock()
-		graph = engine.graphs[taskID]
-		completed := graph != nil && graph.Status == schemas.GraphCompleted
-		engine.Mu.RUnlock()
-		if completed {
+		graph = engine.GetTaskGraph(taskID)
+		if graph != nil && graph.Status == schemas.GraphCompleted {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -190,11 +184,8 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 
 	var graph *schemas.TaskGraph
 	for i := 0; i < 20; i++ {
-		engine.Mu.RLock()
-		graph = engine.graphs[taskID]
-		blocked := graph != nil && len(graph.PendingDecisions) > 0
-		engine.Mu.RUnlock()
-		if blocked {
+		graph = engine.GetTaskGraph(taskID)
+		if graph != nil && len(graph.PendingDecisions) > 0 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -227,11 +218,8 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 	}
 
 	for i := 0; i < 20; i++ {
-		engine.Mu.RLock()
-		graph = engine.graphs[taskID]
-		hasPending := graph != nil && len(graph.PendingDecisions) > 0
-		engine.Mu.RUnlock()
-		if hasPending {
+		graph = engine.GetTaskGraph(taskID)
+		if graph != nil && len(graph.PendingDecisions) > 0 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -297,18 +285,13 @@ func waitForBlocked(t *testing.T, engine *DirectedEngine, taskID string) *schema
 	t.Helper()
 	var graph *schemas.TaskGraph
 	for i := 0; i < 30; i++ {
-		engine.Mu.RLock()
-		graph = engine.graphs[taskID]
-		blocked := graph != nil && len(graph.PendingDecisions) > 0
-		engine.Mu.RUnlock()
-		if blocked {
+		graph = engine.GetTaskGraph(taskID)
+		if graph != nil && len(graph.PendingDecisions) > 0 {
 			return graph
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	engine.Mu.RLock()
-	graph = engine.graphs[taskID]
-	engine.Mu.RUnlock()
+	graph = engine.GetTaskGraph(taskID)
 	if graph == nil {
 		t.Fatalf("graph %q not found", taskID)
 	}
@@ -321,14 +304,12 @@ func waitForBlocked(t *testing.T, engine *DirectedEngine, taskID string) *schema
 // result payload and waits for the graph to settle.
 func fulfillDelegation(t *testing.T, engine *DirectedEngine, taskID, answer string) {
 	t.Helper()
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
+	graph := engine.GetTaskGraph(taskID)
 	hasPending := graph != nil && len(graph.PendingDecisions) > 0
 	var decID string
 	if hasPending {
 		decID = graph.PendingDecisions[0].ID
 	}
-	engine.Mu.RUnlock()
 	if !hasPending {
 		t.Fatalf("no pending decision to fulfill for task %q", taskID)
 	}
@@ -468,8 +449,7 @@ func TestDelegationMode_ParallelIndependentSteps(t *testing.T) {
 
 	// Fulfill every pending decision until the graph completes.
 	for i := 0; i < 10; i++ {
-		engine.Mu.RLock()
-		graph = engine.graphs[taskID]
+		graph = engine.GetTaskGraph(taskID)
 		completed := graph != nil && graph.Status == schemas.GraphCompleted
 		pendingCount := 0
 		var firstDec *schemas.Decision
@@ -479,7 +459,6 @@ func TestDelegationMode_ParallelIndependentSteps(t *testing.T) {
 				firstDec = graph.PendingDecisions[0]
 			}
 		}
-		engine.Mu.RUnlock()
 		if completed {
 			break
 		}
@@ -494,10 +473,8 @@ func TestDelegationMode_ParallelIndependentSteps(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	engine.Mu.RLock()
-	graph = engine.graphs[taskID]
+	graph = engine.GetTaskGraph(taskID)
 	finalStatus := graph.Status
-	engine.Mu.RUnlock()
 	if finalStatus != schemas.GraphCompleted {
 		t.Errorf("expected graph completed, got %v", finalStatus)
 	}
@@ -519,15 +496,14 @@ func TestDelegationMode_DependencyChain(t *testing.T) {
 
 	seen := []string{}
 	for i := 0; i < 30; i++ {
-		engine.Mu.RLock()
-		graph := engine.graphs[taskID]
+		graph := engine.GetTaskGraph(taskID)
 		if graph == nil {
-			engine.Mu.RUnlock()
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		// Race fix: hold RLock while reading graph.Status and graph.PendingDecisions
 		// so we don't race with addDecision/finalize writes (now under Mu.Lock).
+		engine.Mu.RLock()
 		status := graph.Status
 		pendingCount := len(graph.PendingDecisions)
 		var firstDec *schemas.Decision
@@ -549,10 +525,8 @@ func TestDelegationMode_DependencyChain(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
+	graph := engine.GetTaskGraph(taskID)
 	finalStatus := graph.Status
-	engine.Mu.RUnlock()
 	if finalStatus != schemas.GraphCompleted {
 		t.Errorf("expected graph completed, got %v (seen=%v)", finalStatus, seen)
 	}
@@ -576,9 +550,7 @@ func TestDelegationMode_CancelTask(t *testing.T) {
 	// Wait for the graph to exist (it registers synchronously on Submit).
 	var graph *schemas.TaskGraph
 	for i := 0; i < 20; i++ {
-		engine.Mu.RLock()
-		graph = engine.graphs[taskID]
-		engine.Mu.RUnlock()
+		graph = engine.GetTaskGraph(taskID)
 		if graph != nil {
 			break
 		}
@@ -592,10 +564,8 @@ func TestDelegationMode_CancelTask(t *testing.T) {
 		t.Fatalf("CancelTask failed: %v", err)
 	}
 
-	engine.Mu.RLock()
-	graph = engine.graphs[taskID]
+	graph = engine.GetTaskGraph(taskID)
 	cancelStatus := graph.Status
-	engine.Mu.RUnlock()
 	if cancelStatus != schemas.GraphCancelled {
 		t.Errorf("expected graph cancelled, got %v", cancelStatus)
 	}
@@ -603,10 +573,8 @@ func TestDelegationMode_CancelTask(t *testing.T) {
 	// contract is that the status remains GraphCancelled (asserted below), NOT
 	// that an error is or isn't returned. (audit T-MED-2: clarified contract)
 	_ = engine.CancelTask(taskID) // error return is not part of the contract
-	engine.Mu.RLock()
-	graph = engine.graphs[taskID]
+	graph = engine.GetTaskGraph(taskID)
 	cancelStatus2 := graph.Status
-	engine.Mu.RUnlock()
 	if cancelStatus2 != schemas.GraphCancelled {
 		t.Errorf("expected graph still cancelled after double-cancel, got %v", cancelStatus2)
 	}
