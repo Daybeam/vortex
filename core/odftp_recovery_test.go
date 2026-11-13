@@ -45,9 +45,7 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 		PendingDecisions: []*schemas.Decision{},
 	}
 
-	engine.Mu.Lock()
-	engine.graphs[taskID] = graph
-	engine.Mu.Unlock()
+	injectTestGraph(t, engine, graph)
 
 	// Simulate a failure that triggers ODFTP decision
 	step := graph.Steps[stepID]

@@ -51,20 +51,21 @@ func TestFulfillStep_RestartsRunGoroutine(t *testing.T) {
 	stepID := "step1"
 	decisionID := "dec1"
 
-	s.graphs[taskID] = &schemas.TaskGraph{
+	graph := &schemas.TaskGraph{
 		TaskID:      taskID,
 		Status:      schemas.GraphRunning,
 		Steps:       map[string]*schemas.Step{},
 		OutputFiles: []schemas.OutputFile{},
 	}
-	s.graphs[taskID].Steps[stepID] = &schemas.Step{
+	graph.Steps[stepID] = &schemas.Step{
 		ID:     stepID,
 		Status: schemas.StepBlocked,
 		RoleID: "test_role",
 	}
-	s.graphs[taskID].PendingDecisions = []*schemas.Decision{
+	graph.PendingDecisions = []*schemas.Decision{
 		{ID: decisionID, StepID: stepID, Type: schemas.DecisionDelegationRequired},
 	}
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	// Fulfill the decision with valid JSON output.
@@ -74,10 +75,9 @@ func TestFulfillStep_RestartsRunGoroutine(t *testing.T) {
 	}
 
 	// Verify the decision was resolved (pending decisions cleared).
-	s.Mu.RLock()
-	pendingCount := len(s.graphs[taskID].PendingDecisions)
-	graphStatus := s.graphs[taskID].Status
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(taskID)
+	pendingCount := len(g.PendingDecisions)
+	graphStatus := g.Status
 	if pendingCount != 0 {
 		t.Fatalf("expected 0 pending decisions after FulfillStep, got %d", pendingCount)
 	}
@@ -124,20 +124,21 @@ func TestFulfillDelegation_RestartsRunGoroutine(t *testing.T) {
 	taskID := "test_ln6_task"
 	stepID := "step1"
 
-	s.graphs[taskID] = &schemas.TaskGraph{
+	graph := &schemas.TaskGraph{
 		TaskID:      taskID,
 		Status:      schemas.GraphRunning,
 		Steps:       map[string]*schemas.Step{},
 		OutputFiles: []schemas.OutputFile{},
 	}
-	s.graphs[taskID].Steps[stepID] = &schemas.Step{
+	graph.Steps[stepID] = &schemas.Step{
 		ID:     stepID,
 		Status: schemas.StepBlocked,
 		RoleID: "test_role",
 	}
-	s.graphs[taskID].PendingDecisions = []*schemas.Decision{
+	graph.PendingDecisions = []*schemas.Decision{
 		{ID: "dec1", StepID: stepID, Type: schemas.DecisionDelegationRequired},
 	}
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	result := map[string]any{"answer": "42"}
@@ -146,9 +147,8 @@ func TestFulfillDelegation_RestartsRunGoroutine(t *testing.T) {
 	}
 
 	// Verify the decision was resolved.
-	s.Mu.RLock()
-	pendingCount := len(s.graphs[taskID].PendingDecisions)
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(taskID)
+	pendingCount := len(g.PendingDecisions)
 	if pendingCount != 0 {
 		t.Fatalf("expected 0 pending decisions after FulfillDelegation, got %d", pendingCount)
 	}
@@ -183,13 +183,14 @@ func TestResumeSuspendedTask_SwarmModeRestartsWatchdog(t *testing.T) {
 	s.lifecycleCancel = lifecycleCancel
 
 	taskID := "test_ln1_task"
-	s.graphs[taskID] = &schemas.TaskGraph{
+	graph := &schemas.TaskGraph{
 		TaskID: taskID,
 		Status: schemas.GraphSuspended,
 		Steps: map[string]*schemas.Step{
 			"step1": {ID: "step1", Status: schemas.StepPending, RoleID: "test"},
 		},
 	}
+	injectTestGraph(t, s, graph)
 
 	if err := s.ResumeSuspendedTask(taskID); err != nil {
 		t.Fatalf("ResumeSuspendedTask: %v", err)

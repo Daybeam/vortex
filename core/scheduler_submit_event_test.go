@@ -214,8 +214,7 @@ func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 
 	// Honesty checks: graph failed (partial ≠ success), step preserved as
 	// partial (not collapsed to OK).
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
+	graph := engine.GetTaskGraph(taskID)
 	graphStatus := schemas.GraphRunning
 	stepStatus := schemas.StepPending
 	if graph != nil {
@@ -224,7 +223,6 @@ func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 			stepStatus = st.Status
 		}
 	}
-	engine.Mu.RUnlock()
 
 	if graphStatus != schemas.GraphFailed {
 		t.Errorf("expected GraphFailed for partial single-step, got %v", graphStatus)
@@ -333,8 +331,8 @@ func TestSubmitDecision_SmartRoutedSkipReachesTerminal(t *testing.T) {
 	// delegationBlocked branch would produce: step=StepBlocked, graph=
 	// GraphRunning, one pending DecisionDelegationRequired).
 	decisionID := "test-delegation-decision"
+	graph := engine.GetTaskGraph(taskID)
 	engine.Mu.Lock()
-	graph := engine.graphs[taskID]
 	if graph == nil {
 		engine.Mu.Unlock()
 		t.Fatal("graph not found after completion")
@@ -378,16 +376,14 @@ func TestSubmitDecision_SmartRoutedSkipReachesTerminal(t *testing.T) {
 	}
 
 	// Honesty checks: graph reached completed_with_skips, step is skipped.
-	engine.Mu.RLock()
 	graphStatus := schemas.GraphRunning
 	stepStatus := schemas.StepPending
-	if g := engine.graphs[taskID]; g != nil {
+	if g := engine.GetTaskGraph(taskID); g != nil {
 		graphStatus = g.Status
 		if st := g.Steps["step1"]; st != nil {
 			stepStatus = st.Status
 		}
 	}
-	engine.Mu.RUnlock()
 
 	if graphStatus != schemas.GraphCompletedWithSkips {
 		t.Errorf("expected GraphCompletedWithSkips, got %v", graphStatus)

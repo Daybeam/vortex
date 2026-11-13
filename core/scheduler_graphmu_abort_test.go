@@ -32,9 +32,7 @@ func TestGraphMu_SetAndProtectsDecisionHistory(t *testing.T) {
 	graph.Steps["s1"] = &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 	graph.ContextTree["root"] = &schemas.ContextNode{ID: "root"}
 
-	s.Mu.Lock()
-	s.graphs["task-graphmu-test"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// Concurrent DecisionHistory writes via RecordDecision should not panic.
 	var wg sync.WaitGroup
@@ -84,9 +82,7 @@ func TestRequestAutonomousAbort_ConcurrentNoPanic(t *testing.T) {
 	}
 	graph.Steps["s1"] = &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 
-	s.Mu.Lock()
-	s.graphs["task-concurrent-abort"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	var wg sync.WaitGroup
 	const numGoroutines = 50

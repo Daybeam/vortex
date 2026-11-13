@@ -52,11 +52,12 @@ func TestApprovePlan_GoroutineTrackedAndContextDerived(t *testing.T) {
 	s.lifecycleCancel = lifecycleCancel
 
 	taskID := "test_c5_task"
-	s.graphs[taskID] = &schemas.TaskGraph{
+	graph := &schemas.TaskGraph{
 		TaskID: taskID,
 		Status: schemas.GraphPendingReview,
 		Steps:  map[string]*schemas.Step{},
 	}
+	injectTestGraph(t, s, graph)
 
 	if err := s.ApprovePlan(taskID); err != nil {
 		t.Fatalf("ApprovePlan: %v", err)

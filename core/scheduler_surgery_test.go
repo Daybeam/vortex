@@ -67,7 +67,7 @@ func TestDirectedEngine_MutateGraphTopology(t *testing.T) {
 		},
 		CurrentNodeID: "root",
 	}
-	engine.graphs["task1"] = graph
+	injectTestGraph(t, engine, graph)
 
 	surgery := SurgeryData{
 		DeprecatedStepID: "s1",

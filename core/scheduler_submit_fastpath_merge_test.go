@@ -43,10 +43,8 @@ func TestFulfillStep_SingleStepOverlayMerge(t *testing.T) {
 		t.Fatalf("FulfillStep failed: %v", err)
 	}
 
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
+	graph := engine.GetTaskGraph(taskID)
 	gw := graph.GlobalWorkspace
-	engine.Mu.RUnlock()
 
 	// The overlay merge should have written to GlobalWorkspace["answer"]
 	// (the TargetKey), not just GlobalWorkspace["step_1"] (the AutoDepositResult).

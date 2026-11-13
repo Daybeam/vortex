@@ -89,17 +89,13 @@ func TestSubmitDecision_ReplanInjectsSteps(t *testing.T) {
 	}
 
 	graph := fixtureGraph(t, string(payload))
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	if err := s.SubmitDecisionWithPayload(graph.TaskID, "dec-1", "replan", ""); err != nil {
 		t.Fatalf("replan should succeed, got error: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs[graph.TaskID]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(graph.TaskID)
 
 	if got := g.Steps["s1"].Status; got != schemas.StepDeprecated {
 		t.Fatalf("original step should be deprecated, got %s", got)
@@ -125,9 +121,7 @@ func TestSubmitDecision_ReplanWithoutPayloadErrors(t *testing.T) {
 	defer s.Stop()
 
 	graph := fixtureGraph(t, "") // no planner_replan in context
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	err := s.SubmitDecisionWithPayload(graph.TaskID, "dec-1", "replan", "")
 	if err == nil {
@@ -137,9 +131,7 @@ func TestSubmitDecision_ReplanWithoutPayloadErrors(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs[graph.TaskID]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(graph.TaskID)
 	if g.Steps["s1"].Status == schemas.StepDeprecated {
 		t.Fatal("graph must be untouched when replan payload is missing")
 	}
@@ -161,17 +153,13 @@ func TestSubmitDecision_ReplanExplicitPayloadWins(t *testing.T) {
 	}})
 
 	graph := fixtureGraph(t, string(stored))
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	if err := s.SubmitDecisionWithPayload(graph.TaskID, "dec-1", "replan", string(explicit)); err != nil {
 		t.Fatalf("replan with explicit payload failed: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs[graph.TaskID]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(graph.TaskID)
 
 	if _, ok := g.Steps["from_caller"]; !ok {
 		t.Fatal("explicit payload should win and be injected")
@@ -187,9 +175,7 @@ func TestSubmitDecision_ReplanInvalidPayloadErrors(t *testing.T) {
 	defer s.Stop()
 
 	graph := fixtureGraph(t, "{not json")
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	if err := s.SubmitDecisionWithPayload(graph.TaskID, "dec-1", "replan", ""); err == nil {
 		t.Fatal("invalid replan payload must error")
@@ -366,17 +352,13 @@ func TestSubmitDecision_ReplanPreservesToolAllowlists(t *testing.T) {
 	}
 
 	graph := fixtureGraph(t, string(payload))
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	if err := s.SubmitDecisionWithPayload(graph.TaskID, "dec-1", "replan", ""); err != nil {
 		t.Fatalf("replan should succeed, got error: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs[graph.TaskID]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(graph.TaskID)
 
 	st, ok := g.Steps["r1"]
 	if !ok {

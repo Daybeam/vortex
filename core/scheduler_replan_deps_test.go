@@ -51,9 +51,7 @@ func TestReplan_ScrubsDeprecatedStepFromReplacementDeps(t *testing.T) {
 		Options: []string{"replan", "abort"},
 	}}
 
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// Replacement steps: r1 mistakenly depends on s2 (the deprecated step).
 	// r2 depends on r1 (valid — sibling replacement).
@@ -67,9 +65,7 @@ func TestReplan_ScrubsDeprecatedStepFromReplacementDeps(t *testing.T) {
 		t.Fatalf("replan should succeed, got: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs[graph.TaskID]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(graph.TaskID)
 
 	// s2 must be deprecated.
 	if g.Steps["s2"].Status != schemas.StepDeprecated {
@@ -130,9 +126,7 @@ func TestReplan_PreservesValidOriginalDeps(t *testing.T) {
 		Options: []string{"replan", "abort"},
 	}}
 
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// r1 depends on s1 (completed, NOT deprecated) — valid, must survive.
 	replSteps := []schemas.StepInput{
@@ -144,9 +138,7 @@ func TestReplan_PreservesValidOriginalDeps(t *testing.T) {
 		t.Fatalf("replan should succeed, got: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs[graph.TaskID]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(graph.TaskID)
 
 	r1 := g.Steps["r1"]
 	if r1 == nil {

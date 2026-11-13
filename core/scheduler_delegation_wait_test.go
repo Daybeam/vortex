@@ -205,9 +205,10 @@ func TestDelegationView_ACPHintPopulatedFromStep(t *testing.T) {
 		Args:       []string{"--mode", "remote"},
 		TimeoutSec: 120,
 	}
+	g := engine.GetTaskGraph(taskID)
 	engine.Mu.Lock()
-	if graph, ok := engine.graphs[taskID]; ok {
-		if step, ok := graph.Steps["step_acp"]; ok {
+	if g != nil {
+		if step, ok := g.Steps["step_acp"]; ok {
 			step.ACPConfig = acpCfg
 		}
 	}
@@ -283,9 +284,7 @@ func TestDelegationKindPlan_FulfillInjectsSteps(t *testing.T) {
 	}
 
 	// Verify the graph now has the injected steps.
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
-	engine.Mu.RUnlock()
+	graph := engine.GetTaskGraph(taskID)
 	if graph == nil {
 		t.Fatal("graph not found after plan fulfillment")
 	}

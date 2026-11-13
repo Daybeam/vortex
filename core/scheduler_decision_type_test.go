@@ -27,7 +27,7 @@ func TestPendingDecisionType_ResolvesParkedDecisions(t *testing.T) {
 		Type:    schemas.DecisionDelegationRequired,
 		Options: []string{"fulfill"},
 	})
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	tests := []struct {
 		name       string
@@ -76,7 +76,7 @@ func TestPendingDecisionType_ResolvesFromPersistedManifest(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if _, cached := s.graphs[taskID]; cached {
+	if g := s.GetTaskGraph(taskID); g != nil {
 		t.Fatal("test setup: graph is already cached, so nothing was reloaded")
 	}
 	got, ok := s.PendingDecisionType(taskID, "dec_o25")
