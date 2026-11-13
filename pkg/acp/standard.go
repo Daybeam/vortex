@@ -43,10 +43,18 @@ type StandardInitializeParams struct {
 	ClientCapabilities map[string]any `json:"clientCapabilities,omitempty"`
 }
 
+// ImplementationInfo provides name/version metadata about the agent.
+type ImplementationInfo struct {
+	Name    string `json:"name"`
+	Title   string `json:"title,omitempty"`
+	Version string `json:"version"`
+}
+
 // StandardInitializeResult is the agent→client initialize response.
 type StandardInitializeResult struct {
 	ProtocolVersion   int               `json:"protocolVersion"`
 	AgentCapabilities AgentCapabilities `json:"agentCapabilities"`
+	AgentInfo         ImplementationInfo `json:"agentInfo"`
 	AuthMethods       []any             `json:"authMethods,omitempty"`
 }
 
