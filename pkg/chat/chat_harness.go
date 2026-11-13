@@ -543,7 +543,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				})
 				return finalText.String(), err
 			}
-			emit(ChatEvent{Type: "error", Data: err.Error()})
+			emitRunError(emit, err)
 			return finalText.String(), err
 		}
 

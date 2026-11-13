@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/daybeam/vortex/providers"
 )
 
 // DefaultMaxTurns is the chat agent-loop budget when nothing configures it.
@@ -49,11 +51,43 @@ func IsMaxTurnsPartial(err error) bool {
 }
 
 // IsPartialRun reports whether a Run error is one of the deliberate ceilings —
-// the turn budget or the opt-in exploration ceiling — rather than a real
-// failure. Callers use it to keep the partial text; the two ceilings share that
-// contract but have different causes and different markers.
+// the turn budget, the opt-in exploration ceiling, or a provider-side request
+// allowance the run cannot extend — rather than a real failure. Callers use it
+// to keep the partial text; the ceilings share that contract but have different
+// causes and different markers.
 func IsPartialRun(err error) bool {
-	return errors.Is(err, ErrMaxTurnsExceeded) || errors.Is(err, ErrExplorationExhausted)
+	if errors.Is(err, ErrMaxTurnsExceeded) || errors.Is(err, ErrExplorationExhausted) {
+		return true
+	}
+	// D3 (2026-11-11): the gateway refused the next request because the run's
+	// allowance is spent. Same family as the two ceilings above — the work
+	// stopped mid-flight through no fault of the request, and whatever text it
+	// produced is the only evidence it produced. Before this it fell through to
+	// "turn failed" and the text was dropped.
+	var budget *providers.BudgetExhaustedError
+	return errors.As(err, &budget)
+}
+
+// emitRunError presents a run-ending error to the transcript. It exists so the
+// one error that must not read like a broken request — a provider refusing
+// further calls because the allowance is gone — is labelled at the single place
+// the transcript is written, instead of every reader re-deriving it from text.
+//
+// Before D3 this path emitted `bad request: {...}` for an exhausted budget,
+// which is what made three runs (223 twice, 030 off r3) look like a broken
+// mechanism rather than a spent budget. The meta flag is the machine-readable
+// half: Data stays human text.
+func emitRunError(emit func(ChatEvent) error, err error) {
+	var budget *providers.BudgetExhaustedError
+	if errors.As(err, &budget) {
+		emit(ChatEvent{
+			Type: "error",
+			Data: budget.Error(),
+			Meta: map[string]any{"provider_budget_exhausted": true},
+		})
+		return
+	}
+	emit(ChatEvent{Type: "error", Data: err.Error()})
 }
 
 // ErrExplorationExhausted is the sentinel the opt-in escalate arm returns when
