@@ -413,6 +413,7 @@ func RegisterTier1(s *server.MCPServer, app *App) {
 func RegisterTier2(s *server.MCPServer, app *App) {
 	registerAdminTools(s, app)
 	registerCommandList(s, app)
+	registerGetCommandResult(s, app)
 }
 
 func splitQuotedCSV(s string) []string {
