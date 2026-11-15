@@ -107,6 +107,37 @@ func TestRootSkillForCapability_ReturnsExistingRootOrEmpty(t *testing.T) {
 	}
 }
 
+// TestPruneSkills_GuardrailsExempt covers the guardrails protection: a
+// variant with non-empty Guardrails must never be pruned, even if it scores
+// far below its best sibling with enough samples. See
+// SKILL_EVOLUTION_TRIAGE_GUARDRAILS_PLAN.md §2.
+func TestPruneSkills_GuardrailsExempt(t *testing.T) {
+	es := newTestStore(t)
+	es.GeneratedSkills["root_a"] = &GeneratedSkill{ID: "root_a", Capability: "cap_x", ParentID: ""}
+	es.GeneratedSkills["variant_a"] = &GeneratedSkill{
+		ID: "variant_a", Capability: "cap_x", ParentID: "root_a",
+		Guardrails: []string{"never delete temp files"},
+	}
+	es.GeneratedSkills["variant_b"] = &GeneratedSkill{ID: "variant_b", Capability: "cap_x", ParentID: "root_a"}
+	es.SkillAffinities["cap_x:root_a"] = &SkillAffinity{ConfidenceDelta: 0.9, SampleCount: 50}
+	es.SkillAffinities["cap_x:variant_a"] = &SkillAffinity{ConfidenceDelta: 0.1, SampleCount: 50}
+	es.SkillAffinities["cap_x:variant_b"] = &SkillAffinity{ConfidenceDelta: 0.1, SampleCount: 50}
+
+	pruned := es.PruneSkills()
+
+	for _, id := range pruned {
+		if id == "variant_a" {
+			t.Fatal("variant_a has guardrails and must NOT be pruned")
+		}
+	}
+	if _, ok := es.GeneratedSkills["variant_a"]; !ok {
+		t.Fatal("variant_a should remain in GeneratedSkills (guardrails exempt)")
+	}
+	if _, ok := es.GeneratedSkills["variant_b"]; ok {
+		t.Fatal("variant_b has no guardrails and should have been pruned")
+	}
+}
+
 // TestPersistAll_ArchivedSkillsRoundTrips is a direct regression test for
 // the fact that ArchivedSkills was previously declared and initialized but
 // never wired into load()/PersistAll() at all -- a completely dead map.

@@ -79,7 +79,7 @@ func TestInitDB_SetsConnectionPool(t *testing.T) {
 // TestInitDB_FailureReturnsNilDB pins the error-path contract for audit
 // MEDIUM-007: when the DSN is unopenable, InitDB must return (nil, error) so
 // callers skip db.Close() on a pool InitDB has already released.
-// See QUALITY_AUDIT_REPORT.md MEDIUM-007.
+// See docs/archive/audits/QUALITY_AUDIT_REPORT.md MEDIUM-007.
 func TestInitDB_FailureReturnsNilDB(t *testing.T) {
 	dir := t.TempDir()
 	badPath := filepath.Join(dir, "not_a_db.db")

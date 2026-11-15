@@ -71,6 +71,9 @@ func (es *ExperienceStore) PruneSkills() []string {
 		if skill.ParentID == "" {
 			continue
 		}
+		if len(skill.Guardrails) > 0 {
+			continue
+		}
 		key := fmt.Sprintf("%s:%s", skill.Capability, id)
 		sa, ok := es.SkillAffinities[key]
 		if !ok || sa.SampleCount < minSamplesToPrune {

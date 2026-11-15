@@ -114,6 +114,18 @@ type GeneratedSkill struct {
 	AvgLatencyMs   float64 `json:"avg_latency_ms,omitempty"`
 	MetabolicROI   float64 `json:"metabolic_roi,omitempty"`
 	SkillStatus    string  `json:"skill_status,omitempty"` // active, dormant, pruned
+
+	// Structured semantic signature (ADDED 2026-11-13) — CPU-ARC style
+	// parameterized description for robust skill matching. Populated by
+	// CrystallizeStepToSkill's LLM prompt. JSON-encoded:
+	// {"name":"...","description":"...","params":[{"name":"...","type":"...","desc":"..."}]}
+	// Empty for legacy skills (graceful degradation).
+	Signature string `json:"signature,omitempty"`
+
+	// Guardrails (ADDED 2026-11-14): read-only rules inherited from parent
+	// skill. Skills with non-empty Guardrails are exempt from PruneSkills.
+	// See SKILL_EVOLUTION_TRIAGE_GUARDRAILS_PLAN.md §2.
+	Guardrails []string `json:"guardrails,omitempty"`
 }
 
 type RouteWeight struct {
