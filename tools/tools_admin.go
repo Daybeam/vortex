@@ -319,21 +319,24 @@ func HandleAdminDeployCommit(ctx context.Context, app *App, req mcp.CallToolRequ
 	if err != nil {
 		return errResult(fmt.Sprintf("open tmp file failed: %v", err))
 	}
-	defer f.Close()
 	stat, err := f.Stat()
 	if err != nil {
+		f.Close()
 		return errResult(fmt.Sprintf("stat tmp file failed: %v", err))
 	}
 	if stat.Size() != session.TotalSize {
+		f.Close()
 		return errResult("size mismatch")
 	}
 
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, f); err != nil {
+		f.Close()
 		return errResult(fmt.Sprintf("checksum read failed: %v", err))
 	}
 	actualHash := fmt.Sprintf("%x", hasher.Sum(nil))
 	if session.ExpectedHash != "" && session.ExpectedHash != actualHash {
+		f.Close()
 		return errResult("checksum mismatch")
 	}
 	if err := f.Close(); err != nil {

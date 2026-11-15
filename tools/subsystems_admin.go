@@ -195,7 +195,7 @@ func registerAdminSubsystem(app *App) {
 
 	s.Actions["sync_skills"] = Action{
 		Name:        "sync_skills",
-		Description: "Sync SKILL.md files from a GitHub repository. Downloads to a temp directory and imports using the same parser as import_skills (proper frontmatter + capability derivation).",
+		Description: "Sync skills from a GitHub repository. Downloads the repo tarball (preserving directory structure including scripts/assets/references) and imports using the same parser as import_skills.",
 		Parameters: map[string]any{
 			"owner": "string (required) - GitHub repo owner (e.g. mattpocock)",
 			"repo":  "string (required) - GitHub repo name (e.g. skills)",
@@ -209,67 +209,39 @@ func registerAdminSubsystem(app *App) {
 				return nil, fmt.Errorf("owner and repo are required")
 			}
 
-			ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 			defer cancel()
 
-			tempDir, err := os.MkdirTemp("", "sync_skills_*")
-			if err != nil {
-				return nil, fmt.Errorf("failed to create temp dir: %w", err)
-			}
-			defer os.RemoveAll(tempDir)
-
-			// Recursively download .md files, preserving directory structure
-			// so ImportSkillDirectory's filepath.Walk can find SKILL.md files.
-			var download func(repoPath, localDir string, depth int) (int, error)
-			download = func(rp, ld string, depth int) (int, error) {
-				if depth > 5 {
-					return 0, nil
-				}
-				files, err := app.ResourceLoader.FetchRepoContents(ctx, owner, repo, rp)
-				if err != nil {
-					return 0, err
-				}
-				count := 0
-				for _, f := range files {
-					if f.Type == "dir" {
-						subDir := filepath.Join(ld, f.Name)
-						if err := os.MkdirAll(subDir, 0755); err != nil {
-							continue
-						}
-						n, _ := download(f.Path, subDir, depth+1)
-						count += n
-					} else if f.Type == "file" && strings.HasSuffix(f.Name, ".md") {
-						content, err := app.ResourceLoader.Fetch(ctx, f.DownloadURL)
-						if err != nil {
-							continue
-						}
-						if err := os.WriteFile(filepath.Join(ld, f.Name), []byte(content), 0644); err != nil {
-							continue
-						}
-						count++
-					}
-				}
-				return count, nil
+			// Persistent cache directory — NOT a tempDir. This fixes Gap 3.2
+			// (SkillDir dangling): ImportSkillDirectory sets SkillDir to a path
+			// inside this directory, and it must survive the handler's return
+			// so that promoted skills can read SKILL.md via readSkillBody.
+			// PendingSkillGC cleans up expired entries (including os.RemoveAll
+			// on SkillDir) after the staging TTL.
+			cacheDir := filepath.Join(app.RootDir, "skills-cache", owner+"-"+repo)
+			if app.RootDir == "" {
+				cacheDir = filepath.Join(os.TempDir(), "orch-skills-cache", owner+"-"+repo)
 			}
 
-			downloaded, err := download(repoPath, tempDir, 0)
-			if err != nil {
-				return nil, fmt.Errorf("failed to download from %s/%s: %w", owner, repo, err)
+			if err := app.ResourceLoader.FetchArchive(ctx, owner, repo, cacheDir); err != nil {
+				return nil, fmt.Errorf("failed to download archive from %s/%s: %w", owner, repo, err)
 			}
-			if downloaded == 0 {
-				return map[string]any{"imported_count": 0, "message": "no .md files found"}, nil
+
+			importDir := cacheDir
+			if repoPath != "" {
+				importDir = filepath.Join(cacheDir, repoPath)
 			}
 
 			adapter := core.NewExternalSkillAdapter(app.Registry)
-			imported, err := adapter.ImportSkillDirectory(tempDir)
+			imported, err := adapter.ImportSkillDirectory(importDir)
 			if err != nil {
 				return nil, fmt.Errorf("import failed: %w", err)
 			}
 
 			return map[string]any{
-				"imported_count":   imported,
-				"downloaded_files": downloaded,
-				"source":           fmt.Sprintf("%s/%s/%s", owner, repo, repoPath),
+				"imported_count": imported,
+				"source":         fmt.Sprintf("%s/%s/%s", owner, repo, repoPath),
+				"cache_dir":      cacheDir,
 			}, nil
 		},
 	}
