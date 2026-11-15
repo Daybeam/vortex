@@ -20,7 +20,7 @@ import (
 // ServerRiskyMCP checks remain in effect. OnUnknownMCP only reads from
 // the in-memory DynamicMCPs cache — no network calls in the request path.
 //
-// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.6 and §5.2.
+// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.6 and §5.2.
 func TestOnUnknownMCP_WiredInProduction(t *testing.T) {
 	reg := &config.Registry{
 		Providers:   make(map[string]*config.ProviderConfig),

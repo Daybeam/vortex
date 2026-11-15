@@ -46,7 +46,7 @@ type ContextHub struct {
 	// Security: discovered MCPs always carry MountPolicy=admin_only and
 	// Source=external_dynamic, so the existing mount-policy gate in
 	// validator.go still applies. ServerRiskyMCP checks remain in effect.
-	// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.6 and §5.2.
+	// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.6 and §5.2.
 	OnUnknownMCP func(mcpID string) *config.MCPDef
 
 	// Circuit breaker for embedding providers: track non-retryable failures per provider
@@ -70,7 +70,7 @@ func NewContextHub(reg *config.Registry, graph *schemas.TaskGraph, exp store.IEx
 	// the DiscoverySyncer to populate DynamicMCPs from external sources, and
 	// OnUnknownMCP resolves them at request time from the in-memory cache.
 	// No network calls in the request path — discovery is async (DiscoverySyncer).
-	// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.6.
+	// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.6.
 	if reg != nil {
 		hub.OnUnknownMCP = func(mcpID string) *config.MCPDef {
 			reg.Mu.RLock()

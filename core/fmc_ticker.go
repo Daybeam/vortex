@@ -42,6 +42,7 @@ type FMCBatchTicker struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	wg       sync.WaitGroup // track loop goroutine so Stop() can wait for exit
 	ctx      context.Context // audit M11: lifecycle ctx so runOnce cancels on Stop
 	cancel   context.CancelFunc
 }
@@ -79,7 +80,11 @@ func (t *FMCBatchTicker) Start() {
 	if weakModel == "" {
 		return
 	}
-	go t.loop()
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		t.loop()
+	}()
 }
 
 // Stop ends the background loop. Safe to call multiple times or without a
@@ -91,6 +96,7 @@ func (t *FMCBatchTicker) Stop() {
 		}
 		close(t.stopCh)
 	})
+	t.wg.Wait()
 }
 
 func (t *FMCBatchTicker) loop() {

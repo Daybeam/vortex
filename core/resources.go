@@ -1,6 +1,8 @@
 package core
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -35,12 +37,13 @@ type ResourceLoader struct {
 	Mu     sync.RWMutex
 	cache  map[string]string
 
-	// githubAPIBase/githubRawBase default to the real GitHub endpoints (set
-	// by NewResourceLoader) and exist as fields rather than hardcoded string
-	// literals purely so tests can point them at an httptest.Server instead
-	// of making real network calls. ADDED (2026-07-12) alongside FetchCookbook.
-	githubAPIBase string
-	githubRawBase string
+	// githubAPIBase/githubRawBase/githubCodeloadBase default to the real GitHub
+	// endpoints (set by NewResourceLoader) and exist as fields rather than
+	// hardcoded string literals purely so tests can point them at an
+	// httptest.Server instead of making real network calls.
+	githubAPIBase     string
+	githubRawBase     string
+	githubCodeloadBase string
 
 	// Persistence fields (ADDED 2026-07-14)
 	cacheDir     string
@@ -68,10 +71,11 @@ func (l *ResourceLoader) cacheSetLocked(key, value string) {
 
 func NewResourceLoader() *ResourceLoader {
 	return &ResourceLoader{
-		client:        &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}},
-		cache:         make(map[string]string),
-		githubAPIBase: "https://api.github.com",
-		githubRawBase: "https://raw.githubusercontent.com",
+		client:            &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}},
+		cache:             make(map[string]string),
+		githubAPIBase:     "https://api.github.com",
+		githubRawBase:     "https://raw.githubusercontent.com",
+		githubCodeloadBase: "https://codeload.github.com",
 	}
 }
 
@@ -80,6 +84,16 @@ func (l *ResourceLoader) SetCache(dir string, enabled bool) {
 	defer l.Mu.Unlock()
 	l.cacheDir = dir
 	l.cacheEnabled = enabled
+}
+
+// SetGitHubBases overrides the GitHub API, raw content, and codeload base URLs.
+// Useful for tests (pointing at httptest.Server) and GitHub Enterprise deployments.
+func (l *ResourceLoader) SetGitHubBases(apiBase, rawBase, codeloadBase string) {
+	l.Mu.Lock()
+	defer l.Mu.Unlock()
+	l.githubAPIBase = apiBase
+	l.githubRawBase = rawBase
+	l.githubCodeloadBase = codeloadBase
 }
 
 // validateFetchURL checks that a URL is safe to fetch (SSRF protection).
@@ -486,6 +500,129 @@ func (l *ResourceLoader) fetchDefaultBranch(ctx context.Context, owner, repo str
 		return "main", nil
 	}
 	return parsed.DefaultBranch, nil
+}
+
+// FetchArchive downloads a GitHub repository tarball and extracts it to
+// targetDir. The tarball is downloaded from codeload.github.com and extracted
+// with zip-slip protection. The top-level directory prefix (e.g.
+// "repo-name-branch/") is stripped so files land directly under targetDir.
+//
+// This fixes two gaps (see docs/completed/SKILL_MARKETPLACE_REPO_CONTRACT_DESIGN.md):
+//   - Gap 3.1: per-file API download drops scripts/assets/references; tarball
+//     preserves the full directory structure.
+//   - Gap 3.2: callers should extract to a persistent directory (not a tempDir)
+//     so SkillDir survives the handler's defer cleanup.
+//
+// Safety limits: max 500 files, max 50MB total extracted size.
+func (l *ResourceLoader) FetchArchive(ctx context.Context, owner, repo, targetDir string) error {
+	branch, err := l.fetchDefaultBranch(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("fetching default branch for %s/%s: %w", owner, repo, err)
+	}
+
+	archiveURL := fmt.Sprintf("%s/%s/%s/tar.gz/refs/heads/%s", l.githubCodeloadBase, owner, repo, branch)
+	if err := validateFetchURL(archiveURL); err != nil {
+		return fmt.Errorf("archive URL rejected (SSRF): %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", archiveURL, nil)
+	if err != nil {
+		return err
+	}
+	l.setGitHubHeaders(req)
+
+	resp, err := l.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("downloading archive from %s/%s: %w", owner, repo, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("codeload returned status %d for %s/%s", resp.StatusCode, owner, repo)
+	}
+
+	return extractTarGz(resp.Body, targetDir)
+}
+
+const (
+	maxArchiveFiles     = 500
+	maxArchiveTotalSize = 50 * 1024 * 1024
+)
+
+// extractTarGz decompresses a gzip-compressed tar stream and extracts its
+// contents into targetDir, stripping the top-level directory prefix.
+// Includes zip-slip protection and size/file-count limits.
+func extractTarGz(r io.Reader, targetDir string) error {
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("creating target dir: %w", err)
+	}
+
+	gzr, err := gzip.NewReader(r)
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+	fileCount := 0
+	totalSize := int64(0)
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("tar reader: %w", err)
+		}
+
+		// Strip top-level directory prefix (e.g. "repo-name-branch/...")
+		parts := strings.SplitN(header.Name, "/", 2)
+		if len(parts) < 2 || parts[1] == "" {
+			continue
+		}
+		relPath := parts[1]
+
+		// Zip-slip protection
+		cleanPath := filepath.Clean(relPath)
+		if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
+			continue
+		}
+
+		fullPath := filepath.Join(targetDir, cleanPath)
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(fullPath, 0755); err != nil {
+				return fmt.Errorf("creating dir %s: %w", fullPath, err)
+			}
+		case tar.TypeReg:
+			fileCount++
+			if fileCount > maxArchiveFiles {
+				return fmt.Errorf("archive exceeds max file limit (%d)", maxArchiveFiles)
+			}
+			totalSize += header.Size
+			if totalSize > maxArchiveTotalSize {
+				return fmt.Errorf("archive exceeds max total size (%d bytes)", maxArchiveTotalSize)
+			}
+
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				return fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
+			}
+
+			f, err := os.OpenFile(fullPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+			if err != nil {
+				return fmt.Errorf("creating file %s: %w", fullPath, err)
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return fmt.Errorf("writing file %s: %w", fullPath, err)
+			}
+			f.Close()
+		}
+	}
+
+	return nil
 }
 
 func (l *ResourceLoader) fetchRaw(ctx context.Context, url string) (string, error) {
