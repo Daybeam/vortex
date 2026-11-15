@@ -177,11 +177,11 @@ type ChatHarness struct {
 	// the orchestrator. 0 = no estimation (legacy behavior).
 	MaxContextWindow int
 
-	// Segments (ADDED 2026-10-10): optional topic segment manager for
-	// chat memory. When non-nil, each indexed turn is also processed by
-	// the core.SegmentManager for topic segmentation (STAY/SEAL decisions).
-	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
+	// Segments (ADDED 2026-10-10): optional topic segment manager for chat memory.
+	// When non-nil, each indexed turn is processed by the core.SegmentManager
+	// for topic segmentation (STAY/SEAL decisions). See CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
 	Segments *core.SegmentManager
+	SkillQuickPath func(query string) *QuickPathMatch // verified-skill quick path hook
 }
 
 // buildTurnContext returns the per-turn retrieval block, or "".
@@ -270,7 +270,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	completionContract := core.CompletionContractModeFromEnv()
 	core.LogCompletionContractOnce()
 
-	system := h.buildSystem()
+	system := h.applyQuickPath(query, h.buildSystem(), emit)
 
 	messages := make([]ChatMessage, 0, len(history)+maxTurns)
 	if h.Memory != nil {
