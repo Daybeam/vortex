@@ -21,7 +21,7 @@ import (
 // a ticker (interval from System.DiscoverySyncIntervalHours, default 24h).
 // Stop() cancels the context and closes the stop channel.
 //
-// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.5.
+// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.5.
 type DiscoverySyncer struct {
 	sources  []DiscoverySource
 	registry *config.Registry
@@ -320,7 +320,7 @@ func (d *DiscoverySyncer) ingestMCPs(items []DiscoveredItem, source DiscoverySou
 //   - Source = external_dynamic
 //   - CredentialScope = operator (fail-closed default)
 //
-// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.4.2.
+// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.4.2.
 func discoveredItemToMCPDef(item DiscoveredItem) *config.MCPDef {
 	return &config.MCPDef{
 		ID:              item.ID,

@@ -22,7 +22,7 @@ const (
 // The caller is responsible for ingestion (staging, gating, registration) —
 // Discover only fetches and normalizes.
 //
-// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md.
+// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md.
 type DiscoverySource interface {
 	// Name returns the human-readable identifier for this source.
 	Name() string
@@ -60,6 +60,12 @@ type DiscoveredItem struct {
 	Args     []string          `json:"args,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
 	Provides []string          `json:"provides,omitempty"`
+
+	// SkillDir is the local filesystem path to the skill directory, set when
+	// the discovery source downloads content to disk (e.g. GitHubRepoSource
+	// via FetchArchive). When non-empty, the skill is directory-based and
+	// carries scripts/assets/references. Empty for prompt-only skills.
+	SkillDir string `json:"skill_dir,omitempty"`
 
 	// SourceName identifies which DiscoverySource produced this item.
 	SourceName string `json:"source_name"`

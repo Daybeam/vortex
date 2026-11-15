@@ -158,3 +158,51 @@ func TestClassifyError_BadRequest_IsNotCostOverrun(t *testing.T) {
 		t.Fatalf("expected %s, got %s", FailureClassBadRequest, got)
 	}
 }
+
+func TestTriageFailure_EmptyError_FailClosesToCaseOrSpec(t *testing.T) {
+	if got := triageFailure(""); got != TriageCaseOrSpec {
+		t.Fatalf("empty error: expected %s, got %s", TriageCaseOrSpec, got)
+	}
+}
+
+func TestTriageFailure_RateLimit_IsInfraNoise(t *testing.T) {
+	if got := triageFailure("provider call failed: HTTP 429 Too Many Requests"); got != TriageInfraNoise {
+		t.Fatalf("rate limit: expected %s, got %s", TriageInfraNoise, got)
+	}
+}
+
+func TestTriageFailure_AuthPermission_IsInfraNoise(t *testing.T) {
+	if got := triageFailure("provider error: HTTP 401 Unauthorized"); got != TriageInfraNoise {
+		t.Fatalf("auth error: expected %s, got %s", TriageInfraNoise, got)
+	}
+}
+
+func TestTriageFailure_MissingDependency_IsInfraNoise(t *testing.T) {
+	if got := triageFailure("missing dependency: D:/bun/bin/bun.exe"); got != TriageInfraNoise {
+		t.Fatalf("missing dependency: expected %s, got %s", TriageInfraNoise, got)
+	}
+}
+
+func TestTriageFailure_RoleMissing_IsCaseOrSpec(t *testing.T) {
+	if got := triageFailure(`role "nonexistent_role" not found`); got != TriageCaseOrSpec {
+		t.Fatalf("role missing: expected %s, got %s", TriageCaseOrSpec, got)
+	}
+}
+
+func TestTriageFailure_TransientError_IsInfraNoise(t *testing.T) {
+	if got := triageFailure("connection reset by peer: EOF"); got != TriageInfraNoise {
+		t.Fatalf("transient error: expected %s, got %s", TriageInfraNoise, got)
+	}
+}
+
+func TestTriageFailure_CostOverrun_IsSkillDefect(t *testing.T) {
+	if got := triageFailure("provider request budget exhausted: max_agent_turns_exceeded"); got != TriageSkillDefect {
+		t.Fatalf("cost overrun: expected %s, got %s", TriageSkillDefect, got)
+	}
+}
+
+func TestTriageFailure_UnrecognizedString_IsInfraNoise(t *testing.T) {
+	if got := triageFailure("lua runtime error: attempt to index a nil value"); got != TriageInfraNoise {
+		t.Fatalf("unrecognized string defaults to transient→infra_noise, got %s", got)
+	}
+}

@@ -20,7 +20,7 @@ import (
 // Local sources are always treated as trusted — their skills can be registered
 // directly without going through PendingSkills staging.
 //
-// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.2.3.
+// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.2.3.
 type LocalDirSource struct {
 	name  string
 	kind  DiscoveryKind

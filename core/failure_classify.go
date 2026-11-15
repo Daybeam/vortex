@@ -216,3 +216,41 @@ func (s *DirectedEngine) classifyErrorWithSystemOne(err error, stepID, roleID, s
 	}
 	return initial
 }
+
+// FailureTriage classifies a step failure into one of three actionable
+// categories. Only TriageSkillDefect may drive skill repair/re-crystallization;
+// the other two must not trigger skill changes. This is the triage layer
+// described in SKILL_EVOLUTION_TRIAGE_GUARDRAILS_PLAN.md §1.
+type FailureTriage string
+
+const (
+	// TriageSkillDefect: the failure reflects a real deficiency in the
+	// skill/role logic. Only this category may drive skill repair.
+	TriageSkillDefect FailureTriage = "skill_defect"
+
+	// TriageInfraNoise: environment/dependency/rate-limit/auth failure —
+	// not attributable to the skill. Retrying or fixing infra resolves it.
+	TriageInfraNoise FailureTriage = "infra_noise"
+
+	// TriageCaseOrSpec: the request itself is malformed or references a
+	// missing role — not a skill defect. Fixing the request resolves it.
+	TriageCaseOrSpec FailureTriage = "case_or_spec"
+)
+
+// triageFailure maps a step's LastError through classifyError into a
+// FailureTriage category. When there is no error text (evidence absent),
+// it fail-closes to TriageCaseOrSpec (cannot attribute → do not repair).
+func triageFailure(lastError string) FailureTriage {
+	if lastError == "" {
+		return TriageCaseOrSpec
+	}
+	switch classifyError(errors.New(lastError)) {
+	case FailureClassRateLimit, FailureClassAuthPermission,
+		FailureClassTransient, FailureClassMissingDependency:
+		return TriageInfraNoise
+	case FailureClassBadRequest, FailureClassRoleMissing:
+		return TriageCaseOrSpec
+	default:
+		return TriageSkillDefect
+	}
+}

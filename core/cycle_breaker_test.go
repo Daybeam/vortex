@@ -248,7 +248,7 @@ func TestTryBacktrack_FuseDecisionOptions(t *testing.T) {
 	// P5 fix (2026-10-20): options changed from [abort, accept_degraded,
 	// provide_context] to [abort, refine_and_retry]. The old options had no
 	// handlers in scheduler_status.go, causing Interactive/Delegate mode to
-	// hang. See CUSTOMER_V010_AUDIT_2026-10-20.md §P5.
+	// hang. See docs/archive/audits/CUSTOMER_V010_AUDIT_2026-10-20.md §P5.
 	for _, expected := range []string{"abort", "refine_and_retry"} {
 		if !hasOption(expected) {
 			t.Fatalf("expected decision to offer %q, options: %v", expected, dec.Options)

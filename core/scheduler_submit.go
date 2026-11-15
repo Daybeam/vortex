@@ -555,6 +555,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 			s.Mu.Lock()
 			delegationBlocked := false
+			approvalBlocked := false
 			if finalErr != nil {
 				step.Status = schemas.StepFailed
 				step.LastError = finalErr.Error()
@@ -582,6 +583,9 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 					status = schemas.StatusOK
 				}
 				switch status {
+				case schemas.StatusApprovalRequired:
+					step.Status = schemas.StepBlocked
+					approvalBlocked = true
 				case schemas.StatusDelegationRequired:
 					step.Status = schemas.StepBlocked
 					delegationBlocked = true
@@ -649,6 +653,12 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 				// ReadySteps() only returns StepPending steps -- s1 is StepPartial and a
 				// decision is pending, so run() parks on the notify channel and wakes when
 				// the answer arrives.
+				s.startGraphExecutor(ctx, taskID)
+				return
+			}
+			if approvalBlocked {
+				s.emitMountApprovalDecision(graph, step, finalResult.Output.ApprovalRequiredMounts, finalResult.Output.ApprovalRequiredSkills)
+				s.Broadcast()
 				s.startGraphExecutor(ctx, taskID)
 				return
 			}

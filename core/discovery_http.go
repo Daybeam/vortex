@@ -19,7 +19,7 @@ import (
 // Each item in the list should have at least "id" and "name" fields. Other
 // fields are optional and depend on the Kind (skill vs mcp).
 //
-// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.2.2.
+// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.2.2.
 type HTTPListSource struct {
 	name    string
 	kind    DiscoveryKind
