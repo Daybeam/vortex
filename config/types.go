@@ -259,6 +259,12 @@ type Skill struct {
 	// Directory content manifest — path list only, no file contents.
 	Manifest *SkillManifest `json:"manifest,omitempty"`
 
+	// Guardrails are read-only rules that skill evolution must not modify,
+	// delete, or weaken. Injected into CrystallizeStepToSkill's additive-edit
+	// prompt; verified via hash after generation. Skills with non-empty
+	// Guardrails are exempt from PruneSkills. See SKILL_EVOLUTION_TRIAGE_GUARDRAILS_PLAN.md §2.
+	Guardrails []string `json:"guardrails,omitempty"`
+
 	// agentskills.io standard frontmatter fields (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md).
 	// Parsed at import; surfaced as prompt hints at activation. Non-functional
 	// for execution — compatibility warns, allowed-tools is advisory only.
@@ -986,7 +992,7 @@ type SystemSettings struct {
 	// sources for skills and MCPs. Each source has a name, type, kind
 	// (skill/mcp), and source-specific params. Sources are fetched on
 	// startup and periodically (see DiscoverySyncIntervalHours).
-	// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md.
+	// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md.
 	DiscoverySources []DiscoverySourceConfig `json:"discovery_sources,omitempty"`
 
 	// DiscoverySyncIntervalHours (ADDED 2026-11-09) controls how often
@@ -995,7 +1001,7 @@ type SystemSettings struct {
 }
 
 // DiscoverySourceConfig configures a single external discovery source.
-// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.
+// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.
 type DiscoverySourceConfig struct {
 	Name    string            `json:"name"`              // human-readable identifier
 	Type    string            `json:"type"`              // "github" | "http" | "local"

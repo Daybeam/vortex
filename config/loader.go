@@ -272,7 +272,7 @@ func (r *Registry) loadLocked() error {
 	// with type=github, kind=skill. Entries are appended only if no
 	// DiscoverySource with the same Name already exists (avoids duplicates
 	// when both formats are used in the same config).
-	// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.2.
+	// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.2.
 	if len(cfg.SkillSyncSources) > 0 {
 		existingNames := make(map[string]bool)
 		for _, ds := range r.System.DiscoverySources {

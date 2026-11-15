@@ -10,7 +10,7 @@ import (
 // skill_sync_sources entries in config.json are automatically converted to
 // discovery_sources entries during config loading.
 //
-// See docs/plan/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.2.
+// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.2.
 func TestLoad_SkillSyncSources_ConvertedToDiscoverySources(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
