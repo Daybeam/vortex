@@ -50,6 +50,7 @@ func cloneHarnessForRequest(src *chat.ChatHarness) *chat.ChatHarness {
 		DelegateStatus:    src.DelegateStatus,
 		Segments:          src.Segments,
 		MaxContextWindow:  src.MaxContextWindow,
+		SkillQuickPath:    src.SkillQuickPath,
 	}
 	// projectResolver is unexported, so it cannot be copied field-by-field from
 	// this package. Forwarding through the base harness's public ProjectOf

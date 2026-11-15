@@ -54,6 +54,7 @@ var harnessCloneCarried = []string{
 	"Provider", "Model", "Role", "Archive", "MemoryBank", "Embed", "OutputBase",
 	"MaxTurns", "MaxOutputTokens", "SessionRoot", "Sieve", "Memory", "Attachments",
 	"ReadinessGateSoft", "Segments", "DelegateStatus", "MaxContextWindow",
+	"SkillQuickPath",
 	// Unexported — reflection cannot set a sentinel on it, so
 	// TestCloneHarnessForRequest_CarriesEveryField skips it by way of IsZero.
 	// The copy is made through SetProjectResolver(src.ProjectOf); this entry

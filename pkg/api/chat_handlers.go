@@ -289,6 +289,24 @@ func NewChatHandler(app *tools.App) *ChatHandler {
 		Sieve:             sieve.NewSieve(100),
 		Memory:            chatMem,
 		ReadinessGateSoft: app.Registry.System.ReadinessGateSoft,
+		SkillQuickPath: func(query string) *chat.QuickPathMatch {
+			if app.ExpStore == nil || query == "" {
+				return nil
+			}
+			ids := app.ExpStore.QueryRelevantSkills(context.Background(), query, 1)
+			if len(ids) == 0 {
+				return nil
+			}
+			gs, ok := app.ExpStore.GetGeneratedSkill(ids[0])
+			if !ok || !gs.IsVerified {
+				return nil
+			}
+			return &chat.QuickPathMatch{
+				SkillID:   gs.ID,
+				ToolName:  gs.ID,
+				Signature: gs.Signature,
+			}
+		},
 		// Delegate is assigned below, after the handler exists, so that it can
 		// go through the single submission path (submitChatTask).
 		// DelegateStatus closes the loop Delegate opens: without it the model
