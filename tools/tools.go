@@ -8,6 +8,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -169,6 +170,9 @@ type App struct {
 	DB                *sql.DB
 	editionSubsystems []EditionSubsystem
 	archiveStop       chan struct{} // stops the TTL pruning goroutine (audit: was goroutine leak)
+	// shadowWg tracks background shadow-learning goroutines from the proxy
+	// subsystem so Shutdown can wait for them to drain (audit R2).
+	shadowWg sync.WaitGroup
 }
 
 // WireQualityTracker creates a QualityTracker, assigns it to app, and returns
@@ -188,6 +192,10 @@ func (app *App) InitArchive(outputBase string) {
 	app.Archive = core.NewContextArchive(filepath.Join(outputBase, "memory", "context.jsonl"))
 	if app.Scheduler != nil {
 		app.Scheduler.SetArchive(app.Archive)
+	}
+	if app.Registry != nil {
+		hub := core.NewContextHub(app.Registry, nil, app.ExpStore)
+		app.EmbedClient = core.NewHubEmbeddingClient(hub)
 	}
 	app.archiveStop = make(chan struct{})
 	stop := app.archiveStop
@@ -220,6 +228,13 @@ func (app *App) StopArchive() {
 		close(app.archiveStop)
 		app.archiveStop = nil
 	}
+}
+
+// WaitShadow waits for all pending shadow-learning goroutines to complete
+// (audit R2). Call during shutdown to prevent data loss from in-flight
+// background learning writes. Bounded by the 10s timeout in each goroutine.
+func (app *App) WaitShadow() {
+	app.shadowWg.Wait()
 }
 
 // jsonOK marshals v and returns a text result.
@@ -285,9 +300,10 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 			// one path where the parent agent hands over whole prompts and
 			// session-level parameters. submit_task alone can carry a multi-KB
 			// task body.
-			"args":  core.ToolArgsLogString(name, req.Params.Arguments),
-			"tier":  effectiveTier,
-			"phase": "started",
+			"args":   core.ToolArgsLogString(name, req.Params.Arguments),
+			"tier":   effectiveTier,
+			"caller": CallerIdentity(ctx),
+			"phase":  "started",
 		})
 
 		res, err := handler(ctx, req)
@@ -298,6 +314,7 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 			"duration": duration,
 			"phase":    "finished",
 			"tier":     effectiveTier,
+			"caller":   CallerIdentity(ctx),
 		}
 
 		if err != nil {

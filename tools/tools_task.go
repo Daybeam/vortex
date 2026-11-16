@@ -715,11 +715,14 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			if DenyIfNotOwner(ctx, app, taskScope) {
 				return errResult("not found")
 			}
-			if app.Scheduler != nil && !app.Scheduler.TaskKnown(taskScope) {
-				return errResult("task_scope does not match any known task — cross-task search is not allowed")
-			}
+		if app.Scheduler == nil {
+			return errResult("scheduler not available — cannot resolve task scope")
+		}
+		if !app.Scheduler.TaskKnown(taskScope) {
+			return errResult("task_scope does not match any known task — cross-task search is not allowed")
+		}
 
-			items := app.Archive.Search(query, app.EmbedClient, 24, taskScope, app.Scheduler.ProjectOf(taskScope), taskScope)
+		items := app.Archive.Search(query, app.EmbedClient, 24, taskScope, app.Scheduler.ProjectOf(taskScope), taskScope)
 			if mode == "rrf" || len(items) == 0 {
 				if len(items) > k {
 					items = items[:k]

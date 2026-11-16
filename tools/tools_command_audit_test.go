@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
@@ -16,6 +17,9 @@ import (
 // Source: docs/archive/audits/AUDIT_REPORT_2026-10-24_COMPREHENSIVE.md §RL-1
 // -----------------------------------------------------------------------------
 func TestSandboxRunCleaner_StartStopNoLeak(t *testing.T) {
+	// Count goroutines before starting the cleaner.
+	before := runtime.NumGoroutine()
+
 	// Start the cleaner — this launches the background goroutine (once).
 	startSandboxRunCleaner()
 
@@ -28,10 +32,19 @@ func TestSandboxRunCleaner_StartStopNoLeak(t *testing.T) {
 	// This works because stopSandboxRunCleaner uses sync.Once to protect the close.
 	stopSandboxRunCleaner()
 
-	// Give the goroutine a moment to exit cleanly.
-	time.Sleep(50 * time.Millisecond)
+	// Poll for goroutine exit with a timeout instead of a fixed Sleep.
+	// The goroutine should exit within a few milliseconds, but we give it
+	// up to 500ms to account for scheduler latency.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= before {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
-	// If we reach here without panicking or deadlocking, the fix works.
-	// Before the fix, there was no stopSandboxRunCleaner function, so this
-	// test would not compile — the compilation failure IS the regression check.
+	after := runtime.NumGoroutine()
+	if after > before {
+		t.Errorf("goroutine leak: before=%d, after=%d (cleaner goroutine did not exit)", before, after)
+	}
 }

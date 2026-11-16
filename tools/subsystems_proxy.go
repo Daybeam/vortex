@@ -78,10 +78,14 @@ func registerProxySubsystem(app *App) {
 			// Direct Execution
 			res, err := spawner.DirectExecute(ctx, mcpID, toolName, toolArgs)
 
-			// Shadow Learning: only for role-based path (roleless skips attribution)
-			if roleID != "" && app.ExpStore != nil {
-				go func() {
-					defer func() {
+		// Shadow Learning: only for role-based path (roleless skips attribution)
+		if roleID != "" && app.ExpStore != nil {
+			// audit R2: track shadow learning goroutine with shadowWg so
+			// Shutdown can wait for pending learning writes to drain.
+			app.shadowWg.Add(1)
+			go func() {
+				defer app.shadowWg.Done()
+				defer func() {
 						if r := recover(); r != nil {
 							fmt.Fprintf(os.Stderr, "PANIC in shadow learning: %v\n", r)
 						}
