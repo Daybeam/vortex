@@ -109,10 +109,13 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
+		stdoutPipe.Close()
 		return nil, err
 	}
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
+		stdoutPipe.Close()
+		stderrPipe.Close()
 		return nil, err
 	}
 

@@ -40,6 +40,20 @@ func (c *CacheSentinel) Observe(taskID, stepID string, promptTokens, cacheRead i
 	return n >= c.threshold, n
 }
 
+// ResetTask clears all step-level counters for a task. Call this when a task
+// terminates to prevent the consecutiveZero map from growing without bound
+// (audit H11). Iterates all keys with the taskID prefix.
+func (c *CacheSentinel) ResetTask(taskID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prefix := taskID + ":"
+	for k := range c.consecutiveZero {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			delete(c.consecutiveZero, k)
+		}
+	}
+}
+
 // Reset clears the counter for a key (call when a step completes or task resets).
 func (c *CacheSentinel) Reset(taskID, stepID string) {
 	c.mu.Lock()
