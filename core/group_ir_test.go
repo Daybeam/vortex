@@ -32,6 +32,7 @@ func TestDispatchGroup_WithSessionIR(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), nil)
 	defer logger.Close()
 	engine := NewDirectedEngine(reg, nil, nil, nil, logger, nil, t.TempDir(), t.TempDir(), nil)
+	defer engine.Stop()
 	engine.UseSwarm = true // avoid background run
 
 	dispatcher := NewGroupDispatcher(engine, reg)

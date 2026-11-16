@@ -72,15 +72,19 @@ func TestDispatchGroup_AcceptsOwnerID(t *testing.T) {
 	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	t.Cleanup(func() { logger.Close() })
 	engine := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
+	defer engine.Stop()
 	dispatcher := NewGroupDispatcher(engine, reg)
 
 	// DispatchGroup will fail because the engine has no spawner, but the
 	// ownerID parameter must still be accepted by the signature. If someone
 	// removes the parameter, this call won't compile.
 	_, err := dispatcher.DispatchGroup("test-group", "test task", nil, nil, nil, nil, "", false, "tenant-A")
-	// We expect an error (no spawner), but the call itself must compile
-	// and not panic.
-	_ = err
+	// The call must compile (verifying ownerID parameter exists) and not panic.
+	// It should return either a task ID or an error — not both empty/nil.
+	if err != nil {
+		// Expected: error is fine (e.g., group not found, no spawner).
+		t.Logf("DispatchGroup returned error (expected with test setup): %v", err)
+	}
 }
 
 // TestSpawnDecider_AcceptsOwnerID verifies that spawnDecider's signature

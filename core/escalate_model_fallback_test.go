@@ -141,6 +141,7 @@ func TestEscalateModel_UnavailableModel_ReturnsError(t *testing.T) {
 	defer logger.Close()
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
+	defer engine.Stop()
 	engine.lifecycleCancel()
 
 	taskID := "task_escalate_unavailable"
@@ -184,6 +185,7 @@ func TestEscalateModel_AvailableModel_Succeeds(t *testing.T) {
 	defer logger.Close()
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
+	defer engine.Stop()
 	engine.lifecycleCancel()
 
 	taskID := "task_escalate_available"

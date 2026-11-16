@@ -34,6 +34,7 @@ func newPlannerTestEngine(t *testing.T) (*DirectedEngine, *config.Registry) {
 	logger := mustNewLogger(t, logDir, &config.SystemSettings{})
 	t.Cleanup(func() { logger.Close() })
 	s := NewDirectedEngine(reg, nil, nil, nil, logger, nil, outDir, outDir, nil)
+	t.Cleanup(s.Stop)
 	return s, reg
 }
 

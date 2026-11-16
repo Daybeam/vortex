@@ -150,7 +150,7 @@ func TestCompactOldObservations_DoesNotMutateInput(t *testing.T) {
 
 // TestCompactOldObservations_IdempotentAcrossTurns reproduces F6 of the
 // 2026-11-10 Telegram/VCP investigation
-// (docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md):
+// (docs/completed/2026-11-15/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md):
 // appendTurnObservation calls this every turn on a slice that still carries the
 // previous turns' summaries. A summary still starts with MarkerEnvObservation,
 // so it was selected and compacted again -- nesting "(summarized," once per turn
