@@ -72,7 +72,7 @@ func TestEmitRunError_LabelsBudgetHonestly(t *testing.T) {
 
 	emitRunError(emit, &providers.BudgetExhaustedError{
 		Msg: `{"error":{"type":"max_agent_turns_exceeded"}}`,
-	})
+	}, "test-provider")
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -97,12 +97,42 @@ func TestEmitRunError_OtherErrorsKeepTheirText(t *testing.T) {
 	var events []ChatEvent
 	emit := func(ev ChatEvent) error { events = append(events, ev); return nil }
 
-	emitRunError(emit, &providers.BadRequestError{Msg: "invalid schema"})
+	emitRunError(emit, &providers.BadRequestError{Msg: "invalid schema"}, "test-provider")
 
-	if len(events) != 1 || events[0].Data != "bad request: invalid schema" {
-		t.Fatalf("expected the unchanged message, got %+v", events)
+	if len(events) != 1 || events[0].Data != "provider test-provider: bad request: invalid schema" {
+		t.Fatalf("expected the provider-prefixed message, got %+v", events)
 	}
 	if _, ok := events[0].Meta["provider_budget_exhausted"]; ok {
 		t.Fatal("non-budget errors must not carry the budget flag")
+	}
+}
+
+func TestEmitRunError_RateLimitIncludesProviderAndRetryAfter(t *testing.T) {
+	var events []ChatEvent
+	emit := func(ev ChatEvent) error { events = append(events, ev); return nil }
+
+	emitRunError(emit, &providers.RateLimitError{Msg: "too many requests", RetryAfter: 30}, "anthropic")
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if !strings.Contains(ev.Data, "provider anthropic") {
+		t.Fatalf("expected provider name in message, got %q", ev.Data)
+	}
+	if !strings.Contains(ev.Data, "rate limited") {
+		t.Fatalf("expected rate limited in message, got %q", ev.Data)
+	}
+	if !strings.Contains(ev.Data, "retry after 30s") {
+		t.Fatalf("expected retry-after in message, got %q", ev.Data)
+	}
+	if ev.Meta["rate_limited"] != true {
+		t.Fatalf("missing rate_limited flag, meta=%v", ev.Meta)
+	}
+	if ev.Meta["retry_after"] != 30 {
+		t.Fatalf("expected retry_after=30, got %v", ev.Meta["retry_after"])
+	}
+	if ev.Meta["provider"] != "anthropic" {
+		t.Fatalf("expected provider=anthropic, got %v", ev.Meta["provider"])
 	}
 }

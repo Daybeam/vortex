@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -77,17 +78,68 @@ func IsPartialRun(err error) bool {
 // which is what made three runs (223 twice, 030 off r3) look like a broken
 // mechanism rather than a spent budget. The meta flag is the machine-readable
 // half: Data stays human text.
-func emitRunError(emit func(ChatEvent) error, err error) {
+func emitTimeoutError(emit func(ChatEvent) error, err error, ctx context.Context, providerName string) bool {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		var rlErr *providers.RateLimitError
+		if errors.As(err, &rlErr) {
+			emit(ChatEvent{
+				Type: "error",
+				Data: fmt.Sprintf("turn timed out waiting for provider %s (rate limited, retry after %ds)", providerName, rlErr.RetryAfter),
+				Meta: map[string]any{"turn_budget_exhausted": true, "provider": providerName, "rate_limited": true, "retry_after": rlErr.RetryAfter},
+			})
+		} else {
+			emit(ChatEvent{
+				Type: "error",
+				Data: fmt.Sprintf("turn timed out waiting for provider %s: %v", providerName, ctxErr),
+				Meta: map[string]any{"turn_budget_exhausted": true, "provider": providerName},
+			})
+		}
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		var rlErr *providers.RateLimitError
+		if errors.As(err, &rlErr) {
+			emit(ChatEvent{
+				Type: "error",
+				Data: fmt.Sprintf("provider %s timed out (rate limited, retry after %ds)", providerName, rlErr.RetryAfter),
+				Meta: map[string]any{"turn_budget_exhausted": true, "provider": providerName, "rate_limited": true, "retry_after": rlErr.RetryAfter},
+			})
+		} else {
+			emit(ChatEvent{
+				Type: "error",
+				Data: fmt.Sprintf("provider %s timed out (deadline exceeded): %v", providerName, err),
+				Meta: map[string]any{"turn_budget_exhausted": true, "provider": providerName},
+			})
+		}
+		return true
+	}
+	return false
+}
+
+func emitRunError(emit func(ChatEvent) error, err error, providerName string) {
 	var budget *providers.BudgetExhaustedError
 	if errors.As(err, &budget) {
 		emit(ChatEvent{
 			Type: "error",
-			Data: budget.Error(),
-			Meta: map[string]any{"provider_budget_exhausted": true},
+			Data: fmt.Sprintf("provider %s: %s", providerName, budget.Error()),
+			Meta: map[string]any{"provider_budget_exhausted": true, "provider": providerName},
 		})
 		return
 	}
-	emit(ChatEvent{Type: "error", Data: err.Error()})
+	var rlErr *providers.RateLimitError
+	if errors.As(err, &rlErr) {
+		meta := map[string]any{"provider": providerName, "rate_limited": true}
+		if rlErr.RetryAfter > 0 {
+			meta["retry_after"] = rlErr.RetryAfter
+		}
+		emit(ChatEvent{
+			Type: "error",
+			Data: fmt.Sprintf("provider %s: %s", providerName, rlErr.Error()),
+			Meta: meta,
+		})
+		return
+	}
+	emit(ChatEvent{Type: "error", Data: fmt.Sprintf("provider %s: %s", providerName, err.Error())})
 }
 
 // ErrExplorationExhausted is the sentinel the opt-in escalate arm returns when

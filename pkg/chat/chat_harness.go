@@ -405,10 +405,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	// the harness emitted events but never summarised a run. These counters
 	// make the verdict one line of `docker logs`, and they are hard counts, so
 	// they do not depend on the scoring policy (which is still undecided).
-	runStart := time.Now()
-	turnsUsed := 0
-	toolCallsUsed := 0
-	codeExecCalls := 0 // tools whose writes are invisible to writeTargetOf
+	rs := newRunStats(len(declaredArtifacts), len(declaredFields))
 	// Consecutive-no-output guard (P1-1, docs/plan/DELEGATION_ARTIFACT_DELIVERY_
 	// REMEDIATION.md §4.3). execute_code cannot be counted by writeTargetOf, so
 	// the streak is the only thing that can see a loop on it.
@@ -418,30 +415,12 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	// (tool, normalized path): a rewrite changes content but not the path, and
 	// that is the only stable key a signature guard could use. D7.
 	eg := exploreGuard{writeTargets: make(map[string]struct{}), writeCounts: make(map[string]int)}
-	noTextSteers := 0
-	exitReason := "" // "" ⇒ derive from err; "done" / "max_turns" set explicitly
 
 	log.Printf("[chat-harness] task=%s sieve_nil=%v turns=%d", taskID, h.Sieve == nil, maxTurns)
 
 	// One structured line per run, on every exit path. Emitted from a defer so
 	// a new early return can never silently skip the measurement.
-	defer func() {
-		reason := exitReason
-		if reason == "" {
-			if err != nil {
-				reason = "error"
-			} else {
-				reason = "done"
-			}
-		}
-		log.Printf("[chat-turn-summary] task=%s exit=%s turns=%d tool_calls=%d code_exec=%d "+
-			"writes=%d distinct_targets=%d steer_no_text=%d repeated_write=%d contract_declared=%d contract_steer=%d "+
-			"contract_defect_steer=%d fields_declared=%d explore_streak_max=%d explore_steer=%d explore_level=%d post_deleg=%s post_deleg_blocked=%d calls_after_deleg=%d delegated=%d post_deleg_polls=%d post_deleg_poll_blocked=%d elapsed=%.1fs %s",
-			taskID, reason, turnsUsed, toolCallsUsed, codeExecCalls, eg.writeTotal,
-			len(eg.writeTargets), noTextSteers, eg.repeatedWriteSteers, len(declaredArtifacts), contractSteers,
-			contractDefectSteers, len(declaredFields), eg.streakMax, eg.steers, eg.level, h.pd.arm, h.pd.blocked, h.pd.after, h.pd.delegations, h.pd.polls, h.pd.pollBlocked,
-			time.Since(runStart).Seconds(), h.contractObservation())
-	}()
+	defer func() { rs.emitSummary(h, taskID, err, &eg, contractSteers, contractDefectSteers) }()
 
 	defer func() {
 		if err == nil && finalText.Len() > 0 && query != "" {
@@ -457,7 +436,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 
 		prevLen := finalText.Len()
-		turnsUsed++
+		rs.turns++
 		turnToolsOK := false // reset per turn: did THIS turn land a usable tool result?
 
 		req := providers.CompleteRequest{
@@ -465,7 +444,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			User:        flattenChatMessages(messages),
 			Model:       h.Model,
 			MaxTokens:   maxOutputTokens,
-			MCPServers:  []schemas.MCPServerDef{{Name: "core", Tools: h.ToolDefinitions()}},
+			MCPServers:  []schemas.MCPServerDef{{Name: "core", Tools: rs.offerTools(h)}},
 			Attachments: h.Attachments,
 		}
 
@@ -515,40 +494,18 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				turn-- // retry same turn with truncated input
 				continue
 			}
-			// Turn budget exhaustion: distinguish "our clock killed the
-			// turn" from "the model/provider actually errored" so downstream
-			// scoring doesn't mislabel a budget timeout as model_error.
-			//
-			// Two paths lead here:
-			//  (a) runCtx expired → ctx.Err() != nil. The request's context
-			//      is ctx, so client.Do returns context.DeadlineExceeded.
-			//  (b) http.Client.Timeout fired before runCtx → ctx.Err() == nil
-			//      but the error wraps context.DeadlineExceeded. This happens
-			//      when the provider's HTTP timeout (120s/300s) is shorter
-			//      than the turn budget.
-			// Both are infrastructure timeouts, not model failures.
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				emit(ChatEvent{
-					Type: "error",
-					Data: fmt.Sprintf("turn budget exhausted (%v) while waiting for the provider", ctxErr),
-					Meta: map[string]any{"turn_budget_exhausted": true},
-				})
+			// See emitTimeoutError in chat_budget.go for the two paths and
+			// the rate-limit-aware labelling.
+			providerName := h.Provider.Name()
+			if emitTimeoutError(emit, err, ctx, providerName) {
 				return finalText.String(), err
 			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				emit(ChatEvent{
-					Type: "error",
-					Data: fmt.Sprintf("provider timeout (deadline exceeded): %v", err),
-					Meta: map[string]any{"turn_budget_exhausted": true},
-				})
-				return finalText.String(), err
-			}
-			emitRunError(emit, err)
+			emitRunError(emit, err, providerName)
 			return finalText.String(), err
 		}
 
 		if len(resp.ToolCalls) == 0 {
-			exitReason = "done"
+			rs.exitReason = "done"
 			emit(ChatEvent{Type: "done"})
 			return finalText.String(), nil
 		}
@@ -577,7 +534,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			noTextTurns = 0
 			if !noTextNudged && !lastTurnToolsOK {
 				noTextNudged = true
-				noTextSteers++
+				rs.noTextSteers++
 				emit(ChatEvent{Type: "steer", Data: fmt.Sprintf("no text output for %d consecutive turns", n)})
 				messages = append(messages, ChatMessage{
 					Role:    "user",
@@ -630,14 +587,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 
 		for i, tc := range resp.ToolCalls {
-			toolCallsUsed++
-			// Tools whose only write path is inside a `code` argument. The
-			// write guard cannot see these (writeToolArgKeys has no "code"),
-			// so they are counted separately — that gap is the reason p22
-			// recorded writes=1 next to ~70 rewrites of the same CSV.
-			if tc.Name == "execute_code" {
-				codeExecCalls++
-			}
+			rs.recordTool(tc.Name)
 			emit(ChatEvent{Type: "tool_call", Data: tc.Name, Meta: map[string]any{"args": tc.Arguments}})
 
 			h.checkPlanDrift(i, taskID, tc, emit)
@@ -819,7 +769,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				break
 			}
 			if rule.endRun {
-				exitReason = "exploration_exhausted"
+				rs.exitReason = "exploration_exhausted"
 				emit(ChatEvent{Type: "error", Data: fmt.Sprintf("exploration ceiling: %d calls without a write", eg.streak)})
 				return markExplorationTruncated(finalText.String(), eg.streak),
 					fmt.Errorf("exploration ceiling reached (%d calls without a write): %w", eg.streak, ErrExplorationExhausted)
@@ -830,7 +780,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		lastTurnToolsOK = turnToolsOK
 	}
 
-	exitReason = "max_turns"
+	rs.exitReason = "max_turns"
 	emit(ChatEvent{Type: "error", Data: fmt.Sprintf("max turns (%d) exceeded", maxTurns)})
 	return markTruncated(finalText.String(), maxTurns), fmt.Errorf("max turns (%d) exceeded: %w", maxTurns, ErrMaxTurnsExceeded)
 }
