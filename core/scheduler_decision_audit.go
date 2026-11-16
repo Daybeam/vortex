@@ -27,6 +27,12 @@ import (
 // role/SOP config (fixed vocabulary) and LLM-generated PlanDAG exit criteria.
 // In practice the set is small and reusable; the cache is unbounded in theory
 // but bounded by the distinct-criteria vocabulary in the deployment.
+//
+// audit P3: added size cap (regexCacheMaxEntries). When exceeded, the cache
+// is cleared entirely — safe because regex compilation is deterministic and
+// callers will simply recompile on next use.
+const regexCacheMaxEntries = 500
+
 var regexCache sync.Map // map[string]*regexp.Regexp
 
 // compileRegexCache returns a cached compiled regex, compiling on first use.
@@ -38,10 +44,25 @@ func compileRegexCache(pattern string) (*regexp.Regexp, error) {
 	if err != nil {
 		return nil, err
 	}
-	// audit L7: LoadOrStore makes the check-then-act atomic. regexp.Compile
-	// is deterministic for a given pattern; this replaces the non-atomic
-	// Load-then-Store idiom. Returns the canonical cached instance.
-	actual, _ := regexCache.LoadOrStore(pattern, re)
+	// audit P3: enforce size cap to prevent unbounded growth from
+	// LLM-generated exit criteria. Clearing is safe — callers recompile.
+	actual, loaded := regexCache.LoadOrStore(pattern, re)
+	if !loaded {
+		// New entry inserted — check size and clear if over limit.
+		count := 0
+		regexCache.Range(func(_, _ any) bool {
+			count++
+			return count <= regexCacheMaxEntries+1
+		})
+		if count > regexCacheMaxEntries {
+			regexCache.Range(func(k, _ any) bool {
+				regexCache.Delete(k)
+				return true
+			})
+			// Re-store our entry since we just cleared it.
+			regexCache.Store(pattern, re)
+		}
+	}
 	return actual.(*regexp.Regexp), nil
 }
 

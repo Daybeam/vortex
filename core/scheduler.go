@@ -198,9 +198,9 @@ type DirectedEngine struct {
 	staleTaskSnapshots map[string]*staleTaskState
 
 	// recentDecisions (#14, ADDED 2026-10-10): per-step decision timestamp
-	// for RiskTier-based rate limiting. Key: "taskID:stepID".
+	// for RiskTier-based rate limiting. Outer key: taskID, inner key: stepID.
 	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.3.
-	recentDecisions   map[string]time.Time
+	recentDecisions   map[string]map[string]time.Time
 	recentDecisionsMu sync.Mutex
 
 	// auditLogger (#15, ADDED 2026-10-11): tamper-evident SHA-256 hash chain
@@ -266,7 +266,7 @@ func NewDirectedEngine(
 		notifyChan:          make(chan struct{}),
 		decSem:              make(chan struct{}, 5), // audit NEW-P1: bound concurrent decision-resolution goroutines
 		staleTaskSnapshots:  make(map[string]*staleTaskState),
-		recentDecisions:     make(map[string]time.Time),
+		recentDecisions:     make(map[string]map[string]time.Time),
 	}
 	s.spawner.SignalField = sf
 
@@ -991,12 +991,7 @@ func isTerminalStatus(status schemas.GraphStatus) bool {
 // cleanRecentDecisions removes all recentDecisions entries for the given taskID.
 // Called from evictTerminalGraphs to prevent unbounded growth of recentDecisions.
 func (s *DirectedEngine) cleanRecentDecisions(taskID string) {
-	prefix := taskID + ":"
 	s.recentDecisionsMu.Lock()
-	for key := range s.recentDecisions {
-		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
-			delete(s.recentDecisions, key)
-		}
-	}
+	delete(s.recentDecisions, taskID)
 	s.recentDecisionsMu.Unlock()
 }

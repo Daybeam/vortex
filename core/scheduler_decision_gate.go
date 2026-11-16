@@ -287,9 +287,11 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	}
 
 	// #14: Rate limit non-critical decisions — 30s per step.
-	rlKey := graph.TaskID + ":" + step.ID
 	s.recentDecisionsMu.Lock()
-	if last, ok := s.recentDecisions[rlKey]; ok && time.Since(last) < 30*time.Second {
+	if s.recentDecisions[graph.TaskID] == nil {
+		s.recentDecisions[graph.TaskID] = make(map[string]time.Time)
+	}
+	if last, ok := s.recentDecisions[graph.TaskID][step.ID]; ok && time.Since(last) < 30*time.Second {
 		s.recentDecisionsMu.Unlock()
 		s.logger.Log(obs.EventDecisionAutoResolved, graph.TaskID, step.ID, map[string]any{
 			"decision_id": dec.ID,
@@ -297,7 +299,7 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 		})
 		return
 	}
-	s.recentDecisions[rlKey] = time.Now()
+	s.recentDecisions[graph.TaskID][step.ID] = time.Now()
 	s.recentDecisionsMu.Unlock()
 	taskID, decID := graph.TaskID, dec.ID
 	// Captured OUTSIDE the goroutine: the decider must run as the tier of the
