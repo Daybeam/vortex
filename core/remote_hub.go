@@ -86,11 +86,15 @@ func (h *RemoteTaskHub) GetSignalField() interfaces.SignalFieldInterface {
 
 func (h *RemoteTaskHub) ClaimTask(stepID string) bool {
 	url := fmt.Sprintf("%s/api/swarm/claim", h.BaseURL)
-	body, _ := json.Marshal(map[string]string{"step_id": stepID})
+	body, err := json.Marshal(map[string]string{"step_id": stepID})
+	if err != nil {
+		log.Printf("WARN: remote_hub: ClaimTask json.Marshal failed: %v", err)
+		return false
+	}
 
 	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic
 	// if BaseURL contains invalid URL characters.
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		log.Printf("WARN: remote_hub: ClaimTask failed to build request: %v", err)
 		return false
@@ -124,10 +128,14 @@ func (h *RemoteTaskHub) ClaimTask(stepID string) bool {
 
 func (h *RemoteTaskHub) ReleaseTask(stepID string) {
 	url := fmt.Sprintf("%s/api/swarm/release", h.BaseURL)
-	body, _ := json.Marshal(map[string]string{"step_id": stepID})
+	body, err := json.Marshal(map[string]string{"step_id": stepID})
+	if err != nil {
+		log.Printf("WARN: remote_hub: ReleaseTask json.Marshal failed: %v", err)
+		return
+	}
 
 	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic.
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		log.Printf("WARN: remote_hub: ReleaseTask failed to build request: %v", err)
 		return
@@ -177,13 +185,17 @@ func (h *RemoteTaskHub) ExecuteTask(ctx context.Context, stepID string) (*schema
 
 	// Yield result back to Hub
 	yieldURL := fmt.Sprintf("%s/api/swarm/yield", h.BaseURL)
-	yieldBody, _ := json.Marshal(map[string]any{
+	yieldBody, err := json.Marshal(map[string]any{
 		"step_id": stepID,
 		"output":  output,
 	})
+	if err != nil {
+		log.Printf("WARN: remote_hub: yield json.Marshal failed: %v", err)
+		return output, nil
+	}
 
 	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic.
-	yReq, yErr := http.NewRequest("POST", yieldURL, bytes.NewBuffer(yieldBody))
+	yReq, yErr := http.NewRequestWithContext(context.Background(), "POST", yieldURL, bytes.NewBuffer(yieldBody))
 	if yErr != nil {
 		log.Printf("WARN: remote_hub: yield failed to build request: %v", yErr)
 	} else {
@@ -219,7 +231,7 @@ var _ interfaces.SignalFieldInterface = (*RemoteSignalField)(nil)
 func (f *RemoteSignalField) SensingGlobal(limit int, agentLoad float64) []string {
 	url := fmt.Sprintf("%s/api/swarm/sensing", f.Hub.BaseURL)
 	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic.
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
 	if err != nil {
 		log.Printf("WARN: remote_hub: SensingGlobal failed to build request: %v", err)
 		return nil

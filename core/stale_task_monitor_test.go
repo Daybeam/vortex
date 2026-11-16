@@ -22,7 +22,7 @@ import (
 // the time on a 2-step graph (measured 2 failures in 8 runs at HEAD). 64 rounds
 // make a pre-fix pass probability 2^-63, so this is a reliable regression rather
 // than a coin flip. Bug: F12 in
-// docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md — an unstable hash
+// docs/completed/2026-11-15/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md — an unstable hash
 // reads as progress, so failStaleTasks resets lastProgress and never auto-fails.
 func TestTaskProgressHash_StableForSameState(t *testing.T) {
 	graph := &schemas.TaskGraph{
@@ -357,7 +357,7 @@ func readLedgerStatus(t *testing.T, db *sql.DB, taskID string) string {
 // 'running' by a process that died is not in s.graphs and nothing rehydrates it,
 // so the in-process loop never sees it and the frontend polls a task that will
 // never finish.
-// Bug: docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md F10.
+// Bug: docs/completed/2026-11-15/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md F10.
 func TestStaleTaskMonitor_SweepsOrphanedLedgerRow(t *testing.T) {
 	s, db := newLedgerSweepEngine(t)
 	const taskID = "task_orphan"

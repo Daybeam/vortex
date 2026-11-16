@@ -132,7 +132,7 @@ func (s *DirectedEngine) failStaleTasks(timeout time.Duration) {
 // walks s.graphs, and nothing rehydrates a dead process's rows into that map, so
 // a row left 'running' by a crash or a restart is invisible to it: measured on
 // task_eb209a68, 'running' since 2026-11-06 12:12 with the frontend still polling
-// it four days later (F10, docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md).
+// it four days later (F10, docs/completed/2026-11-15/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md).
 //
 // The cutoff is the row's own updated_at rather than a first-sight timestamp, so
 // that row closes on the next tick instead of waiting another full timeout.

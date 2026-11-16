@@ -424,10 +424,14 @@ func (re *ReflectionEngine) CrystallizeStepToSkill(ctx context.Context, rec stor
 		}
 
 		if parentGS, ok := re.expStore.GetGeneratedSkill(parentID); ok && len(parentGS.Guardrails) > 0 {
-			instruction += "\n\nGUARDRAILS — the following rules MUST NOT be modified, deleted, or weakened in your output:\n"
+			var grBuilder strings.Builder
+			grBuilder.WriteString("\n\nGUARDRAILS — the following rules MUST NOT be modified, deleted, or weakened in your output:\n")
 			for _, g := range parentGS.Guardrails {
-				instruction += "- " + g + "\n"
+				grBuilder.WriteString("- ")
+				grBuilder.WriteString(g)
+				grBuilder.WriteString("\n")
 			}
+			instruction += grBuilder.String()
 		}
 	}
 
