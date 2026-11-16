@@ -84,12 +84,16 @@ func (s *ProviderSlot) ReportError() {
 
 // ProviderRouter manages multiple provider slots and routes requests.
 type ProviderRouter struct {
-	slots map[string]*ProviderSlot
-	mu    sync.RWMutex
+	slots     map[string]*ProviderSlot
+	// audit P1: pool index for O(1) pool lookup in Next() instead of
+	// linear scanning all slots. Maintained in Register/Deregister.
+	poolIndex map[string][]*ProviderSlot
+	mu        sync.RWMutex
 }
 
 var GlobalRouter = &ProviderRouter{
-	slots: make(map[string]*ProviderSlot),
+	slots:     make(map[string]*ProviderSlot),
+	poolIndex: make(map[string][]*ProviderSlot),
 }
 
 // Register adds or updates a provider slot.
@@ -100,20 +104,44 @@ func (r *ProviderRouter) Register(id string, cfg *config.ProviderConfig, p Provi
 	if poolID == "" {
 		poolID = providerCacheKey(cfg)
 	}
-	r.slots[id] = &ProviderSlot{
+	// audit P1: remove old slot from pool index if it existed.
+	if old, ok := r.slots[id]; ok {
+		r.removeFromPoolIndexLocked(old.PoolID, old)
+	}
+	slot := &ProviderSlot{
 		ID:       id,
 		Config:   cfg,
 		PoolID:   poolID,
 		Provider: p,
 		Status:   StatusHealthy,
 	}
+	r.slots[id] = slot
+	r.poolIndex[poolID] = append(r.poolIndex[poolID], slot)
 }
 
 // Deregister removes a provider slot by ID. Used for test cleanup.
 func (r *ProviderRouter) Deregister(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if slot, ok := r.slots[id]; ok {
+		r.removeFromPoolIndexLocked(slot.PoolID, slot)
+	}
 	delete(r.slots, id)
+}
+
+// removeFromPoolIndexLocked removes a slot from the pool index. Caller must
+// hold r.mu.
+func (r *ProviderRouter) removeFromPoolIndexLocked(poolID string, slot *ProviderSlot) {
+	slots := r.poolIndex[poolID]
+	for i, s := range slots {
+		if s == slot {
+			r.poolIndex[poolID] = append(slots[:i], slots[i+1:]...)
+			break
+		}
+	}
+	if len(r.poolIndex[poolID]) == 0 {
+		delete(r.poolIndex, poolID)
+	}
 }
 
 func (r *ProviderRouter) ReportSuccess(id string, latencyMs float64) {
@@ -148,6 +176,9 @@ func (r *ProviderRouter) ReportError(id string) {
 // providers.PoolIDFor). Prior to 2026-07-19 this matched on the bare
 // Provider type string, which silently merged unrelated standalone named
 // providers sharing that type into one pool.
+//
+// audit P1: uses poolIndex for O(slots-in-pool) lookup instead of O(total-slots)
+// linear scan.
 func (r *ProviderRouter) Next(poolID string) (*ProviderSlot, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -155,11 +186,7 @@ func (r *ProviderRouter) Next(poolID string) (*ProviderSlot, error) {
 	var best *ProviderSlot
 	minLatency := math.MaxFloat64
 
-	for _, slot := range r.slots {
-		if slot.PoolID != poolID {
-			continue
-		}
-
+	for _, slot := range r.poolIndex[poolID] {
 		if slot.IsHealthy() {
 			slot.mu.RLock()
 			lat := slot.LatencyEMA
