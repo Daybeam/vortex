@@ -395,15 +395,11 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompleteRequest) (
 
 	var resp struct {
 		Content []struct {
-			Type  string `json:"type"`
-			Text  string `json:"text"`
-			Input struct {
-				ToolUse struct {
-					ID    string         `json:"id"`
-					Name  string         `json:"name"`
-					Input map[string]any `json:"input"`
-				} `json:"tool_use"`
-			} `json:"input"`
+			Type  string         `json:"type"`
+			Text  string         `json:"text"`
+			ID    string         `json:"id"`
+			Name  string         `json:"name"`
+			Input map[string]any `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
@@ -424,9 +420,9 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompleteRequest) (
 			text.WriteString(c.Text)
 		} else if c.Type == "tool_use" {
 			toolCalls = append(toolCalls, ToolCall{
-				CallID:    c.Input.ToolUse.ID,
-				Name:      c.Input.ToolUse.Name,
-				Arguments: c.Input.ToolUse.Input,
+				CallID:    c.ID,
+				Name:      c.Name,
+				Arguments: c.Input,
 			})
 		}
 	}
