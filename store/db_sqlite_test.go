@@ -98,7 +98,7 @@ func TestInitDB_FailureReturnsNilDB(t *testing.T) {
 }
 
 // TestInitDB_BackfillsColumnsOnLegacyDB reproduces F13 in
-// docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md, measured on the
+// docs/completed/2026-11-15/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md, measured on the
 // live hub 2026-11-10: "failed to run migrations: SQL logic error: no such
 // column: domain". A column added to CREATE TABLE IF NOT EXISTS never lands on
 // a DB that already has the table, so idx_exp_nodes_domain failed, and because

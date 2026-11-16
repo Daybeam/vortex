@@ -167,6 +167,13 @@ type ExperienceStore struct {
 	// Not JSON-serialized — rebuilt lazily.
 	patternTokensCache map[string]map[string]int
 
+	// bm25StatsCache caches corpus-level BM25 statistics (termDocFreqs and
+	// avgdl) derived from patternTokensCache, avoiding O(N) recomputation on
+	// every query (audit H9). Invalidated together with patternTokensCache.
+	// Not JSON-serialized — rebuilt lazily.
+	bm25TermDocFreqsCache map[string]int
+	bm25AvgdlCache        float64
+
 	// JIT Promotion Audit (ADDED 2026-09-06)
 	JITCandidates      map[string]*JITCandidate `json:"jit_candidates"`
 	PromotionAuditLogs []PromotionAuditLog      `json:"promotion_audit_logs"`

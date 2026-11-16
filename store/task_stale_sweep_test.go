@@ -28,7 +28,7 @@ func agedTimestamp(d time.Duration) string {
 // TestSweepStaleRunning_ClosesOnlyOrphanedRunningRows is the F10 regression at
 // the store layer: a row left 'running' by a dead process must close, while a
 // live row and every terminal row must be left exactly as they were.
-// Bug: docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md F10.
+// Bug: docs/completed/2026-11-15/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md F10.
 func TestSweepStaleRunning_ClosesOnlyOrphanedRunningRows(t *testing.T) {
 	b := newSweepTestDB(t)
 	ctx := context.Background()

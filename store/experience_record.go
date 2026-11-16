@@ -233,7 +233,10 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 			if fullSource != "" && existing.SourceText == "" {
 				existing.SourceText = fullSource
 				// audit P-5: SourceText changed → invalidate BM25 token cache.
+				// audit H9: also invalidate BM25 stats cache.
 				es.patternTokensCache = nil
+				es.bm25TermDocFreqsCache = nil
+				es.bm25AvgdlCache = 0
 			}
 			es.TaskPatterns[existingID] = existing
 			return
@@ -263,6 +266,9 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 			delete(es.TaskPatterns, all[i].id)
 		}
 		es.patternTokensCache = nil // invalidate cache
+		// audit H9: also invalidate BM25 stats cache.
+		es.bm25TermDocFreqsCache = nil
+		es.bm25AvgdlCache = 0
 	}
 	es.TaskPatterns[patternID] = TaskPattern{
 		ID:             patternID,
@@ -284,7 +290,10 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 		es.sequenceKeyIndex[key] = patternID
 	}
 	// audit P-5: invalidate BM25 token cache — new/updated pattern changes tokens.
+	// audit H9: also invalidate BM25 stats cache.
 	es.patternTokensCache = nil
+	es.bm25TermDocFreqsCache = nil
+	es.bm25AvgdlCache = 0
 }
 
 // stepSequenceKey builds a canonical, order-preserving signature of what a
