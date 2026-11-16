@@ -166,7 +166,7 @@ func (h *ChatHandler) notifyTaskTerminal(ev obs.AgentEvent) error {
 		// Measured 2026-11-10: the F10 sweep closed task_eb209a68 and this path
 		// dropped its notification with reason=session_not_loaded_in_this_process,
 		// so the ledger said 'failed' and no human ever heard it.
-		// See docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md F14.
+		// See docs/completed/2026-11-15/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md F14.
 		h.logNotificationDrop(taskID, kindTaskCallback, ref.dropReason, ref.sessionID)
 		if ref.dropReason == dropSessionEvicted {
 			h.queueNotification(taskID, ref.sessionID, kindTaskCallback, "task_callback|"+taskID, summary, meta)

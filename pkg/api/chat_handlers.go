@@ -60,6 +60,10 @@ type ChatHandler struct {
 	// to drain instead of orphaning LLM calls on server stop (audit C4).
 	wg sync.WaitGroup
 
+	// channelWg tracks input-channel goroutines (e.g. Telegram start) so
+	// Shutdown can wait for them to exit (audit R3).
+	channelWg sync.WaitGroup
+
 	// cancelFuncs maps sessionID → context.CancelFunc for true interrupt
 	// support. When a new request arrives for a session with an in-flight
 	// run, the previous cancel func is invoked to stop wasted token spend.
@@ -167,10 +171,43 @@ func (h *ChatHandler) SetProcessInfoDisabled(sessionID string, disabled bool) {
 // See docs/CHAT_GATEWAY_TIERS_DESIGN.md §3.
 const defaultChatFrontDeskRole = "chat_front_desk"
 
-// Shutdown waits for all in-flight chat goroutines to complete. Call before
-// server close to prevent orphaned LLM provider calls (audit C4).
+// Shutdown waits for all in-flight chat goroutines and channel goroutines to
+// complete. Call before server close to prevent orphaned LLM provider calls
+// (audit C4) and channel goroutine leaks (audit R3).
 func (h *ChatHandler) Shutdown() {
 	h.wg.Wait()
+	h.channelWg.Wait()
+}
+
+// CleanupSession removes all sync.Map entries for a session to prevent
+// unbounded memory growth from completed sessions (audit H8). Handles both
+// simple-keyed maps (sessionID) and composite-keyed maps ("sessionID|...").
+func (h *ChatHandler) CleanupSession(sessionID string) {
+	// Simple-keyed maps: direct delete.
+	h.cancelFuncs.Delete(sessionID)
+	h.lastThinking.Delete(sessionID)
+	h.clearConfirmations.Delete(sessionID)
+	h.processInfoDisabled.Delete(sessionID)
+	h.followUpDepth.Delete(sessionID)
+	h.pendingWake.Delete(sessionID)
+	h.sessionHarness.Delete(sessionID)
+	h.lastSubmitterAdmin.Delete(sessionID)
+
+	// Composite-keyed maps: iterate and delete entries with matching prefix.
+	prefix := sessionID + "|"
+	deleteByPrefix := func(m *sync.Map) {
+		m.Range(func(k, _ any) bool {
+			if s, ok := k.(string); ok && len(s) > len(prefix) && s[:len(prefix)] == prefix {
+				m.Delete(k)
+			}
+			return true
+		})
+	}
+	deleteByPrefix(&h.forgetConfirmations)
+	deleteByPrefix(&h.followUpSeen)
+	deleteByPrefix(&h.wakeSeen)
+	deleteByPrefix(&h.consumedTasks)
+	deleteByPrefix(&h.delegatedTasks)
 }
 
 // StoreLastThinking saves the last thinking/reasoning content for a session.
@@ -346,6 +383,8 @@ func NewChatHandler(app *tools.App) *ChatHandler {
 	// from the app itself (EffectiveTier falls back to app.Tier), so a
 	// local/admin app isn't fail-closed on dynamic mounts. The request-scoped
 	// copy (hCopy.Delegate) uses the real ctx tier.
+	// audit L1: use context.Background() only for the construction-time
+	// fallback — the request-scoped delegate in handleChat uses r.Context().
 	handler.Harness.Delegate = func(prompt string) (string, error) {
 		isAdmin := tools.EffectiveTier(context.Background(), app) == tools.TierAdmin
 		return handler.submitChatTask(

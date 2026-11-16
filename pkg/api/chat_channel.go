@@ -129,7 +129,11 @@ func RegisterInputChannels(h *ChatHandler, mux *http.ServeMux, ctx context.Conte
 	if token := getEnv("TELEGRAM_BOT_TOKEN"); token != "" {
 		tgCh := NewTelegramChannel(h, token)
 		channels = append(channels, tgCh)
+		// audit R3: track Telegram start goroutine with channelWg so
+		// Shutdown can wait for it to exit instead of orphaning it.
+		h.channelWg.Add(1)
 		go func() {
+			defer h.channelWg.Done()
 			if err := tgCh.Start(ctx); err != nil {
 				// Log but don't fail — HTTP chat still works.
 				// FIX (2026-10-27): surface to BOTH slog (daily stderr/log sink,

@@ -228,7 +228,7 @@ func TestNotifyTaskTerminal_WebSessionStaysHistoryOnly(t *testing.T) {
 }
 
 // TestNotifyTaskTerminal_QueuesWhenSessionIsNotLoaded reproduces F14
-// (docs/plan/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md, measured on the
+// (docs/completed/2026-11-15/TELEGRAM_CALLBACK_AND_VCP_FINDINGS_2026-11-10.md, measured on the
 // live hub 2026-11-10): the F10 sweep closed task_eb209a68, this path dropped
 // the notification with reason=session_not_loaded_in_this_process, and the
 // outbox stayed empty -- so the ledger said 'failed' and no human ever heard it.

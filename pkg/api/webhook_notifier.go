@@ -20,6 +20,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -376,7 +377,7 @@ func (n *webhookNotifier) doSend(route string, ev obs.AgentEvent) error {
 // log them; any HTTP response that completes is treated as accepted — 200 means
 // the target accepted the message, 202 means the run was queued.
 func (n *webhookNotifier) post(url string, body []byte) error {
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -560,7 +561,7 @@ func (n *webhookNotifier) sendToTelegram(route config.NotificationRoute, ev obs.
 	text = truncateRunes(text, 4000)
 	body, _ := json.Marshal(map[string]string{"chat_id": route.ChatID, "text": text})
 	url := "https://api.telegram.org/bot" + token + "/sendMessage"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		log.Printf("WARN telegram: build request for route %s: %s", route.Name, tgRedact(token, err.Error()))
 		return
@@ -593,7 +594,7 @@ func (n *webhookNotifier) sendToWebhook(route config.NotificationRoute, ev obs.A
 			secret = s
 		}
 	}
-	req, err := http.NewRequest(http.MethodPost, route.TargetURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, route.TargetURL, bytes.NewReader(body))
 	if err != nil {
 		log.Printf("WARN webhook: build request for route %s: %v", route.Name, err)
 		return

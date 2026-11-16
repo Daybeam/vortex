@@ -104,7 +104,7 @@ func (h *APIHandler) SubmitSOPHandler(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) submitSteps(steps []map[string]any) (string, error) {
 	body, _ := json.Marshal(map[string]any{"steps": steps})
 	// audit L-15-2: check NewRequest error to prevent nil-deref panic.
-	req, err := http.NewRequest("POST", "/api/tasks/submit", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", "/api/tasks/submit", strings.NewReader(string(body)))
 	if err != nil {
 		return "", fmt.Errorf("build submit request: %w", err)
 	}
@@ -269,7 +269,7 @@ func (h *APIHandler) ExperienceAlertsHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	alerts := h.App.ExpStore.GetEnvironmentAlerts(ctx)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -290,7 +290,7 @@ func (h *APIHandler) ExperienceBriefHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	brief := h.App.ExpStore.GetOrchestrationBrief(ctx, skillIDs)
 
 	w.Header().Set("Content-Type", "application/json")

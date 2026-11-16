@@ -581,7 +581,9 @@ func (h *ChatHandler) cmdRun(arg string) (bool, string) {
 	exec := core.NewControlledExecutor()
 	exec.IdleTimeout = 15 * time.Second
 	exec.TotalTimeout = 120 * time.Second
-	res, err := exec.Run(context.Background(), cmdName, cmdArgs, "", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), exec.TotalTimeout)
+	defer cancel()
+	res, err := exec.Run(ctx, cmdName, cmdArgs, "", nil)
 	if err != nil {
 		return true, fmt.Sprintf("exec error: %v", err)
 	}
