@@ -107,6 +107,9 @@ func TestEmitRunError_OtherErrorsKeepTheirText(t *testing.T) {
 	}
 }
 
+// Rate limit errors must include the provider name, retry-after, and
+// machine-readable meta so the operator can see which provider is throttled
+// without digging through raw error text.
 func TestEmitRunError_RateLimitIncludesProviderAndRetryAfter(t *testing.T) {
 	var events []ChatEvent
 	emit := func(ev ChatEvent) error { events = append(events, ev); return nil }

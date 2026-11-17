@@ -34,6 +34,22 @@ func (h *ChatHarness) delegateReceipt(id string) string {
 			if s, _ := st["status"].(string); s != "" {
 				b.WriteString("current status: " + s + "\n")
 			}
+			// The estimate turns "you get one status check" into "you get one
+			// check at a stated time, and only if it is late". That is the
+			// difference between a lockout that reads as a broken tool and one
+			// that reads as a deadline: the wake arm already allows exactly one
+			// check, and this is the number that says when it is worth spending.
+			//
+			// Gated with the status line: same text channel, same arm.
+			if delegETAMode() {
+				eta := EstimateETA(st, time.Now())
+				if eta.Known() && eta.Basis != ETABasisDone {
+					b.WriteString("expected: about " + formatDuration(eta.Remaining) + "\n")
+					b.WriteString("If it is still running well past that, check once with orchestrator_task_status" +
+						"(task_id=\"" + id + "\") and report which step it is on and whether that step is moving. " +
+						"One check per overrun, then wait for the wake.\n")
+				}
+			}
 			h.noteTerminalTask(id, st)
 		}
 		b.WriteString("next: reply to the user now with the state you have — this session is resumed " +

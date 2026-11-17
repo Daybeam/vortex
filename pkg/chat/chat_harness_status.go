@@ -79,6 +79,15 @@ func formatTaskStatus(id string, st map[string]any, declared []string) string {
 			b.WriteString("elapsed: " + formatDuration(elapsed) + "\n")
 		}
 	}
+	// The estimate, gated (see delegETAMode). Progress and elapsed are two
+	// facts; the caller has to divide them itself and has no prior to divide by,
+	// so it either polls on a fixed schedule or gives up. This line is that
+	// division, labelled with its basis so an extrapolation is not read as a
+	// schedule. Left off by default because adding a line to every status
+	// answer changes what the model sees and therefore changes the arm.
+	if delegETAMode() {
+		b.WriteString(formatETALine(EstimateETA(st, time.Now())))
+	}
 	if steps, ok := st["steps"].(map[string]any); ok && len(steps) > 0 {
 		ids := make([]string, 0, len(steps))
 		for sid := range steps {
@@ -134,51 +143,60 @@ func formatTaskStatus(id string, st map[string]any, declared []string) string {
 	// every poll with the same four lines, which reads like "still working" to a
 	// model that has run out of ideas, and the only move left is to ask again.
 	if isTerminalChatStatus(status) {
-		switch {
-		case len(names) > 0:
-			b.WriteString("this task is finished — read the output_files above and answer. " +
-				"Calling orchestrator_task_status again will not change anything.\n")
-		case len(declared) > 0 && root != "":
-			// The declared list comes from the task prompt's "Enforced workspace
-			// change contract" section (h.declaredArtifacts), not from the
-			// subagent: the delegate contract has no field for outputs, so
-			// `names` above is always empty for a delegated task and this line
-			// used to say nothing at all about the files. Measured on 011
-			// b3d-v71-r5: the receipt said "declared no output files, go ls",
-			// the parent could not tell "missing" from "elsewhere", and it spent
-			// 32 execute_code calls rebuilding before the budget ended the run.
-			//
-			// These are counts, not a verdict: the list is
-			// mutation_contract.allowed_created, which differs from the task's
-			// required_artifacts on 185 of 274 tasks, so `present < declared`
-			// must never be turned into "the task failed" (→171).
-			absent := core.MissingArtifacts(root, declared)
-			b.WriteString(fmt.Sprintf("declared %d artifact(s); present %d",
-				len(declared), len(declared)-len(absent)))
-			if len(absent) > 0 {
-				b.WriteString("; missing: " + strings.Join(absent, ", "))
-			}
-			b.WriteString("\n")
-			if len(absent) > 0 {
-				b.WriteString("the missing ones are not under " + root + " by those names — list it " +
-					"(e.g. execute_code with `ls -la`) before rebuilding anything, because a file " +
-					"can exist in the wrong place. Do not poll this tool again for this task.\n")
-			} else {
-				b.WriteString("all declared artifacts exist under " + root +
-					" — read them and answer. Do not poll this tool again for this task.\n")
-			}
-		case root != "":
-			b.WriteString("this task is finished and declared no output files: the agents write " +
-				"into the workspace, so list " + root + " (e.g. execute_code with `ls -la`) " +
-				"to find the deliverable. Do not poll this tool again for this task. " +
-				"no artifacts were declared for this task; if you expected files, the delegate " +
-				"call must declare them.\n")
-		default:
-			b.WriteString("this task is finished and declared no output files. " +
-				"Do not poll this tool again for this task.\n")
-		}
+		b.WriteString(formatTerminalAction(status, names, declared, root))
 	}
 	return b.String()
+}
+
+// formatTerminalAction renders the "what to do next" guidance for a finished
+// task. Without it the tool answered every poll with the same four lines,
+// which reads like "still working" to a model that has run out of ideas.
+func formatTerminalAction(status string, names []string, declared []string, root string) string {
+	switch {
+	case len(names) > 0:
+		return "this task is finished — read the output_files above and answer. " +
+			"Calling orchestrator_task_status again will not change anything.\n"
+	case len(declared) > 0 && root != "":
+		// The declared list comes from the task prompt's "Enforced workspace
+		// change contract" section (h.declaredArtifacts), not from the
+		// subagent: the delegate contract has no field for outputs, so
+		// `names` above is always empty for a delegated task and this line
+		// used to say nothing at all about the files. Measured on 011
+		// b3d-v71-r5: the receipt said "declared no output files, go ls",
+		// the parent could not tell "missing" from "elsewhere", and it spent
+		// 32 execute_code calls rebuilding before the budget ended the run.
+		//
+		// These are counts, not a verdict: the list is
+		// mutation_contract.allowed_created, which differs from the task's
+		// required_artifacts on 185 of 274 tasks, so `present < declared`
+		// must never be turned into "the task failed" (→171).
+		absent := core.MissingArtifacts(root, declared)
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("declared %d artifact(s); present %d",
+			len(declared), len(declared)-len(absent)))
+		if len(absent) > 0 {
+			b.WriteString("; missing: " + strings.Join(absent, ", "))
+		}
+		b.WriteString("\n")
+		if len(absent) > 0 {
+			b.WriteString("the missing ones are not under " + root + " by those names — list it " +
+				"(e.g. execute_code with `ls -la`) before rebuilding anything, because a file " +
+				"can exist in the wrong place. Do not poll this tool again for this task.\n")
+		} else {
+			b.WriteString("all declared artifacts exist under " + root +
+				" — read them and answer. Do not poll this tool again for this task.\n")
+		}
+		return b.String()
+	case root != "":
+		return "this task is finished and declared no output files: the agents write " +
+			"into the workspace, so list " + root + " (e.g. execute_code with `ls -la`) " +
+			"to find the deliverable. Do not poll this tool again for this task. " +
+			"no artifacts were declared for this task; if you expected files, the delegate " +
+			"call must declare them.\n"
+	default:
+		return "this task is finished and declared no output files. " +
+			"Do not poll this tool again for this task.\n"
+	}
 }
 
 // isTerminalChatStatus reports whether a task status string means "no further
