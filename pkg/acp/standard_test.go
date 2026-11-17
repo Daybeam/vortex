@@ -7,12 +7,30 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
 )
+
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // eventMockEngine is a mock Engine that publishes obs events after Submit.
 type eventMockEngine struct {
@@ -410,7 +428,7 @@ func runStandardACP(t *testing.T, engine Engine, input string) string {
 func runStandardACPWithPipe(t *testing.T, engine Engine, preInput, postInput string, waitDelay time.Duration) string {
 	t.Helper()
 	pr, pw := io.Pipe()
-	var stdout bytes.Buffer
+	var stdout safeBuffer
 	done := make(chan struct{})
 	go func() {
 		ServeACP(engine, pr, &stdout)
