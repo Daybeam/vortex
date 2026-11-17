@@ -97,6 +97,17 @@ const (
 // lost (harness-bench p24 lost exactly this way — one line in the log and no
 // answer). See enqueueWake and deliverPendingWake.
 func (h *ChatHandler) startFollowUpTurn(sessionID, taskID, summary string) bool {
+	return h.startFollowUpTurnWithDigest(sessionID, taskID, summary, "")
+}
+
+// startFollowUpTurnWithDigest is the form that also carries the artifact digest.
+//
+// It exists as a separate method rather than a fourth parameter because the digest
+// is produced where the task outcome is known (chat_outbox.go) and the rest of the
+// call sites — including the whole follow-up test file — have nothing to add. The
+// gate is inside wakeArtifactDigest, so passing "" and not calling it are the same
+// behaviour.
+func (h *ChatHandler) startFollowUpTurnWithDigest(sessionID, taskID, summary, digest string) bool {
 	reason := "task_done"
 	text := fmt.Sprintf(followUpTriggerFmt, taskID)
 	// The trigger says "read the artifacts it produced" without naming them, so
@@ -107,6 +118,12 @@ func (h *ChatHandler) startFollowUpTurn(sessionID, taskID, summary string) bool 
 	// list, so hand it over rather than letting the parameter go unused.
 	if summary != "" {
 		text += "\n\n" + summary
+	}
+	// The digest is the content half of the same problem (D21, 2026-11-17): a file
+	// list tells the model what exists, not what it says, and a wake turn that is
+	// handed only names answered with invented figures in 10/10 runs on 041.
+	if digest != "" {
+		text += digest
 	}
 	switch h.startFollowUpTurnWithTrigger(sessionID, taskID, reason, text) {
 	case followUpStarted:

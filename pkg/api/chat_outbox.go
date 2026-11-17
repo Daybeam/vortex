@@ -193,7 +193,7 @@ func (h *ChatHandler) notifyTaskTerminal(ev obs.AgentEvent) error {
 	// turns the result into an answer. Without this segment a delegated task
 	// whose turn died at its budget wrote its result into the session tree and
 	// nobody ever read it.
-	h.startFollowUpTurn(ref.sessionID, taskID, summary)
+	h.startFollowUpTurnWithDigest(ref.sessionID, taskID, summary, wakeArtifactDigest(outcome))
 
 	// Stop tracking this task: the throttle entry is only needed while the task
 	// is alive, and the map would otherwise grow for the process lifetime (one

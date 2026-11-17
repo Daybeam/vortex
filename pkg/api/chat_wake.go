@@ -377,6 +377,15 @@ func (h *ChatHandler) cleanupSessionChatState(sessionID string) {
 	// already walked away from.
 	h.forgetDelegatedTasks(sessionID)
 	h.forgetSessionHarness(sessionID)
+	// The follow-up depth counter belongs to the conversation that spent it, and
+	// it is spent for good otherwise: nothing else resets it (CleanupSession
+	// deletes it but has no callers outside tests). Without this line a session
+	// that has been woken three times is permanently un-wakeable, and /clear
+	// makes it worse rather than better — it drops followUpSeen, so every later
+	// cause looks new and is then suppressed at the depth cap with only a stderr
+	// line. Measured shape: 12/12 wake-arm runs received exactly one wake, so a
+	// single long conversation reaches the cap in normal use.
+	h.followUpDepth.Delete(sessionID)
 }
 
 // deliverPendingWake starts a follow-up turn for the oldest wake that was

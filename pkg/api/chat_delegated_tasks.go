@@ -1,6 +1,9 @@
 package api
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // The per-session ledger of tasks a chat turn handed off.
 //
@@ -24,11 +27,22 @@ import "sort"
 // noteDelegatedTask records that `sessionID` handed `taskID` to the
 // orchestrator. Called from the per-request Delegate wrapper, which is the one
 // place that sees the id.
+//
+// The stored value is the watchdog state (see chat_deleg_watchdog.go), not a
+// bare struct{}: one ledger means the poll lever and the watchdog cannot
+// disagree about which tasks this session handed off. With the watchdog off the
+// value stays a plain struct{} and nothing reads it.
 func (h *ChatHandler) noteDelegatedTask(sessionID, taskID string) {
 	if h == nil || sessionID == "" || taskID == "" {
 		return
 	}
-	h.delegatedTasks.Store(sessionID+"|"+taskID, struct{}{})
+	key := sessionID + "|" + taskID
+	if delegWatchdogMode() {
+		h.watchOnce()
+		h.noteDelegWatch(key, time.Now())
+		return
+	}
+	h.delegatedTasks.Store(key, struct{}{})
 }
 
 // delegatedTasksFor returns the task ids `sessionID` has handed off, sorted so

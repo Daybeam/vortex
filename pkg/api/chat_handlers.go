@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/daybeam/vortex/core/sieve"
 	"log"
@@ -134,7 +133,19 @@ type ChatHandler struct {
 	// (a turn can delegate twice), and the wake turn needs it too — but the
 	// harness that delegated is gone by then, so the ledger lives here.
 	// See chat_delegated_tasks.go and post_deleg_lockout.go.
-	delegatedTasks sync.Map // "sessionID|taskID" → struct{}
+	// Value: *delegWatch when the watchdog is armed (chat_deleg_watchdog.go),
+	// struct{}{} otherwise — the key set is what the poll lever reads, and it is
+	// identical either way.
+	delegatedTasks sync.Map // "sessionID|taskID" → *delegWatch | struct{}{}
+	// delegWatchOnce / delegWatchStop own the watchdog goroutine. Both are
+	// inert unless VORTEX_DELEG_WATCHDOG is set: the goroutine is started on the
+	// first delegation, not at construction, so an idle handler runs nothing.
+	// The channel is created in the constructor rather than inside the Once so
+	// Shutdown can never race a nil channel and then block in wg.Wait on a
+	// goroutine it failed to stop.
+	delegWatchOnce sync.Once
+	delegStopOnce  sync.Once
+	delegWatchStop chan struct{}
 	// sessionHarness keeps the harness this session's last request ran on.
 	// A role-bound request builds a NEW harness (role's provider/model/system
 	// prompt) instead of mutating the shared one, so `h.Harness` never carries
@@ -175,6 +186,14 @@ const defaultChatFrontDeskRole = "chat_front_desk"
 // complete. Call before server close to prevent orphaned LLM provider calls
 // (audit C4) and channel goroutine leaks (audit R3).
 func (h *ChatHandler) Shutdown() {
+	// Stop the delegation watchdog before waiting: it holds a wg slot, so
+	// closing after Wait would deadlock for the life of the process. Closed
+	// through a Once because Shutdown is reachable from more than one path.
+	h.delegStopOnce.Do(func() {
+		if h.delegWatchStop != nil {
+			close(h.delegWatchStop)
+		}
+	})
 	h.wg.Wait()
 	h.channelWg.Wait()
 }
@@ -372,11 +391,12 @@ func NewChatHandler(app *tools.App) *ChatHandler {
 	}
 
 	handler := &ChatHandler{
-		App:        app,
-		Harness:    harness,
-		Store:      chatStore,
-		Outbox:     outbox,
-		hookRunner: core.NewHookRunner(app.Registry.System.Hooks, app.Registry.ExternalRuntimes, app.Logger),
+		App:            app,
+		Harness:        harness,
+		Store:          chatStore,
+		Outbox:         outbox,
+		hookRunner:     core.NewHookRunner(app.Registry.System.Hooks, app.Registry.ExternalRuntimes, app.Logger),
+		delegWatchStop: make(chan struct{}),
 	}
 
 	// Construction-time fallback Delegate (no request ctx): derive the tier
@@ -418,56 +438,6 @@ func (h *ChatHandler) submitChatTask(steps []schemas.StepInput, sessionID string
 		return "", fmt.Errorf("orchestrator scheduler is not available")
 	}
 	return h.App.Scheduler.SubmitWithWorkspace(steps, sessionID, chatWorkspaceRoot(h.Harness))
-}
-
-func (h *ChatHandler) SendHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var body struct {
-		SessionID      string           `json:"session_id"`
-		MessageID      string           `json:"message_id"`
-		Content        string           `json:"content"`
-		ParentID       string           `json:"parent_id"`
-		InputDir       string           `json:"input_dir"`
-		ModelOverride  string           `json:"model_override"`
-		RoleID         string           `json:"role_id"`
-		DirectTask     bool             `json:"direct_task"`
-		ReplyTo        string           `json:"reply_to"`
-		ReplyToContent string           `json:"reply_to_content"`
-		Attachments    []AttachmentSpec `json:"attachments"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	resp := h.ProcessMessage(r.Context(), ChatRequest{
-		SessionID:      body.SessionID,
-		MessageID:      body.MessageID,
-		Content:        body.Content,
-		ParentID:       body.ParentID,
-		InputDir:       body.InputDir,
-		ModelOverride:  body.ModelOverride,
-		RoleID:         body.RoleID,
-		DirectTask:     body.DirectTask,
-		CallerID:       tools.CallerIdentity(r.Context()),
-		ReplyTo:        body.ReplyTo,
-		ReplyToContent: body.ReplyToContent,
-		Attachments:    body.Attachments,
-	})
-
-	if resp.StatusCode != 0 {
-		http.Error(w, resp.Error, resp.StatusCode)
-		return
-	}
-	if resp.Error != "" {
-		writeJSON(w, map[string]any{"session_id": resp.SessionID, "error": resp.Error})
-		return
-	}
-	writeJSON(w, resp)
 }
 
 // ProcessMessage is the transport-agnostic chat message processor.
@@ -1013,81 +983,4 @@ func (h *ChatHandler) finishTurn(session *chat.ChatSession, terminalSent bool, p
 	h.deliverPendingWake(session.ID)
 }
 
-func (h *ChatHandler) StreamHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
 
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID == "" {
-		http.Error(w, "session_id required", http.StatusBadRequest)
-		return
-	}
-	session := h.Store.Get(sessionID)
-	if session == nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-
-	lastSeq := parseSeq(r.Header.Get("Last-Event-ID"))
-	// The Last-Event-ID header is authoritative on browser auto-reconnects
-	// (it always carries the latest seen seq). The query param is only a
-	// fallback for the initial connect, where no header exists yet — letting
-	// it override would replay the whole history on every reconnect and
-	// duplicate tool-call entries in the UI.
-	if lastSeq == 0 {
-		if q := r.URL.Query().Get("last_event_id"); q != "" {
-			lastSeq = parseSeq(q)
-		}
-	}
-
-	if chat.SinkEnabled() {
-		h.streamHandlerWithSink(w, r, sessionID, lastSeq)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	flusher.Flush()
-
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-
-	lastPing := time.Now()
-	for {
-		events := session.EventsAfter(lastSeq)
-		terminal := false
-		for _, ev := range events {
-			lastSeq = ev.Seq
-			writeSSE(w, ev)
-			if ev.Type == "done" || ev.Type == "error" {
-				terminal = true
-			}
-		}
-		if len(events) > 0 {
-			flusher.Flush()
-		}
-		if terminal {
-			return
-		}
-
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ticker.C:
-			if time.Since(lastPing) > 15*time.Second {
-				fmt.Fprintf(w, ": keepalive\n\n")
-				flusher.Flush()
-				lastPing = time.Now()
-			}
-		}
-	}
-}
