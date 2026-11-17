@@ -39,17 +39,38 @@ func TestCompletionCheckDefects_ExecutesDeclaredCheck(t *testing.T) {
 		}
 	}
 
+	// A passing check used to be indistinguishable from a check that never ran:
+	// both returned nil and wrote nothing (→226). The event is the only evidence
+	// that separates them, so it is asserted on the passing path too.
+	var events []ChatEvent
+	sink := func(ev ChatEvent) error {
+		if ev.Type == "completion_check" {
+			events = append(events, ev)
+		}
+		return nil
+	}
+
 	write("import sys\nsys.stderr.write('view v is broken\\n')\nsys.exit(1)\n")
-	got := h.completionCheckDefects(context.Background(), "e2e")
+	got := h.completionCheckDefects(context.Background(), "e2e", sink)
 	if len(got) != 1 || !strings.Contains(got[0], "view v is broken") {
 		t.Fatalf("a failing check must surface one defect line, got %v", got)
 	}
 	if !strings.HasPrefix(got[0], "report.sql: ") {
 		t.Fatalf("defect must name its artefact, got %q", got[0])
 	}
+	if len(events) != 1 || events[0].Meta["outcome"] != "fail" {
+		t.Fatalf("a failing check must emit one completion_check with outcome=fail, got %v", events)
+	}
 
+	events = nil
 	write("import sys\nprint('ok')\nsys.exit(0)\n")
-	if got := h.completionCheckDefects(context.Background(), "e2e"); got != nil {
+	if got := h.completionCheckDefects(context.Background(), "e2e", sink); got != nil {
 		t.Fatalf("a passing check must add no defect, got %v", got)
+	}
+	// The pass shape is not "exit_code 0": execute_code omits exit_code on
+	// success on purpose (core_tools.go #17), so the event must say pass without
+	// pretending a code came back.
+	if len(events) != 1 || events[0].Meta["outcome"] != "pass" || events[0].Meta["exit_code_omitted"] != true {
+		t.Fatalf("a passing check must still emit completion_check outcome=pass (exit_code omitted by contract), got %v", events)
 	}
 }

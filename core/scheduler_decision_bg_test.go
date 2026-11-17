@@ -49,7 +49,7 @@ func TestFinalize_GoroutinesTrackedByBgWg(t *testing.T) {
 		Status: schemas.GraphRunning,
 		Steps:  map[string]*schemas.Step{},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	s.finalize(graph)

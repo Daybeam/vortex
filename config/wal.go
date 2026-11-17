@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -223,6 +224,7 @@ func (w *WAL) containsCommitLocked(commitID string) (bool, error) {
 	for scanner.Scan() {
 		var commit Commit
 		if err := json.Unmarshal(scanner.Bytes(), &commit); err != nil {
+			slog.Warn("WAL: skipping corrupted entry", "commit_id", commitID, "err", err)
 			continue
 		}
 		if commit.ID == commitID {

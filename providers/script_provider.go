@@ -445,7 +445,7 @@ func (sp *ScriptProvider) registerBridge(vm *lua.LState) {
 			return 3
 		}
 
-		httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(body)))
+		httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader([]byte(body)))
 		if err != nil {
 			L.Push(lua.LNil)
 			L.Push(lua.LNumber(0))

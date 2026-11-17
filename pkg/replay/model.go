@@ -78,6 +78,9 @@ type Step struct {
 	Thought    string   `json:"thought,omitempty"`
 	Error      string   `json:"error,omitempty"`
 	Confidence *float64 `json:"confidence,omitempty"`
+	// ResultRef names the stored step output inside the task's artifact dir,
+	// matched from the filename rather than telemetry (see attributeArtifacts).
+	ResultRef string `json:"resultRef,omitempty"`
 }
 
 // Event is a normalized timeline entry. StepID is empty for run-level events.

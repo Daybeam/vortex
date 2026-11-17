@@ -6,7 +6,7 @@ import (
 )
 
 // This file pins the O16/O21 false-positive class in the text-repetition rule.
-// Both incidents are 实测 and both were the engine destroying legitimate work:
+// Both incidents were measured in practice and both were the engine destroying legitimate work:
 //   - O16 (task_f31f1868): the mounted-skill index is joined with "\n---\n"
 //     (core/skill_mounter.go:173), so two one-line descriptions render as two
 //     bare "---" lines two apart, and the delegation hand-over was vetoed as

@@ -31,9 +31,7 @@ func TestBrokenRouterRemoved_GenerativeUncertaintyEnqueuesDecision(t *testing.T)
 	step := &schemas.Step{ID: "s1", Status: schemas.StepFailed}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-router-fix"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// This is the exact call pattern from handleStepFailure (line 153):
 	// DecisionStepFailed with root_cause in context. The broken router
@@ -73,9 +71,7 @@ func TestBrokenRouterRemoved_NonGenerativeUncertaintyStillEnqueues(t *testing.T)
 		step := &schemas.Step{ID: "s1", Status: schemas.StepFailed}
 		graph.Steps["s1"] = step
 
-		s.Mu.Lock()
-		s.graphs[graph.TaskID] = graph
-		s.Mu.Unlock()
+		injectTestGraph(t, s, graph)
 
 		s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
 			"root_cause": rootCause,
@@ -110,9 +106,7 @@ func TestNonInteractive_DelegateFallbackToConservative(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-delegate-fallback"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// RequestAutonomousAbort creates a decision with options confirm_abort/continue.
 	// The delegate strategy will try to spawn "decision-arbiter" but the test
@@ -157,9 +151,7 @@ func TestNonInteractive_NoDeciderRole_UsesConservative(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-no-decider"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	s.RequestAutonomousAbort("task-no-decider", "s1", FailureClassCostOverrun, "test conservative only")
 

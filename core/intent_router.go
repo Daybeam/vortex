@@ -53,11 +53,18 @@ const embeddingWorkers = 4
 // must not block on provider latency: each cold SOP costs up to the 3s embed
 // timeout, and Route already degrades to keyword matching while the cache is
 // empty.
+//
+// A 5-minute timeout bounds the goroutine so a hung embedding provider cannot
+// leak it indefinitely (audit F-5).
 func (r *IntentRouter) RefreshEmbeddingsAsync(reg *config.Registry) {
 	if r.embedClient == nil || reg == nil {
 		return
 	}
-	go r.RefreshEmbeddings(context.Background(), reg)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	go func() {
+		defer cancel()
+		r.RefreshEmbeddings(ctx, reg)
+	}()
 }
 
 // RefreshEmbeddings updates SOP vector cache incrementally on reload.

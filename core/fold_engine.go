@@ -80,6 +80,15 @@ func NewFoldEngine(segMgr *SegmentManager, archive *ContextArchive, logger *obs.
 	}
 }
 
+// CleanupTask removes the fold state for a completed task scope.
+// Call this when a task terminates to prevent the states map from growing
+// without bound (audit H7).
+func (f *FoldEngine) CleanupTask(taskScope string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.states, taskScope)
+}
+
 // SetSummarizer sets a custom LLM-based summarizer for fold blocks.
 // If not set, a fallback summary (topic + item count) is used.
 func (f *FoldEngine) SetSummarizer(fn func(*MemorySegment) string) {

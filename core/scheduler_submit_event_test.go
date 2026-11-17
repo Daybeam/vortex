@@ -31,6 +31,7 @@ import (
 
 func TestSubmit_SingleStepPublishesTerminalEvent(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
 
@@ -111,7 +112,7 @@ func TestSubmit_SingleStepPublishesTerminalEvent(t *testing.T) {
 }
 
 // TestSubmit_SingleStepPartialReachesTerminal is the C5DD-T1 regression test
-// (PREREG-C5DD §7.4 / 铁律 42: 先跑出红再改).
+// (PREREG-C5DD §7.4 / Iron Rule 42: red-before-green).
 //
 // Bug: a single-step (smart_route) task whose step returned a self-declared
 // StatusPartial (not a ParseOutput fallback) raised a step_failed decision
@@ -130,6 +131,7 @@ func TestSubmit_SingleStepPublishesTerminalEvent(t *testing.T) {
 // Green after fix: EventTaskFailed published, graph "failed", step "partial".
 func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
 
@@ -212,8 +214,7 @@ func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 
 	// Honesty checks: graph failed (partial ≠ success), step preserved as
 	// partial (not collapsed to OK).
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
+	graph := engine.GetTaskGraph(taskID)
 	graphStatus := schemas.GraphRunning
 	stepStatus := schemas.StepPending
 	if graph != nil {
@@ -222,7 +223,6 @@ func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 			stepStatus = st.Status
 		}
 	}
-	engine.Mu.RUnlock()
 
 	if graphStatus != schemas.GraphFailed {
 		t.Errorf("expected GraphFailed for partial single-step, got %v", graphStatus)
@@ -233,7 +233,7 @@ func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 }
 
 // TestSubmitDecision_SmartRoutedSkipReachesTerminal is the C5DD-T2 regression
-// test (PREREG-C5DD §7.2 / 铁律 42: 先跑出红再改).
+// test (PREREG-C5DD §7.2 / Iron Rule 42: red-before-green).
 //
 // Bug: a single-step (smart_route) task whose step returned
 // StatusDelegationRequired raised a DecisionDelegationRequired and returned
@@ -251,6 +251,7 @@ func TestSubmit_SingleStepPartialReachesTerminal(t *testing.T) {
 // Green after fix: doneChan closed, graph "completed_with_skips".
 func TestSubmitDecision_SmartRoutedSkipReachesTerminal(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
 
@@ -330,8 +331,8 @@ func TestSubmitDecision_SmartRoutedSkipReachesTerminal(t *testing.T) {
 	// delegationBlocked branch would produce: step=StepBlocked, graph=
 	// GraphRunning, one pending DecisionDelegationRequired).
 	decisionID := "test-delegation-decision"
+	graph := engine.GetTaskGraph(taskID)
 	engine.Mu.Lock()
-	graph := engine.graphs[taskID]
 	if graph == nil {
 		engine.Mu.Unlock()
 		t.Fatal("graph not found after completion")
@@ -375,16 +376,14 @@ func TestSubmitDecision_SmartRoutedSkipReachesTerminal(t *testing.T) {
 	}
 
 	// Honesty checks: graph reached completed_with_skips, step is skipped.
-	engine.Mu.RLock()
 	graphStatus := schemas.GraphRunning
 	stepStatus := schemas.StepPending
-	if g := engine.graphs[taskID]; g != nil {
+	if g := engine.GetTaskGraph(taskID); g != nil {
 		graphStatus = g.Status
 		if st := g.Steps["step1"]; st != nil {
 			stepStatus = st.Status
 		}
 	}
-	engine.Mu.RUnlock()
 
 	if graphStatus != schemas.GraphCompletedWithSkips {
 		t.Errorf("expected GraphCompletedWithSkips, got %v", graphStatus)

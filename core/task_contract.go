@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,34 +33,87 @@ import (
 //     real lines in the section whose content is the word "none", not a file.
 const contractSectionHeading = "## Enforced workspace change contract"
 
-// ParseDeclaredArtifacts extracts the artifact names a task promises to create.
+// DeclaredContract is the same section split by column.
 //
-// Returns nil when the prompt carries no contract section — that is the
-// ordinary case for every caller outside the benchmark, and nil must mean
-// "no contract", never "empty contract". Callers treat nil as "behave exactly
-// as before"; only a non-empty result may change behaviour.
-func ParseDeclaredArtifacts(text string) []string {
+// Only Create names artifacts (see DeclaredContract.Create). The other two are
+// here for a different question — "which paths may this workspace hold at the
+// end" — which an extras check asks and a presence check cannot answer:
+//
+//   - Modify names a file the seed already ships. It must still be there and it
+//     must have changed. Its presence proves nothing (→221), which is exactly
+//     why it cannot enter the artifact list, and exactly why it can be part of
+//     the allowed set.
+//   - Delete names a path that must be gone; that absence is never "an extra".
+//
+// Present distinguishes "the prompt has no contract section" from "the section
+// names nothing to create" — the distinction →219 recorded as missing from the
+// older API. It has a consumer now (the extras gate), so it is not speculative.
+type DeclaredContract struct {
+	Present bool
+	// Create is the only column that names artifacts, and the only one a
+	// completion check may read. Modify is excluded on measurement, not taste:
+	// the three tasks whose contract is "Create: none / Modify: X" (262/263/264)
+	// ship X in the seed workspace, so an existence check on X answers "done" at
+	// t=0 -- and the harness fires the completion marker on missing == 0 alone,
+	// which would tell the model it is finished on turn one and spend the
+	// one-shot latch. Those tasks therefore get no completion signal from this
+	// section at all: "modified, not created" is unobservable by a presence test
+	// (TestWorkspaceArtifactsComplete_ModifyTargetIsPresentAtStart, RESULT §28.7).
+	//
+	// nil means "nothing to create" -- true both when the prompt has no section
+	// and when the section says so. Callers gate on len(...) > 0, so the two
+	// behave identically; Present tells them apart when that matters.
+	Create []string
+	// Modify lists files the seed already ships: they must still be there and
+	// must have changed. Presence proves nothing (→221), which is why they are
+	// excluded from Create and why they belong to the allowed set an extras check
+	// compares against.
+	Modify []string
+	// Delete lists paths that must be gone; their absence is never "an extra".
+	Delete []string
+}
+
+// ParseDeclaredContract reads all three columns of the contract section.
+//
+// Same narrow rules as the artifact parser: only the section counts, and a
+// column whose content is the word "none" contributes nothing because "none"
+// carries no backticks. Order is first-seen, duplicates dropped per column.
+func ParseDeclaredContract(text string) DeclaredContract {
 	section := contractSection(text)
 	if section == "" {
-		return nil
+		return DeclaredContract{}
 	}
 
-	seen := make(map[string]struct{})
-	var out []string
+	out := DeclaredContract{Present: true}
 	for _, line := range strings.Split(section, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "- Create:") {
-			continue
-		}
-		for _, token := range backtickedTokens(trimmed) {
-			if _, dup := seen[token]; dup {
-				continue
-			}
-			seen[token] = struct{}{}
-			out = append(out, token)
+		switch {
+		case strings.HasPrefix(trimmed, "- Create:"):
+			out.Create = appendMissing(out.Create, backtickedTokens(trimmed))
+		case strings.HasPrefix(trimmed, "- Modify:"):
+			out.Modify = appendMissing(out.Modify, backtickedTokens(trimmed))
+		case strings.HasPrefix(trimmed, "- Delete:"):
+			out.Delete = appendMissing(out.Delete, backtickedTokens(trimmed))
 		}
 	}
 	return out
+}
+
+// appendMissing appends tokens not already in dst, preserving first-seen order.
+func appendMissing(dst, tokens []string) []string {
+	for _, token := range tokens {
+		seen := false
+		for _, existing := range dst {
+			if existing == token {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			dst = append(dst, token)
+		}
+	}
+	return dst
 }
 
 // contractSection returns the text between the contract heading and the next
@@ -152,6 +206,89 @@ func WorkspaceArtifactsComplete(root string, declared []string) (present, missin
 	return len(declared) - len(absent), len(absent)
 }
 
+// ── Extras: what the workspace grew that the contract never allowed ──
+
+// workspaceWalkSkip lists directories whose contents are never deliverables.
+// They are skipped rather than ignored after the fact: a workspace with a
+// materialised node_modules would otherwise cost thousands of stat calls per
+// check, and .git is not part of what any task hands in.
+var workspaceWalkSkip = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"__pycache__":  true,
+}
+
+// maxWorkspaceEntries bounds the walk. A workspace that exceeds it is not a
+// deliverable anyone is grading by enumeration, and returning an error (rather
+// than a truncated set) keeps the caller from reporting a wrong answer
+// (→201: a partial view must not stand in for the whole).
+const maxWorkspaceEntries = 20000
+
+// SnapshotWorkspace records every path under root, relative and slash-separated.
+//
+// This is the t=0 baseline an extras check compares against. It has to be taken
+// before the model's first turn, because "the workspace grew a file" is only
+// answerable relative to what was there when the run started — and on the tasks
+// this exists for, the deliverable itself is part of that starting state (→221).
+func SnapshotWorkspace(root string) (map[string]struct{}, error) {
+	out := make(map[string]struct{}, 64)
+	err := walkWorkspace(root, func(rel string) error {
+		if len(out) >= maxWorkspaceEntries {
+			return fmt.Errorf("workspace has more than %d entries; extras check disabled", maxWorkspaceEntries)
+		}
+		out[rel] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// WorkspaceNewPaths returns the paths under root that baseline does not have,
+// sorted, so the same workspace always yields the same message.
+//
+// Directories count. A task that says "Create: none" and means it does not want
+// a `logs/` directory either, and the scorer's own workspace_scope compares
+// directory entries as entries. Paths are not filtered by kind for the same
+// reason MissingArtifacts stats rather than reads: the question is presence.
+func WorkspaceNewPaths(root string, baseline map[string]struct{}) ([]string, error) {
+	var out []string
+	err := walkWorkspace(root, func(rel string) error {
+		if _, known := baseline[rel]; !known {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// walkWorkspace visits every path under root once, calling visit with the
+// slash-separated relative path. One implementation so the snapshot and the diff
+// cannot disagree about what counts as a path (→131).
+func walkWorkspace(root string, visit func(rel string) error) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		if d.IsDir() && workspaceWalkSkip[d.Name()] {
+			return fs.SkipDir
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		return visit(filepath.ToSlash(rel))
+	})
+}
+
 // resolveArtifactPath maps a declared name onto root, refusing anything that
 // points outside it.
 func resolveArtifactPath(root, declared string) (string, bool) {
@@ -194,7 +331,7 @@ const createContainingSuffix = "containing:"
 
 // ParseDeclaredArtifactFields returns, per declared artifact, the top-level keys
 // the prompt says it must carry. Keys are normalised to workspace-relative form
-// so they line up with ParseDeclaredArtifacts' names.
+// so they line up with DeclaredContract.Create's names.
 //
 // Returns nil when the prompt declares no such block — nil must mean "no
 // contract", never "empty contract", so callers keep their previous behaviour.

@@ -37,6 +37,8 @@ func (m *MockHybridProvider) Embed(ctx context.Context, text string) ([]float32,
 }
 
 func TestReflectionEngine_ScanForHybridMerge(t *testing.T) {
+	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	logDir := t.TempDir()
 
@@ -56,7 +58,7 @@ func TestReflectionEngine_ScanForHybridMerge(t *testing.T) {
 	}
 
 	mock := &MockHybridProvider{
-		response: "```lua\n-- unified expert skill\nfunction expert() end\n```",
+		response: "```lua\n-- unified expert skill\nfunction expert() end\n```\n```json\n{\"name\": \"expert\", \"description\": \"unified expert skill\", \"params\": []}\n```",
 	}
 
 	// Inject into GlobalRouter and Cache
@@ -94,6 +96,9 @@ func TestReflectionEngine_ScanForHybridMerge(t *testing.T) {
 			if !strings.Contains(src, "function expert()") {
 				t.Errorf("expected expert code, got %q", src)
 			}
+			if gs.Signature == "" {
+				t.Error("expected non-empty signature for merged skill")
+			}
 			break
 		}
 	}
@@ -103,6 +108,8 @@ func TestReflectionEngine_ScanForHybridMerge(t *testing.T) {
 }
 
 func TestReflectionEngine_CrystallizeStepToSkill_Additive(t *testing.T) {
+	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	logDir := t.TempDir()
 
@@ -120,7 +127,7 @@ func TestReflectionEngine_CrystallizeStepToSkill_Additive(t *testing.T) {
 	}
 
 	mock := &MockHybridProvider{
-		response: "```lua\n-- additive extension\n```",
+		response: "```lua\n-- additive extension\n```\n```json\n{\"name\": \"addon\", \"description\": \"additive extension\", \"params\": [{\"name\": \"task\", \"type\": \"string\", \"desc\": \"task variant\"}]}\n```",
 	}
 	providers.GlobalRouter.Register("default", providerCfg, mock)
 	t.Cleanup(func() { providers.GlobalRouter.Deregister("default") })
@@ -160,10 +167,58 @@ func TestReflectionEngine_CrystallizeStepToSkill_Additive(t *testing.T) {
 	for _, gs := range es.GetGeneratedSkillsSnapshot() {
 		if gs.Description == "new task variant" && gs.Capability == "addon-test" {
 			found = true
+			if gs.Signature == "" {
+				t.Error("expected non-empty signature for crystallized skill")
+			}
+			if !strings.Contains(gs.Signature, "addon") {
+				t.Errorf("expected signature to contain 'addon', got %q", gs.Signature)
+			}
 			break
 		}
 	}
 	if !found {
 		t.Error("Skill from additive crystallization not found")
+	}
+}
+
+func TestExtractCodeBlock(t *testing.T) {
+	tests := []struct {
+		name  string
+		text  string
+		lang  string
+		want  string
+	}{
+		{
+			name: "lua block",
+			text: "```lua\nprint('hello')\n```\n```json\n{\"a\":1}\n```",
+			lang: "lua",
+			want: "print('hello')",
+		},
+		{
+			name: "json block",
+			text: "```lua\nprint('hello')\n```\n```json\n{\"a\":1}\n```",
+			lang: "json",
+			want: "{\"a\":1}",
+		},
+		{
+			name: "missing block",
+			text: "```lua\nprint('hello')\n```",
+			lang: "json",
+			want: "",
+		},
+		{
+			name: "old format single fence",
+			text: "```lua\nprint('hello')\n```",
+			lang: "lua",
+			want: "print('hello')",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractCodeBlock(tt.text, tt.lang)
+			if got != tt.want {
+				t.Errorf("extractCodeBlock(%q, %q) = %q, want %q", tt.text, tt.lang, got, tt.want)
+			}
+		})
 	}
 }

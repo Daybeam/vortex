@@ -48,15 +48,12 @@ func TestBuild_PrecedentsCappedAtTopN(t *testing.T) {
 		}
 	}
 
-	blocks, err := spawner.buildSystemPrompt(
+	blocks := buildSystemPromptForTest(t, spawner,
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		precedents, "do the task", "", "", "",
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("buildSystemPrompt: %v", err)
-	}
 
 	// Count how many precedent outcomes appear in the blocks.
 	foundCount := 0
@@ -89,15 +86,12 @@ func TestBuild_RoleInstructionCompressed(t *testing.T) {
 
 	role := &config.Role{ID: "r1", Name: "test", Instruction: longInstruction}
 
-	blocks, err := spawner.buildSystemPrompt(
+	blocks := buildSystemPromptForTest(t, spawner,
 		context.Background(), nil, role, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, nil, nil, false,
 		nil, "do the task", "", "", "",
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("buildSystemPrompt: %v", err)
-	}
 
 	// Find the role instruction block.
 	var roleBlock *schemas.ContentBlock
@@ -149,15 +143,12 @@ func TestBuild_TreePathSlidingWindow(t *testing.T) {
 	}
 	mergedContext := map[string]any{"path": path}
 
-	blocks, err := spawner.buildSystemPrompt(
+	blocks := buildSystemPromptForTest(t, spawner,
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "gpt-4o"}, []string{}, mergedContext, nil, false,
 		nil, "do the task", "", "", "",
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("buildSystemPrompt: %v", err)
-	}
 
 	// Find the tree path block.
 	var treeBlock *schemas.ContentBlock

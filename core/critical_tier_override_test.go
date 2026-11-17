@@ -39,9 +39,7 @@ func TestCriticalTierOverride_Default_Blocks(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Task: "deploy to production", Status: schemas.StepFailed}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-crit-default"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	s.addDecision(graph, step, schemas.DecisionStepFailed,
 		map[string]any{"root_cause": "test"}, []string{"skip", "abort"})
@@ -76,9 +74,7 @@ func TestCriticalTierOverride_Enabled_AutoResolves(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Task: "deploy to production", Status: schemas.StepFailed}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-crit-override"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	s.addDecision(graph, step, schemas.DecisionStepFailed,
 		map[string]any{"root_cause": "test"}, []string{"skip", "abort"})

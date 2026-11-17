@@ -410,7 +410,7 @@ func IsContextLimitError(err error) bool {
 // caller can emit exactly one event whether or not anything was dropped.
 // A silent no-op is indistinguishable from "the guard never ran" — that is
 // precisely how three previous keyword fixes (eval §8.48.7 / §9.3) shipped
-// without ever being exercised (铁律 51-3).
+// without ever being exercised (Iron Rule 51-3).
 type contextCompressResult struct {
 	Blocks    []schemas.ContentBlock
 	Before    int
@@ -436,7 +436,7 @@ const (
 // call's max_tokens, with a safety margin.
 //
 // The margin is not decoration. providers.EstimateTokens is known to UNDERSTATE
-// JSON/schema-heavy prompts by >=17.6% (铁律 15), so a request trimmed to fit
+// JSON/schema-heavy prompts by >=17.6% (Iron Rule 15), so a request trimmed to fit
 // "exactly" still 400s. 0.85 is the smallest margin that covers that measured
 // gap; tightening it needs a fresh measurement, not a guess.
 func (s *Spawner) contextInputBudget(pCfg *config.ProviderConfig, req *SpawnRequest) int {
@@ -460,7 +460,7 @@ func (s *Spawner) contextInputBudget(pCfg *config.ProviderConfig, req *SpawnRequ
 
 // estimateBlocksTokens sums the provider-facing estimate for every block.
 // Uses providers.EstimateTokens (CJK-aware) rather than len(text)/4 so the
-// budget check shares one unit with the rest of the engine (铁律 15).
+// budget check shares one unit with the rest of the engine (Iron Rule 15).
 func estimateBlocksTokens(blocks []schemas.ContentBlock) int {
 	total := 0
 	for i := range blocks {
@@ -488,7 +488,7 @@ func truncateBlockText(text string, keepChars int) string {
 // compressUserBlocksToBudget shrinks the conversation history so that its
 // estimated token count fits budgetTokens. It always returns a usable slice.
 //
-// History (铁律 51, 2026-10-27): the previous compressUserBlocks keyed on BLOCK
+// History (Iron Rule 51, 2026-10-27): the previous compressUserBlocks keyed on BLOCK
 // COUNT — `len(blocks) <= 10 ⇒ return nil` — and the caller treated nil as
 // "nothing to do". Two failures followed, both observed on aw19:
 //   - Squeeze collapsed userBlocks to a single block, so len == 1 and this
@@ -859,7 +859,12 @@ func (s *Spawner) resolveContextRefs(ctx context.Context, req *SpawnRequest) map
 // Extracted from spawner.go doSpawn during god-class split.
 func (s *Spawner) fetchDynamicContext(ctx context.Context, taskID, stepID string) map[string]any {
 	envContext := make(map[string]any)
-	for _, cp := range s.contextProviders {
+	// L-RACE-3 fix: copy contextProviders under RLock to synchronize with
+	// potential AddContextProvider calls.
+	s.interceptorsMu.RLock()
+	providers := s.contextProviders
+	s.interceptorsMu.RUnlock()
+	for _, cp := range providers {
 		if c, err := cp.FetchContext(ctx); err == nil {
 			envContext[cp.Name()] = c
 		} else {

@@ -71,6 +71,9 @@ func (es *ExperienceStore) PruneSkills() []string {
 		if skill.ParentID == "" {
 			continue
 		}
+		if len(skill.Guardrails) > 0 {
+			continue
+		}
 		key := fmt.Sprintf("%s:%s", skill.Capability, id)
 		sa, ok := es.SkillAffinities[key]
 		if !ok || sa.SampleCount < minSamplesToPrune {
@@ -177,6 +180,8 @@ func (es *ExperienceStore) QueryDecisionAdvice(ctx context.Context, decisionType
 	defer es.Mu.RUnlock()
 
 	choiceCounts := make(map[string]int)
+	proposerCounts := make(map[string]int)
+	deciderCounts := make(map[string]int)
 	var confSum float64
 	var confCount int
 	var latestTS time.Time
@@ -188,6 +193,12 @@ func (es *ExperienceStore) QueryDecisionAdvice(ctx context.Context, decisionType
 		}
 		found = true
 		choiceCounts[d.Choice]++
+		if d.Proposer != "" {
+			proposerCounts[d.Proposer]++
+		}
+		if d.Decider != "" {
+			deciderCounts[d.Decider]++
+		}
 		if d.FinalConfidence != nil {
 			confSum += *d.FinalConfidence
 			confCount++
@@ -215,6 +226,12 @@ func (es *ExperienceStore) QueryDecisionAdvice(ctx context.Context, decisionType
 		Choice:       bestChoice,
 		Resolved:     true,
 		Timestamp:    latestTS,
+	}
+	if proposerCounts != nil {
+		result.Proposer = mostCommon(proposerCounts)
+	}
+	if deciderCounts != nil {
+		result.Decider = mostCommon(deciderCounts)
 	}
 	if confCount > 0 {
 		avg := confSum / float64(confCount)
@@ -244,6 +261,9 @@ func (es *ExperienceStore) QuerySimilarPatterns(ctx context.Context, capabilitie
 	if N == 0 {
 		return nil
 	}
+
+	// audit H9: use cached BM25 corpus stats (termDocFreqs + avgdl) when
+	// patternTokensCache is valid, avoiding O(N) recomputation per query.
 	var totalLen float64
 	termDocFreqs := make(map[string]int)
 	// audit P-5: cache tokenized patterns to avoid O(N) re-tokenization on
@@ -260,8 +280,16 @@ func (es *ExperienceStore) QuerySimilarPatterns(ctx context.Context, capabilitie
 			}
 			totalLen += float64(docLen)
 		}
+		// Cache the freshly computed BM25 stats (audit H9).
+		es.bm25TermDocFreqsCache = termDocFreqs
+		es.bm25AvgdlCache = totalLen / float64(N)
+	} else if es.bm25TermDocFreqsCache != nil {
+		// Cache valid — use cached BM25 stats directly.
+		termDocFreqs = es.bm25TermDocFreqsCache
+		totalLen = es.bm25AvgdlCache * float64(N)
 	} else {
-		// Cache valid — derive termDocFreqs and totalLen from cached tokens.
+		// patternTokensCache valid but BM25 stats not cached yet — derive
+		// from cached tokens and cache for next time (audit H9).
 		for _, tokens := range es.patternTokensCache {
 			docLen := 0
 			for term, count := range tokens {
@@ -270,6 +298,8 @@ func (es *ExperienceStore) QuerySimilarPatterns(ctx context.Context, capabilitie
 			}
 			totalLen += float64(docLen)
 		}
+		es.bm25TermDocFreqsCache = termDocFreqs
+		es.bm25AvgdlCache = totalLen / float64(N)
 	}
 	avgdl := totalLen / float64(N)
 

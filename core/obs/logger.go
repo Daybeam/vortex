@@ -65,10 +65,10 @@ const (
 	EventToolPromoted            EventType = "tool_promoted"
 	EventHumanApprovalAttached   EventType = "human_approval_attached"
 	EventFallbackActivated       EventType = "fallback_activated"
-	// Context-compression events (铁律 51, 2026-10-27). These were string
+	// Context-compression events (Iron Rule 51, 2026-10-27). These were string
 	// literals at the call site, which violated the "event names are a schema"
-	// rule (铁律 29). The three legacy names keep their original PascalCase wire
-	// values so existing dashboards / judges do not silently break (铁律 24);
+	// rule (Iron Rule 29). The three legacy names keep their original PascalCase wire
+	// values so existing dashboards / judges do not silently break (Iron Rule 24);
 	// the new skipped event uses snake_case, which is the table convention.
 	EventContextCompressed           EventType = "EventContextCompressed"
 	EventContextCompressRetrySuccess EventType = "EventContextCompressRetrySuccess"
@@ -103,6 +103,12 @@ const (
 	// docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §3.4 and
 	// behavior contract B11.
 	EventIntentShiftBranch EventType = "intent_shift_branch"
+	// Command execution events (ADDED 2026-11-12): emitted by background
+	// run_command goroutines. Webhook routes must opt-in via trigger_on;
+	// default routes only cover task_completed/task_failed.
+	EventCommandStarted   EventType = "command_started"
+	EventCommandCompleted EventType = "command_completed"
+	EventCommandTimeout   EventType = "command_timeout"
 )
 
 type LogEvent struct {
@@ -123,6 +129,11 @@ type Logger struct {
 	wg       sync.WaitGroup
 	closed   bool
 	closedMu sync.RWMutex
+	// purgeStop lets Close drain the purge ticker without relying on the
+	// caller's ctx: main defers rootCancel after Close (LIFO), so a ctx-only
+	// ticker deadlocks wg.Wait.
+	purgeStop chan struct{}
+	purgeOnce sync.Once
 	System   *config.SystemSettings
 	// droppedEvents counts log events dropped because the channel was full
 	// (audit finding H6 — non-blocking send prevents deadlock under backpressure).
@@ -156,6 +167,7 @@ func NewLogger(logDir string, sys *config.SystemSettings) (*Logger, error) {
 		dirCache:                make(map[string]bool),
 		fileSizeCache:           make(map[string]int64),
 		maxFileSizeCacheEntries: defaultMaxFileSizeCacheEntries,
+		purgeStop:               make(chan struct{}),
 	}
 
 	// Purge old logs on startup (keep last 7 days)
@@ -256,6 +268,7 @@ func (l *Logger) Close() {
 	l.closed = true
 	close(l.ch)
 	l.closedMu.Unlock()
+	l.purgeOnce.Do(func() { close(l.purgeStop) })
 	l.wg.Wait()
 }
 
@@ -593,6 +606,37 @@ func SplitLines(data []byte) [][]byte {
 		lines = append(lines, data[start:])
 	}
 	return lines
+}
+
+// StartPurgeTicker launches a background goroutine that periodically purges
+// old log directories. The interval defaults to 24h. The retention period
+// defaults to 7 days (matching the startup purge). Both can be overridden via
+// SystemSettings. The goroutine is tracked by l.wg so Close() drains it.
+func (l *Logger) StartPurgeTicker(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+	daysToKeep := 7
+	if l.System != nil && l.System.LogRetentionDays > 0 {
+		daysToKeep = l.System.LogRetentionDays
+	}
+
+	l.wg.Add(1)
+	go func() {
+		defer l.wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-l.purgeStop:
+				return
+			case <-ticker.C:
+				l.PurgeLogs(daysToKeep)
+			}
+		}
+	}()
 }
 
 // PurgeLogs removes log directories older than daysToKeep.

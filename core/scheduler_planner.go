@@ -97,7 +97,7 @@ Respond with ONE JSON object and nothing else. No prose, no markdown fences.
       "allowed_tools": ["<exact tool name from the catalog below>", ...],
       "exit_criteria": "<optional: 'regex:<pattern>' or 'file:<path>' or 'json' or empty>",
       "deterministic_checks": [
-        { "type": "<one of file_exists|command_pass|plan_checkboxes|code_entities>", "params": { "<key>": "<value>" } }
+        { "type": "<one of file_exists|command_pass|plan_checkboxes|code_entities|read_coverage>", "params": { "<key>": "<value>" } }
       ]
     }
   ]

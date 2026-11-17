@@ -89,15 +89,16 @@ func TestDecisionGate_RiskTierCritical_NeverAutoResolves(t *testing.T) {
 func TestDecisionGate_RecentDecisions_RateLimit(t *testing.T) {
 	// Verify the rate limiting data structure works correctly.
 	s := &DirectedEngine{
-		recentDecisions: make(map[string]time.Time),
+		recentDecisions: make(map[string]map[string]time.Time),
 	}
-
-	key := "task1:step1"
 
 	// First decision — should be allowed.
 	s.recentDecisionsMu.Lock()
-	_, exists := s.recentDecisions[key]
-	s.recentDecisions[key] = time.Now()
+	if s.recentDecisions["task1"] == nil {
+		s.recentDecisions["task1"] = make(map[string]time.Time)
+	}
+	_, exists := s.recentDecisions["task1"]["step1"]
+	s.recentDecisions["task1"]["step1"] = time.Now()
 	s.recentDecisionsMu.Unlock()
 
 	if exists {
@@ -106,7 +107,7 @@ func TestDecisionGate_RecentDecisions_RateLimit(t *testing.T) {
 
 	// Second decision immediately — should be rate-limited.
 	s.recentDecisionsMu.Lock()
-	last := s.recentDecisions[key]
+	last := s.recentDecisions["task1"]["step1"]
 	rateLimited := time.Since(last) < 30*time.Second
 	s.recentDecisionsMu.Unlock()
 
@@ -117,19 +118,20 @@ func TestDecisionGate_RecentDecisions_RateLimit(t *testing.T) {
 
 func TestDecisionGate_RecentDecisions_AfterExpiry(t *testing.T) {
 	s := &DirectedEngine{
-		recentDecisions: make(map[string]time.Time),
+		recentDecisions: make(map[string]map[string]time.Time),
 	}
-
-	key := "task2:step2"
 
 	// Simulate a decision 31 seconds ago.
 	s.recentDecisionsMu.Lock()
-	s.recentDecisions[key] = time.Now().Add(-31 * time.Second)
+	if s.recentDecisions["task2"] == nil {
+		s.recentDecisions["task2"] = make(map[string]time.Time)
+	}
+	s.recentDecisions["task2"]["step2"] = time.Now().Add(-31 * time.Second)
 	s.recentDecisionsMu.Unlock()
 
 	// Should NOT be rate-limited after 30s.
 	s.recentDecisionsMu.Lock()
-	last := s.recentDecisions[key]
+	last := s.recentDecisions["task2"]["step2"]
 	rateLimited := time.Since(last) < 30*time.Second
 	s.recentDecisionsMu.Unlock()
 

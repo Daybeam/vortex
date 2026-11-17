@@ -147,7 +147,7 @@ func (p *AnthropicProvider) StreamComplete(ctx context.Context, req CompleteRequ
 			return nil, &RateLimitError{Msg: string(b), RetryAfter: parseRetryAfter(resp.Header)}
 		}
 		if resp.StatusCode == 400 {
-			return nil, &BadRequestError{Msg: string(b)}
+			return nil, classifyBadRequest(b)
 		}
 		return nil, &ProviderError{Msg: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(b))}
 	}
@@ -387,7 +387,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompleteRequest) (
 		return nil, &RateLimitError{Msg: string(respBody), RetryAfter: parseRetryAfter(headers)}
 	}
 	if status == 400 {
-		return nil, &BadRequestError{Msg: string(respBody)}
+		return nil, classifyBadRequest(respBody)
 	}
 	if status >= 400 {
 		return nil, &ProviderError{Msg: fmt.Sprintf("HTTP %d: %s", status, respBody)}
@@ -395,15 +395,11 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompleteRequest) (
 
 	var resp struct {
 		Content []struct {
-			Type  string `json:"type"`
-			Text  string `json:"text"`
-			Input struct {
-				ToolUse struct {
-					ID    string         `json:"id"`
-					Name  string         `json:"name"`
-					Input map[string]any `json:"input"`
-				} `json:"tool_use"`
-			} `json:"input"`
+			Type  string         `json:"type"`
+			Text  string         `json:"text"`
+			ID    string         `json:"id"`
+			Name  string         `json:"name"`
+			Input map[string]any `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
@@ -424,9 +420,9 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompleteRequest) (
 			text.WriteString(c.Text)
 		} else if c.Type == "tool_use" {
 			toolCalls = append(toolCalls, ToolCall{
-				CallID:    c.Input.ToolUse.ID,
-				Name:      c.Input.ToolUse.Name,
-				Arguments: c.Input.ToolUse.Input,
+				CallID:    c.ID,
+				Name:      c.Name,
+				Arguments: c.Input,
 			})
 		}
 	}

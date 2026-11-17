@@ -491,3 +491,51 @@ func TestSubmittedDependenciesReachStepDetail(t *testing.T) {
 		t.Errorf("s1 deps = %q, want none", deps["s1"])
 	}
 }
+
+// Regression test: a replay counted a run's stored artifacts but never said
+// which one a step produced, so the viewer could not open a step's deliverable.
+// The filename is the only reliable link — the step_completed line carries
+// SpawnResult.Ref, which is just "taskID:stepID" restated (asserted below), and
+// the asset path is not known until after that line is written.
+func TestStepResultRefComesFromItsArtifactFile(t *testing.T) {
+	root := t.TempDir()
+	const taskID = "task_ref00001"
+	writeArtifact(t, root, taskID, "s1.json")
+	writeArtifact(t, root, taskID, "s2_1730000000.json")
+	writeArtifact(t, root, taskID, "notes.json")
+	writeLogFile(t, root, "2026-10-30", taskID,
+		line(taskID, "task_submitted", "", 1000, `{"step_count":3}`),
+		line(taskID, "step_started", "s1", 1001, `{"role":"reader"}`),
+		line(taskID, "step_completed", "s1", 1002, `{"status":"ok"}`),
+		line(taskID, "step_started", "s2", 1003, `{"role":"analyst"}`),
+		line(taskID, "step_completed", "s2", 1004, `{"status":"ok","result_ref":"`+taskID+`:s2"}`),
+		line(taskID, "step_started", "s3", 1005, `{"role":"writer"}`),
+		line(taskID, "step_completed", "s3", 1006, `{"status":"ok"}`),
+	)
+
+	detail, err := NewLoader(filepath.Join(root, "logs"), filepath.Join(root, "tasks")).Detail(taskID)
+	if err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	refs := map[string]string{}
+	for _, step := range detail.Steps {
+		refs[step.ID] = step.ResultRef
+	}
+	if refs["s1"] != "s1.json" {
+		t.Errorf("s1 resultRef = %q, want the stored step output s1.json", refs["s1"])
+	}
+	if refs["s2"] != "s2_1730000000.json" {
+		t.Errorf("s2 resultRef = %q, want the side-loaded s2_1730000000.json", refs["s2"])
+	}
+	if refs["s3"] != "" {
+		t.Errorf("s3 resultRef = %q, want none when no artifact matches", refs["s3"])
+	}
+	if len(detail.Artifacts) != 3 {
+		t.Fatalf("artifacts = %d, want the run list unchanged at 3", len(detail.Artifacts))
+	}
+	for _, step := range detail.Steps {
+		if strings.Contains(step.ResultRef, taskID) {
+			t.Errorf("%s resultRef = %q, want a filename, not the telemetry taskID:stepID ref", step.ID, step.ResultRef)
+		}
+	}
+}

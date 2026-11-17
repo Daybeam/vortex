@@ -42,6 +42,21 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to ping sqlite db: %w", err)
 	}
 
+	// Backfill columns added to a CREATE TABLE IF NOT EXISTS whose table already
+	// exists on disk: the CREATE silently skips it, so the column never lands.
+	// This must precede runMigrations — idx_exp_nodes_domain lives inside that
+	// one multi-statement Exec, and its failure aborts the whole schema, making
+	// InitDB return nil and every entry point fall back to file mode with a nil
+	// task registry (measured on the live hub 2026-11-10). The best-effort block
+	// below runs after runMigrations, so it can only carry columns no index
+	// needs. Errors are ignored: on a fresh DB these tables do not exist yet and
+	// the CREATE defines the columns anyway.
+	_, _ = db.Exec(`ALTER TABLE experience_nodes ADD COLUMN domain TEXT`)
+	_, _ = db.Exec(`ALTER TABLE generated_skills ADD COLUMN token_cost_total INTEGER DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE generated_skills ADD COLUMN avg_latency_ms REAL DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE generated_skills ADD COLUMN metabolic_roi REAL DEFAULT 1.0`)
+	_, _ = db.Exec(`ALTER TABLE generated_skills ADD COLUMN skill_status TEXT DEFAULT 'active'`)
+
 	// Run schema migrations
 	if err := runMigrations(db); err != nil {
 		db.Close() // audit M8: prevent connection pool leak on migration failure
@@ -300,6 +315,7 @@ func runMigrations(db *sql.DB) error {
 		failure_mode  TEXT,
 		critique      TEXT,
 		confidence    REAL DEFAULT 0,
+		domain        TEXT,
 		source_text   TEXT,
 		embedding     BLOB,
 		embedding_model TEXT,
@@ -308,6 +324,7 @@ func runMigrations(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_exp_nodes_task ON experience_nodes(task_id);
 	CREATE INDEX IF NOT EXISTS idx_exp_nodes_capability ON experience_nodes(capability);
 	CREATE INDEX IF NOT EXISTS idx_exp_nodes_outcome ON experience_nodes(outcome);
+	CREATE INDEX IF NOT EXISTS idx_exp_nodes_domain ON experience_nodes(domain);
 
 	CREATE TABLE IF NOT EXISTS experience_edges (
 		source_id TEXT NOT NULL,
@@ -340,6 +357,31 @@ func runMigrations(db *sql.DB) error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
 	CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
+
+	-- Chat outbox (ADDED 2026-11-07): durable outbound notifications.
+	-- A delegated task can finish in a hub that does not hold the Telegram bot
+	-- token, and a notification must survive a restart of the hub that does.
+	-- Rows are handed out with the same guarded-UPDATE claim idiom as
+	-- task_steps (SQLiteTaskBackend.Claim), so several hubs -- processes on one
+	-- host, pods on k3s -- can share this table without delivering twice; see
+	-- store.IChatOutbox. claim_expires_at is unix seconds, not a DATETIME, so
+	-- lease comparisons stay numeric on both sides.
+	CREATE TABLE IF NOT EXISTS chat_outbox (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id       TEXT NOT NULL DEFAULT '',
+		kind             TEXT NOT NULL,
+		dedupe_key       TEXT NOT NULL UNIQUE,
+		text             TEXT NOT NULL,
+		meta_json        TEXT NOT NULL DEFAULT '',
+		created_at       DATETIME,
+		status           TEXT NOT NULL DEFAULT 'pending', -- pending | claimed | delivered | dropped
+		claim_holder     TEXT NOT NULL DEFAULT '',
+		claim_expires_at INTEGER NOT NULL DEFAULT 0,
+		delivered_at     DATETIME,
+		attempts         INTEGER NOT NULL DEFAULT 0,
+		last_error       TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX IF NOT EXISTS idx_chat_outbox_claimable ON chat_outbox(status, claim_expires_at, id);
 
 	-- P7 Promotion Audit Log (ADDED 2026-09-15 for A31 DB collapse)
 	CREATE TABLE IF NOT EXISTS promotion_audit (

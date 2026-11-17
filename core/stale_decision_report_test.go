@@ -12,9 +12,9 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-// Regression tests for Q5-5 (answered 2026-11-06): 「step_failed 等人裁决的 24 小时
-// 判"已陈旧"，… 到期只新增一个信号，在 /tasks 和 get_task_status 里显示，不自动
-// abort」.
+// Regression tests for Q5-5 (answered 2026-11-06): "A step_failed awaiting human
+// decision is marked 'stale' after 24 hours; on expiry only a signal is added,
+// shown in /tasks and get_task_status, without auto-abort".
 //
 // The delegation half (30 minutes) is pinned by delegation_answer_timeout_test.go.
 // These tests cover the second window: a failed step whose decision nobody has
@@ -62,7 +62,7 @@ func TestStaleDecisionReport_ReportsPastDefaultWindow(t *testing.T) {
 	s, _ := newAnswerTestEngine(t)
 	taskID := "q55_default_window"
 	graph := newFailedDecisionGraph(taskID, 25*time.Hour)
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	report := staleReport(t, mustStatus(t, s, taskID))
 	if report == nil {
@@ -104,14 +104,14 @@ func TestStaleDecisionReport_ReportsPastDefaultWindow(t *testing.T) {
 func TestStaleDecisionReport_SilentInsideWindow(t *testing.T) {
 	s, _ := newAnswerTestEngine(t)
 	taskID := "q55_inside_window"
-	s.graphs[taskID] = newFailedDecisionGraph(taskID, 23*time.Hour)
+	injectTestGraph(t, s, newFailedDecisionGraph(taskID, 23*time.Hour))
 
 	if report := staleReport(t, mustStatus(t, s, taskID)); report != nil {
 		t.Errorf("23-hour step_failed reported as stale: %+v", report)
 	}
 }
 
-// TestStaleDecisionReport_Configurable pins "两个值都做成配置项": the override
+// TestStaleDecisionReport_Configurable pins "both values made configurable": the override
 // sets the window, 0/negative turns it off, and nil keeps 24h.
 func TestStaleDecisionReport_Configurable(t *testing.T) {
 	cases := []struct {
@@ -132,7 +132,7 @@ func TestStaleDecisionReport_Configurable(t *testing.T) {
 			s, _ := newAnswerTestEngine(t)
 			s.registry.System.DecisionStaleTimeoutSeconds = tc.setting
 			taskID := "q55_" + tc.name
-			s.graphs[taskID] = newFailedDecisionGraph(taskID, tc.waiting)
+			injectTestGraph(t, s, newFailedDecisionGraph(taskID, tc.waiting))
 
 			report := staleReport(t, mustStatus(t, s, taskID))
 			if !tc.wantOK {
@@ -162,7 +162,7 @@ func TestStaleDecisionReport_OnlyStepFailuresAreReported(t *testing.T) {
 		{ID: "dec_deleg", StepID: "s1", Type: schemas.DecisionDelegationRequired, Created: time.Now().Add(-3 * 24 * time.Hour)},
 		{ID: "dec_cap", StepID: "s1", Type: schemas.DecisionCapabilityRequired, Created: time.Now().Add(-3 * 24 * time.Hour)},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	status := mustStatus(t, s, taskID)
 	if report := staleReport(t, status); report != nil {
@@ -182,7 +182,7 @@ func TestStaleDecisionReport_SkipsZeroCreated(t *testing.T) {
 	taskID := "q55_zero_created"
 	graph := newFailedDecisionGraph(taskID, time.Minute)
 	graph.PendingDecisions[0].Created = time.Time{}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	if report := staleReport(t, mustStatus(t, s, taskID)); report != nil {
 		t.Errorf("zero Created reported as stale: %+v", report)
@@ -199,7 +199,7 @@ func TestStaleDecisionReport_NamesTheOldestOfMany(t *testing.T) {
 		ID: "dec_newer", StepID: "s2", Type: schemas.DecisionStepFailed,
 		Created: time.Now().Add(-25 * time.Hour),
 	})
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	report := staleReport(t, mustStatus(t, s, taskID))
 	if report == nil {
@@ -226,7 +226,7 @@ func TestStaleDecisionReport_BothWindowsAreIndependent(t *testing.T) {
 		ID: "dec_deleg", StepID: "s2", Type: schemas.DecisionDelegationRequired,
 		Created: time.Now().Add(-31 * time.Minute),
 	})
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 
 	status := mustStatus(t, s, taskID)
 	wait := waitReport(t, status)
@@ -250,7 +250,7 @@ func TestStaleDecisionReport_BothWindowsAreIndependent(t *testing.T) {
 func TestStaleDecisionReport_WaitTaskCarriesIt(t *testing.T) {
 	s, _ := newAnswerTestEngine(t)
 	taskID := "q55_wait_task"
-	s.graphs[taskID] = newFailedDecisionGraph(taskID, 25*time.Hour)
+	injectTestGraph(t, s, newFailedDecisionGraph(taskID, 25*time.Hour))
 	s.doneChans[taskID] = make(chan struct{})
 
 	status, ok := s.WaitTask(context.Background(), taskID, time.Millisecond)
@@ -269,14 +269,15 @@ func TestListGraphsCarriesStalenessSignals(t *testing.T) {
 	s, outputBase := newAnswerTestEngine(t)
 
 	staleID := "q55_list_stale"
-	s.graphs[staleID] = newFailedDecisionGraph(staleID, 25*time.Hour)
-	s.graphs[staleID].PendingDecisions = append(s.graphs[staleID].PendingDecisions, &schemas.Decision{
+	staleGraph := newFailedDecisionGraph(staleID, 25*time.Hour)
+	staleGraph.PendingDecisions = append(staleGraph.PendingDecisions, &schemas.Decision{
 		ID: "dec_deleg", StepID: "s2", Type: schemas.DecisionDelegationRequired,
 		Created: time.Now().Add(-31 * time.Minute),
 	})
+	injectTestGraph(t, s, staleGraph)
 
 	freshID := "q55_list_fresh"
-	s.graphs[freshID] = newFailedDecisionGraph(freshID, time.Minute)
+	injectTestGraph(t, s, newFailedDecisionGraph(freshID, time.Minute))
 
 	// The disk half: a manifest not in s.graphs, still carrying a stale failure.
 	diskID := "q55_list_disk"

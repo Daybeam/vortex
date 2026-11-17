@@ -69,9 +69,7 @@ func TestNonInteractive_AutoResolvesDecision(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-ni-1"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// RequestAutonomousAbort creates an autonomous_abort_requested decision
 	// (options confirm_abort/continue). NonInteractive should auto-pick
@@ -118,9 +116,7 @@ func TestNonInteractive_Disabled_StillBlocks(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-ni-2"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	s.RequestAutonomousAbort("task-ni-2", "s1", FailureClassCostOverrun, "should block")
 

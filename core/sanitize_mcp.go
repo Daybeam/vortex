@@ -2,6 +2,7 @@ package core
 
 import (
 	"log/slog"
+	"reflect"
 	"strings"
 	"unicode"
 )
@@ -55,4 +56,50 @@ func sanitizeMCPToolField(s, mcpID, field string) string {
 			"mcp", mcpID, "field", field)
 	}
 	return clean
+}
+
+// SanitizeMCPToolSchema recursively strips invisible Unicode from every string
+// leaf in an input schema (title, description, enum values, default, property
+// keys, examples). Returns a deep-copied schema; the input is not mutated.
+func SanitizeMCPToolSchema(schema map[string]any) map[string]any {
+	out := make(map[string]any, len(schema))
+	for k, v := range schema {
+		out[SanitizeMCPToolText(k)] = sanitizeMCPToolValue(v)
+	}
+	return out
+}
+
+func sanitizeMCPToolValue(v any) any {
+	switch tv := v.(type) {
+	case string:
+		return SanitizeMCPToolText(tv)
+	case map[string]any:
+		return SanitizeMCPToolSchema(tv)
+	case []any:
+		out := make([]any, len(tv))
+		for i, e := range tv {
+			out[i] = sanitizeMCPToolValue(e)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// VerifyApprovalFidelity checks whether raw MCP tool metadata contains any
+// invisible Unicode characters. Returns true if the raw strings are clean
+// (sanitization is a no-op), false if concealment was detected (fail-closed:
+// the tool should be rejected, not silently stripped).
+//
+// See MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.5.
+func VerifyApprovalFidelity(rawName, rawDesc string) bool {
+	return SanitizeMCPToolText(rawName) == rawName &&
+		SanitizeMCPToolText(rawDesc) == rawDesc
+}
+
+// VerifySchemaFidelity checks whether a raw input schema contains any invisible
+// Unicode characters in its string leaves (keys, values, enum elements).
+// Returns true if the schema is clean, false if concealment was detected.
+func VerifySchemaFidelity(schema map[string]any) bool {
+	return reflect.DeepEqual(SanitizeMCPToolSchema(schema), schema)
 }

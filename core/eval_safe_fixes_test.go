@@ -188,7 +188,7 @@ func TestIsContextLimitError(t *testing.T) {
 // Verifies the compression contract: keep the first 2 and last 6 blocks, insert
 // a compression marker, and DROP nothing when the history already fits.
 //
-// CONTRACT CHANGED 2026-10-27 (铁律 51): the old function returned nil unless
+// CONTRACT CHANGED 2026-10-27 (Iron Rule 51): the old function returned nil unless
 // len(blocks) > 10 and the caller read nil as "nothing to do". Squeeze collapsed
 // userBlocks to a single block, so the guard returned nil on every context-limit
 // 400 and the step died silently. The old assertion "5 blocks => nil" was

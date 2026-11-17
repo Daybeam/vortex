@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,7 +17,6 @@ import (
 //
 // Design: docs/plan/STEP_PLAN_MODE_DESIGN.md §13.7 (item #18, Intrect-io CostTracker).
 type CostTracker struct {
-	mu sync.Mutex
 	db *sql.DB
 }
 
@@ -78,9 +76,10 @@ func (ct *CostTracker) Record(model, taskID, stepID string, inputTokens, outputT
 	if ct == nil || ct.db == nil {
 		return nil
 	}
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // audit P-LOW-3: prevent indefinite hang on slow DB
+	// No mutex: SQLite WAL mode + busy_timeout(5000) handles concurrent writes.
+	// The mutex previously serialized all Record/GetTotalSpend calls, making
+	// cost tracking a bottleneck under high task throughput.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := ct.db.ExecContext(ctx,
 		`INSERT INTO cost_records (ts, model, task_id, step_id, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -94,9 +93,8 @@ func (ct *CostTracker) GetTotalSpend() (map[string]int, error) {
 	if ct == nil || ct.db == nil {
 		return nil, nil
 	}
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // audit P-LOW-3: prevent indefinite hang on slow DB
+	// No mutex: SQLite WAL mode handles concurrent read/write.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	rows, err := ct.db.QueryContext(ctx, `SELECT model, SUM(input_tokens + output_tokens) FROM cost_records GROUP BY model`)
 	if err != nil {

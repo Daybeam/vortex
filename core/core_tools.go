@@ -185,6 +185,69 @@ func handleBatchReplace(args map[string]any, resolve func(string) (string, error
 	return result.Summary, nil
 }
 
+// pathResolver resolves relative and absolute paths within the allowed
+// task/session directories. Extracted from HandleCoreTool closures to keep
+// that function under the 150-line size limit.
+type pathResolver struct {
+	validator *SafePathValidator
+	taskDir   string
+}
+
+// resolve maps a relative or absolute path to a full filesystem path.
+// Relative paths resolve to SessionRoot (if available) or taskDir.
+func (pr *pathResolver) resolve(rel string) (string, error) {
+	if filepath.IsAbs(rel) {
+		if pr.validator != nil && pr.validator.IsAllowed(rel) {
+			return rel, nil
+		}
+		return "", fmt.Errorf("absolute path %q is outside allowed directories (allowed: %s)", rel, allowedDirsStr(pr.validator, pr.taskDir))
+	}
+	if pr.validator != nil && pr.validator.SessionRoot != "" {
+		sessionPath, err := pr.validator.Resolve("session", rel)
+		if err == nil {
+			return sessionPath, nil
+		}
+	}
+	if pr.validator != nil {
+		return pr.validator.Resolve("task", rel)
+	}
+	return safeJoin(pr.taskDir, rel)
+}
+
+// resolveExisting finds an existing file, searching SessionRoot first, then
+// taskDir. Returns an error if the file does not exist in either location.
+func (pr *pathResolver) resolveExisting(rel string) (string, error) {
+	if filepath.IsAbs(rel) {
+		if pr.validator != nil && pr.validator.IsAllowed(rel) {
+			return rel, nil
+		}
+		return "", fmt.Errorf("absolute path %q is outside allowed directories (allowed: %s)", rel, allowedDirsStr(pr.validator, pr.taskDir))
+	}
+	if pr.validator != nil && pr.validator.SessionRoot != "" {
+		sessionPath, err := pr.validator.Resolve("session", rel)
+		if err == nil {
+			if _, statErr := os.Stat(sessionPath); statErr == nil {
+				return sessionPath, nil
+			}
+		}
+	}
+	var fallback string
+	if pr.validator != nil {
+		fallback, _ = pr.validator.Resolve("task", rel)
+	} else {
+		fallback, _ = safeJoin(pr.taskDir, rel)
+	}
+	if fallback != "" {
+		if _, statErr := os.Stat(fallback); statErr == nil {
+			return fallback, nil
+		}
+	}
+	if pr.validator != nil && pr.validator.SessionRoot != "" {
+		return "", fmt.Errorf("file not found: %s (searched session and task dirs)", rel)
+	}
+	return "", fmt.Errorf("file not found: %s", rel)
+}
+
 // HandleCoreTool executes a core tool by name. ctx is used for cancellation
 // (e.g. execute_code subprocess timeout derives from ctx).
 func HandleCoreTool(ctx context.Context, name string, args map[string]any, outputBase, taskID string, validators ...*SafePathValidator) (string, error) {
@@ -194,60 +257,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		validator = validators[0]
 	}
 
-	resolvePath := func(rel string) (string, error) {
-		if filepath.IsAbs(rel) {
-			// Absolute path: check if within allowed roots.
-			if validator != nil && validator.IsAllowed(rel) {
-				return rel, nil
-			}
-			return "", fmt.Errorf("absolute path %q is outside allowed directories (allowed: %s)", rel, allowedDirsStr(validator, taskDir))
-		}
-		if validator != nil && validator.SessionRoot != "" {
-			// Prefer SessionRoot (harness-bench workspace) when available.
-			sessionPath, err := validator.Resolve("session", rel)
-			if err == nil {
-				return sessionPath, nil
-			}
-		}
-		// Fall back to taskDir (backward compatible).
-		if validator != nil {
-			return validator.Resolve("task", rel)
-		}
-		return safeJoin(taskDir, rel)
-	}
-	// resolveExistingPath finds an existing file (SessionRoot first, then taskDir).
-	resolveExistingPath := func(rel string) (string, error) {
-		if filepath.IsAbs(rel) {
-			// Absolute path: check if within allowed roots.
-			if validator != nil && validator.IsAllowed(rel) {
-				return rel, nil
-			}
-			return "", fmt.Errorf("absolute path %q is outside allowed directories (allowed: %s)", rel, allowedDirsStr(validator, taskDir))
-		}
-		if validator != nil && validator.SessionRoot != "" {
-			sessionPath, err := validator.Resolve("session", rel)
-			if err == nil {
-				if _, statErr := os.Stat(sessionPath); statErr == nil {
-					return sessionPath, nil
-				}
-			}
-		}
-		var fallback string
-		if validator != nil {
-			fallback, _ = validator.Resolve("task", rel)
-		} else {
-			fallback, _ = safeJoin(taskDir, rel)
-		}
-		if fallback != "" {
-			if _, statErr := os.Stat(fallback); statErr == nil {
-				return fallback, nil
-			}
-		}
-		if validator != nil && validator.SessionRoot != "" {
-			return "", fmt.Errorf("file not found: %s (searched session and task dirs)", rel)
-		}
-		return "", fmt.Errorf("file not found: %s", rel)
-	}
+	pr := &pathResolver{validator: validator, taskDir: taskDir}
 
 	switch name {
 	case "write_file":
@@ -267,7 +277,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 			landing = writeLandingNote(path, corrected, validator.SessionRoot)
 			path = corrected
 		}
-		fullPath, err := resolvePath(path)
+		fullPath, err := pr.resolve(path)
 		if err != nil {
 			return "", err
 		}
@@ -296,7 +306,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 			return "", fmt.Errorf("path is required")
 		}
 		path = ResolveActiveSkillPath(ctx, path)
-		fullPath, err := resolveExistingPath(path)
+		fullPath, err := pr.resolveExisting(path)
 		if err != nil {
 			return "", err
 		}
@@ -316,7 +326,7 @@ func HandleCoreTool(ctx context.Context, name string, args map[string]any, outpu
 		return string(gated), nil
 
 	case "batch_replace":
-		return handleBatchReplace(args, resolveExistingPath)
+		return handleBatchReplace(args, pr.resolveExisting)
 
 	case "execute_code":
 		code, _ := args["code"].(string)
@@ -459,15 +469,28 @@ func executeCode(ctx context.Context, code, lang, cwd string) (map[string]any, e
 	execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	var resolvedPath string
 	for _, c := range candidates {
 		if path, err := exec.LookPath(c); err == nil {
-			cmd = exec.CommandContext(execCtx, path, "-c", code)
+			resolvedPath = path
 			break
 		}
 	}
-	if cmd == nil {
+	if resolvedPath == "" {
 		return nil, fmt.Errorf("%s runtime not found on PATH", lang)
 	}
+
+	// Command guard: inspect code before execution (closes bypass path 1 —
+	// execute_code was previously completely unguarded).
+	guard := CheckAll(resolvedPath, []string{"-c", code}, code)
+	if guard.Block {
+		return nil, fmt.Errorf("blocked by command guard: %s", guard.Message)
+	}
+	if guard.RewrittenBody != "" {
+		code = guard.RewrittenBody
+	}
+
+	cmd = exec.CommandContext(execCtx, resolvedPath, "-c", code)
 
 	// Set working directory so the model can use relative paths.
 	if cwd != "" {

@@ -11,9 +11,9 @@ import (
 //
 // Option A would have made the engine reject a handover whose artifacts are
 // incomplete and spend the parent's retry budget on it. The user declined
-// (2026-11-04, "Q0-1 选 B（只观测）"), so this function only measures. It is the
+// (2026-11-04, "Q0-1 chose B (observe only)"), so this function only measures. It is the
 // other half of that same answer: observation needs a declaration channel, which
-// is why Q1-1 came first ("A 是 B 的前提").
+// is why Q1-1 came first ("A is a prerequisite for B").
 //
 // Why the shape half rides along with present/missing: chat_harness.go's own
 // comment on declaredFields records 9 of 35 harness-bench failures whose
@@ -33,9 +33,16 @@ func (h *ChatHarness) contractObservation() string {
 	// which says nothing about this run (see chat_harness.go:1080-1086). "na" keeps
 	// that from reading as present=0, i.e. "the run produced nothing".
 	if h.SessionRoot == "" || len(h.declaredArtifacts) == 0 {
-		return "contract_present=na contract_missing=na contract_defects=na"
+		return "contract_present=na contract_missing=na contract_defects=na checks_armed=na"
 	}
 	present, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, h.declaredArtifacts)
 	defects := len(core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields))
-	return fmt.Sprintf("contract_present=%d contract_missing=%d contract_defects=%d", present, missing, defects)
+	// checks_armed, not "checks passed". `contract_defects` above is the TYPE
+	// layer only: it counts "the file parses", never "the file does what the task
+	// asked", so it is 0 on a run whose SQL cannot execute. Without this field a
+	// reader cannot tell that run apart from one where no check was wired at all
+	// (→226, RESULT §33.3) — the per-check outcome now rides in the
+	// `completion_check` events.
+	return fmt.Sprintf("contract_present=%d contract_missing=%d contract_defects=%d checks_armed=%d",
+		present, missing, defects, len(h.armedCompletionChecks()))
 }

@@ -37,6 +37,7 @@ func ClearCache() {
 	mu.Unlock()
 	GlobalRouter.mu.Lock()
 	GlobalRouter.slots = make(map[string]*ProviderSlot)
+	GlobalRouter.poolIndex = make(map[string][]*ProviderSlot)
 	GlobalRouter.mu.Unlock()
 }
 

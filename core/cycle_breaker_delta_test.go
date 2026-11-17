@@ -345,9 +345,7 @@ func TestRetryClearsDeltaBacktrackState(t *testing.T) {
 		}},
 	}
 
-	s.Mu.Lock()
-	s.graphs["task-retry-delta"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// User chooses "retry".
 	if err := s.SubmitDecision("task-retry-delta", "dec-1", "retry"); err != nil {
@@ -409,9 +407,7 @@ func TestRefineAndRetryClearsPreviousOutputSummary(t *testing.T) {
 		}},
 	}
 
-	s.Mu.Lock()
-	s.graphs["task-refine-delta"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	if err := s.SubmitDecision("task-refine-delta", "dec-1", "refine_and_retry"); err != nil {
 		t.Fatalf("SubmitDecision failed: %v", err)

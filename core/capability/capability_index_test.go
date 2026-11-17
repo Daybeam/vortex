@@ -64,7 +64,7 @@ func TestCapabilityIndex_SingleCharTokensDropped(t *testing.T) {
 // UTF-8, so even single Chinese chars (3 bytes) pass len >= 2.
 //
 // This also documents that the design doc's claim about Chinese 2-char words
-// being dropped by len>=3 was incorrect — "行情" is 6 bytes, always passed.
+// being dropped by len>=3 was incorrect — a 2-char CJK word is 6 bytes, always passed.
 func TestCapabilityIndex_ChineseTokensPreserved(t *testing.T) {
 	reg := &config.Registry{
 		Skills: map[string]*config.Skill{

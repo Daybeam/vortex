@@ -24,6 +24,7 @@ import (
 	"github.com/daybeam/vortex/core/jit"
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/acp"
+	"github.com/daybeam/vortex/pkg/api"
 	"github.com/daybeam/vortex/pkg/featureflags"
 	"github.com/daybeam/vortex/pkg/registry"
 	"github.com/daybeam/vortex/pkg/runenv"
@@ -38,18 +39,8 @@ import (
 	"github.com/daybeam/vortex/pkg/telemetry"
 )
 
-func main() {
-	mode := flag.String("mode", "hub", "run mode: hub | worker")
-	execTool := flag.String("exec", "", "one-off tool execution (e.g., orchestrator_discover)")
-	execArgs := flag.String("args", "{}", "JSON arguments for the tool")
-	execFile := flag.String("file", "", "JSON file containing arguments for the tool")
-	configFlag := flag.String("c", "", "path to config file (overrides VORTEX_CONFIG env var and defaults)")
-	flag.Parse()
-
-	// ── Resolve paths ──────────────────────────────────────────────────────
-	// VORTEX_ROOT pins the data root for multi-tenant deployment (§13.6);
-	// unset → exe-dir heuristic with cwd fallback (backward compatible).
-	root := runenv.ResolveDataRoot(func() string {
+func resolveStartupPaths(configFlag string) (root, configPath, outputBase, tmpBase, logDir, expDir, schedulePath string) {
+	root = runenv.ResolveDataRoot(func() string {
 		exe, _ := os.Executable()
 		r := filepath.Dir(exe)
 		if _, err := os.Stat(filepath.Join(r, "config.json")); err != nil {
@@ -58,9 +49,9 @@ func main() {
 		return r
 	})
 
-	configPath := filepath.Join(root, "config.json")
-	if *configFlag != "" {
-		configPath = *configFlag
+	configPath = filepath.Join(root, "config.json")
+	if configFlag != "" {
+		configPath = configFlag
 	} else if envConfig := os.Getenv("VORTEX_CONFIG"); envConfig != "" {
 		configPath = envConfig
 	} else {
@@ -69,11 +60,23 @@ func main() {
 			configPath = osConfig
 		}
 	}
-	outputBase := filepath.Join(root, "outputs")
-	tmpBase := filepath.Join(root, "tmp")
-	logDir := runenv.LogsDir(root)
-	expDir := filepath.Join(root, "experience")
-	schedulePath := filepath.Join(expDir, "schedules.json")
+	outputBase = filepath.Join(root, "outputs")
+	tmpBase = filepath.Join(root, "tmp")
+	logDir = runenv.LogsDir(root)
+	expDir = filepath.Join(root, "experience")
+	schedulePath = filepath.Join(expDir, "schedules.json")
+	return root, configPath, outputBase, tmpBase, logDir, expDir, schedulePath
+}
+
+func main() {
+	mode := flag.String("mode", "hub", "run mode: hub | worker")
+	execTool := flag.String("exec", "", "one-off tool execution (e.g., orchestrator_discover)")
+	execArgs := flag.String("args", "{}", "JSON arguments for the tool")
+	execFile := flag.String("file", "", "JSON file containing arguments for the tool")
+	configFlag := flag.String("c", "", "path to config file (overrides VORTEX_CONFIG env var and defaults)")
+	flag.Parse()
+
+	root, configPath, outputBase, tmpBase, logDir, expDir, schedulePath := resolveStartupPaths(*configFlag)
 
 	// ── Load Environment ──────────────────────────────────────────────────
 	loadDotEnv(filepath.Join(root, ".env"))
@@ -119,6 +122,22 @@ func main() {
 		log.Fatalf("failed to init logger: %v", err)
 	}
 	defer logger.Close()
+
+	logger.StartPurgeTicker(rootCtx, 24*time.Hour)
+
+	rotWriter, rwErr := obs.NewRotatingWriter(logDir,
+		reg.System.MaxLogSizeMB,
+		reg.System.LogRetentionDays,
+		reg.System.LogTotalSizeCapMB)
+	if rwErr != nil {
+		log.Printf("[warning] failed to init rotating stderr capture: %v (continuing without)", rwErr)
+	} else {
+		defer rotWriter.Close()
+		log.SetOutput(rotWriter)
+		restoreStderr := rotWriter.StartStderrCapture()
+		defer restoreStderr()
+		fmt.Fprintln(rotWriter, "[vortex] stderr capture enabled")
+	}
 
 	// ── Runtime DB (SQLite) ───────────────────────────────────────────────
 	dbPath := getenv("VORTEX_DB_PATH", filepath.Join(root, "orchestrator_runtime.db"))
@@ -243,6 +262,7 @@ func runExec(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase
 	modelRegistry := registry.NewModelRegistry()
 	scheduler.WireCapabilityRouting(capProfileStore, modelRegistry)
 	scheduler.WireHooks(reg.System.Hooks, reg.ExternalRuntimes)
+	core.RegisterExternalGuards(reg.System.CommandGuards, reg.ExternalRuntimes)
 
 	scheduler.JITSessions = jit.NewJITSessionManager(reg, filepath.Join(root, "scripts"))
 	scheduler.SetTaskRegistry(s.TaskRegistry)
@@ -367,6 +387,14 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 	syncer := core.NewCookbookSyncer(reg, loader, logger)
 	syncer.Start()
 	defer syncer.Stop()
+
+	// ── Discovery Syncer ─────────────────────────────────────────────────
+	discoverySyncer := core.NewDiscoverySyncer(reg, loader, logger)
+	if discoverySyncer.SourceCount() > 0 {
+		discoverySyncer.Start()
+		defer discoverySyncer.Stop()
+		log.Printf("[discovery] %d source(s) configured, syncer started", discoverySyncer.SourceCount())
+	}
 
 	// ── Signal Field ──────────────────────────────────────────────────────
 	sf := core.NewSignalField(0.95, 10*time.Second)
@@ -500,6 +528,11 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 	app.InitArchive(outputBase)
 	defer app.StopArchive() // audit M12: stop pruning goroutine on shutdown
 
+	if wh := api.WireTaskWebhook(scheduler, reg.System.Notifications.Routes); wh != nil {
+		defer wh()
+		fmt.Fprintln(os.Stderr, "[vortex] task webhook callback enabled")
+	}
+
 	// Budget Gate: auto-suspend tasks when token usage exceeds configured
 	// thresholds. No-op unless budget_gate.enabled is set in config.json.
 	bg := core.NewBudgetGate(reg.System.BudgetGate, scheduler)
@@ -509,7 +542,7 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 	}
 	app.BudgetGate = bg
 	app.CostTracker = ct
-	defer app.WireQualityTracker()() // design §2.4 方案 D: quality trend observability
+	defer app.WireQualityTracker()() // design §2.4 scheme D: quality trend observability
 	if err := app.SetupSubsystems(mcpServer); err != nil {
 		log.Fatalf("failed to init subsystems: %v", err)
 	}

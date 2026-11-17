@@ -18,9 +18,9 @@ import (
 	"github.com/daybeam/vortex/store"
 )
 
-// PREREG-CTX51 (铁律 51 的四条修法). Deterministic, no Kaggle, no network.
+// PREREG-CTX51 (the four remedies of Iron Rule 51). Deterministic, no Kaggle, no network.
 //
-// D1 块结构守恒 / D2 预算裁剪 / D3 事件可观测 / D4 闸门算入 MaxTokens.
+// D1 block structure conservation / D2 budget trimming / D3 event observability / D4 gate counts toward MaxTokens.
 
 // ---------------------------------------------------------------------------
 // stub provider
@@ -91,7 +91,7 @@ func (p *ctx51Stub) stats() (calls, userBlocks, sysBlocks int) {
 }
 
 // ---------------------------------------------------------------------------
-// D1 — Squeeze must preserve block granularity (铁律 51-1)
+// D1 — Squeeze must preserve block granularity (Iron Rule 51-1)
 // ---------------------------------------------------------------------------
 
 func TestCTX51_D1_SqueezePreservesBlockStructure(t *testing.T) {
@@ -243,7 +243,7 @@ func TestCTX51_D2_BudgetCompression(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// D4 — Audit must account for max_tokens (铁律 51-4)
+// D4 — Audit must account for max_tokens (Iron Rule 51-4)
 // ---------------------------------------------------------------------------
 
 func TestCTX51_D4_AuditCountsMaxTokens(t *testing.T) {
@@ -337,7 +337,7 @@ func TestCTX51_D4_AuditCountsMaxTokens(t *testing.T) {
 		}
 	})
 
-	// Mutation guard (D4's own 反例): with MaxTokens dropped the A case must NOT
+	// Mutation guard (D4's own counter-example): with MaxTokens dropped the A case must NOT
 	// be flagged — that is the aw19 bug reproduced.
 	t.Run("mutation_zero_max_tokens_does_not_fire", func(t *testing.T) {
 		stub := &ctx51Stub{name: "ctx51-openai"}
@@ -355,7 +355,7 @@ func TestCTX51_D4_AuditCountsMaxTokens(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// D3 — exactly one compression event per context-limit error (铁律 51-3)
+// D3 — exactly one compression event per context-limit error (Iron Rule 51-3)
 // ---------------------------------------------------------------------------
 
 // realLlamaContextLimit is the exact shape observed on aw19 (b3, turn 50).

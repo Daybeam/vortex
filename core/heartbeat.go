@@ -20,10 +20,10 @@ const (
 // an agent's response text. When Action is HeartbeatNone, the response is a
 // normal turn — proceed with the existing spawner flow.
 //
-// Protocol tags (VCP-inspired, see docs/plan/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md):
+// Protocol tags (VCP-inspired, see docs/completed/2026-10-30/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md):
 //
-//	[[Heartbeat::Sleep::秒数]]                              — sleep N seconds
-//	[[Heartbeat::WakePrompt]]自定义唤醒提示词[[/Heartbeat::WakePrompt]] — next-turn prompt
+//	[[Heartbeat::Sleep::seconds]]                              — sleep N seconds
+//	[[Heartbeat::WakePrompt]]custom wake prompt[[/Heartbeat::WakePrompt]] — next-turn prompt
 //	[[Heartbeat::Complete]]                                — task complete
 //	[[Heartbeat::Fail]]                                    — task failed
 type HeartbeatDirective struct {

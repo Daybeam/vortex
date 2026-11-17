@@ -3,7 +3,7 @@ package core
 // quality_tracker.go
 //
 // Sliding-window quality trend tracking per role/task-type.
-// Addresses observability gap D/E (design §2.4 方案 D, 2026-10-23):
+// Addresses observability gap D/E (design §2.4 scheme D, 2026-10-23):
 // the existing monitors (CacheSentinel, BudgetSentinel, ConvergenceMonitor,
 // ProviderTelemetry, Metrics) only capture instantaneous snapshots — none
 // record a time series of success rates. This tracker fills that gap by

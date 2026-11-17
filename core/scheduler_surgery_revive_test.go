@@ -65,7 +65,7 @@ func newSurgeryReviveEngine(t *testing.T) (*DirectedEngine, *schemas.TaskGraph) 
 		},
 		CurrentNodeID: "root",
 	}
-	engine.graphs["task_revive"] = graph
+	injectTestGraph(t, engine, graph)
 	return engine, graph
 }
 

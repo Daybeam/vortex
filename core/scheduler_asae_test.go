@@ -44,7 +44,7 @@ func TestDirectedEngine_ASAE(t *testing.T) {
 			},
 			CurrentNodeID: "root",
 		}
-		engine.graphs[taskID] = graph
+		injectTestGraph(t, engine, graph)
 		engine.doneChans[taskID] = make(chan struct{})
 
 		result := &SpawnResult{
@@ -98,7 +98,7 @@ func TestDirectedEngine_ASAE(t *testing.T) {
 			},
 			CurrentNodeID: "root",
 		}
-		engine.graphs[taskID] = graph
+		injectTestGraph(t, engine, graph)
 		engine.doneChans[taskID] = make(chan struct{})
 
 		result := &SpawnResult{
@@ -148,7 +148,7 @@ func TestDirectedEngine_ASAE(t *testing.T) {
 			},
 			CurrentNodeID: "root",
 		}
-		engine.graphs[taskID] = graph
+		injectTestGraph(t, engine, graph)
 		engine.doneChans[taskID] = make(chan struct{})
 
 		result := &SpawnResult{
@@ -210,7 +210,7 @@ func TestDirectedEngine_ASAE(t *testing.T) {
 			},
 			CurrentNodeID: "root",
 		}
-		engine.graphs[taskID] = graph
+	injectTestGraph(t, engine, graph)
 		engine.doneChans[taskID] = make(chan struct{})
 
 		result := &SpawnResult{
@@ -274,7 +274,7 @@ func TestDirectedEngine_ASAE(t *testing.T) {
 			},
 			CurrentNodeID: "root",
 		}
-		engine.graphs[taskID] = graph
+		injectTestGraph(t, engine, graph)
 		engine.doneChans[taskID] = make(chan struct{})
 
 		result := &SpawnResult{

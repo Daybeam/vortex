@@ -93,13 +93,13 @@ func TestTurnBudget_ContextExpired_TagsAsBudgetExhausted(t *testing.T) {
 	if !hasBudgetMeta(events) {
 		t.Fatal("expected turn_budget_exhausted meta on error event")
 	}
-	// Verify the event data mentions "turn budget exhausted"
+	// Verify the event data mentions "turn timed out" and the provider name
 	for _, ev := range events {
-		if ev.Type == "error" && strings.Contains(ev.Data, "turn budget exhausted") {
+		if ev.Type == "error" && strings.Contains(ev.Data, "turn timed out") && strings.Contains(ev.Data, "ctx-waiting") {
 			return // found the right event
 		}
 	}
-	t.Errorf("expected error event data to contain 'turn budget exhausted', got events: %v", events)
+	t.Errorf("expected error event data to contain 'turn timed out' and provider name, got events: %v", events)
 }
 
 // TestTurnBudget_ProviderTimeout_TagsAsBudgetExhausted verifies that when the
@@ -134,13 +134,13 @@ func TestTurnBudget_ProviderTimeout_TagsAsBudgetExhausted(t *testing.T) {
 	if !hasBudgetMeta(events) {
 		t.Fatal("expected turn_budget_exhausted meta on error event for provider timeout")
 	}
-	// Verify the event data mentions "provider timeout"
+	// Verify the event data mentions "timed out" and the provider name
 	for _, ev := range events {
-		if ev.Type == "error" && strings.Contains(ev.Data, "provider timeout") {
+		if ev.Type == "error" && strings.Contains(ev.Data, "timed out") && strings.Contains(ev.Data, "fixed-error") {
 			return // found the right event
 		}
 	}
-	t.Errorf("expected error event data to contain 'provider timeout', got events: %v", events)
+	t.Errorf("expected error event data to contain 'timed out' and provider name, got events: %v", events)
 }
 
 // TestTurnBudget_ProviderError_NotTaggedAsBudgetExhausted verifies the reverse:
@@ -170,11 +170,11 @@ func TestTurnBudget_ProviderError_NotTaggedAsBudgetExhausted(t *testing.T) {
 	if hasBudgetMeta(events) {
 		t.Fatal("did NOT expect turn_budget_exhausted meta for a provider 500 error")
 	}
-	// Verify the error event has the original error message (not "turn budget exhausted")
+	// Verify the error event has the original error message (not a timeout label)
 	for _, ev := range events {
 		if ev.Type == "error" {
-			if strings.Contains(ev.Data, "turn budget exhausted") || strings.Contains(ev.Data, "provider timeout") {
-				t.Fatalf("generic provider error was mislabeled as budget/timeout: %s", ev.Data)
+			if strings.Contains(ev.Data, "timed out") {
+				t.Fatalf("generic provider error was mislabeled as timeout: %s", ev.Data)
 			}
 			if !strings.Contains(ev.Data, "500") {
 				t.Errorf("expected error event to contain '500', got: %s", ev.Data)

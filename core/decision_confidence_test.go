@@ -14,7 +14,7 @@ import (
 // TestQueryDecisionPrecedents_ConfidenceWeightedRanking verifies that when two
 // precedents have similar semantic relevance (same embedding), the one with
 // higher Confidence ranks first. This is the core behaviour of memory tiering
-// gap B (design §1.4 方案 B, 2026-10-23).
+// gap B (design §1.4 scheme B, 2026-10-23).
 func TestQueryDecisionPrecedents_ConfidenceWeightedRanking(t *testing.T) {
 	tmpDir := t.TempDir()
 	ts := store.NewTaskStore(store.NewFileTaskBackend(tmpDir))

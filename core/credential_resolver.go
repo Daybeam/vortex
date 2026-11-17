@@ -90,3 +90,13 @@ func (r *oauthCredentialResolver) Invalidate(mcpID, ownerID string) {
 	// If no config is recorded (e.g., API-key-only MCP), there's nothing to
 	// invalidate — the env var is static and will be re-read on next Resolve.
 }
+
+// ClearConfigs removes all cached OAuth client configs. Called when an MCP is
+// removed from the registry to prevent the configs sync.Map from growing
+// unbounded over the process lifetime (audit F-6).
+func (r *oauthCredentialResolver) ClearConfigs() {
+	r.configs.Range(func(key, _ any) bool {
+		r.configs.Delete(key)
+		return true
+	})
+}

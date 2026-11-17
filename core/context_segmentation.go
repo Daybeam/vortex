@@ -392,6 +392,15 @@ func NewBudgetManager() *BudgetManager {
 	}
 }
 
+// CleanupBudget removes the budget entry for a completed task.
+// Call this when a task terminates to prevent the budgets map from growing
+// without bound (audit H10).
+func (m *BudgetManager) CleanupBudget(taskID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.budgets, taskID)
+}
+
 // GetBudget returns the current token budget for a task, or the default.
 func (m *BudgetManager) GetBudget(taskID string) int {
 	m.mu.RLock()

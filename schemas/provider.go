@@ -79,11 +79,11 @@ type MCPServerDef struct {
 
 // ProviderResponse is the structured response from an AI provider.
 type ProviderResponse struct {
-	Text             string
-	ToolCalls        []ToolCall
-	StopReason       string
-	PromptTokens     int
-	CompletionTokens int
-	CacheWriteTokens int // Tokens written to cache this turn
-	CacheReadTokens  int // Tokens read from cache this turn
+	Text             string     `json:"text"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	StopReason       string     `json:"stop_reason"`
+	PromptTokens     int        `json:"prompt_tokens"`
+	CompletionTokens int        `json:"completion_tokens"`
+	CacheWriteTokens int        `json:"cache_write_tokens,omitempty"`
+	CacheReadTokens  int        `json:"cache_read_tokens,omitempty"`
 }

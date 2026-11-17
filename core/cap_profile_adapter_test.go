@@ -81,7 +81,10 @@ func TestRecordCapabilityOutcome_SkipsWhenStoreNil(t *testing.T) {
 		TurnsUsed: 3,
 		Output:    schemas.SubagentOutput{Status: schemas.StatusOK, Capability: "refactor"},
 	}
+	// Should not panic and should be a no-op when store is nil.
 	s.recordCapabilityOutcome(context.Background(), req, result, 1000000)
+	// Verify no panic occurred by reaching this point; with a nil store,
+	// the function must return without side effects.
 }
 
 // TestRouteProvider_FallsBackToNextWhenNoLookup verifies that routing

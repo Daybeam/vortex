@@ -115,11 +115,12 @@ func readManifest(t *testing.T, outputBase, taskID string) map[string]any {
 func TestSubmitDecision_AbortIsDurable(t *testing.T) {
 	s, outputBase := newAnswerTestEngine(t)
 	taskID := "o25_abort_durable"
-	s.graphs[taskID] = newBlockedGraph(taskID)
+	graph := newBlockedGraph(taskID)
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	// The checkpoint that produced the stale `running` state in the field.
-	s.persistGraph(s.graphs[taskID])
+	s.persistGraph(graph)
 	// persistGraph debounces 200 ms per task (H-5); the answer normally arrives
 	// seconds later, so give the debounce its real-time window instead of
 	// clearing it behind the code's back.
@@ -142,10 +143,11 @@ func TestSubmitDecision_AbortIsDurable(t *testing.T) {
 func TestSubmitDecision_AnswerRemovesThePendingDecisionDurably(t *testing.T) {
 	s, outputBase := newAnswerTestEngine(t)
 	taskID := "o25_skip_checkpointed"
-	s.graphs[taskID] = newBlockedGraph(taskID)
+	graph := newBlockedGraph(taskID)
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
-	s.persistGraph(s.graphs[taskID])
+	s.persistGraph(graph)
 	time.Sleep(210 * time.Millisecond)
 
 	if err := s.SubmitDecisionWithPayload(taskID, "dec_o25", "skip", ""); err != nil {

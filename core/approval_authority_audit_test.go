@@ -33,9 +33,7 @@ func TestCheckApprovalAuthority_NoRaceOnPendingDecisions(t *testing.T) {
 				Context: map[string]any{"approval_required_mounts": []string{}}, Options: []string{"approve", "reject"}},
 		},
 	}
-	s.Mu.Lock()
-	s.graphs["task-race"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// Reader: call checkApprovalAuthority repeatedly (reads PendingDecisions).
 	// Writer: concurrently append to PendingDecisions under s.Mu.Lock().
@@ -64,4 +62,13 @@ func TestCheckApprovalAuthority_NoRaceOnPendingDecisions(t *testing.T) {
 	}()
 
 	wg.Wait()
+
+	// Verify the graph is still in a consistent state after concurrent access.
+	g := s.GetTaskGraph("task-race")
+	if g == nil {
+		t.Fatal("graph should still exist after concurrent access")
+	}
+	if len(g.PendingDecisions) == 0 {
+		t.Fatal("PendingDecisions should not be empty after writer appended entries")
+	}
 }

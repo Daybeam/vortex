@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -184,6 +183,8 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 				"decision_type": schemas.DecisionStepFailed,
 				"role_id":       step.RoleID,
 				"choice":        "skip",
+				"proposer":      "agent",
+				"decider":       "agent",
 			})
 		}
 
@@ -220,10 +221,7 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 			if step.LastError == "" {
 				continue
 			}
-			switch classifyError(errors.New(step.LastError)) {
-			case FailureClassRateLimit, FailureClassAuthPermission, FailureClassTransient, FailureClassMissingDependency:
-				// infra/environment-caused -- not attributable to the skill/role
-			default:
+			if triageFailure(step.LastError) == TriageSkillDefect {
 				attributableFailure = true
 			}
 		}
@@ -357,26 +355,43 @@ func (re *ReflectionEngine) isNovelTask(ctx context.Context, task string) bool {
 }
 
 func (re *ReflectionEngine) maybePromoteSkill(ctx context.Context, skillID string) {
-	// FIX (2026-08-03): GetGeneratedSkill already acquires es.Mu.RLock()
-	// internally. Wrapping it in an outer Lock()/Unlock() here was a
-	// guaranteed self-deadlock: a goroutine holding a write Lock() can
-	// never satisfy its own subsequent RLock() call, since Go's
-	// sync.RWMutex is not reentrant. Confirmed live via a goroutine dump
-	// showing three goroutines permanently blocked on es.Mu.RLock (one of
-	// them this exact call site) after every task using a role with any
-	// bound skill silently deadlocked the whole ExperienceStore.
 	gs, ok := re.expStore.GetGeneratedSkill(skillID)
 
 	if ok && !gs.IsVerified {
-		// Criteria: Used 3+ times with > 80% success
 		if gs.UsageCount >= 3 && gs.SuccessRate > 0.8 {
 			err := re.jit.PromotePermanent(skillID)
 			if err == nil {
 				re.expStore.UpdateGeneratedSkillVerified(skillID, true)
 				re.expStore.PersistAll(ctx)
+				re.logger.Log("EventSkillPromoted", "", "", map[string]any{
+					"skill_id":    skillID,
+					"capability":  gs.Capability,
+					"usage_count": gs.UsageCount,
+					"success_rate": gs.SuccessRate,
+					"message":     "Skill promoted to permanent after meeting threshold (UsageCount>=3, SuccessRate>0.8)",
+				})
 			}
 		}
 	}
+}
+
+// extractCodeBlock extracts the content of a fenced code block with the
+// given language tag from text. Returns empty string if not found.
+func extractCodeBlock(text, lang string) string {
+	marker := "```" + lang
+	start := strings.Index(text, marker)
+	if start == -1 {
+		return ""
+	}
+	rest := text[start+len(marker):]
+	if len(rest) > 0 && rest[0] == '\n' {
+		rest = rest[1:]
+	}
+	end := strings.Index(rest, "```")
+	if end == -1 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
 }
 
 // CrystallizeStepToSkill abstracts a successful execution trace into a reusable tool.
@@ -399,7 +414,6 @@ func (re *ReflectionEngine) CrystallizeStepToSkill(ctx context.Context, rec stor
 	instruction := "Your task is to extract the logic from a successful execution trace and turn it into a reusable, parameterised Lua script."
 
 	if parentID != "" {
-		// Fetch existing code for additive editing
 		instruction = fmt.Sprintf("A baseline Lua script already exists for capability %q (ID: %s). "+
 			"Your task is to analyze the new execution trace and EXTEND the existing logic. "+
 			"Do not rewrite from scratch unless necessary; perform an ADDITIVE EDIT that handles the new case while preserving old robustness.",
@@ -408,11 +422,26 @@ func (re *ReflectionEngine) CrystallizeStepToSkill(ctx context.Context, rec stor
 		if baseCode, ok := re.skillSource(parentID); ok {
 			instruction += fmt.Sprintf("\n\nExisting Baseline Code:\n```lua\n%s\n```", baseCode)
 		}
+
+		if parentGS, ok := re.expStore.GetGeneratedSkill(parentID); ok && len(parentGS.Guardrails) > 0 {
+			var grBuilder strings.Builder
+			grBuilder.WriteString("\n\nGUARDRAILS — the following rules MUST NOT be modified, deleted, or weakened in your output:\n")
+			for _, g := range parentGS.Guardrails {
+				grBuilder.WriteString("- ")
+				grBuilder.WriteString(g)
+				grBuilder.WriteString("\n")
+			}
+			instruction += grBuilder.String()
+		}
 	}
 
 	system := fmt.Sprintf(`You are an expert automation engineer. %s
 The script will be used as a standalone tool. It should handle errors gracefully and provide clear output.
-Output ONLY the Lua code. No markdown, no explanation.`, instruction)
+
+Output exactly two fenced code blocks and nothing else:
+1. A `+"```"+`lua block with the Lua script.
+2. A `+"```"+`json block with a semantic signature describing the script:
+   {"name": "<short name>", "description": "<what it does>", "params": [{"name": "...", "type": "string|number|boolean", "desc": "..."}]}`, instruction)
 
 	user := fmt.Sprintf(`Task: %s
 Capability: %s
@@ -420,7 +449,8 @@ Trace:
 %s
 
 Goal: Write a Lua script (or an extension of the existing one) that achieves this task.
-Use variables for any hardcoded values that should be parameters.`, rec.Task, rec.Capability, string(traceBytes))
+Use variables for any hardcoded values that should be parameters.
+Also produce a JSON signature describing the script's purpose and its parameters.`, rec.Task, rec.Capability, string(traceBytes))
 
 	// C6.4: scrub secrets from the prompt before sending to the LLM.
 	// This is a background skill-crystallization path that runs after task
@@ -439,21 +469,26 @@ Use variables for any hardcoded values that should be parameters.`, rec.Task, re
 		return
 	}
 
-	// Clean code
-	code := resp.Text
-	code = strings.TrimPrefix(code, "```lua")
-	code = strings.TrimPrefix(code, "```")
-	code = strings.TrimSuffix(code, "```")
-	code = strings.TrimSpace(code)
+	// Extract Lua code and JSON signature from the response
+	code := extractCodeBlock(resp.Text, "lua")
+	if code == "" {
+		// Fallback: old format (bare code or single fence without lang tag)
+		code = resp.Text
+		code = strings.TrimPrefix(code, "```lua")
+		code = strings.TrimPrefix(code, "```")
+		code = strings.TrimSuffix(code, "```")
+		code = strings.TrimSpace(code)
+	}
+	signature := extractCodeBlock(resp.Text, "json")
 
 	// Register as a temporary JIT tool with a long TTL (24h)
 	id, err := re.jit.RegisterTool(code, "lua", 24*time.Hour, true)
 	if err == nil {
-		re.registerAsSkill(ctx, id, rec.Capability, rec.Task, rec.LastError, code)
+		re.registerAsSkill(ctx, id, rec.Capability, rec.Task, rec.LastError, code, signature)
 	}
 }
 
-func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability, originalTask, failureSignal, sourceCode string) {
+func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability, originalTask, failureSignal, sourceCode, signature string) {
 	// ── JIT Auto-Promotion Dedup (ADDED 2026-09-06) ─────────────────────
 	// If the ID already exists in GeneratedSkills — which happens when a
 	// JIT tool gets seeded by the trace-based capture hook in
@@ -493,7 +528,13 @@ func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability,
 	// underperforming variants eventually get archived.
 	parentID := re.expStore.RootSkillForCapability(capability)
 
-	// Priority 7: Use CommitOps for atomic increment with audit log
+	var inheritedGuardrails []string
+	if parentID != "" {
+		if parentGS, ok := re.expStore.GetGeneratedSkill(parentID); ok {
+			inheritedGuardrails = parentGS.Guardrails
+		}
+	}
+
 	newSkill := &config.Skill{
 		ID:          id,
 		Name:        "Generated: " + id,
@@ -504,6 +545,7 @@ func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability,
 				SystemPrompt: fmt.Sprintf(SysPromptSpecializedTool, id, originalTask),
 			},
 		},
+		Guardrails: inheritedGuardrails,
 	}
 
 	skillJSON, _ := json.Marshal(newSkill)
@@ -524,11 +566,13 @@ func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability,
 		UsageCount:    0,
 		SuccessRate:   1.0,
 		LastUsed:      time.Now(),
-		OS:            runtime.GOOS,          // Environment Fingerprint (ADDED 2026-08-16)
-		Arch:          runtime.GOARCH,        // Environment Fingerprint (ADDED 2026-08-16)
-		Shell:         env.GetShellVersion(), // Environment Fingerprint (ADDED 2026-08-20)
-		FailureSignal: failureSignal,         // Trigger-driven retrieval (ADDED 2026-08-16)
-		SourceText:    sourceCode,            // Survives JIT expiry; additive-edit/merge fallback
+		OS:            runtime.GOOS,
+		Arch:          runtime.GOARCH,
+		Shell:         env.GetShellVersion(),
+		FailureSignal: failureSignal,
+		SourceText:    sourceCode,
+		Signature:     signature,
+		Guardrails:    inheritedGuardrails,
 	})
 }
 
@@ -591,7 +635,11 @@ Unify them into a single script that is:
 1. Robust: Handles all cases from all variants.
 2. Clean: Removes redundancies.
 3. Parameterized: Uses variables for values that might change.
-Output ONLY the unified Lua code. No markdown, no explanation.`
+
+Output exactly two fenced code blocks and nothing else:
+1. A `+"```"+`lua block with the unified Lua script.
+2. A `+"```"+`json block with a semantic signature describing the merged script:
+   {"name": "<short name>", "description": "<what it does>", "params": [{"name": "...", "type": "string|number|boolean", "desc": "..."}]}`
 
 	user := fmt.Sprintf("Capability: %s\n\nVariants to merge:\n\n%s", capability, strings.Join(sourceList, "\n\n------------------\n\n"))
 
@@ -614,18 +662,22 @@ Output ONLY the unified Lua code. No markdown, no explanation.`
 		return
 	}
 
-	// Clean code
-	code := resp.Text
-	code = strings.TrimPrefix(code, "```lua")
-	code = strings.TrimPrefix(code, "```")
-	code = strings.TrimSuffix(code, "```")
-	code = strings.TrimSpace(code)
+	// Extract Lua code and JSON signature from the response
+	code := extractCodeBlock(resp.Text, "lua")
+	if code == "" {
+		code = resp.Text
+		code = strings.TrimPrefix(code, "```lua")
+		code = strings.TrimPrefix(code, "```")
+		code = strings.TrimSuffix(code, "```")
+		code = strings.TrimSpace(code)
+	}
+	signature := extractCodeBlock(resp.Text, "json")
 
 	// Register the unified tool
 	id, err := re.jit.RegisterTool(code, "lua", 72*time.Hour, true) // Longer TTL for expert skills
 	if err == nil {
 		// Register as a NEW verified root skill
-		re.registerAsSkill(ctx, id, capability, "Unified Expert Skill via Hybrid Merge", "", code)
+		re.registerAsSkill(ctx, id, capability, "Unified Expert Skill via Hybrid Merge", "", code, signature)
 		re.expStore.UpdateGeneratedSkillVerified(id, true)
 		re.expStore.PersistAll(ctx)
 

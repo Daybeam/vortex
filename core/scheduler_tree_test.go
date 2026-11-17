@@ -58,9 +58,7 @@ func TestDirectedEngine_ContextTreeBranching(t *testing.T) {
 
 	var graph *schemas.TaskGraph
 	for i := 0; i < 20; i++ {
-		engine.Mu.RLock()
-		graph = engine.graphs[taskID]
-		engine.Mu.RUnlock()
+		graph = engine.GetTaskGraph(taskID)
 		if graph != nil {
 			break
 		}

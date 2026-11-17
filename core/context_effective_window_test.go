@@ -57,7 +57,7 @@ func TestCTX52_E1_UnsetEffectiveWindowIsNotAggressive(t *testing.T) {
 		pc.ReserveTokens = 4096
 		// EffectiveContextWindow deliberately unset (0) — this is what
 		// kernel.py and harness/config_appworld_kaggle.json produce.
-		// MaxTokens deliberately unset so 铁律 51-4 (OUTPUT_BUDGET_PRESSURE)
+		// MaxTokens deliberately unset so Iron Rule 51-4 (OUTPUT_BUDGET_PRESSURE)
 		// cannot fire first and mask the bug under test.
 	})
 

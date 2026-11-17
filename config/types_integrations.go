@@ -74,6 +74,11 @@ type Config struct {
 	SkillsDir                string                    `json:"skills_dir,omitempty"`
 	RolesDir                 string                    `json:"roles_dir,omitempty"`
 	SplitLayout              *SplitLayout              `json:"_split_layout,omitempty"`
+	// SkillSyncSources (legacy) configures trusted GitHub repos for periodic
+	// skill sync. Automatically converted to DiscoverySources entries at load
+	// time. New configs should use system.discovery_sources instead.
+	// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.2.
+	SkillSyncSources         map[string]string         `json:"skill_sync_sources,omitempty"`
 	// WALCheckpoint records the ID of the last WAL commit already reflected
 	// in this snapshot (set automatically by persistLocked whenever a WAL is
 	// active). On the next load, ReplaySince uses this to skip commits that

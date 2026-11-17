@@ -54,9 +54,7 @@ func TestStepStatusWrites_ConcurrentUnderLock(t *testing.T) {
 	}
 	graph.Steps["s1"] = &schemas.Step{ID: "s1", Status: schemas.StepPending}
 
-	s.Mu.Lock()
-	s.graphs["task-step-status"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	var wg sync.WaitGroup
 

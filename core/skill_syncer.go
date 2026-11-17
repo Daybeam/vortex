@@ -15,6 +15,15 @@ import (
 	"github.com/daybeam/vortex/core/obs"
 )
 
+// Deprecated: SkillSyncer writes remote skills directly to Registry.Skills,
+// bypassing PendingSkills staging — a security gap. Use DiscoverySyncer instead,
+// which routes untrusted remote skills through PendingSkills (requiring
+// promote_skill before activation). DiscoverySyncer also supports multiple
+// source types (HTTP APIs, local dirs) beyond GitHub-only.
+//
+// SkillSyncer is retained for reference but is no longer wired in any
+// production entry point. It will be removed in a future cleanup.
+//
 // SkillSyncer is the skill analog of CookbookSyncer: periodically syncs skills
 // from trusted public GitHub repos (e.g. mattpocock/skills) into the registry.
 //

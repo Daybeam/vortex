@@ -18,6 +18,7 @@ type ExperienceNode struct {
 	FailureMode string    `json:"failure_mode,omitempty"` // FMC: Structured label (ADDED 2026-09-06)
 	Critique    string    `json:"critique,omitempty"`     // FMC: Natural-language critique (ADDED 2026-09-06)
 	Confidence  float64   `json:"confidence,omitempty"`
+	Domain      string    `json:"domain,omitempty"` // topic facet (design §4: frozen at write time)
 	Timestamp   time.Time `json:"timestamp"`
 
 	// Semantic embedding for warm-context retrieval

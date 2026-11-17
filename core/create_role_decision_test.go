@@ -106,9 +106,7 @@ func TestSubmitDecision_CreateRoleWithDraftPayload(t *testing.T) {
 	reg.Roles["reconciler"] = &config.Role{ID: "reconciler", Name: "Global Reconciler"}
 
 	graph := createRoleFixtureGraph("reconciler")
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	draft := config.Role{
 		ID:               "reconciler",
@@ -126,9 +124,7 @@ func TestSubmitDecision_CreateRoleWithDraftPayload(t *testing.T) {
 		t.Fatalf("create_role with draft payload failed: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs[graph.TaskID]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(graph.TaskID)
 
 	step := g.Steps["s1"]
 	if step.Status != schemas.StepPending {
@@ -175,9 +171,7 @@ func TestSubmitDecision_CreateRoleDoesNotFlipGlobalSwitch(t *testing.T) {
 	}
 
 	graph := createRoleFixtureGraph("reconciler")
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	payload, _ := json.Marshal(config.Role{ID: "reconciler", Name: "Draft"})
 	if err := s.SubmitDecisionWithPayload(graph.TaskID, "dec-1", "create_role", string(payload)); err != nil {
@@ -201,9 +195,7 @@ func TestSubmitDecision_CreateRoleWithoutProviderErrorsAndKeepsStepBlocked(t *te
 	defer s.Stop()
 
 	graph := createRoleFixtureGraph("reconciler")
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	err := s.SubmitDecisionWithPayload(graph.TaskID, "dec-1", "create_role", "")
 	if err == nil {
@@ -213,9 +205,7 @@ func TestSubmitDecision_CreateRoleWithoutProviderErrorsAndKeepsStepBlocked(t *te
 		t.Fatalf("error should name the choice for traceability, got: %v", err)
 	}
 
-	s.Mu.RLock()
-	g := s.graphs[graph.TaskID]
-	s.Mu.RUnlock()
+	g := s.GetTaskGraph(graph.TaskID)
 
 	if g.Steps["s1"].Status == schemas.StepPending {
 		t.Error("step must stay blocked when generation failed")

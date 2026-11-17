@@ -1,6 +1,7 @@
 package core
 
 import (
+	"log/slog"
 	"path/filepath"
 	"strings"
 )
@@ -18,7 +19,7 @@ var pagerEnvVars = []string{
 	"LESS=-F", // -F: quit if output fits on screen
 }
 
-// ─── TUI command guard ─────────────────────────────────────────────────────
+// ─── TUI command blocklist ─────────────────────────────────────────────────
 
 // blockedInteractiveCommands lists tools that require a real TTY and
 // will always hang in a pipe-based executor.
@@ -43,13 +44,13 @@ var blockedInteractiveCommands = map[string]string{
 
 // ─── Git auto-rewrite ──────────────────────────────────────────────────────
 
-// gitSubcommandsThatPagedare git subcommands that commonly invoke a pager.
+// gitSubcommandsThatPage are git subcommands that commonly invoke a pager.
 var gitSubcommandsThatPage = map[string]bool{
 	"log": true, "diff": true, "show": true, "blame": true,
 	"grep": true, "shortlog": true, "reflog": true, "cherry": true,
 }
 
-// ─── Guard struct ──────────────────────────────────────────────────────────
+// ─── Guard result & interface ──────────────────────────────────────────────
 
 // CommandGuardResult holds the outcome of a pre-execution safety check.
 type CommandGuardResult struct {
@@ -62,50 +63,137 @@ type CommandGuardResult struct {
 	// and these are empty, use the originals.
 	RewrittenCommand string
 	RewrittenArgs    []string
+
+	// RewrittenBody is the rewritten script body (for RunViaTempScript
+	// and execute_code paths where the body is inspected).
+	RewrittenBody string
 }
 
-// CheckCommand runs the full guard pipeline:
-//  0. Windows bash resolution: prefer git bash over WSL's bash.exe
-//  1. Blocklist TUI tools
-//  2. Auto-inject --no-pager for git subcommands
-func CheckCommand(command string, args []string) CommandGuardResult {
-	// 0. Windows: prefer git bash over WSL's bash.exe when available.
+// CommandGuard is a pre-execution safety check. Implementations may be
+// builtin (TUI blocklist, git pager) or user-supplied (external script).
+type CommandGuard interface {
+	Name() string
+	Check(command string, args []string, body string) CommandGuardResult
+}
+
+// ─── Registry & chain ──────────────────────────────────────────────────────
+
+var commandGuards []CommandGuard
+
+// RegisterCommandGuard adds a guard to the chain. Guards are executed in
+// registration order; the first Block result wins (fail-closed).
+func RegisterCommandGuard(g CommandGuard) {
+	commandGuards = append(commandGuards, g)
+}
+
+// resetCommandGuards clears the guard chain. For testing only.
+func resetCommandGuards() {
+	commandGuards = nil
+}
+
+// CheckAll runs every registered guard in sequence. Rewrite accumulates:
+// later guards see earlier rewrites. First Block wins (fail-closed).
+func CheckAll(command string, args []string, body string) CommandGuardResult {
+	result := CommandGuardResult{}
+	for _, g := range commandGuards {
+		r := g.Check(command, args, body)
+		if r.Block {
+			slog.Info("command_guard",
+				"guard", g.Name(),
+				"command", command,
+				"blocked", true,
+				"message", r.Message,
+			)
+			return r
+		}
+		if r.RewrittenCommand != "" {
+			command = r.RewrittenCommand
+			result.RewrittenCommand = command
+		}
+		if r.RewrittenArgs != nil {
+			args = r.RewrittenArgs
+			result.RewrittenArgs = args
+		}
+		if r.RewrittenBody != "" {
+			body = r.RewrittenBody
+			result.RewrittenBody = body
+		}
+		slog.Info("command_guard",
+			"guard", g.Name(),
+			"command", command,
+			"blocked", false,
+		)
+	}
+	return result
+}
+
+// ─── Builtin guards ────────────────────────────────────────────────────────
+
+// BuiltinTuiGuard blocks interactive TUI commands and resolves Windows
+// bash paths. It migrates the TUI blocklist from the legacy CheckCommand.
+type BuiltinTuiGuard struct{}
+
+func (BuiltinTuiGuard) Name() string { return "builtin-tui" }
+
+func (BuiltinTuiGuard) Check(command string, args []string, body string) CommandGuardResult {
 	resolved := resolveWindowsBash(command)
 	cmdName := strings.ToLower(filepath.Base(resolved))
 	cmdName = strings.TrimSuffix(cmdName, ".exe")
 
-	// 1. TUI blocklist
 	if reason, blocked := blockedInteractiveCommands[cmdName]; blocked {
 		return CommandGuardResult{Block: true, Message: reason}
 	}
 
-	// 2. Git auto-rewrite: inject --no-pager if missing
-	if cmdName == "git" && len(args) > 0 {
-		hasNoPager := false
-		for _, a := range args {
-			if a == "--no-pager" {
-				hasNoPager = true
-				break
-			}
-		}
-		if !hasNoPager && gitSubcommandsThatPage[args[0]] {
-			newArgs := make([]string, 0, len(args)+1)
-			newArgs = append(newArgs, "--no-pager")
-			newArgs = append(newArgs, args...)
-			return CommandGuardResult{
-				RewrittenCommand: resolved,
-				RewrittenArgs:    newArgs,
-			}
-		}
-	}
-
-	// 3. Return resolved bash path if it differs from the original.
 	if resolved != command {
 		return CommandGuardResult{RewrittenCommand: resolved}
 	}
-
 	return CommandGuardResult{}
 }
+
+// BuiltinGitPagerGuard auto-injects --no-pager for git subcommands that
+// commonly invoke a pager. Migrates the git rewrite from legacy CheckCommand.
+type BuiltinGitPagerGuard struct{}
+
+func (BuiltinGitPagerGuard) Name() string { return "builtin-git-pager" }
+
+func (BuiltinGitPagerGuard) Check(command string, args []string, body string) CommandGuardResult {
+	cmdName := strings.ToLower(filepath.Base(command))
+	cmdName = strings.TrimSuffix(cmdName, ".exe")
+
+	if cmdName != "git" || len(args) == 0 {
+		return CommandGuardResult{}
+	}
+	for _, a := range args {
+		if a == "--no-pager" {
+			return CommandGuardResult{}
+		}
+	}
+	if !gitSubcommandsThatPage[args[0]] {
+		return CommandGuardResult{}
+	}
+	newArgs := make([]string, 0, len(args)+1)
+	newArgs = append(newArgs, "--no-pager")
+	newArgs = append(newArgs, args...)
+	return CommandGuardResult{RewrittenArgs: newArgs}
+}
+
+// ─── Backward-compat wrapper ───────────────────────────────────────────────
+
+// CheckCommand runs the full guard pipeline. Deprecated: use CheckAll
+// which also accepts a body parameter for script inspection.
+// Kept for backward compatibility with existing call sites and tests.
+func CheckCommand(command string, args []string) CommandGuardResult {
+	return CheckAll(command, args, "")
+}
+
+// ─── Initialization ────────────────────────────────────────────────────────
+
+func init() {
+	RegisterCommandGuard(BuiltinTuiGuard{})
+	RegisterCommandGuard(BuiltinGitPagerGuard{})
+}
+
+// ─── Pager env helper ──────────────────────────────────────────────────────
 
 // PagerEnv returns the slice of environment variable strings that
 // should be appended to os.Environ() when spawning a subprocess.

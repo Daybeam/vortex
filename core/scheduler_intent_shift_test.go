@@ -123,7 +123,7 @@ func strPtr(b bool) *bool { return &b }
 //
 //	creates ContextNode_B with inherited metadata and cleared LocalSymbolIndex
 //
-// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: 上下文树
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Context Tree
 // -----------------------------------------------------------------------------
 func TestTransitionContextTree_SemanticDrift_Branches(t *testing.T) {
 	engine, _ := intentShiftTestEngine(t, &config.SystemSettings{})
@@ -184,7 +184,7 @@ func TestTransitionContextTree_SemanticDrift_Branches(t *testing.T) {
 //
 //	branch (no fragmentation on similar embeddings)
 //
-// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: 上下文树
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Context Tree
 // -----------------------------------------------------------------------------
 func TestTransitionContextTree_Aligned_NoBranch(t *testing.T) {
 	engine, _ := intentShiftTestEngine(t, &config.SystemSettings{})
@@ -217,7 +217,7 @@ func TestTransitionContextTree_Aligned_NoBranch(t *testing.T) {
 //
 //	⇒ heuristic fallback branch (pre-2026-10-25 behavior preserved)
 //
-// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: 上下文树
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Context Tree
 // -----------------------------------------------------------------------------
 func TestTransitionContextTree_ColdCache_HeuristicFallback(t *testing.T) {
 	engine, _ := intentShiftTestEngine(t, &config.SystemSettings{})
@@ -250,7 +250,7 @@ func TestTransitionContextTree_ColdCache_HeuristicFallback(t *testing.T) {
 //
 //	heuristic-only branching (zero behavior change vs pre-wiring)
 //
-// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: 上下文树
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Context Tree
 // -----------------------------------------------------------------------------
 func TestTransitionContextTree_Disabled(t *testing.T) {
 	engine, _ := intentShiftTestEngine(t, &config.SystemSettings{
@@ -287,7 +287,7 @@ func TestTransitionContextTree_Disabled(t *testing.T) {
 //
 //	NOT branch (guard against false-positive fragmentation)
 //
-// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: 上下文树
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Context Tree
 // -----------------------------------------------------------------------------
 func TestTransitionContextTree_NoEmbedNoHeuristic(t *testing.T) {
 	engine, _ := intentShiftTestEngine(t, &config.SystemSettings{})
@@ -312,7 +312,7 @@ func TestTransitionContextTree_NoEmbedNoHeuristic(t *testing.T) {
 //
 //	similarity drop (≈0.707) count as drift
 //
-// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: 上下文树
+// Source: docs/gherkin/BEHAVIOR_CONTRACTS.md §Feature: Context Tree
 // -----------------------------------------------------------------------------
 func TestTransitionContextTree_CustomThreshold_Branches(t *testing.T) {
 	engine, _ := intentShiftTestEngine(t, &config.SystemSettings{

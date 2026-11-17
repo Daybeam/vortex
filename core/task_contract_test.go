@@ -23,6 +23,12 @@ import (
 // and 54 -- so "every backticked token in the text" and "every filename-looking
 // token in the text" are both wrong answers, and the only correct one is
 // "the - Create: line inside the contract section".
+// declaredCreates is the Create column, which is what "the artifacts" means.
+// There is no separate ParseDeclaredArtifacts any more: a second entry point
+// would be a second place for the nil/empty rule to drift (→131), and it had no
+// caller left once the chat harness moved to the contract struct.
+func declaredCreates(text string) []string { return ParseDeclaredContract(text).Create }
+
 const contractSample = "## Your task\n\n" +
 	"Build customer-level revenue metrics and a reconciliation note from local tables.\n\n" +
 	"Inputs copied to the workspace root:\n" +
@@ -39,7 +45,7 @@ const contractSample = "## Your task\n\n" +
 	"Do not leave any other created, modified, or deleted path in `/workspace`.\n"
 
 func TestParseDeclaredArtifacts_RealSample(t *testing.T) {
-	got := ParseDeclaredArtifacts(contractSample)
+	got := declaredCreates(contractSample)
 	want := []string{
 		"customer_metrics.csv",
 		"reconciliation_audit.json",
@@ -62,14 +68,14 @@ func TestParseDeclaredArtifacts_IgnoresBackticksOutsideSection(t *testing.T) {
 		"- Create: `result.json`\n" +
 		"- Modify: none\n" +
 		"- Delete: none\n"
-	got := ParseDeclaredArtifacts(text)
+	got := declaredCreates(text)
 	if !reflect.DeepEqual(got, []string{"result.json"}) {
 		t.Fatalf("got %v, want [result.json]", got)
 	}
 }
 
 func TestParseDeclaredArtifacts_NoSectionIsNil(t *testing.T) {
-	if got := ParseDeclaredArtifacts("Just a normal task with `code` in it."); got != nil {
+	if got := declaredCreates("Just a normal task with `code` in it."); got != nil {
 		t.Fatalf("no contract section must yield nil, got %v", got)
 	}
 }
@@ -82,8 +88,82 @@ func TestParseDeclaredArtifacts_NoneIsNotAnArtifact(t *testing.T) {
 		"- Create: none\n" +
 		"- Modify: `existing.csv`\n" +
 		"- Delete: none\n"
-	if got := ParseDeclaredArtifacts(text); len(got) != 0 {
+	if got := declaredCreates(text); len(got) != 0 {
 		t.Fatalf("want no artifacts, got %v", got)
+	}
+}
+
+// The contract section has exactly three lines, and each is either "none" or a
+// backticked list -- so the input shapes are the 2x2x2 of which of Create /
+// Modify / Delete is non-empty. Every one of them occurs in the 274-task suite
+// and the split is not even (RESULT §28):
+//
+//	create+modify  166 tasks
+//	create only    102 tasks
+//	modify only      3 tasks   ← 262, 263, 264
+//	neither          3 tasks
+//
+// Only the Create column may become an artifact name. The Modify column is the
+// one that looks like it should (it names real files, and for 262-264 it is the
+// only place the deliverable is ever named) -- see
+// TestWorkspaceArtifactsComplete_ModifyTargetIsPresentAtStart for the measurement
+// that rules it out.
+//
+// The empty rows assert len==0 rather than DeepEqual(nil): nil and []string{}
+// are both "no artifacts", nothing downstream may distinguish them today, and a
+// test that pinned the encoding instead of the semantics would have to be edited
+// by any future change to it (→175: prove the change, don't freeze the bug).
+func TestParseDeclaredArtifacts_InputShapes(t *testing.T) {
+	const (
+		create = "- Create: `a.csv`, `b.json`\n"
+		none   = "- Create: none\n"
+	)
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "create and modify",
+			body: create + "- Modify: `existing.csv`\n- Delete: none\n",
+			want: []string{"a.csv", "b.json"},
+		},
+		{
+			name: "create only",
+			body: create + "- Modify: none\n- Delete: none\n",
+			want: []string{"a.csv", "b.json"},
+		},
+		{
+			// 262/263/264. The only task shape where the deliverable is named
+			// nowhere but on the Modify line -- and still not an artifact.
+			name: "modify only",
+			body: none + "- Modify: `submission/service.py`\n- Delete: none\n",
+		},
+		{
+			name: "neither",
+			body: none + "- Modify: none\n- Delete: none\n",
+		},
+		{
+			// Delete is a real column with real names; it is still not "what the
+			// task must deliver", so nothing may leak through from it.
+			name: "delete only",
+			body: none + "- Modify: none\n- Delete: `obsolete.csv`\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := declaredCreates("## Enforced workspace change contract\n" + tc.body)
+			if len(tc.want) == 0 {
+				if len(got) != 0 {
+					t.Fatalf("got %v, want no artifacts: only a Create line declares them", got)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -91,7 +171,7 @@ func TestParseDeclaredArtifacts_MergesCreateLinesAndDedupes(t *testing.T) {
 	text := "## Enforced workspace change contract\n" +
 		"- Create: `a.csv`, `b.json`\n" +
 		"- Create: `b.json`, `c.md`\n"
-	got := ParseDeclaredArtifacts(text)
+	got := declaredCreates(text)
 	want := []string{"a.csv", "b.json", "c.md"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v (dedup, first-seen order)", got, want)
@@ -105,9 +185,61 @@ func TestParseDeclaredArtifacts_StopsAtNextHeading(t *testing.T) {
 		"- Create: `real.csv`\n\n" +
 		"## Appendix\n" +
 		"- Create: `example_only.csv`\n"
-	got := ParseDeclaredArtifacts(text)
+	got := declaredCreates(text)
 	if !reflect.DeepEqual(got, []string{"real.csv"}) {
 		t.Fatalf("got %v, want [real.csv]", got)
+	}
+}
+
+// The three modify-only tasks ship their deliverable in the seed workspace, so
+// "the declared artifact exists" is already true before the model does anything:
+//
+//	tasks/262-.../workspace/nami_service/users.py   repair -- the handler is broken
+//	tasks/263-.../workspace/submission/service.py   implement -- the stub raises
+//	tasks/264-.../workspace/src/process.js          fix -- the parser is wrong
+//
+// A presence check cannot tell "repaired" from "untouched": it answers yes at
+// t=0. That is why the Modify column may never become an artifact name. The
+// consumer that makes it acute is chat_harness.go:1088, which fires the
+// artifacts_complete event and the completion marker on `missing == 0` alone --
+// so including Modify would tell the model it is finished on the first turn,
+// which is strictly worse than having no contract at all.
+//
+// Consequence, recorded so it is not rediscovered: these three tasks get no
+// completion signal from the contract section, and their real obligation ("leave
+// no extra entries in /workspace") is one a presence check cannot express --
+// that is a separate gap with a separate fix (RESULT §28.7).
+func TestWorkspaceArtifactsComplete_ModifyTargetIsPresentAtStart(t *testing.T) {
+	tests := []struct{ task, target string }{
+		{"262-user-service-registration-repair", "nami_service/users.py"},
+		{"263-stateful-python-rpc-service", "submission/service.py"},
+		{"264-node-record-processing-contract", "src/process.js"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.task, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, filepath.FromSlash(tc.target))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("seeded, not yet fixed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			present, missing := WorkspaceArtifactsComplete(root, []string{tc.target})
+			if present != 1 || missing != 0 {
+				t.Fatalf("present=%d missing=%d, want 1/0: the seed ships the Modify target", present, missing)
+			}
+
+			// Same prompt shape the renderer emits for this task
+			// (tools/run_benchmark.py:render_prompt): the target must not leak
+			// out of the Modify line into the declared artifacts.
+			got := declaredCreates("## Enforced workspace change contract\n" +
+				"- Create: none\n- Modify: `" + tc.target + "`\n- Delete: none\n")
+			if len(got) != 0 {
+				t.Fatalf("Modify target leaked into declared artifacts: %v", got)
+			}
+		})
 	}
 }
 

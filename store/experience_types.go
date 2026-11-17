@@ -66,6 +66,13 @@ type DecisionOutcome struct {
 	Resolved        bool      `json:"resolved"`
 	FinalConfidence *float64  `json:"final_confidence,omitempty"`
 	Timestamp       time.Time `json:"timestamp"`
+
+	// Authority separation (Atria Dawn arXiv:2609.15818):
+	// Proposer = who generated the option; Decider = who picked among options;
+	// Intervention = human intervention type when Decider == "human".
+	Proposer     string `json:"proposer,omitempty"`     // "agent" | "verifier" | "critic" | "human"
+	Decider      string `json:"decider,omitempty"`      // "agent" | "human"
+	Intervention string `json:"intervention,omitempty"` // "informational" | "edit" | "takeover" | ""
 }
 
 type SkillAffinity struct {
@@ -107,6 +114,18 @@ type GeneratedSkill struct {
 	AvgLatencyMs   float64 `json:"avg_latency_ms,omitempty"`
 	MetabolicROI   float64 `json:"metabolic_roi,omitempty"`
 	SkillStatus    string  `json:"skill_status,omitempty"` // active, dormant, pruned
+
+	// Structured semantic signature (ADDED 2026-11-13) — CPU-ARC style
+	// parameterized description for robust skill matching. Populated by
+	// CrystallizeStepToSkill's LLM prompt. JSON-encoded:
+	// {"name":"...","description":"...","params":[{"name":"...","type":"...","desc":"..."}]}
+	// Empty for legacy skills (graceful degradation).
+	Signature string `json:"signature,omitempty"`
+
+	// Guardrails (ADDED 2026-11-14): read-only rules inherited from parent
+	// skill. Skills with non-empty Guardrails are exempt from PruneSkills.
+	// See SKILL_EVOLUTION_TRIAGE_GUARDRAILS_PLAN.md §2.
+	Guardrails []string `json:"guardrails,omitempty"`
 }
 
 type RouteWeight struct {

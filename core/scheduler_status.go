@@ -390,36 +390,18 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 	// kind is "plan", the host has produced a plan. Parse it via ParsePlanDAG
 	// and inject the steps via graph surgery (mutateGraphTopologyLocked).
 	if kind, _ := dec.Context["kind"].(string); kind == DelegationKindPlan {
-		planned, err := schemas.ParsePlanDAG(outputJSON, schemas.PlanParseOptions{})
+		planned, err := s.fulfillPlanDelegationLocked(graph, dec, decIdx, outputJSON)
 		if err != nil {
 			s.Mu.Unlock()
-			return fmt.Errorf("plan delegation: failed to parse plan: %w", err)
+			return err
 		}
-		if len(planned) == 0 {
-			s.Mu.Unlock()
-			return fmt.Errorf("plan delegation: parsed plan has zero steps")
-		}
-		// Inject: deprecate the planning step, add the planned steps.
-		if err := s.mutateGraphTopologyLocked(graph, SurgeryData{
-			DeprecatedStepID: dec.StepID,
-			ReplacementSteps: planned,
-		}); err != nil {
-			s.Mu.Unlock()
-			return fmt.Errorf("plan delegation: graph surgery failed: %w", err)
-		}
-		// Clear the decision.
-		graph.PendingDecisions = append(graph.PendingDecisions[:decIdx], graph.PendingDecisions[decIdx+1:]...)
-		// The graph is now a real DAG, not smart-routed.
-		graph.IsSmartRouted = false
-		graph.Status = schemas.GraphRunning
-		taskID := graph.TaskID
+		resumedTaskID := graph.TaskID
 		s.Mu.Unlock()
 		s.persistGraph(graph)
-		s.logger.Log("plan_delegation_fulfilled", taskID, dec.StepID, map[string]any{
+		s.logger.Log("plan_delegation_fulfilled", resumedTaskID, dec.StepID, map[string]any{
 			"steps_injected": len(planned),
 		})
-		// Start the executor so the new steps run.
-		s.startGraphExecutor(s.lifecycleCtx, taskID)
+		s.startGraphExecutor(s.lifecycleCtx, resumedTaskID)
 		return nil
 	}
 
@@ -494,24 +476,7 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 	graph.PendingDecisions = append(graph.PendingDecisions[:decIdx], graph.PendingDecisions[decIdx+1:]...)
 
 	// Resume graph if no other pending decisions
-	if len(graph.PendingDecisions) == 0 {
-		if graph.IsSmartRouted {
-			graph.Status = schemas.GraphCompleted
-			if ch, ok := s.doneChans[taskID]; ok {
-				select {
-				case <-ch:
-				default:
-					close(ch)
-				}
-			}
-		} else {
-			// Graph is already GraphRunning (step-level blocking never set
-			// GraphBlocked). Create a fresh done channel so WaitTask callers
-			// can wait for the next terminal state, and Broadcast to wake
-			// the run() loop which is waiting for decision resolution.
-			s.doneChans[taskID] = make(chan struct{})
-		}
-	}
+	s.resumeGraphAfterDecisionLocked(graph, taskID)
 
 	s.Mu.Unlock()
 
@@ -529,6 +494,7 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 			Capability:     output.Capability,
 			MissingContext: output.MissingContext,
 			Attachments:    output.Attachments,
+			Usage:          output.Usage, // O56: handleStepSuccess reads this for cost + event; do not drop it again.
 		},
 		Ref: fmt.Sprintf("%s:%s", taskID, stepID),
 	})
@@ -537,6 +503,56 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 	// Wake the run() loop to check for newly-ready steps after decision resolution.
 	s.Broadcast()
 	return nil
+}
+
+// fulfillPlanDelegationLocked parses a plan delegation output, injects the
+// planned steps via graph surgery, and updates graph state. Caller MUST hold
+// s.Mu.Lock(); the lock is NOT released by this helper.
+func (s *DirectedEngine) fulfillPlanDelegationLocked(graph *schemas.TaskGraph, dec *schemas.Decision, decIdx int, outputJSON string) ([]schemas.StepInput, error) {
+	planned, err := schemas.ParsePlanDAG(outputJSON, schemas.PlanParseOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("plan delegation: failed to parse plan: %w", err)
+	}
+	if len(planned) == 0 {
+		return nil, fmt.Errorf("plan delegation: parsed plan has zero steps")
+	}
+	if err := s.mutateGraphTopologyLocked(graph, SurgeryData{
+		DeprecatedStepID: dec.StepID,
+		ReplacementSteps: planned,
+	}); err != nil {
+		return nil, fmt.Errorf("plan delegation: graph surgery failed: %w", err)
+	}
+	// Clear the decision and update graph state.
+	graph.PendingDecisions = append(graph.PendingDecisions[:decIdx], graph.PendingDecisions[decIdx+1:]...)
+	graph.IsSmartRouted = false
+	graph.Status = schemas.GraphRunning
+	return planned, nil
+}
+
+// resumeGraphAfterDecisionLocked resumes a graph after a decision has been
+// resolved. If no other pending decisions remain, either completes a smart-
+// routed graph or creates a fresh done channel for non-smart-routed graphs.
+// Caller MUST hold s.Mu.Lock().
+func (s *DirectedEngine) resumeGraphAfterDecisionLocked(graph *schemas.TaskGraph, taskID string) {
+	if len(graph.PendingDecisions) > 0 {
+		return
+	}
+	if graph.IsSmartRouted {
+		graph.Status = schemas.GraphCompleted
+		if ch, ok := s.doneChans[taskID]; ok {
+			select {
+			case <-ch:
+			default:
+				close(ch)
+			}
+		}
+	} else {
+		// Graph is already GraphRunning (step-level blocking never set
+		// GraphBlocked). Create a fresh done channel so WaitTask callers
+		// can wait for the next terminal state, and Broadcast to wake
+		// the run() loop which is waiting for decision resolution.
+		s.doneChans[taskID] = make(chan struct{})
+	}
 }
 
 // GetSignalState returns the raw ACAIS SignalField intensity map (layer →
@@ -562,7 +578,44 @@ func (s *DirectedEngine) GetSignalState() map[string]map[string]float64 {
 	return state
 }
 
-// ─── Decision ─────────────────────────────────────────────────────────────
+// PendingDecisionCount returns the number of pending decisions for a task,
+// safely reading under the engine mutex. Use this instead of
+// len(graph.PendingDecisions) in tests and callers that don't hold s.Mu.
+func (s *DirectedEngine) PendingDecisionCount(taskID string) int {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	g, ok := s.graphs[taskID]
+	if !ok {
+		return 0
+	}
+	return len(g.PendingDecisions)
+}
+
+// FirstPendingDecision returns the first pending decision for a task, or nil
+// if there are none. The returned pointer is a snapshot — callers must not
+// mutate it. Safe for concurrent use.
+func (s *DirectedEngine) FirstPendingDecision(taskID string) *schemas.Decision {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	g, ok := s.graphs[taskID]
+	if !ok || len(g.PendingDecisions) == 0 {
+		return nil
+	}
+	return g.PendingDecisions[0]
+}
+
+// GraphStatus returns the current status of a task graph, safely reading under
+// the engine mutex. Use this instead of graph.Status in tests and callers that
+// don't hold s.Mu. Returns false if the task is not found.
+func (s *DirectedEngine) GraphStatus(taskID string) (schemas.GraphStatus, bool) {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	g, ok := s.graphs[taskID]
+	if !ok {
+		return "", false
+	}
+	return g.Status, true
+}
 
 // ─── Decision ─────────────────────────────────────────────────────────────
 

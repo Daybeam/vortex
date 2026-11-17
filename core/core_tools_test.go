@@ -142,7 +142,7 @@ func strIndexOf(s, substr string) int {
 // of files modified during execution. Without this, the model can't
 // observe whether anything happened → loops until max_turns.
 //
-// Bug: 041-capacity-planning task had 38/41空转 calls because the script
+// Bug: 041-capacity-planning task had 38/41 idle calls because the script
 // writes 3 deliverables but never prints — model sees empty stdout and
 // re-runs the same script 37 times.
 func TestExecuteCode_SilentSuccess_ReportsFileChanges(t *testing.T) {

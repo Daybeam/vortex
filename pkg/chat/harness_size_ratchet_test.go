@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// Q6-1 ratchet (decision 2026-11-04: "不拆", with one stated precondition —
-// "Run 只许缩不许长，新功能一律进 helper，这条要靠 sizecheck 守住").
+// Q6-1 ratchet (decision 2026-11-04: "do not split", with one stated precondition —
+// "Run may only shrink, never grow; new features go into helpers; sizecheck enforces this").
 //
 // sizecheck cannot hold that line today. scripts/size_baseline.txt froze
 // chat_harness.go at 1137 and Run at 401 (its lines 9-10) while the tree already
@@ -28,8 +28,8 @@ import (
 // Lower these two numbers when the code shrinks. Raising them needs the user's
 // decision on Q6-1 again, not a test edit.
 const (
-	chatHarnessFileCeiling = 1525
-	chatHarnessRunCeiling  = 645
+	chatHarnessFileCeiling = 868
+	chatHarnessRunCeiling  = 559
 )
 
 func TestChatHarnessSize_RatchetOnlyTightens(t *testing.T) {

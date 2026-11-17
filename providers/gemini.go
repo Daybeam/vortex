@@ -205,7 +205,7 @@ func (p *GeminiProvider) StreamComplete(ctx context.Context, req CompleteRequest
 	}
 	if httpResp.StatusCode == 400 {
 		b, _ := io.ReadAll(io.LimitReader(httpResp.Body, safelimits.MaxErrorBody)) // audit H1
-		return nil, &BadRequestError{Msg: string(b)}
+		return nil, classifyBadRequest(b)
 	}
 	if httpResp.StatusCode >= 400 {
 		b, _ := io.ReadAll(io.LimitReader(httpResp.Body, safelimits.MaxErrorBody)) // audit H1
@@ -350,7 +350,7 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompleteRequest) (*Pr
 		return nil, &RateLimitError{Msg: string(respBody), RetryAfter: parseRetryAfter(headers)}
 	}
 	if status == 400 {
-		return nil, &BadRequestError{Msg: string(respBody)}
+		return nil, classifyBadRequest(respBody)
 	}
 	if status >= 400 {
 		return nil, &ProviderError{Msg: fmt.Sprintf("HTTP %d: %s", status, respBody)}

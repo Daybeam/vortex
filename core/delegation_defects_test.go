@@ -22,7 +22,7 @@ func TestCollectDelegationToolDefs_IncludesCoreTools(t *testing.T) {
 	hub := NewContextHub(reg, nil, nil)
 	spawner := &Spawner{registry: reg}
 
-	defs := spawner.collectDelegationToolDefs(hub, nil)
+	defs := collectDelegationToolDefsForTest(t, spawner, hub, nil)
 
 	if len(defs) == 0 {
 		t.Fatal("expected core tool definitions, got empty list")
@@ -58,7 +58,7 @@ func TestCollectDelegationToolDefs_IncludesMCPBindings(t *testing.T) {
 	spawner := &Spawner{registry: reg}
 
 	bindings := []config.MCPBinding{{MCPID: "search-mcp"}}
-	defs := spawner.collectDelegationToolDefs(hub, bindings)
+	defs := collectDelegationToolDefsForTest(t, spawner, hub, bindings)
 
 	hasWebSearch := false
 	hasFetchPage := false
@@ -100,7 +100,7 @@ func TestCollectDelegationToolDefs_RespectsAllowlist(t *testing.T) {
 	bindings := []config.MCPBinding{
 		{MCPID: "search-mcp", AllowedTools: []string{"web_search"}},
 	}
-	defs := spawner.collectDelegationToolDefs(hub, bindings)
+	defs := collectDelegationToolDefsForTest(t, spawner, hub, bindings)
 
 	hasWebSearch := false
 	hasFetchPage := false
@@ -139,19 +139,15 @@ func TestFulfillDelegation_UnblocksStep(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		engine.Mu.RLock()
-		graph = engine.graphs[taskID]
-		completed := graph != nil && graph.Status == schemas.GraphCompleted
-		engine.Mu.RUnlock()
-		if completed {
+		graph = engine.GetTaskGraph(taskID)
+		if graph != nil && graph.Status == schemas.GraphCompleted {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	engine.Mu.RLock()
+	graph = engine.GetTaskGraph(taskID)
 	finalStatus := graph.Status
-	engine.Mu.RUnlock()
 	if finalStatus != schemas.GraphCompleted {
 		t.Errorf("expected graph completed, got %v", finalStatus)
 	}
@@ -173,15 +169,13 @@ func TestFulfillDelegation_StepNotBlocked(t *testing.T) {
 	// FulfillDelegation: on Linux -race the goroutine can transition
 	// the step to StepBlocked before FulfillDelegation checks status.
 	taskID := "test_not_blocked"
-	engine.Mu.Lock()
-	engine.graphs[taskID] = &schemas.TaskGraph{
+	injectTestGraph(t, engine, &schemas.TaskGraph{
 		TaskID: taskID,
 		Steps: map[string]*schemas.Step{
 			"step_1": {ID: "step_1", RoleID: "worker", Task: "work", Status: schemas.StepPending},
 		},
 		Status: schemas.GraphRunning,
-	}
-	engine.Mu.Unlock()
+	})
 
 	err := engine.FulfillDelegation(taskID, "step_1", map[string]any{})
 	if err == nil {
@@ -437,9 +431,7 @@ func TestSubmitWithSessionIR_SetsTimeoutAndTokenBudget(t *testing.T) {
 		t.Fatalf("SubmitWithSessionIR failed: %v", err)
 	}
 
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
-	engine.Mu.RUnlock()
+	graph := engine.GetTaskGraph(taskID)
 
 	if graph == nil {
 		t.Fatal("expected graph to exist")
@@ -468,9 +460,7 @@ func TestSubmitWithSessionIR_ZeroTimeoutUsesDefault(t *testing.T) {
 		t.Fatalf("SubmitWithSessionIR failed: %v", err)
 	}
 
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
-	engine.Mu.RUnlock()
+	graph := engine.GetTaskGraph(taskID)
 
 	if graph == nil {
 		t.Fatal("expected graph to exist")
@@ -590,12 +580,12 @@ func TestFulfillDelegation_ClearsPendingDecision(t *testing.T) {
 		t.Fatalf("FulfillDelegation failed: %v", err)
 	}
 
+	graph = engine.GetTaskGraph(taskID)
 	engine.Mu.RLock()
-	graph = engine.graphs[taskID]
 	for _, dec := range graph.PendingDecisions {
 		if dec.StepID == "step_1" && dec.Type == schemas.DecisionDelegationRequired {
-			engine.Mu.RUnlock()
 			t.Error("expected delegation decision to be cleared after fulfillment")
+			engine.Mu.RUnlock()
 			return
 		}
 	}

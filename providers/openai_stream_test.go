@@ -57,6 +57,66 @@ func TestOpenAIStreamComplete_TextTokens(t *testing.T) {
 	}
 }
 
+// Ant Ling emits `data:{...}` with no space after the colon and terminates
+// with `data:[DONE]`. Both are legal SSE. Before the fix every frame was
+// skipped, StreamComplete saw an empty reply, and silently issued a SECOND
+// non-streaming request (the "streaming returned empty response" fallback).
+// The request counter is the regression: one turn must cost exactly one call.
+func TestOpenAIStreamComplete_NoSpaceAfterColon(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		frames := []string{
+			`data:{"id":"ling-1","choices":[{"delta":{"content":"","role":"assistant"},"index":0}],"usage":null}`,
+			`data:{"choices":[{"delta":{"content":"Hello"},"index":0}],"usage":null}`,
+			`data:{"choices":[{"delta":{"content":" world"},"index":0}],"usage":null}`,
+			`data:{"choices":[],"usage":{"prompt_tokens":2842,"completion_tokens":63,"prompt_tokens_details":{"cached_tokens":11}}}`,
+			`data:[DONE]`,
+		}
+		for _, frame := range frames {
+			fmt.Fprintln(w, frame)
+			fmt.Fprintln(w)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.ProviderConfig{Provider: "openai", Model: "Ling-3.2-flash", BaseURL: server.URL}
+	p := &OpenAIProvider{cfg: cfg, name: "openai", client: server.Client()}
+
+	var chunks []string
+	resp, err := p.StreamComplete(context.Background(), CompleteRequest{
+		Model:     "Ling-3.2-flash",
+		System:    "test",
+		User:      "hi",
+		MaxTokens: 100,
+	}, func(chunk string) error {
+		chunks = append(chunks, chunk)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamComplete failed: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected exactly one provider request, got %d (empty-stream fallback fired)", requests)
+	}
+	if resp.Text != "Hello world" {
+		t.Errorf("expected text 'Hello world', got %q", resp.Text)
+	}
+	if strings.Join(chunks, "") != "Hello world" {
+		t.Errorf("chunk concatenation mismatch: %v", chunks)
+	}
+	if resp.PromptTokens != 2842 || resp.CompletionTokens != 63 || resp.CacheReadTokens != 11 {
+		t.Errorf("usage not read from the no-space frames: prompt=%d completion=%d cached=%d",
+			resp.PromptTokens, resp.CompletionTokens, resp.CacheReadTokens)
+	}
+}
+
 func TestOpenAIStreamComplete_ToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

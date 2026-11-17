@@ -28,6 +28,20 @@ type TaskRegistry interface {
 	ListTasks(ctx context.Context, limit int) ([]TaskRow, error)
 }
 
+// StaleTaskSweeper is an optional capability of a TaskRegistry: close task rows
+// left 'running' by a process that no longer exists. Optional for the same reason
+// batchLoader is — file mode has no task ledger at all, and a mock registry
+// should not have to implement a sweep nobody will ask it for. Consumers detect
+// it by type assertion and skip when it is absent.
+type StaleTaskSweeper interface {
+	// SweepStaleRunning fails rows still 'running' whose last write predates
+	// cutoff and returns the task IDs this call actually closed. The UPDATE
+	// carries the same predicate as the SELECT, so a row a live hub touched in
+	// between is left alone, and two hubs sweeping at once cannot both report
+	// the same ID.
+	SweepStaleRunning(ctx context.Context, cutoff time.Time) ([]string, error)
+}
+
 // BaselineStore pins and retrieves SOP/Role versions at task creation time.
 // Nil-safe: consumers must nil-check before use (mirrors TaskRegistry pattern).
 // See docs/BASELINE_VERSION_PINNING_DESIGN.md
@@ -124,7 +138,7 @@ type IExperienceStore interface {
 	AddGeneratedSkill(ctx context.Context, skill *GeneratedSkill) error
 	QueryRoleAdvice(ctx context.Context, roleID string) map[string]any
 	// Experience Graph Memory (docs/architecture/EXPERIENCE_GRAPH_DESIGN.md)
-	RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal string, tokenBudget int) []*ExperienceNode
+	RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal, domain string, tokenBudget int) []*ExperienceNode
 	QuerySimilarPatterns(ctx context.Context, capabilities []string, limit int) []TaskPattern
 	QueryRelevantSkills(ctx context.Context, taskType string, limit int) []string
 	QuerySkillsBySignal(ctx context.Context, signal string) []string
@@ -233,4 +247,67 @@ type ChatSessionRow struct {
 	RootID       string    `json:"root_id,omitempty"`
 	ActiveLeafID string    `json:"active_leaf_id,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+// OutboxItem is one notification waiting to reach a user through whichever
+// transport can currently deliver it.
+type OutboxItem struct {
+	ID        int64
+	SessionID string
+	Kind      string
+	DedupeKey string
+	Text      string
+
+	// MetaJSON is opaque to the store: the producer and the deliverer agree on
+	// its contents, so the queue itself never needs a schema per notification.
+	MetaJSON string
+
+	CreatedAt time.Time
+
+	// Attempts counts claims, not delivery failures reported by the caller.
+	Attempts int
+}
+
+// IChatOutbox is the durable queue between "something happened to a session"
+// and "a transport pushed it to the user".
+//
+// It exists because those two sides are not always in the same process: the
+// task finishes in whichever hub runs it, but only the hub holding the bot
+// token can speak to Telegram, and neither of them may still be alive when the
+// notification comes due. Producers enqueue and forget; a deliverer claims,
+// sends, and confirms.
+//
+// Claims are leased and atomic. claim_holder doubles as the fence: once a lease
+// lapses and another hub takes the row over, the previous owner's confirm call
+// matches no rows and its delivery goes unrecorded rather than being credited
+// to a send that never happened.
+//
+// Scope, stated because it decides what this queue can be used for: the SQLite
+// backend is safe for several hubs sharing one file on one host, which is the
+// WAL + busy_timeout configuration the runtime DB already runs. It is not safe
+// for several nodes sharing one file over RWX/NFS, which is why the hub HA plan
+// rejects that shape outright (docs/plan/HUB_HA_PRIMARY_STANDBY_DESIGN.md D2).
+// On k3s a hub therefore either owns the channel as the single writer of that
+// host's file, or this interface gets a Postgres backend -- the seam is here so
+// nothing above the store changes when that backend lands.
+type IChatOutbox interface {
+	// Enqueue stores a notification, reporting false when dedupe_key already
+	// exists so a producer retrying after a lost response cannot double-send.
+	Enqueue(ctx context.Context, item OutboxItem) (bool, error)
+
+	// ClaimPending reserves up to limit claimable rows for holder for the lease
+	// duration and returns them.
+	ClaimPending(ctx context.Context, holder string, limit int, lease time.Duration) ([]OutboxItem, error)
+
+	// MarkDelivered closes a row still held by holder, reporting false when the
+	// claim was already lost.
+	MarkDelivered(ctx context.Context, id int64, holder string) (bool, error)
+
+	// MarkFailed releases a row still held by holder for a later pass, or drops
+	// it once it has run out of attempts. reason is recorded for the operator.
+	MarkFailed(ctx context.Context, id int64, holder, reason string) error
+
+	// Purge deletes rows that reached a terminal state before the bound and
+	// reports how many went.
+	Purge(ctx context.Context, before time.Time) (int, error)
 }

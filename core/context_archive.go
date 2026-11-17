@@ -21,7 +21,7 @@ type MemoryScope string
 
 const (
 	ScopeTask    MemoryScope = "task"    // current task context (filtered by TaskID)
-	ScopeProject MemoryScope = "project" // project-level business knowledge (filtered by TaskID)
+	ScopeProject MemoryScope = "project" // project-level business knowledge (cross-task within one ProjectID)
 	ScopeTeam    MemoryScope = "team"    // team conventions/standards (cross-task shared)
 	ScopeGlobal  MemoryScope = "global"  // globally universal (cross-task shared, = existing behavior for shared items)
 )

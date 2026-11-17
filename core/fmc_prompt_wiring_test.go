@@ -48,15 +48,12 @@ func TestSpawner_ActiveContextAssembler_FiresWithoutSimilarTaskPatterns(t *testi
 	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	spawner := NewSpawner(reg, ts, es, logger, nil, "outputs")
 
-	blocks, err := spawner.buildSystemPrompt(
+	blocks := buildSystemPromptForTest(t, spawner,
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "test-model"}, []string{}, nil, nil, false, nil,
 		"do the coding task", "operation timeout after 30s", "", "",
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("buildSystemPrompt: %v", err)
-	}
 
 	foundSimilarTask := false
 	foundLearnedExperience := false
@@ -97,15 +94,12 @@ func TestSpawner_FailureModeProfileInjection(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	spawner := NewSpawner(reg, ts, es, logger, nil, "outputs")
 
-	blocks, err := spawner.buildSystemPrompt(
+	blocks := buildSystemPromptForTest(t, spawner,
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "test-model"}, []string{}, nil, nil, false, nil,
 		"do the coding task", "", "", "",
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("buildSystemPrompt: %v", err)
-	}
 
 	found := false
 	for _, b := range blocks {
@@ -139,15 +133,12 @@ func TestSpawner_FailureModeProfileInjection_NoDataIsSilent(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	spawner := NewSpawner(reg, ts, es, logger, nil, "outputs")
 
-	blocks, err := spawner.buildSystemPrompt(
+	blocks := buildSystemPromptForTest(t, spawner,
 		context.Background(), nil, &config.Role{ID: "r1", Name: "test"}, nil, "coding",
 		&config.ProviderConfig{Model: "unseen-model"}, []string{}, nil, nil, false, nil,
 		"do the coding task", "", "", "",
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("buildSystemPrompt: %v", err)
-	}
 	for _, b := range blocks {
 		if strings.Contains(b.Text, "Known Weak Spots") {
 			t.Errorf("did not expect a Known Weak Spots block with zero data for this model, got: %s", b.Text)

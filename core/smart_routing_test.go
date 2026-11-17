@@ -60,13 +60,17 @@ func buildSmartRoutingEngine(t *testing.T, requireReview bool) (*DirectedEngine,
 func waitForGraph(t *testing.T, engine *DirectedEngine, taskID string, cond func(*schemas.TaskGraph) bool) *schemas.TaskGraph {
 	t.Helper()
 	for i := 0; i < 20; i++ {
-		engine.Mu.RLock()
-		graph, exists := engine.graphs[taskID]
+		graph := engine.GetTaskGraph(taskID)
+		if graph == nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
 		// Evaluate cond(graph) under RLock to prevent data race on
 		// graph.Status — the background goroutine in scheduler_submit.go
 		// writes graph.Status under Mu.Lock(), so the reader must hold
 		// Mu.RLock() to establish a happens-before relationship.
-		done := exists && graph != nil && (cond == nil || cond(graph))
+		engine.Mu.RLock()
+		done := cond == nil || cond(graph)
 		engine.Mu.RUnlock()
 		if done {
 			return graph

@@ -589,7 +589,7 @@ func (s *Spawner) processToolCalls(
 		// filesystem.delete_file and leave no trace in the jsonl beyond the
 		// result that went into the prompt. Core tools were the only auditable
 		// path, which is why p23's file loss could be bounded in time but never
-		// attributed to a call (铁律 78/131: one concept, two paths, one wired).
+		// attributed to a call (Iron Rule 78/131: one concept, two paths, one wired).
 		//
 		// The read-cache replay above returns before this line on purpose: it
 		// reuses an earlier result without executing anything, so it is not a
@@ -675,7 +675,7 @@ func (s *Spawner) processToolCalls(
 					md := env.ToMarkdown(call.Name)
 
 					// Apply Sieve Pruning to reduce token noise for large tool outputs
-					if len(md) > s.processor.MaxBodyChars {
+					if len(md) > s.processor.GetMaxBodyChars() {
 						md = s.sieve.PruneOutput(md, req.Task)
 					}
 					// #2-universal (eval §23): cache the successful read result
@@ -687,7 +687,7 @@ func (s *Spawner) processToolCalls(
 					// Egress redaction (I5) + L1 injection marking (input_normalization.go).
 					// Output bounding: adaptive truncation for oversized results.
 					md = redactAndMarkUntrusted(md, req.OwnerID)
-					if len(md) > s.processor.MaxBodyChars {
+					if len(md) > s.processor.GetMaxBodyChars() {
 						md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
 					noteToolResult(state, callKey, md)
@@ -735,7 +735,7 @@ func (s *Spawner) processToolCalls(
 
 					// Apply Sieve Pruning to reduce token noise for large tool outputs,
 					// mirroring the local (command-based) MCP branch above.
-					if len(md) > s.processor.MaxBodyChars {
+					if len(md) > s.processor.GetMaxBodyChars() {
 						md = s.sieve.PruneOutput(md, req.Task)
 					}
 					// #2-universal (eval §23): cache the successful read result.
@@ -745,7 +745,7 @@ func (s *Spawner) processToolCalls(
 					}
 					// Egress redaction (I5) + L1 injection marking (mirrors the local branch).
 					md = redactAndMarkUntrusted(md, req.OwnerID)
-					if len(md) > s.processor.MaxBodyChars {
+					if len(md) > s.processor.GetMaxBodyChars() {
 						md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
 					}
 					noteToolResult(state, callKey, md)

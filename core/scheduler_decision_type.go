@@ -5,8 +5,8 @@ import "github.com/daybeam/vortex/schemas"
 // PendingDecisionType reports the type of a parked decision, looked up by its
 // ID, and whether the lookup succeeded.
 //
-// Q4-5 (2026-11-05, operator ruling: 「按 decision_id 路由，同时保留按载荷存在与否
-// 路由作兜底」): orchestrator_submit_decision used to pick its engine entry point
+// Q4-5 (2026-11-05, operator ruling: "Route by decision_id, while keeping payload-presence
+// routing as fallback"): orchestrator_submit_decision used to pick its engine entry point
 // from the mere presence of an `output` payload, so a host that serialised an
 // empty result object for a skip|abort landed in the delegation-only
 // FulfillStep (O17). The decision's own type is the fact that determines what

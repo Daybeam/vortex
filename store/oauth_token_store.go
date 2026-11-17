@@ -22,7 +22,7 @@ func NewOAuthTokenStore(db *sql.DB) *OAuthTokenStore {
 }
 
 // SaveToken upserts a token entry. Called by TokenManager after each
-// successful token fetch or refresh — R5 requires "先落盘再返回" (persist
+// successful token fetch or refresh — R5 requires "persist before returning" (persist
 // before returning) to avoid concurrent refresh burning the refresh token.
 func (s *OAuthTokenStore) SaveToken(ctx context.Context, ownerID, clientID, tokenEndpoint, accessToken, refreshToken string, expiresAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `

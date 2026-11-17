@@ -11,8 +11,13 @@ import (
 // blocks kept in full. Older observations are compacted to one-line
 // summaries to prevent context pollution in long-running heartbeat tasks.
 //
-// See docs/plan/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md §3 Bucket 2.
+// See docs/completed/2026-10-30/VCP_HEARTBEAT_AND_CONTEXT_TIERING_DESIGN.md §3 Bucket 2.
 const MaxFullObservations = 5
+
+// summarizedInfix separates an already-compacted observation from a fresh one.
+// The producer always emits MarkerEnvObservation followed by "\n", so this infix
+// can only come from a summary this function wrote.
+const summarizedInfix = " (summarized, "
 
 // CompactOldObservations implements the Rolling Log Bucket (Bucket 2 of
 // the VCP Context Tiering design). It keeps the latest maxFull observation
@@ -25,9 +30,11 @@ const MaxFullObservations = 5
 //
 // The summary format is:
 //
-//	"[ENVIRONMENT OBSERVATION (summarized, XKB)] <first line of original>"
+//	"[ENVIRONMENT OBSERVATION] (summarized, XKB) <first line of original>"
 //
 // This is a pure function: it returns a new slice, never mutates the input.
+// It is also idempotent — an already-summarized block is left untouched, so
+// running it once per turn does not re-summarize the previous turns' summaries.
 func CompactOldObservations(userBlocks []schemas.ContentBlock, maxFull int) []schemas.ContentBlock {
 	if maxFull <= 0 {
 		maxFull = MaxFullObservations
@@ -54,13 +61,20 @@ func CompactOldObservations(userBlocks []schemas.ContentBlock, maxFull int) []sc
 	toCompact := len(obsIndices) - maxFull
 	for _, idx := range obsIndices[:toCompact] {
 		original := result[idx].Text
+		// Idempotent: the caller runs this every turn on a slice that still
+		// carries earlier summaries. Re-compacting one would measure the
+		// summary's own length and nest the marker, losing the original size
+		// and first line -- the only two facts worth keeping.
+		if strings.HasPrefix(original, MarkerEnvObservation+summarizedInfix) {
+			continue
+		}
 		kb := len(original) / 1024
 		if kb == 0 {
 			kb = 1 // "0KB" is misleading for non-empty content
 		}
 		firstLine := extractFirstLine(original)
 		result[idx] = schemas.ContentBlock{
-			Text: fmt.Sprintf("%s (summarized, %dKB) %s", MarkerEnvObservation, kb, firstLine),
+			Text: fmt.Sprintf("%s%s%dKB) %s", MarkerEnvObservation, summarizedInfix, kb, firstLine),
 			// No CacheControl — summarized blocks should not be cached.
 		}
 	}

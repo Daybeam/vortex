@@ -44,7 +44,10 @@ func (m *mockProfileLookup) Lookup(modelID, capability string) (float64, float64
 }
 
 func newTestRouter() *ProviderRouter {
-	return &ProviderRouter{slots: make(map[string]*ProviderSlot)}
+	return &ProviderRouter{
+		slots:     make(map[string]*ProviderSlot),
+		poolIndex: make(map[string][]*ProviderSlot),
+	}
 }
 
 func registerTestSlot(r *ProviderRouter, id, poolID, model string, latency float64) {
@@ -58,6 +61,7 @@ func registerTestSlot(r *ProviderRouter, id, poolID, model string, latency float
 	}
 	slot.LatencyEMA = latency
 	r.slots[id] = slot
+	r.poolIndex[poolID] = append(r.poolIndex[poolID], slot)
 }
 
 func TestNextPareto_NilLookupFallsBackToNext(t *testing.T) {

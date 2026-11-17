@@ -105,8 +105,12 @@ func TestDeleteByScope_FileRewritten(t *testing.T) {
 	path := filepath.Join(dir, "archive.jsonl")
 	a := NewContextArchive(path)
 
-	_ = a.Append(MemoryItem{TaskID: "taskA", NodeID: "n1", Intent: "keep", Timestamp: time.Now()})
-	_ = a.Append(MemoryItem{TaskID: "taskB", NodeID: "n2", Intent: "delete", Timestamp: time.Now()})
+	if err := a.Append(MemoryItem{TaskID: "taskA", NodeID: "n1", Intent: "keep", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("Append taskA failed: %v", err)
+	}
+	if err := a.Append(MemoryItem{TaskID: "taskB", NodeID: "n2", Intent: "delete", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("Append taskB failed: %v", err)
+	}
 
 	_, err := a.DeleteByScope(ArchiveScope{TaskID: "taskB"})
 	if err != nil {
@@ -134,8 +138,12 @@ func TestDeleteByScope_IndexDirty(t *testing.T) {
 	path := filepath.Join(dir, "archive.jsonl")
 	a := NewContextArchive(path)
 
-	_ = a.Append(MemoryItem{TaskID: "taskA", NodeID: "n1", Intent: "x", Timestamp: time.Now()})
-	_ = a.Append(MemoryItem{TaskID: "taskB", NodeID: "n2", Intent: "y", Timestamp: time.Now()})
+	if err := a.Append(MemoryItem{TaskID: "taskA", NodeID: "n1", Intent: "x", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("Append taskA failed: %v", err)
+	}
+	if err := a.Append(MemoryItem{TaskID: "taskB", NodeID: "n2", Intent: "y", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("Append taskB failed: %v", err)
+	}
 
 	// Build the index so it's clean.
 	a.BuildIndex()

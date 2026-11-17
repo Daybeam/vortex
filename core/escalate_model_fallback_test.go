@@ -141,6 +141,7 @@ func TestEscalateModel_UnavailableModel_ReturnsError(t *testing.T) {
 	defer logger.Close()
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
+	defer engine.Stop()
 	engine.lifecycleCancel()
 
 	taskID := "task_escalate_unavailable"
@@ -155,9 +156,7 @@ func TestEscalateModel_UnavailableModel_ReturnsError(t *testing.T) {
 			{ID: "dec_1", StepID: stepID, Options: []string{"escalate_model"}},
 		},
 	}
-	engine.Mu.Lock()
-	engine.graphs[taskID] = graph
-	engine.Mu.Unlock()
+	injectTestGraph(t, engine, graph)
 
 	// "claude-3-opus" is not a provider ID and no provider uses this model.
 	err := engine.SubmitDecision(taskID, "dec_1", "escalate_model:claude-3-opus")
@@ -186,6 +185,7 @@ func TestEscalateModel_AvailableModel_Succeeds(t *testing.T) {
 	defer logger.Close()
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
+	defer engine.Stop()
 	engine.lifecycleCancel()
 
 	taskID := "task_escalate_available"
@@ -200,9 +200,7 @@ func TestEscalateModel_AvailableModel_Succeeds(t *testing.T) {
 			{ID: "dec_1", StepID: stepID, Options: []string{"escalate_model"}},
 		},
 	}
-	engine.Mu.Lock()
-	engine.graphs[taskID] = graph
-	engine.Mu.Unlock()
+	injectTestGraph(t, engine, graph)
 
 	// "gpt-4o" is available as a model name (provider "openai" uses it).
 	err := engine.SubmitDecision(taskID, "dec_1", "escalate_model:gpt-4o")

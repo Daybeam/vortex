@@ -30,6 +30,7 @@ import (
 // no effect on the task's context, and the provider call hangs forever.
 func TestSubmit_TaskContextDerivedFromLifecycleCtx(t *testing.T) {
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
 

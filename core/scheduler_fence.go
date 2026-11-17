@@ -110,7 +110,7 @@ func readGraphFence(path string) (graphFence, bool) {
 // is write-tearing, not the claim race — see limit 1 above.
 //
 // The rename is retried because on Windows replacing a file that another engine
-// created milliseconds earlier fails outright with a sharing violation — 实测
+// created milliseconds earlier fails outright with a sharing violation — measured:
 // `rename …\fence.json.tmp …\fence.json: The process cannot access the file
 // because it is being used by another process`, from a test where two engines in
 // one process stamped the same task. A held-open destination is exactly the
@@ -203,7 +203,7 @@ func (s *DirectedEngine) claimFence(taskID string) {
 //  1. A token left on disk does not mean a live rival. After any crash or kill the
 //     previous holder's fence.json is stale, and refusing to start on that evidence
 //     would break the resume path this fence was added to protect.
-//  2. 实测: a write at executor start is a write that races whoever built the
+//  2. Measured: a write at executor start is a write that races whoever built the
 //     engine. TestDispatchGroup_AcceptsOwnerID failed 3 and 6 times out of 40 with
 //     `TempDir RemoveAll cleanup: unlinkat …: The directory is not empty` once
 //     startGraphExecutor claimed, and 0 of 80 with only that write suppressed — the

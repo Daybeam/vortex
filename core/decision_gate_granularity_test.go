@@ -23,9 +23,7 @@ func TestDecisionGate_NoGraphBlockedStatus(t *testing.T) {
 	step := &schemas.Step{ID: "s1", Status: schemas.StepFailed}
 	graph.Steps["s1"] = step
 
-	s.Mu.Lock()
-	s.graphs["task-no-block"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	s.addDecision(graph, step, schemas.DecisionStepFailed,
 		map[string]any{"last_error": "test"},
@@ -64,9 +62,7 @@ func TestDecisionGate_ParallelBranchesContinue(t *testing.T) {
 		Status: schemas.GraphRunning,
 	}
 
-	s.Mu.Lock()
-	s.graphs["task-parallel"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// Step A fails → addDecision creates a pending decision.
 	// With graph-level blocking, graph.Status would become GraphBlocked,
@@ -128,9 +124,7 @@ func TestDecisionGate_MultipleConcurrentDecisions(t *testing.T) {
 		Status: schemas.GraphRunning,
 	}
 
-	s.Mu.Lock()
-	s.graphs["task-multi-dec"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	// Step A fails → decision 1
 	s.addDecision(graph, graph.Steps["A"], schemas.DecisionStepFailed,

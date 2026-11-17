@@ -58,7 +58,7 @@ func TestIntegration_A1_Retry_DuplicateSkipped_OneEffectRecorded(t *testing.T) {
 		t.Fatal("first call should not be skipped by A1")
 	}
 	// recordEffect is called (matching spawner.go line 1381).
-	spawner.recordEffect(taskID, stepID, toolName, args, "written", "success")
+	recordEffectForTest(t, spawner, taskID, stepID, toolName, args, "written", "success")
 
 	// ── Turn 1, Call 2 (duplicate): A1 skips it → recordEffect NOT called. ──
 	opKey2 := toolCallKey(toolName, args)
@@ -99,14 +99,14 @@ func TestIntegration_A1_Retry_DifferentArgs_BothRecorded(t *testing.T) {
 	if turnCtx.CheckAndMark(toolCallKey("write_file", args1)) {
 		t.Fatal("first call should not be skipped")
 	}
-	spawner.recordEffect(taskID, stepID, "write_file", args1, "written", "success")
+	recordEffectForTest(t, spawner, taskID, stepID, "write_file", args1, "written", "success")
 
 	// Call 2: write_file with content "world" — different args, should NOT be skipped
 	args2 := map[string]any{"path": "a.txt", "content": "world"}
 	if turnCtx.CheckAndMark(toolCallKey("write_file", args2)) {
 		t.Fatal("call with different args should not be skipped")
 	}
-	spawner.recordEffect(taskID, stepID, "write_file", args2, "written", "success")
+	recordEffectForTest(t, spawner, taskID, stepID, "write_file", args2, "written", "success")
 
 	tracker := spawner.GetOrCreateEffectTracker(taskID)
 	records := tracker.GetRecords()

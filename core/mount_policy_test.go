@@ -183,9 +183,7 @@ func TestHandleStepFailure_ApprovalEmitsHumanApprovalDecision(t *testing.T) {
 	}
 	step := &schemas.Step{ID: "s1", Status: schemas.StepRunning, RoleID: "worker", Task: "deploy"}
 	graph.Steps["s1"] = step
-	s.Mu.Lock()
-	s.graphs["task-g2-approval"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	result := &SpawnResult{Output: schemas.SubagentOutput{
 		Status:                 schemas.StatusApprovalRequired,
@@ -232,9 +230,7 @@ func TestSubmitDecision_ApproveMountRecordsAndRequeues(t *testing.T) {
 		Context: map[string]any{"approval_required_mounts": []string{"approv_mcp"}},
 		Options: []string{"approve", "reject"},
 	}}
-	s.Mu.Lock()
-	s.graphs["task-g2-submit"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	if err := s.SubmitDecision("task-g2-submit", "dec-g2", "approve"); err != nil {
 		t.Fatalf("SubmitDecision approve: %v", err)

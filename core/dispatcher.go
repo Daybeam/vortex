@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -42,7 +43,12 @@ func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventTy
 		Timestamp: time.Now(),
 	}
 	statusSnap := graph.Status
-	globalWSSnap := graph.GlobalWorkspace
+	// Deep-copy GlobalWorkspace to prevent concurrent map iteration race
+	// with MutateGraphTopology / handleStepSuccess after RUnlock.
+	globalWSSnap := make(map[string]any, len(graph.GlobalWorkspace))
+	for k, v := range graph.GlobalWorkspace {
+		globalWSSnap[k] = v
+	}
 
 	cfg := s.registry.System.Notifications
 	matchingRoutes := make([]config.NotificationRoute, 0)
@@ -76,19 +82,15 @@ func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventTy
 	body, _ := json.Marshal(payload)
 
 	for _, route := range matchingRoutes {
-		go func(route config.NotificationRoute) {
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Fprintf(os.Stderr, "[webhook] panic for %s: %v\n", route.TargetURL, r)
-				}
-			}()
+		route := route // capture per-iteration for closure
+		s.goBackground(func() {
 			// audit fix C: acquire semaphore slot to bound concurrency. If all
 			// slots are taken, this goroutine blocks until one frees — providing
 			// backpressure instead of unbounded goroutine spawn.
 			webhookSem <- struct{}{}
 			defer func() { <-webhookSem }()
 			sendWebhook(route.TargetURL, route.SecretEnv, body)
-		}(route)
+		})
 	}
 }
 
@@ -115,7 +117,7 @@ func matchesTrigger(route config.NotificationRoute, eventType obs.EventType, gra
 }
 
 func sendWebhook(targetURL, secretEnv string, body []byte) {
-	req, err := http.NewRequest("POST", targetURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return
 	}

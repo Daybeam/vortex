@@ -65,6 +65,23 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 		if dt == "" || choice == "" {
 			continue
 		}
+		proposer, _ := d["proposer"].(string)
+		decider, _ := d["decider"].(string)
+		intervention, _ := d["intervention"].(string)
+		if proposer == "" {
+			proposer = "agent"
+		}
+		if decider == "" {
+			switch dt {
+			case "human_approval_required", "autonomous_abort_requested", "goal_change_requested":
+				decider = "human"
+				if intervention == "" {
+					intervention = "informational"
+				}
+			default:
+				decider = "agent"
+			}
+		}
 		do := &DecisionOutcome{
 			DecisionType: dt,
 			RoleID:       rid,
@@ -72,6 +89,9 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 			Choice:       choice,
 			Resolved:     success,
 			Timestamp:    time.Now(),
+			Proposer:     proposer,
+			Decider:      decider,
+			Intervention: intervention,
 		}
 		if success {
 			oc := overallConf
@@ -213,7 +233,10 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 			if fullSource != "" && existing.SourceText == "" {
 				existing.SourceText = fullSource
 				// audit P-5: SourceText changed → invalidate BM25 token cache.
+				// audit H9: also invalidate BM25 stats cache.
 				es.patternTokensCache = nil
+				es.bm25TermDocFreqsCache = nil
+				es.bm25AvgdlCache = 0
 			}
 			es.TaskPatterns[existingID] = existing
 			return
@@ -243,6 +266,9 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 			delete(es.TaskPatterns, all[i].id)
 		}
 		es.patternTokensCache = nil // invalidate cache
+		// audit H9: also invalidate BM25 stats cache.
+		es.bm25TermDocFreqsCache = nil
+		es.bm25AvgdlCache = 0
 	}
 	es.TaskPatterns[patternID] = TaskPattern{
 		ID:             patternID,
@@ -264,7 +290,10 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 		es.sequenceKeyIndex[key] = patternID
 	}
 	// audit P-5: invalidate BM25 token cache — new/updated pattern changes tokens.
+	// audit H9: also invalidate BM25 stats cache.
 	es.patternTokensCache = nil
+	es.bm25TermDocFreqsCache = nil
+	es.bm25AvgdlCache = 0
 }
 
 // stepSequenceKey builds a canonical, order-preserving signature of what a

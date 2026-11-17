@@ -62,7 +62,7 @@ func TestSearchTools(t *testing.T) {
 
 // D3 fix (2026-10-20): SearchTools with roleID must scope to the role's bound
 // MCPs only. A role with no bindings gets empty results (no pool fallback).
-// See CUSTOMER_V010_AUDIT_2026-10-20.md §D3.
+// See docs/archive/audits/CUSTOMER_V010_AUDIT_2026-10-20.md §D3.
 func TestSearchTools_RoleScoped(t *testing.T) {
 	registry := &config.Registry{
 		Mu: sync.RWMutex{},

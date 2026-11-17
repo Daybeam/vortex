@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -273,8 +274,12 @@ func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mc
 
 	applyAuth := func(req *http.Request) {
 		// Best-effort: handshake failures are handled by the caller (returns "").
-		// OAuth errors here will cause the handshake to fail naturally.
-		_ = applyMCPAuth(ctx, req, mcp, ownerID)
+		// OAuth errors here will cause the handshake to fail naturally, but we
+		// log the error so auth misconfiguration is visible in logs rather than
+		// silently swallowed.
+		if err := applyMCPAuth(ctx, req, mcp, ownerID); err != nil {
+			slog.Warn("MCP handshake auth failed", "mcp_id", mcp.ID, "owner", ownerID, "err", err)
+		}
 	}
 
 	initBody, _ := json.Marshal(map[string]any{
@@ -414,13 +419,27 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 			continue
 		}
 		desc, _ := t["description"].(string)
+		// Fail-closed: reject tools with invisible Unicode in metadata
+		// (MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.5, audit S-C2).
+		if !VerifyApprovalFidelity(name, desc) {
+			slog.Warn("MCP tool rejected: invisible Unicode detected in name/description (fail-closed)",
+				"mcp", mcp.ID, "tool", name)
+			continue
+		}
+		if is, ok := t["inputSchema"].(map[string]any); ok {
+			if !VerifySchemaFidelity(is) {
+				slog.Warn("MCP tool rejected: invisible Unicode detected in inputSchema (fail-closed)",
+					"mcp", mcp.ID, "tool", name)
+				continue
+			}
+		}
 		// Sanitize invisible Unicode from remote MCP tool metadata
 		// (MCP_UNICODE_TAG_SANITIZATION_DESIGN.md §3.2).
 		name = sanitizeMCPToolField(name, mcp.ID, "name")
 		desc = sanitizeMCPToolField(desc, mcp.ID, "description")
 		def := schemas.ToolDefinition{Name: name, Description: desc}
 		if is, ok := t["inputSchema"].(map[string]any); ok {
-			def.InputSchema = is
+			def.InputSchema = SanitizeMCPToolSchema(is)
 		}
 		out = append(out, def)
 	}

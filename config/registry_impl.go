@@ -353,9 +353,13 @@ func (r *Registry) GetHealthyModelsSummary() []map[string]any {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
+	now := time.Now()
 	var summary []map[string]any
 	for id, pc := range r.Providers {
 		if pc == nil {
+			continue
+		}
+		if !pc.IsWithinValidity(now) {
 			continue
 		}
 		summary = append(summary, map[string]any{
@@ -377,34 +381,45 @@ func (r *Registry) ResolveCapabilities(caps []string) ([]string, []MCPBinding) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
+	// audit H5: build reverse indexes once (O(skills + MCPs×tools)) instead
+	// of nested scans per cap (O(caps × skills + caps × MCPs × tools)).
+	// capToSkills: capability string → skill IDs that provide it.
+	capToSkills := make(map[string][]string, len(r.Skills))
+	for _, s := range r.Skills {
+		capToSkills[s.Capability] = append(capToSkills[s.Capability], s.ID)
+	}
+
+	// capToMCPTools: capability/tool name → list of (mcpID, tool) pairs.
+	type mcpToolRef struct {
+		mcpID string
+		tool  string
+	}
+	capToMCPTools := make(map[string][]mcpToolRef)
+	addMCP := func(m *MCPDef) {
+		for _, tool := range m.AvailableTools {
+			capToMCPTools[tool] = append(capToMCPTools[tool], mcpToolRef{m.ID, tool})
+			qualified := fmt.Sprintf("%s.%s", m.ID, tool)
+			capToMCPTools[qualified] = append(capToMCPTools[qualified], mcpToolRef{m.ID, tool})
+		}
+	}
+	for _, m := range r.MCPs {
+		addMCP(m)
+	}
+	for _, m := range r.DynamicMCPs {
+		addMCP(m)
+	}
+
 	var skills []string
 	mcpTools := make(map[string][]string)
 
 	for _, reqCap := range caps {
-		foundSkill := false
-		for _, s := range r.Skills {
-			if s.Capability == reqCap {
-				skills = append(skills, s.ID)
-				foundSkill = true
-			}
-		}
-		if foundSkill {
+		if ids, ok := capToSkills[reqCap]; ok {
+			skills = append(skills, ids...)
 			continue
 		}
-
-		for _, m := range r.MCPs {
-			for _, tool := range m.AvailableTools {
-				if tool == reqCap || fmt.Sprintf("%s.%s", m.ID, tool) == reqCap {
-					mcpTools[m.ID] = append(mcpTools[m.ID], tool)
-				}
-			}
-		}
-
-		for _, m := range r.DynamicMCPs {
-			for _, tool := range m.AvailableTools {
-				if tool == reqCap || fmt.Sprintf("%s.%s", m.ID, tool) == reqCap {
-					mcpTools[m.ID] = append(mcpTools[m.ID], tool)
-				}
+		if refs, ok := capToMCPTools[reqCap]; ok {
+			for _, ref := range refs {
+				mcpTools[ref.mcpID] = append(mcpTools[ref.mcpID], ref.tool)
 			}
 		}
 	}

@@ -29,7 +29,8 @@ import (
 func TestFulfillStep_MisRoutedAnswerNamesTheRealDecisionType(t *testing.T) {
 	s, _ := newAnswerTestEngine(t)
 	taskID := "o17_misrouted_abort"
-	s.graphs[taskID] = newBlockedGraph(taskID) // step_failed decision, options skip|abort
+	graph := newBlockedGraph(taskID) // step_failed decision, options skip|abort
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	err := s.FulfillStep(taskID, "dec_o25", "{}")

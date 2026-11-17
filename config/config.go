@@ -59,6 +59,10 @@ type Registry struct {
 	loadedSize       int64
 	loadedSnapshotMu sync.RWMutex
 
+	// watcherWg tracks the config watcher goroutine so StopWatcher can wait
+	// for it to fully exit after context cancellation (audit LEAK-2).
+	watcherWg sync.WaitGroup
+
 	wal           *WAL
 	compactor     *Compactor
 	walCheckpoint string // last WAL commit ID reflected in the loaded/persisted snapshot; see Config.WALCheckpoint

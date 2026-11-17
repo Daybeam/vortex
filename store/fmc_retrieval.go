@@ -31,6 +31,7 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 	query []float32,
 	capability string,
 	errorSignal string,
+	domain string,
 	tokenBudget int,
 ) []*ExperienceNode {
 	es.Mu.RLock()
@@ -99,7 +100,7 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 	tier2Start := time.Now()
 	tier2Base := len(results)
 	if len(query) > 0 {
-		simResults := es.querySimilarNodesLocked(query, 5, capability)
+		simResults := es.querySimilarNodesLocked(query, 5, capability, domain)
 		for _, node := range simResults {
 			if !seen[node.NodeID] {
 				results = append(results, node)
@@ -155,6 +156,9 @@ func (es *ExperienceStore) RetrieveRelevantExperience(
 		bonusStart := time.Now()
 		results = applyContextBonus(results, capability)
 		contextBonusDur = time.Since(bonusStart)
+	}
+	if len(results) > 1 && domain != "" {
+		results = applyDomainBonus(results, domain)
 	}
 
 	// audit C-HIGH-2: snapshot rerankerClient while still holding RLock to
@@ -217,7 +221,7 @@ func (es *ExperienceStore) predictFailureMode(err string) string {
 	return ""
 }
 
-func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int, capability string) []*ExperienceNode {
+func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int, capability, domain string) []*ExperienceNode {
 	if len(query) == 0 {
 		return nil
 	}
@@ -265,19 +269,22 @@ func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int, c
 	capMatches := func(node *ExperienceNode) bool {
 		return capability == "" || node.Capability == "" || node.Capability == capability
 	}
+	domMatches := func(node *ExperienceNode) bool {
+		return domain == "" || node.Domain == "" || domainPrefixMatch(node.Domain, domain)
+	}
 
-	// Pass 1: matching-capability nodes.
+	// Pass 1: matching capability AND domain (tightest match).
 	for _, node := range es.Nodes {
 		if len(node.Embedding) == 0 || len(node.Embedding) != len(query) {
 			continue
 		}
-		if !capMatches(node) {
+		if !capMatches(node) || !domMatches(node) {
 			continue
 		}
 		scoreNode(node)
 	}
 
-	// Pass 2: non-matching nodes, only if pass 1 was insufficient.
+	// Pass 2: remaining nodes, only if pass 1 was insufficient.
 	twoPass := false
 	if len(scored) < limit {
 		twoPass = true
@@ -285,7 +292,7 @@ func (es *ExperienceStore) querySimilarNodesLocked(query []float32, limit int, c
 			if len(node.Embedding) == 0 || len(node.Embedding) != len(query) {
 				continue
 			}
-			if capMatches(node) {
+			if capMatches(node) && domMatches(node) {
 				continue // already scanned in pass 1
 			}
 			scoreNode(node)
@@ -334,6 +341,42 @@ func applyContextBonus(results []*ExperienceNode, capability string) []*Experien
 		score := 1.0 / float64(i+1) // base: inverse tier rank
 		if node.Capability == capability {
 			score += 0.5 // context bonus: capability match
+		}
+		scoredResults[i] = scored{node: node, score: score}
+	}
+	sort.Slice(scoredResults, func(i, j int) bool {
+		return scoredResults[i].score > scoredResults[j].score
+	})
+	out := make([]*ExperienceNode, len(scoredResults))
+	for i, s := range scoredResults {
+		out[i] = s.node
+	}
+	return out
+}
+
+// applyDomainBonus re-sorts retrieval candidates by combining current rank with
+// domain-matching bonuses (design §7). Domain is a soft feature — it adds
+// incremental weight rather than acting as a binary filter.
+//
+// Base score = 1/(rank+1)  (inverse position, decays with rank)
+// Exact domain match  → +0.30 bonus
+// Prefix domain match → +0.15 bonus (query or item is prefix of the other)
+//
+// Bonuses are strictly lower than capability's +0.5 to preserve the relative
+// importance of capability matching. This runs AFTER applyContextBonus so the
+// base rank already reflects capability-aware ordering.
+func applyDomainBonus(results []*ExperienceNode, domain string) []*ExperienceNode {
+	type scored struct {
+		node  *ExperienceNode
+		score float64
+	}
+	scoredResults := make([]scored, len(results))
+	for i, node := range results {
+		score := 1.0 / float64(i+1) // base: inverse rank (post-capability-bonus)
+		if node.Domain == domain {
+			score += 0.30 // exact domain match
+		} else if domainPrefixMatch(node.Domain, domain) {
+			score += 0.15 // prefix domain match (either direction)
 		}
 		scoredResults[i] = scored{node: node, score: score}
 	}

@@ -42,6 +42,8 @@ func (s *DirectedEngine) SubmitDecisionWithResolver(taskID, decisionID, choice, 
 				}
 				d.Context["_resolver_owner_id"] = resolver.OwnerID
 				d.Context["_resolver_channel"] = resolver.Channel
+				d.Context["_decider"] = "human"
+				d.Context["_intervention"] = "informational"
 				break
 			}
 		}

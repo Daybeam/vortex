@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,7 +44,7 @@ func LoopbackURL(port string) (string, error) {
 // attachable, which keeps the previous fallback in place for them.
 func HubAnswersAPI(client *http.Client, baseURL, apiKey string) (bool, string) {
 	url := strings.TrimRight(baseURL, "/") + "/api/config"
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
 		return false, fmt.Sprintf("probe URL %q invalid: %v", url, err)
 	}

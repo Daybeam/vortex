@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,7 +16,7 @@ import (
 // audit H-2: use a client with timeout instead of http.DefaultClient
 // (which has Timeout: 0 = no timeout). A hung master would stall the
 // proxy goroutine forever.
-var proxyClient = &http.Client{Timeout: 30 * time.Second}
+var proxyClient = &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}}
 
 // RunStdioToHTTP reads JSON-RPC messages from stdin and forwards them to a Master's HTTP endpoint.
 // It writes responses back to stdout. All logging goes to stderr.
@@ -35,7 +36,7 @@ func RunStdioToHTTP(targetURL string, apiKey string) error {
 		}
 
 		// Forward to Master via HTTP POST
-		req, err := http.NewRequest("POST", targetURL, bytes.NewReader(line))
+		req, err := http.NewRequestWithContext(context.Background(), "POST", targetURL, bytes.NewReader(line))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[proxy] Error creating request: %v\n", err)
 			continue

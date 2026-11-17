@@ -400,18 +400,18 @@ func (b *SQLiteExperienceBackend) SaveExperienceNode(ctx context.Context, node *
 		INSERT INTO experience_nodes (
 			node_id, task_id, step_id, role_id, capability, strategy, action,
 			outcome, error_signal, model_id, failure_mode, critique, confidence,
-			source_text, embedding, embedding_model, timestamp
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			domain, source_text, embedding, embedding_model, timestamp
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(node_id) DO UPDATE SET
 			task_id=excluded.task_id, step_id=excluded.step_id, role_id=excluded.role_id,
 			capability=excluded.capability, strategy=excluded.strategy, action=excluded.action,
 			outcome=excluded.outcome, error_signal=excluded.error_signal, model_id=excluded.model_id,
 			failure_mode=excluded.failure_mode, critique=excluded.critique, confidence=excluded.confidence,
-			source_text=excluded.source_text, embedding=excluded.embedding,
+			domain=excluded.domain, source_text=excluded.source_text, embedding=excluded.embedding,
 			embedding_model=excluded.embedding_model, timestamp=excluded.timestamp
 	`, node.NodeID, node.TaskID, node.StepID, node.RoleID, node.Capability, node.Strategy, node.Action,
 		node.Outcome, node.ErrorSignal, node.ModelID, node.FailureMode, node.Critique, node.Confidence,
-		node.SourceText, float32ToBytes(node.Embedding), node.EmbeddingModel, node.Timestamp)
+		node.Domain, node.SourceText, float32ToBytes(node.Embedding), node.EmbeddingModel, node.Timestamp)
 	return err
 }
 
@@ -430,7 +430,7 @@ func (b *SQLiteExperienceBackend) LoadExperienceNodes(ctx context.Context) (map[
 	rows, err := b.db.QueryContext(ctx, `
 		SELECT node_id, task_id, step_id, role_id, capability, strategy, action,
 			outcome, error_signal, model_id, failure_mode, critique, confidence,
-			source_text, embedding, embedding_model, timestamp
+			domain, source_text, embedding, embedding_model, timestamp
 		FROM experience_nodes
 	`)
 	if err != nil {
@@ -444,7 +444,7 @@ func (b *SQLiteExperienceBackend) LoadExperienceNodes(ctx context.Context) (map[
 		var embedding []byte
 		if err := rows.Scan(&n.NodeID, &n.TaskID, &n.StepID, &n.RoleID, &n.Capability,
 			&n.Strategy, &n.Action, &n.Outcome, &n.ErrorSignal, &n.ModelID,
-			&n.FailureMode, &n.Critique, &n.Confidence, &n.SourceText,
+			&n.FailureMode, &n.Critique, &n.Confidence, &n.Domain, &n.SourceText,
 			&embedding, &n.EmbeddingModel, &n.Timestamp); err != nil {
 			continue
 		}
@@ -497,18 +497,18 @@ func (b *SQLiteExperienceBackend) SaveExperienceBatch(ctx context.Context, nodes
 			INSERT INTO experience_nodes (
 				node_id, task_id, step_id, role_id, capability, strategy, action,
 				outcome, error_signal, model_id, failure_mode, critique, confidence,
-				source_text, embedding, embedding_model, timestamp
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				domain, source_text, embedding, embedding_model, timestamp
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(node_id) DO UPDATE SET
 				task_id=excluded.task_id, step_id=excluded.step_id, role_id=excluded.role_id,
 				capability=excluded.capability, strategy=excluded.strategy, action=excluded.action,
 				outcome=excluded.outcome, error_signal=excluded.error_signal, model_id=excluded.model_id,
 				failure_mode=excluded.failure_mode, critique=excluded.critique, confidence=excluded.confidence,
-				source_text=excluded.source_text, embedding=excluded.embedding,
+				domain=excluded.domain, source_text=excluded.source_text, embedding=excluded.embedding,
 				embedding_model=excluded.embedding_model, timestamp=excluded.timestamp
 		`, node.NodeID, node.TaskID, node.StepID, node.RoleID, node.Capability, node.Strategy, node.Action,
 			node.Outcome, node.ErrorSignal, node.ModelID, node.FailureMode, node.Critique, node.Confidence,
-			node.SourceText, float32ToBytes(node.Embedding), node.EmbeddingModel, node.Timestamp); err != nil {
+			node.Domain, node.SourceText, float32ToBytes(node.Embedding), node.EmbeddingModel, node.Timestamp); err != nil {
 			return err
 		}
 	}

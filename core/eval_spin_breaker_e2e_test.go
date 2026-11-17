@@ -48,6 +48,7 @@ func (p *spinGarbageProvider) Embed(_ context.Context, _ string) ([]float32, err
 func newSpinLoopEngine(t *testing.T) *DirectedEngine {
 	t.Helper()
 	providers.ClearCache()
+	t.Cleanup(providers.ClearCache)
 
 	reg := &config.Registry{
 		DefaultProvider: "garbage",

@@ -18,7 +18,7 @@ import (
 // tenant B — letting the remote server conflate two tenants into one session.
 //
 // Acceptance criterion O4 from the OAUTH plan:
-// "两个不同 OwnerID 握手 ⇒ 2 次 initialize、2 个不同 Mcp-Session-Id"
+// "Two different OwnerIDs handshake ⇒ 2 initialize calls, 2 different Mcp-Session-Ids"
 func TestEnsureRemoteMCPSession_PerTenantIsolation(t *testing.T) {
 	var initCount int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

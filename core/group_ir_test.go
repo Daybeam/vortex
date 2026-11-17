@@ -32,6 +32,7 @@ func TestDispatchGroup_WithSessionIR(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), nil)
 	defer logger.Close()
 	engine := NewDirectedEngine(reg, nil, nil, nil, logger, nil, t.TempDir(), t.TempDir(), nil)
+	defer engine.Stop()
 	engine.UseSwarm = true // avoid background run
 
 	dispatcher := NewGroupDispatcher(engine, reg)
@@ -50,16 +51,12 @@ func TestDispatchGroup_WithSessionIR(t *testing.T) {
 	}
 
 	// 5. Verify the generated graph has the session role
-	engine.Mu.RLock()
-	graph := engine.graphs[taskID]
-	engine.Mu.RUnlock()
+	graph := engine.GetTaskGraph(taskID)
 
 	if graph == nil {
 		for i := 0; i < 20; i++ {
 			time.Sleep(50 * time.Millisecond)
-			engine.Mu.RLock()
-			graph = engine.graphs[taskID]
-			engine.Mu.RUnlock()
+			graph = engine.GetTaskGraph(taskID)
 			if graph != nil {
 				break
 			}

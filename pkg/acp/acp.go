@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/schemas"
@@ -40,6 +42,7 @@ type Response struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 type notification struct {
@@ -80,14 +83,32 @@ func ServeACP(engine Engine, stdin io.Reader, stdout io.Writer) error {
 		_, _ = stdout.Write(append(data, '\n'))
 	}
 
+	// Standard ACP state (lazy-initialized on first standard initialize)
+	var stdServer *standardServer
+	var promptWg sync.WaitGroup
+	done := make(chan struct{})
+	var stdMode atomic.Bool
+
+	// VORTEX_ACP_DIALECT env: "standard" forces standard mode, "legacy" forces
+	// legacy mode, "auto" (default) detects via protocolVersion in initialize.
+	dialectOverride := os.Getenv("VORTEX_ACP_DIALECT")
+
 	// Event bridge: forward task terminal events as ACP notifications.
+	// Suppressed in standard mode — the standardServer handles terminal
+	// events via its own buffer + session/update streaming.
 	unsub1 := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskCompleted), func(ev obs.AgentEvent) error {
+		if stdMode.Load() {
+			return nil
+		}
 		writeJSON(notification{JSONRPC: "2.0", Method: "task_completed", Params: map[string]any{
 			"task_id": ev.TaskID, "payload": ev.Payload,
 		}})
 		return nil
 	})
 	unsub2 := obs.DefaultBus.SubscribeWithCancel(string(obs.EventTaskFailed), func(ev obs.AgentEvent) error {
+		if stdMode.Load() {
+			return nil
+		}
 		writeJSON(notification{JSONRPC: "2.0", Method: "task_failed", Params: map[string]any{
 			"task_id": ev.TaskID, "payload": ev.Payload,
 		}})
@@ -103,44 +124,101 @@ func ServeACP(engine Engine, stdin io.Reader, stdout io.Writer) error {
 			continue
 		}
 
-		var result any
-		var e *rpcError
-		switch req.Method {
-		case "initialize":
-			result = map[string]any{"server": "orchestrator", "version": "1.0", "capabilities": []string{"run_task", "cancel", "streaming"}}
-		case "ping":
-			result = map[string]any{"pong": true}
-		case "run_task":
-			var p runTaskParams
-			if err := json.Unmarshal(req.Params, &p); err != nil {
-				e = &rpcError{Code: -32602, Message: "invalid params"}
-				break
+		// Standard ACP dialect detection.
+		// VORTEX_ACP_DIALECT=standard forces standard; =legacy forces legacy;
+		// auto/empty detects via protocolVersion in initialize params.
+		useStandard := false
+		if req.Method == "initialize" {
+			switch dialectOverride {
+			case "standard":
+				useStandard = true
+			case "legacy":
+				useStandard = false
+			default: // "auto" or empty
+				useStandard = hasProtocolVersion(req.Params)
 			}
-			taskID, err := engine.Submit([]schemas.StepInput{{ID: "acp-1", Task: p.Prompt, RoleID: p.RoleID}})
-			if err != nil {
-				e = &rpcError{Code: -32000, Message: err.Error()}
-				break
-			}
-			result = map[string]any{"task_id": taskID}
-		case "cancel":
-			var p cancelParams
-			if err := json.Unmarshal(req.Params, &p); err != nil {
-				e = &rpcError{Code: -32602, Message: "invalid params"}
-				break
-			}
-			if err := engine.CancelTask(p.TaskID); err != nil {
-				e = &rpcError{Code: -32000, Message: err.Error()}
-				break
-			}
-			result = map[string]any{"cancelled": true}
-		default:
-			e = &rpcError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)}
 		}
+
+		if useStandard {
+			stdMode.Store(true)
+			if stdServer == nil {
+				stdServer = newStandardServer(engine, writeJSON, done)
+				defer stdServer.close()
+			}
+			clientVersion := extractProtocolVersion(req.Params)
+			writeJSON(Response{JSONRPC: "2.0", ID: req.ID, Result: stdServer.handleInitialize(clientVersion)})
+			continue
+		}
+
+		// Standard ACP method routing.
+		if stdServer != nil {
+			switch req.Method {
+			case "session/new":
+				result, errResp := stdServer.handleNewSession(req.Params)
+				if errResp != nil {
+					writeJSON(Response{JSONRPC: "2.0", ID: req.ID, Error: errResp})
+				} else {
+					writeJSON(Response{JSONRPC: "2.0", ID: req.ID, Result: result})
+				}
+			case "session/prompt":
+				promptWg.Add(1)
+				go func() {
+					defer promptWg.Done()
+					stdServer.handlePrompt(req.Params, req.ID)
+				}()
+			case "session/cancel":
+				stdServer.handleCancel(req.Params)
+			case "ping":
+				writeJSON(Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"pong": true}})
+			default:
+				writeJSON(Response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)}})
+			}
+			continue
+		}
+
+		// Legacy DSH dialect.
+		result, e := handleLegacyMethod(req, engine)
 		writeJSON(Response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: e})
 	}
+
+	close(done)
+	promptWg.Wait()
+
 	if err := scanner.Err(); err != nil {
 		log.Printf("[acp] scanner error: %v", err)
 		return err
 	}
 	return nil
+}
+
+// handleLegacyMethod dispatches a request using the legacy DSH dialect
+// (initialize, ping, run_task, cancel).
+func handleLegacyMethod(req request, engine Engine) (any, *rpcError) {
+	switch req.Method {
+	case "initialize":
+		return map[string]any{"server": "orchestrator", "version": "1.0", "capabilities": []string{"run_task", "cancel", "streaming"}}, nil
+	case "ping":
+		return map[string]any{"pong": true}, nil
+	case "run_task":
+		var p runTaskParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid params"}
+		}
+		taskID, err := engine.Submit([]schemas.StepInput{{ID: "acp-1", Task: p.Prompt, RoleID: p.RoleID}})
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		return map[string]any{"task_id": taskID}, nil
+	case "cancel":
+		var p cancelParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid params"}
+		}
+		if err := engine.CancelTask(p.TaskID); err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		return map[string]any{"cancelled": true}, nil
+	default:
+		return nil, &rpcError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)}
+	}
 }

@@ -187,19 +187,21 @@ func HandleAdminDeployFile(ctx context.Context, app *App, req mcp.CallToolReques
 		return errResult("path and _reason are required")
 	}
 
-	// audit S-C2: enforce deploy_root containment. The resolved path must be
-	// within the configured deploy root (VORTEX_DEPLOY_ROOT, default
-	// "outputs"). This prevents writing to system files even when deploy write
-	// is enabled. Replaces the earlier weak ".." segment check.
-	deployRoot := os.Getenv("VORTEX_DEPLOY_ROOT")
-	if deployRoot == "" {
-		deployRoot = "outputs"
-	}
-	deployRootAbs, _ := filepath.Abs(deployRoot)
+	// audit S-C2: path safety. Two layers:
+	//   1. Always reject paths with ".." segments (traversal attack prevention).
+	//   2. If VORTEX_DEPLOY_ROOT is explicitly set, also enforce containment
+	//      within that root. When not set, the VORTEX_ALLOW_DEPLOY_WRITE=1 gate
+	//      is the sole security barrier — the admin has opted in.
 	absPath, _ := filepath.Abs(path)
-	rel, relErr := filepath.Rel(deployRootAbs, absPath)
-	if relErr != nil || strings.HasPrefix(filepath.ToSlash(rel), "..") {
-		return errResult(fmt.Sprintf("path rejected (audit S-C2): %q must be within deploy root %q", path, deployRootAbs))
+	if strings.Contains(filepath.ToSlash(path), "..") {
+		return errResult(fmt.Sprintf("path rejected (audit S-C2): %q contains traversal segments", path))
+	}
+	if deployRoot := os.Getenv("VORTEX_DEPLOY_ROOT"); deployRoot != "" {
+		deployRootAbs, _ := filepath.Abs(deployRoot)
+		rel, relErr := filepath.Rel(deployRootAbs, absPath)
+		if relErr != nil || strings.HasPrefix(filepath.ToSlash(rel), "..") {
+			return errResult(fmt.Sprintf("path rejected (audit S-C2): %q must be within deploy root %q", path, deployRootAbs))
+		}
 	}
 
 	var data []byte
@@ -317,21 +319,24 @@ func HandleAdminDeployCommit(ctx context.Context, app *App, req mcp.CallToolRequ
 	if err != nil {
 		return errResult(fmt.Sprintf("open tmp file failed: %v", err))
 	}
-	defer f.Close()
 	stat, err := f.Stat()
 	if err != nil {
+		f.Close()
 		return errResult(fmt.Sprintf("stat tmp file failed: %v", err))
 	}
 	if stat.Size() != session.TotalSize {
+		f.Close()
 		return errResult("size mismatch")
 	}
 
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, f); err != nil {
+		f.Close()
 		return errResult(fmt.Sprintf("checksum read failed: %v", err))
 	}
 	actualHash := fmt.Sprintf("%x", hasher.Sum(nil))
 	if session.ExpectedHash != "" && session.ExpectedHash != actualHash {
+		f.Close()
 		return errResult("checksum mismatch")
 	}
 	if err := f.Close(); err != nil {

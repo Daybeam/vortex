@@ -75,7 +75,7 @@ func TestSmartRouted_DecisionResolvedFinalizesExactlyOnce(t *testing.T) {
 			Options: []string{"fulfill", "skip", "abort"},
 		}},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	var mu sync.Mutex
@@ -156,7 +156,7 @@ func TestFinalize_IsIdempotent(t *testing.T) {
 		},
 		PendingDecisions: []*schemas.Decision{},
 	}
-	s.graphs[taskID] = graph
+	injectTestGraph(t, s, graph)
 	s.doneChans[taskID] = make(chan struct{})
 
 	var mu sync.Mutex

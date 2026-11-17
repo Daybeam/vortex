@@ -119,7 +119,7 @@ func TestCheckTaskOwnership_StdioWithoutFixFails(t *testing.T) {
 // failed to set AuthTierKey, the request silently became admin → cross-tenant
 // access. Fix: only inject TierAdmin when app.Tier != TierPublic.
 //
-// See audit report §2: "769d16808 的默认 admin 注入".
+// See audit report §2: "769d16808 default admin injection".
 
 func TestLoggedHandler_PublicAppNoTierDoesNotGetAdmin(t *testing.T) {
 	// A public app (app.Tier == TierPublic) with a missing AuthTierKey

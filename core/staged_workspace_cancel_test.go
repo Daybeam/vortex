@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -56,11 +55,8 @@ func TestCancelTask_RunLoopExitsPromptly_NoOwnGoroutineForStagedWorkspace(t *tes
 		Status: schemas.GraphRunning,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	s.Mu.Lock()
-	s.graphs[graph.TaskID] = graph
-	s.cancelFuncs[graph.TaskID] = cancel
-	s.Mu.Unlock()
+	ctx, cancel := injectRunningTestGraph(t, s, graph)
+	defer cancel()
 
 	runDone := make(chan struct{})
 	go func() {

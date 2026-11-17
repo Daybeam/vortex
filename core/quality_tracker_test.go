@@ -9,7 +9,7 @@ import (
 
 // TestQualityTracker_RecordsAndTrends verifies that the QualityTracker
 // correctly records step outcomes and computes success-rate trends.
-// (design §2.4 方案 D, 2026-10-23: observability gap D/E)
+// (design §2.4 scheme D, 2026-10-23: observability gap D/E)
 func TestQualityTracker_RecordsAndTrends(t *testing.T) {
 	q := NewQualityTracker()
 	defer q.Wire()()

@@ -11,7 +11,7 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-// Delegation gate (Stage 3, docs/plan/COST_AND_TERMINATION_PLAN.md 阶段 3,
+// Delegation gate (Stage 3, docs/plan/COST_AND_TERMINATION_PLAN.md stage 3,
 // commit 49e9ca3ea): when every artifact the task prompt declared already
 // exists, delegate_to_orchestrator returns a skip receipt instead of starting
 // a run. The gate is pure cost avoidance — a delegated task re-does work the

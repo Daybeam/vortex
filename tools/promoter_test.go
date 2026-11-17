@@ -91,6 +91,79 @@ func TestPromoter_EnforcesTier2AccessAtRuntime(t *testing.T) {
 	}
 }
 
+func TestPromoter_EvictLRU_AtCapacity(t *testing.T) {
+	app, act := makePromoterApp(t)
+	app.Tier = TierAdmin
+
+	srv := server.NewMCPServer("test", "1.0.0")
+	p := NewPromoter(srv, app, 1, 2, 2*time.Hour)
+
+	act2 := &Action{
+		Name:        "list_skills",
+		Description: "List all skills",
+		Parameters:  map[string]any{},
+		Handler:     func(ctx context.Context, a *App, args map[string]any) (any, error) { return nil, nil },
+	}
+	act3 := &Action{
+		Name:        "list_mcps",
+		Description: "List all MCPs",
+		Parameters:  map[string]any{},
+		Handler:     func(ctx context.Context, a *App, args map[string]any) (any, error) { return nil, nil },
+	}
+
+	p.Record("config", "list_roles", *act)
+	p.Record("config", "list_skills", *act2)
+	if len(p.promoted) != 2 {
+		t.Fatalf("expected 2 promoted at capacity, got %d", len(p.promoted))
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	p.Record("config", "list_mcps", *act3)
+	if len(p.promoted) != 2 {
+		t.Fatalf("expected 2 promoted after LRU eviction, got %d", len(p.promoted))
+	}
+
+	if _, exists := p.promoted["config.list_roles"]; exists {
+		t.Error("expected oldest entry 'config.list_roles' to be evicted")
+	}
+	if _, exists := p.promoted["config.list_skills"]; !exists {
+		t.Error("expected 'config.list_skills' to still be promoted")
+	}
+	if _, exists := p.promoted["config.list_mcps"]; !exists {
+		t.Error("expected 'config.list_mcps' to be promoted after eviction")
+	}
+}
+
+func TestPromoter_Reset(t *testing.T) {
+	app, act := makePromoterApp(t)
+	app.Tier = TierAdmin
+
+	srv := server.NewMCPServer("test", "1.0.0")
+	p := NewPromoter(srv, app, 1, 20, 2*time.Hour)
+
+	p.Record("config", "list_roles", *act)
+	p.Record("config", "list_roles", *act)
+	if len(p.promoted) != 1 {
+		t.Fatalf("expected 1 promoted before reset, got %d", len(p.promoted))
+	}
+	if len(p.counters) != 1 {
+		t.Fatalf("expected 1 counter before reset, got %d", len(p.counters))
+	}
+
+	p.Reset()
+
+	if len(p.promoted) != 0 {
+		t.Errorf("expected 0 promoted after reset, got %d", len(p.promoted))
+	}
+	if len(p.counters) != 0 {
+		t.Errorf("expected 0 counters after reset, got %d", len(p.counters))
+	}
+	if len(p.lastUsed) != 0 {
+		t.Errorf("expected 0 lastUsed after reset, got %d", len(p.lastUsed))
+	}
+}
+
 func TestPromoter_StatsReturnsSnapshot(t *testing.T) {
 	app, act := makePromoterApp(t)
 	app.Tier = TierAdmin

@@ -26,6 +26,7 @@ var deterministicVerifiers = map[string]DeterministicVerifier{
 	"command_pass":    &CommandPassVerifier{},
 	"plan_checkboxes": &PlanCheckboxVerifier{},
 	"code_entities":   &CodeEntityVerifier{},
+	"read_coverage":   &ReadCoverageVerifier{},
 }
 
 // FileExistsVerifier checks that a file exists and is non-empty.
