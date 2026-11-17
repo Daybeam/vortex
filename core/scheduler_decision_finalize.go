@@ -84,32 +84,7 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 	// Snapshot output data for the terminal event payload while still holding
 	// the lock. ACP consumers (and any future event subscriber) need the
 	// actual task result, not just a confidence number.
-	var resultSummary string
-	outputFileList := make([]map[string]any, 0, len(graph.OutputFiles))
-	for _, of := range graph.OutputFiles {
-		outputFileList = append(outputFileList, map[string]any{
-			"path":       of.Path,
-			"summary":    of.Summary,
-			"format":     of.Format,
-			"is_primary": of.IsPrimary,
-		})
-		if of.IsPrimary && of.Summary != "" {
-			resultSummary = of.Summary
-		}
-	}
-	// Fall back to last completed step's partial output if no primary file.
-	if resultSummary == "" {
-		for _, step := range graph.Steps {
-			if step.Status == schemas.StepOK && step.PartialOutput != "" {
-				resultSummary = step.PartialOutput
-			}
-		}
-	}
-	// Cap to prevent oversized ACP notifications (4 MB JSON-RPC line limit).
-	const maxResultLen = 10000
-	if len(resultSummary) > maxResultLen {
-		resultSummary = resultSummary[:maxResultLen] + "...[truncated]"
-	}
+	resultSummary, outputFileList := snapshotOutputData(graph)
 
 	s.Mu.Unlock()
 	s.setGraphStatus(graph, finalStatus)
@@ -186,6 +161,38 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 
 	// Notification dispatch (webhook routing)
 	s.goBackground(func() { s.dispatchNotifications(graph, event) }) // audit H6: use goBackground so Stop() drains
+}
+
+// snapshotOutputData extracts the result summary and output file list from
+// the graph for inclusion in terminal event payloads. Must be called while
+// holding s.Mu (graph fields are read).
+func snapshotOutputData(graph *schemas.TaskGraph) (resultSummary string, outputFileList []map[string]any) {
+	outputFileList = make([]map[string]any, 0, len(graph.OutputFiles))
+	for _, of := range graph.OutputFiles {
+		outputFileList = append(outputFileList, map[string]any{
+			"path":       of.Path,
+			"summary":    of.Summary,
+			"format":     of.Format,
+			"is_primary": of.IsPrimary,
+		})
+		if of.IsPrimary && of.Summary != "" {
+			resultSummary = of.Summary
+		}
+	}
+	// Fall back to last completed step's partial output if no primary file.
+	if resultSummary == "" {
+		for _, step := range graph.Steps {
+			if step.Status == schemas.StepOK && step.PartialOutput != "" {
+				resultSummary = step.PartialOutput
+			}
+		}
+	}
+	// Cap to prevent oversized ACP notifications (4 MB JSON-RPC line limit).
+	const maxResultLen = 10000
+	if len(resultSummary) > maxResultLen {
+		resultSummary = resultSummary[:maxResultLen] + "...[truncated]"
+	}
+	return resultSummary, outputFileList
 }
 
 func (s *DirectedEngine) deliverArtifacts(graph *schemas.TaskGraph) {
