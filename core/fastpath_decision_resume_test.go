@@ -156,18 +156,21 @@ type graphSnapshot struct {
 }
 
 func (h *fastPathHarness) snapshot(taskID string) graphSnapshot {
-	g := h.engine.GetTaskGraph(taskID)
-	if g == nil {
-		return graphSnapshot{}
-	}
 	var snap graphSnapshot
-	snap.graphStatus = g.Status
-	for _, st := range g.Steps {
-		snap.stepStatus = st.Status
-		snap.stepErr = st.LastError
-	}
-	for _, d := range g.PendingDecisions {
-		snap.decisions = append(snap.decisions, *d)
+	if !h.engine.WithTaskGraph(taskID, func(g *schemas.TaskGraph) {
+		snap.graphStatus = g.Status
+		for _, st := range g.Steps {
+			snap.stepStatus = st.Status
+			snap.stepErr = st.LastError
+		}
+		for _, d := range g.PendingDecisions {
+			snap.decisions = append(snap.decisions, *d)
+		}
+	}) {
+		// Task not found — return a snapshot with an impossible status so
+		// callers' assertions fail loudly instead of silently passing with
+		// zero values (e.g. "0 decisions" looks like "no decisions yet").
+		snap.graphStatus = "__TASK_NOT_FOUND__"
 	}
 	return snap
 }

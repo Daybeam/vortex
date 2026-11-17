@@ -616,15 +616,12 @@ func TestSpawnRequest_TaskID_PassedToBuildSystemPrompt(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), &config.SystemSettings{})
 	spawner := NewSpawner(reg, nil, nil, logger, nil, t.TempDir())
 
-	blocks, err := spawner.buildSystemPrompt(
+	blocks := buildSystemPromptForTest(t, spawner,
 		context.Background(), nil, nil, nil, "coding",
 		&config.ProviderConfig{}, nil, nil, nil, false, nil,
 		"test task", "", "task-id-123", "",
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("buildSystemPrompt failed: %v", err)
-	}
 	if len(blocks) == 0 {
 		t.Fatal("expected non-empty blocks from buildSystemPrompt")
 	}

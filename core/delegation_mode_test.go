@@ -66,14 +66,13 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
-	var graph *schemas.TaskGraph
 	for i := 0; i < 20; i++ {
-		graph = engine.GetTaskGraph(taskID)
-		if graph != nil && len(graph.PendingDecisions) > 0 {
+		if engine.PendingDecisionCount(taskID) > 0 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	graph := engine.GetTaskGraph(taskID)
 
 	engine.Mu.RLock()
 	if graph == nil {
@@ -117,16 +116,13 @@ func TestDelegationMode_SingleStepTask(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		graph = engine.GetTaskGraph(taskID)
-		if graph != nil && graph.Status == schemas.GraphCompleted {
+		if status, ok := engine.GraphStatus(taskID); ok && status == schemas.GraphCompleted {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	engine.Mu.RLock()
-	finalStatus := graph.Status
-	engine.Mu.RUnlock()
+	finalStatus, _ := engine.GraphStatus(taskID)
 	if finalStatus != schemas.GraphCompleted {
 		t.Errorf("expected graph completed, got %v", finalStatus)
 	}
@@ -182,14 +178,13 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
-	var graph *schemas.TaskGraph
 	for i := 0; i < 20; i++ {
-		graph = engine.GetTaskGraph(taskID)
-		if graph != nil && len(graph.PendingDecisions) > 0 {
+		if engine.PendingDecisionCount(taskID) > 0 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	graph := engine.GetTaskGraph(taskID)
 
 	engine.Mu.RLock()
 	if graph == nil {
@@ -218,8 +213,8 @@ func TestDelegationMode_MultiStepTask(t *testing.T) {
 	}
 
 	for i := 0; i < 20; i++ {
-		graph = engine.GetTaskGraph(taskID)
-		if graph != nil && len(graph.PendingDecisions) > 0 {
+		if engine.PendingDecisionCount(taskID) > 0 {
+			graph = engine.GetTaskGraph(taskID)
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -283,20 +278,20 @@ func newDelegationEngine(t *testing.T) (*DirectedEngine, *config.Registry) {
 // (step-level blocking), or fails the test after a timeout.
 func waitForBlocked(t *testing.T, engine *DirectedEngine, taskID string) *schemas.TaskGraph {
 	t.Helper()
-	var graph *schemas.TaskGraph
 	for i := 0; i < 30; i++ {
-		graph = engine.GetTaskGraph(taskID)
-		if graph != nil && len(graph.PendingDecisions) > 0 {
-			return graph
+		if engine.PendingDecisionCount(taskID) > 0 {
+			if g := engine.GetTaskGraph(taskID); g != nil {
+				return g
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	graph = engine.GetTaskGraph(taskID)
-	if graph == nil {
+	if g := engine.GetTaskGraph(taskID); g == nil {
 		t.Fatalf("graph %q not found", taskID)
+	} else {
+		t.Fatalf("expected graph blocked with pending decision, got status=%v decisions=%d",
+			g.Status, engine.PendingDecisionCount(taskID))
 	}
-	t.Fatalf("expected graph blocked with pending decision, got status=%v decisions=%d",
-		graph.Status, len(graph.PendingDecisions))
 	return nil
 }
 
@@ -304,15 +299,14 @@ func waitForBlocked(t *testing.T, engine *DirectedEngine, taskID string) *schema
 // result payload and waits for the graph to settle.
 func fulfillDelegation(t *testing.T, engine *DirectedEngine, taskID, answer string) {
 	t.Helper()
-	graph := engine.GetTaskGraph(taskID)
-	hasPending := graph != nil && len(graph.PendingDecisions) > 0
-	var decID string
-	if hasPending {
-		decID = graph.PendingDecisions[0].ID
+	if !engine.TaskKnown(taskID) {
+		t.Fatalf("task %q not found — graph was never registered or was evicted", taskID)
 	}
-	if !hasPending {
+	dec := engine.FirstPendingDecision(taskID)
+	if dec == nil {
 		t.Fatalf("no pending decision to fulfill for task %q", taskID)
 	}
+	decID := dec.ID
 	fulfillment := `{"status":"ok","confidence":0.9,"result":{"answer":"` + answer + `"},"capability":"text"}`
 	if err := engine.FulfillStep(taskID, decID, fulfillment); err != nil {
 		t.Fatalf("FulfillStep failed: %v", err)
@@ -333,17 +327,25 @@ func TestDelegationMode_HighRiskTaskIntercepted(t *testing.T) {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
-	graph := waitForBlocked(t, engine, taskID)
-	dec := graph.PendingDecisions[0]
+	waitForBlocked(t, engine, taskID)
+	dec := engine.FirstPendingDecision(taskID)
+	if dec == nil {
+		if !engine.TaskKnown(taskID) {
+			t.Fatal("engine bug: task not registered after Submit")
+		}
+		t.Fatal("expected pending decision but none found")
+	}
 	if dec.Type != schemas.DecisionDelegationRequired {
 		t.Fatalf("expected delegation decision for high-risk task, got %v", dec.Type)
 	}
 	// The destructive task must NOT have executed: step must still be pending/blocked.
-	step := graph.Steps["step_1"]
-	if step == nil {
-		t.Fatal("step_1 not found")
-	}
-	if step.Status == schemas.StepOK {
+	var stepOK bool
+	engine.WithTaskGraph(taskID, func(g *schemas.TaskGraph) {
+		if step := g.Steps["step_1"]; step != nil && step.Status == schemas.StepOK {
+			stepOK = true
+		}
+	})
+	if stepOK {
 		t.Errorf("high-risk task executed (StepOK) instead of being intercepted")
 	}
 	// The prompt context must carry the original task text so a human/outer agent
@@ -370,8 +372,14 @@ func TestDelegationMode_PromptContainsRoleAndCapability(t *testing.T) {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
-	graph := waitForBlocked(t, engine, taskID)
-	dec := graph.PendingDecisions[0]
+	waitForBlocked(t, engine, taskID)
+	dec := engine.FirstPendingDecision(taskID)
+	if dec == nil {
+		if !engine.TaskKnown(taskID) {
+			t.Fatal("engine bug: task not registered after Submit")
+		}
+		t.Fatal("expected pending decision but none found")
+	}
 	prompt, _ := dec.Context["prompt"].(map[string]any)
 	if prompt == nil {
 		t.Fatal("expected prompt in decision context")
@@ -402,22 +410,35 @@ func TestDelegationMode_ContextTreeRootCreated(t *testing.T) {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
-	graph := waitForBlocked(t, engine, taskID)
-	if len(graph.ContextTree) == 0 {
+	waitForBlocked(t, engine, taskID)
+	var rootStatus schemas.NodeStatus
+	var rootIntent string
+	var currentNodeID string
+	var hasContextTree, hasRoot bool
+	engine.WithTaskGraph(taskID, func(g *schemas.TaskGraph) {
+		hasContextTree = len(g.ContextTree) > 0
+		root, ok := g.ContextTree["root"]
+		if ok {
+			hasRoot = true
+			rootStatus = root.Status
+			rootIntent = root.Intent
+		}
+		currentNodeID = g.CurrentNodeID
+	})
+	if !hasContextTree {
 		t.Fatal("expected non-empty context tree")
 	}
-	root, ok := graph.ContextTree["root"]
-	if !ok {
+	if !hasRoot {
 		t.Fatal("expected 'root' node in context tree")
 	}
-	if root.Status != schemas.NodeActive {
-		t.Errorf("expected root node active, got %v", root.Status)
+	if rootStatus != schemas.NodeActive {
+		t.Errorf("expected root node active, got %v", rootStatus)
 	}
-	if root.Intent != "understand the requirement" {
-		t.Errorf("expected root intent to match task, got %q", root.Intent)
+	if rootIntent != "understand the requirement" {
+		t.Errorf("expected root intent to match task, got %q", rootIntent)
 	}
-	if graph.CurrentNodeID != "root" {
-		t.Errorf("expected current node = root, got %q", graph.CurrentNodeID)
+	if currentNodeID != "root" {
+		t.Errorf("expected current node = root, got %q", currentNodeID)
 	}
 }
 
@@ -435,46 +456,41 @@ func TestDelegationMode_ParallelIndependentSteps(t *testing.T) {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
-	graph := waitForBlocked(t, engine, taskID)
+	waitForBlocked(t, engine, taskID)
 	// At least one delegation decision must be pending; for independent steps
 	// the engine may surface one or both at once.
-	if len(graph.PendingDecisions) == 0 {
+	if engine.PendingDecisionCount(taskID) == 0 {
+		if !engine.TaskKnown(taskID) {
+			t.Fatal("engine bug: task not registered after Submit")
+		}
 		t.Fatal("expected pending delegation decision(s) for parallel steps")
 	}
-	for _, dec := range graph.PendingDecisions {
-		if dec.Type != schemas.DecisionDelegationRequired {
-			t.Errorf("expected delegation decision, got %v", dec.Type)
-		}
+	dec := engine.FirstPendingDecision(taskID)
+	if dec == nil {
+		t.Fatal("race: PendingDecisionCount > 0 but FirstPendingDecision returned nil")
+	}
+	if dec.Type != schemas.DecisionDelegationRequired {
+		t.Errorf("expected delegation decision, got %v", dec.Type)
 	}
 
 	// Fulfill every pending decision until the graph completes.
 	for i := 0; i < 10; i++ {
-		graph = engine.GetTaskGraph(taskID)
-		completed := graph != nil && graph.Status == schemas.GraphCompleted
-		pendingCount := 0
-		var firstDec *schemas.Decision
-		if !completed && graph != nil {
-			pendingCount = len(graph.PendingDecisions)
-			if pendingCount > 0 {
-				firstDec = graph.PendingDecisions[0]
-			}
-		}
-		if completed {
+		if status, ok := engine.GraphStatus(taskID); ok && status == schemas.GraphCompleted {
 			break
 		}
-		if pendingCount == 0 {
+		dec := engine.FirstPendingDecision(taskID)
+		if dec == nil {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		fulfillment := `{"status":"ok","confidence":0.9,"result":{"answer":"done"},"capability":"text"}`
-		if err := engine.FulfillStep(taskID, firstDec.ID, fulfillment); err != nil {
+		if err := engine.FulfillStep(taskID, dec.ID, fulfillment); err != nil {
 			t.Fatalf("FulfillStep failed: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	graph = engine.GetTaskGraph(taskID)
-	finalStatus := graph.Status
+	finalStatus, _ := engine.GraphStatus(taskID)
 	if finalStatus != schemas.GraphCompleted {
 		t.Errorf("expected graph completed, got %v", finalStatus)
 	}
@@ -525,8 +541,7 @@ func TestDelegationMode_DependencyChain(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	graph := engine.GetTaskGraph(taskID)
-	finalStatus := graph.Status
+	finalStatus, _ := engine.GraphStatus(taskID)
 	if finalStatus != schemas.GraphCompleted {
 		t.Errorf("expected graph completed, got %v (seen=%v)", finalStatus, seen)
 	}
@@ -548,15 +563,14 @@ func TestDelegationMode_CancelTask(t *testing.T) {
 	}
 
 	// Wait for the graph to exist (it registers synchronously on Submit).
-	var graph *schemas.TaskGraph
 	for i := 0; i < 20; i++ {
-		graph = engine.GetTaskGraph(taskID)
-		if graph != nil {
+		if engine.PendingDecisionCount(taskID) > 0 {
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
-	if graph == nil {
+
+	if !engine.TaskKnown(taskID) {
 		t.Fatal("graph not registered after Submit")
 	}
 
@@ -564,8 +578,7 @@ func TestDelegationMode_CancelTask(t *testing.T) {
 		t.Fatalf("CancelTask failed: %v", err)
 	}
 
-	graph = engine.GetTaskGraph(taskID)
-	cancelStatus := graph.Status
+	cancelStatus, _ := engine.GraphStatus(taskID)
 	if cancelStatus != schemas.GraphCancelled {
 		t.Errorf("expected graph cancelled, got %v", cancelStatus)
 	}
@@ -573,8 +586,7 @@ func TestDelegationMode_CancelTask(t *testing.T) {
 	// contract is that the status remains GraphCancelled (asserted below), NOT
 	// that an error is or isn't returned. (audit T-MED-2: clarified contract)
 	_ = engine.CancelTask(taskID) // error return is not part of the contract
-	graph = engine.GetTaskGraph(taskID)
-	cancelStatus2 := graph.Status
+	cancelStatus2, _ := engine.GraphStatus(taskID)
 	if cancelStatus2 != schemas.GraphCancelled {
 		t.Errorf("expected graph still cancelled after double-cancel, got %v", cancelStatus2)
 	}
@@ -645,8 +657,14 @@ func TestDelegationMode_FulfillStep_FailedStatusRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit failed: %v", err)
 	}
-	graph := waitForBlocked(t, engine, taskID)
-	dec := graph.PendingDecisions[0]
+	waitForBlocked(t, engine, taskID)
+	dec := engine.FirstPendingDecision(taskID)
+	if dec == nil {
+		if !engine.TaskKnown(taskID) {
+			t.Fatal("engine bug: task not registered after Submit")
+		}
+		t.Fatal("expected pending decision but none found")
+	}
 
 	// A fulfillment whose parsed status is "failed" must be rejected.
 	failed := `{"status":"failed","confidence":0.5,"result":{"error":"boom"}}`

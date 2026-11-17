@@ -23,14 +23,12 @@ func TestEvalC6_TerminalStateGuardInDecisionGate(t *testing.T) {
 	}
 
 	// Wait for graph to exist.
-	var graph *schemas.TaskGraph
 	for i := 0; i < 20; i++ {
-		graph = engine.GetTaskGraph(taskID)
-		if graph != nil {
+		if engine.TaskKnown(taskID) {
 			break
 		}
 	}
-	if graph == nil {
+	if !engine.TaskKnown(taskID) {
 		t.Fatal("graph not registered after Submit")
 	}
 
@@ -39,22 +37,28 @@ func TestEvalC6_TerminalStateGuardInDecisionGate(t *testing.T) {
 		t.Fatalf("CancelTask failed: %v", err)
 	}
 
-	graph = engine.GetTaskGraph(taskID)
-	if graph.Status != schemas.GraphCancelled {
-		t.Fatalf("expected GraphCancelled, got %v", graph.Status)
+	cancelStatus, ok := engine.GraphStatus(taskID)
+	if !ok {
+		t.Fatal("task not found after CancelTask — graph was never registered or was evicted")
+	}
+	if cancelStatus != schemas.GraphCancelled {
+		t.Fatalf("expected GraphCancelled, got %v", cancelStatus)
 	}
 
 	// Now call addDecision directly on the cancelled graph.
 	// Before P0 fix: this would set Status = GraphBlocked, losing the cancellation.
 	// After P0 fix: the terminal-state guard returns early, preserving GraphCancelled.
+	graph := engine.GetTaskGraph(taskID)
 	step := &schemas.Step{ID: "step_1"}
 	engine.addDecision(graph, step, schemas.DecisionStepFailed,
 		map[string]any{"last_error": "test"},
 		[]string{"skip", "abort"})
 
-	graph = engine.GetTaskGraph(taskID)
-	finalStatus := graph.Status
-	pendingCount := len(graph.PendingDecisions)
+	finalStatus, ok := engine.GraphStatus(taskID)
+	if !ok {
+		t.Fatal("task not found after addDecision — graph was evicted mid-test")
+	}
+	pendingCount := engine.PendingDecisionCount(taskID)
 
 	if finalStatus != schemas.GraphCancelled {
 		t.Errorf("P0 REGRESSION: addDecision changed terminal status from Cancelled to %v "+

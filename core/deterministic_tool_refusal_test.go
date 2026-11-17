@@ -11,11 +11,11 @@ import (
 // the worst task-level tool failure count.
 func TestRepeatedToolFailure_ReturnsHighest(t *testing.T) {
 	s := &Spawner{}
-	s.incrTaskToolFail("task-x", "tool_a", 1)
-	s.incrTaskToolFail("task-x", "tool_a", 1) // 2
-	s.incrTaskToolFail("task-x", "tool_b", 1)
-	s.incrTaskToolFail("task-x", "tool_b", 1)
-	s.incrTaskToolFail("task-x", "tool_b", 1) // 3 — highest
+	incrTaskToolFailForTest(t, s, "task-x", "tool_a", 1)
+	incrTaskToolFailForTest(t, s, "task-x", "tool_a", 1) // 2
+	incrTaskToolFailForTest(t, s, "task-x", "tool_b", 1)
+	incrTaskToolFailForTest(t, s, "task-x", "tool_b", 1)
+	incrTaskToolFailForTest(t, s, "task-x", "tool_b", 1) // 3 — highest
 
 	tool, n := s.RepeatedToolFailure("task-x")
 	if tool != "tool_b" || n != 3 {
@@ -56,7 +56,7 @@ func TestHandleStepFailure_RepeatedToolFailure_NoFollowUp(t *testing.T) {
 
 	// Simulate a tool that failed 3 times at the task level.
 	for i := 0; i < toolFailCircuitBreakerThreshold; i++ {
-		s.spawner.incrTaskToolFail("task-e23-det", "exchange_order", 1)
+		incrTaskToolFailForTest(t, s.spawner, "task-e23-det", "exchange_order", 1)
 	}
 
 	// Low confidence would normally → generative_uncertainty → follow-up spawn.

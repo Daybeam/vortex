@@ -75,9 +75,14 @@ func TestFulfillStep_RestartsRunGoroutine(t *testing.T) {
 	}
 
 	// Verify the decision was resolved (pending decisions cleared).
-	g := s.GetTaskGraph(taskID)
-	pendingCount := len(g.PendingDecisions)
-	graphStatus := g.Status
+	if !s.TaskKnown(taskID) {
+		t.Fatal("task not found after FulfillStep — graph was evicted mid-test")
+	}
+	pendingCount := s.PendingDecisionCount(taskID)
+	graphStatus := schemas.GraphStatus("")
+	if g := s.GetTaskGraph(taskID); g != nil {
+		graphStatus = g.Status
+	}
 	if pendingCount != 0 {
 		t.Fatalf("expected 0 pending decisions after FulfillStep, got %d", pendingCount)
 	}
@@ -147,8 +152,10 @@ func TestFulfillDelegation_RestartsRunGoroutine(t *testing.T) {
 	}
 
 	// Verify the decision was resolved.
-	g := s.GetTaskGraph(taskID)
-	pendingCount := len(g.PendingDecisions)
+	if !s.TaskKnown(taskID) {
+		t.Fatal("task not found after FulfillDelegation — graph was evicted mid-test")
+	}
+	pendingCount := s.PendingDecisionCount(taskID)
 	if pendingCount != 0 {
 		t.Fatalf("expected 0 pending decisions after FulfillDelegation, got %d", pendingCount)
 	}

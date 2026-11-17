@@ -22,7 +22,7 @@ func TestCollectDelegationToolDefs_IncludesCoreTools(t *testing.T) {
 	hub := NewContextHub(reg, nil, nil)
 	spawner := &Spawner{registry: reg}
 
-	defs := spawner.collectDelegationToolDefs(hub, nil)
+	defs := collectDelegationToolDefsForTest(t, spawner, hub, nil)
 
 	if len(defs) == 0 {
 		t.Fatal("expected core tool definitions, got empty list")
@@ -58,7 +58,7 @@ func TestCollectDelegationToolDefs_IncludesMCPBindings(t *testing.T) {
 	spawner := &Spawner{registry: reg}
 
 	bindings := []config.MCPBinding{{MCPID: "search-mcp"}}
-	defs := spawner.collectDelegationToolDefs(hub, bindings)
+	defs := collectDelegationToolDefsForTest(t, spawner, hub, bindings)
 
 	hasWebSearch := false
 	hasFetchPage := false
@@ -100,7 +100,7 @@ func TestCollectDelegationToolDefs_RespectsAllowlist(t *testing.T) {
 	bindings := []config.MCPBinding{
 		{MCPID: "search-mcp", AllowedTools: []string{"web_search"}},
 	}
-	defs := spawner.collectDelegationToolDefs(hub, bindings)
+	defs := collectDelegationToolDefsForTest(t, spawner, hub, bindings)
 
 	hasWebSearch := false
 	hasFetchPage := false
@@ -581,12 +581,15 @@ func TestFulfillDelegation_ClearsPendingDecision(t *testing.T) {
 	}
 
 	graph = engine.GetTaskGraph(taskID)
+	engine.Mu.RLock()
 	for _, dec := range graph.PendingDecisions {
 		if dec.StepID == "step_1" && dec.Type == schemas.DecisionDelegationRequired {
 			t.Error("expected delegation decision to be cleared after fulfillment")
+			engine.Mu.RUnlock()
 			return
 		}
 	}
+	engine.Mu.RUnlock()
 }
 
 // Ensure context import is used

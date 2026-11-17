@@ -99,3 +99,66 @@ func injectRunningTestGraph(t *testing.T, s *DirectedEngine, graph *schemas.Task
 	s.Mu.Unlock()
 	return ctx, cancel
 }
+
+// --- Spawner test helpers (audit F-1) ---
+//
+// These helpers encapsulate access to unexported Spawner fields and methods.
+// Use them instead of directly calling spawner.buildSystemPrompt(),
+// spawner.collectDelegationToolDefs(), etc. This localizes the coupling to
+// implementation details in one file so internal refactors only need to update
+// these wrappers.
+
+// buildSystemPromptForTest wraps Spawner.buildSystemPrompt for test use.
+func buildSystemPromptForTest(
+	t *testing.T,
+	s *Spawner,
+	ctx context.Context,
+	hub *ContextHub,
+	role *config.Role,
+	skillIDs []string,
+	capability string,
+	providerCfg *config.ProviderConfig,
+	toolConstraints []string,
+	mergedContext map[string]any,
+	fewShots []string,
+	isolation bool,
+	precedents []*schemas.DecisionNode,
+	taskText string,
+	latestError string,
+	taskID string,
+	stepID string,
+	trace []store.ToolInteraction,
+) []schemas.ContentBlock {
+	t.Helper()
+	blocks, err := s.buildSystemPrompt(ctx, hub, role, skillIDs, capability, providerCfg, toolConstraints, mergedContext, fewShots, isolation, precedents, taskText, latestError, taskID, stepID, trace)
+	if err != nil {
+		t.Fatalf("buildSystemPrompt failed: %v", err)
+	}
+	return blocks
+}
+
+// collectDelegationToolDefsForTest wraps Spawner.collectDelegationToolDefs.
+func collectDelegationToolDefsForTest(t *testing.T, s *Spawner, hub *ContextHub, bindings []config.MCPBinding) []schemas.ToolDefinition {
+	t.Helper()
+	return s.collectDelegationToolDefs(hub, bindings)
+}
+
+// recordEffectForTest wraps Spawner.recordEffect.
+func recordEffectForTest(t *testing.T, s *Spawner, taskID, stepID, toolName string, args map[string]any, result string, status string) {
+	t.Helper()
+	s.recordEffect(taskID, stepID, toolName, args, result, status)
+}
+
+// incrTaskToolFailForTest wraps Spawner.incrTaskToolFail.
+func incrTaskToolFailForTest(t *testing.T, s *Spawner, taskID, toolName string, stepCount int) int {
+	t.Helper()
+	return s.incrTaskToolFail(taskID, toolName, stepCount)
+}
+
+// setSpawnerArchiveForTest sets the unexported archive and pa fields on a
+// Spawner for tests that need to verify context archive integration.
+func setSpawnerArchiveForTest(t *testing.T, s *Spawner, archive *ContextArchive, reg *config.Registry, logger *obs.Logger) {
+	t.Helper()
+	s.archive = archive
+	s.pa = NewPromptAssembler(nil, nil, reg, logger)
+}

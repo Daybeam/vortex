@@ -94,10 +94,7 @@ func TestSpawner_PrecedentInjection(t *testing.T) {
 		},
 	}
 
-	blocks, err := spawner.buildSystemPrompt(context.Background(), nil, &config.Role{Name: "test"}, nil, "text", &config.ProviderConfig{}, []string{}, nil, nil, false, precedents, "test task", "", "", "", nil)
-	if err != nil {
-		t.Fatalf("buildSystemPrompt failed: %v", err)
-	}
+	blocks := buildSystemPromptForTest(t, spawner, context.Background(), nil, &config.Role{Name: "test"}, nil, "text", &config.ProviderConfig{}, []string{}, nil, nil, false, precedents, "test task", "", "", "", nil)
 
 	found := false
 	for _, b := range blocks {

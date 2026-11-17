@@ -114,34 +114,34 @@ func TestFastPath_ApprovalRequired_RaisesHumanApprovalDecision(t *testing.T) {
 
 	// Gate 1: a human_approval_required decision must be raised
 	got := waitFor(30*time.Second, func() bool {
-		g := engine.GetTaskGraph(taskID)
-		if g == nil {
-			return false
-		}
-		return len(g.PendingDecisions) > 0
+		return engine.PendingDecisionCount(taskID) > 0
 	})
 	if !got {
-		g := engine.GetTaskGraph(taskID)
-		status := schemas.GraphStatus("")
-		stepStatus := schemas.StepStatus("")
-		if g != nil {
+		var status schemas.GraphStatus
+		var stepStatus schemas.StepStatus
+		engine.WithTaskGraph(taskID, func(g *schemas.TaskGraph) {
 			status = g.Status
 			for _, st := range g.Steps {
 				stepStatus = st.Status
 			}
-		}
+		})
 		t.Fatalf("no decision was raised within 30s — StatusApprovalRequired "+
 			"was swallowed instead of raising G2. graph=%s step=%s calls=%d",
 			status, stepStatus, stub.calls.Load())
 	}
 
-	g := engine.GetTaskGraph(taskID)
-	graphStatus := g.Status
+	var graphStatus schemas.GraphStatus
 	var stepStatus schemas.StepStatus
-	for _, st := range g.Steps {
-		stepStatus = st.Status
-	}
-	dec := *g.PendingDecisions[0]
+	var dec schemas.Decision
+	engine.WithTaskGraph(taskID, func(g *schemas.TaskGraph) {
+		graphStatus = g.Status
+		for _, st := range g.Steps {
+			stepStatus = st.Status
+		}
+		if len(g.PendingDecisions) > 0 {
+			dec = *g.PendingDecisions[0]
+		}
+	})
 
 	// Step must be blocked, not failed
 	if stepStatus != schemas.StepBlocked {

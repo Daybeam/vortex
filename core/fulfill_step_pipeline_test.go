@@ -56,9 +56,8 @@ func newDelegationTestEngine(t *testing.T) *DirectedEngine {
 func waitForDelegationDecision(t *testing.T, engine *DirectedEngine, taskID string) *schemas.Decision {
 	t.Helper()
 	for i := 0; i < 20; i++ {
-		graph := engine.GetTaskGraph(taskID)
-		if graph != nil && len(graph.PendingDecisions) > 0 {
-			return graph.PendingDecisions[0]
+		if dec := engine.FirstPendingDecision(taskID); dec != nil {
+			return dec
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
