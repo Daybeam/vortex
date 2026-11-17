@@ -177,39 +177,7 @@ func ServeACP(engine Engine, stdin io.Reader, stdout io.Writer) error {
 		}
 
 		// Legacy DSH dialect.
-		var result any
-		var e *rpcError
-		switch req.Method {
-		case "initialize":
-			result = map[string]any{"server": "orchestrator", "version": "1.0", "capabilities": []string{"run_task", "cancel", "streaming"}}
-		case "ping":
-			result = map[string]any{"pong": true}
-		case "run_task":
-			var p runTaskParams
-			if err := json.Unmarshal(req.Params, &p); err != nil {
-				e = &rpcError{Code: -32602, Message: "invalid params"}
-				break
-			}
-			taskID, err := engine.Submit([]schemas.StepInput{{ID: "acp-1", Task: p.Prompt, RoleID: p.RoleID}})
-			if err != nil {
-				e = &rpcError{Code: -32603, Message: err.Error()}
-				break
-			}
-			result = map[string]any{"task_id": taskID}
-		case "cancel":
-			var p cancelParams
-			if err := json.Unmarshal(req.Params, &p); err != nil {
-				e = &rpcError{Code: -32602, Message: "invalid params"}
-				break
-			}
-			if err := engine.CancelTask(p.TaskID); err != nil {
-				e = &rpcError{Code: -32603, Message: err.Error()}
-				break
-			}
-			result = map[string]any{"cancelled": true}
-		default:
-			e = &rpcError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)}
-		}
+		result, e := handleLegacyMethod(req, engine)
 		writeJSON(Response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: e})
 	}
 
@@ -221,4 +189,36 @@ func ServeACP(engine Engine, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	return nil
+}
+
+// handleLegacyMethod dispatches a request using the legacy DSH dialect
+// (initialize, ping, run_task, cancel).
+func handleLegacyMethod(req request, engine Engine) (any, *rpcError) {
+	switch req.Method {
+	case "initialize":
+		return map[string]any{"server": "orchestrator", "version": "1.0", "capabilities": []string{"run_task", "cancel", "streaming"}}, nil
+	case "ping":
+		return map[string]any{"pong": true}, nil
+	case "run_task":
+		var p runTaskParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid params"}
+		}
+		taskID, err := engine.Submit([]schemas.StepInput{{ID: "acp-1", Task: p.Prompt, RoleID: p.RoleID}})
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		return map[string]any{"task_id": taskID}, nil
+	case "cancel":
+		var p cancelParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid params"}
+		}
+		if err := engine.CancelTask(p.TaskID); err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		return map[string]any{"cancelled": true}, nil
+	default:
+		return nil, &rpcError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)}
+	}
 }
