@@ -21,7 +21,7 @@ func (b *SQLiteChatBackend) SaveSession(ctx context.Context, sessionID, rootID, 
 		ON CONFLICT(id) DO UPDATE SET
 			root_id=excluded.root_id,
 			active_leaf_id=excluded.active_leaf_id
-	`, sessionID, rootID, activeLeafID, createdAt)
+	`, sessionID, rootID, activeLeafID, createdAt.Format(time.RFC3339))
 	return err
 }
 
@@ -36,14 +36,14 @@ func (b *SQLiteChatBackend) SaveMessage(ctx context.Context, msg *ChatMessageRow
 			forked_from=excluded.forked_from,
 			role=excluded.role,
 			content=excluded.content
-	`, msg.ID, msg.SessionID, msg.ParentID, msg.ClientID, msg.ReplyTo, msg.ForkedFrom, msg.Role, msg.Content, msg.CreatedAt)
+	`, msg.ID, msg.SessionID, msg.ParentID, msg.ClientID, msg.ReplyTo, msg.ForkedFrom, msg.Role, msg.Content, msg.CreatedAt.Format(time.RFC3339))
 	return err
 }
 
 func (b *SQLiteChatBackend) LoadSession(ctx context.Context, sessionID string) (rootID, activeLeafID string, messages map[string]*ChatMessageRow, err error) {
 	var root, leaf sql.NullString
-	var createdAt time.Time
-	err = b.db.QueryRowContext(ctx, `SELECT root_id, active_leaf_id, created_at FROM chat_sessions WHERE id = ?`, sessionID).Scan(&root, &leaf, &createdAt)
+	var createdAtStr string
+	err = b.db.QueryRowContext(ctx, `SELECT root_id, active_leaf_id, created_at FROM chat_sessions WHERE id = ?`, sessionID).Scan(&root, &leaf, &createdAtStr)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -60,7 +60,8 @@ func (b *SQLiteChatBackend) LoadSession(ctx context.Context, sessionID string) (
 	for rows.Next() {
 		var m ChatMessageRow
 		var parentID, clientID, replyTo, forkedFrom sql.NullString
-		if err := rows.Scan(&m.ID, &parentID, &clientID, &replyTo, &forkedFrom, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+		var createdStr string
+		if err := rows.Scan(&m.ID, &parentID, &clientID, &replyTo, &forkedFrom, &m.Role, &m.Content, &createdStr); err != nil {
 			continue
 		}
 		m.ParentID = parentID.String
@@ -68,6 +69,7 @@ func (b *SQLiteChatBackend) LoadSession(ctx context.Context, sessionID string) (
 		m.ReplyTo = replyTo.String
 		m.ForkedFrom = forkedFrom.String
 		m.SessionID = sessionID
+		m.CreatedAt = parseTimeField(createdStr)
 		messages[m.ID] = &m
 	}
 	return rootID, activeLeafID, messages, nil
@@ -84,12 +86,27 @@ func (b *SQLiteChatBackend) ListSessions(ctx context.Context, limit, offset int)
 	for rows.Next() {
 		var s ChatSessionRow
 		var root, leaf sql.NullString
-		if err := rows.Scan(&s.ID, &root, &leaf, &s.CreatedAt); err != nil {
+		var createdStr string
+		if err := rows.Scan(&s.ID, &root, &leaf, &createdStr); err != nil {
 			continue
 		}
 		s.RootID = root.String
 		s.ActiveLeafID = leaf.String
+		s.CreatedAt = parseTimeField(createdStr)
 		sessions = append(sessions, s)
 	}
 	return sessions, nil
+}
+
+func parseTimeField(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", s); err == nil {
+		return t
+	}
+	return time.Time{}
 }

@@ -114,3 +114,82 @@ func TestSQLiteChatBackend_LegacySchemaMigration(t *testing.T) {
 		t.Errorf("client_id lost after migration: %q", msgs["m2"].ClientID)
 	}
 }
+
+// TestSQLiteChatBackend_CreatedAtRFC3339RoundTrip verifies that time.Now()
+// (which carries a monotonic clock reading) survives a save/load cycle.
+// Before the RFC3339 fix, the monotonic suffix caused Scan to fail,
+// returning a zero time.Time on load.
+func TestSQLiteChatBackend_CreatedAtRFC3339RoundTrip(t *testing.T) {
+	db, err := InitDB(filepath.Join(t.TempDir(), "chat.db"))
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	backend := NewSQLiteChatBackend(db)
+	ctx := context.Background()
+
+	// time.Now() includes monotonic clock — the original bug trigger.
+	now := time.Now().Round(time.Second)
+	sessionCreated := now.Add(-1 * time.Hour)
+
+	if err := backend.SaveSession(ctx, "s1", "m1", "m2", sessionCreated); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+	if err := backend.SaveMessage(ctx, &ChatMessageRow{
+		ID: "m1", SessionID: "s1", Role: "user", Content: "hello", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMessage failed: %v", err)
+	}
+
+	_, _, msgs, err := backend.LoadSession(ctx, "s1")
+	if err != nil {
+		t.Fatalf("LoadSession failed: %v", err)
+	}
+
+	m, ok := msgs["m1"]
+	if !ok {
+		t.Fatal("message m1 not found after load")
+	}
+	if m.CreatedAt.IsZero() {
+		t.Fatal("CreatedAt is zero after round-trip — monotonic clock bug not fixed")
+	}
+	// Compare at second precision (RFC3339 drops sub-second by default
+	// with Format, but our values are already Round(time.Second)).
+	if !m.CreatedAt.Equal(now) {
+		t.Errorf("CreatedAt mismatch after round-trip: got %v, want %v", m.CreatedAt, now)
+	}
+}
+
+// TestParseTimeField covers the backward-compat parser: RFC3339 (new),
+// legacy time.String() format (old rows), and garbage (zero defense).
+func TestParseTimeField(t *testing.T) {
+	t.Run("RFC3339", func(t *testing.T) {
+		s := "2026-11-20T14:32:07+08:00"
+		got := parseTimeField(s)
+		if got.IsZero() {
+			t.Fatal("RFC3339 should parse successfully")
+		}
+		want, _ := time.Parse(time.RFC3339, s)
+		if !got.Equal(want) {
+			t.Errorf("parseTimeField(%q) = %v, want %v", s, got, want)
+		}
+	})
+	t.Run("legacy format", func(t *testing.T) {
+		s := "2026-11-20 14:32:07.123456789+08:00"
+		got := parseTimeField(s)
+		if got.IsZero() {
+			t.Fatal("legacy format should parse successfully")
+		}
+	})
+	t.Run("empty string", func(t *testing.T) {
+		if got := parseTimeField(""); !got.IsZero() {
+			t.Errorf("empty string should return zero time, got %v", got)
+		}
+	})
+	t.Run("garbage", func(t *testing.T) {
+		if got := parseTimeField("not-a-time"); !got.IsZero() {
+			t.Errorf("garbage should return zero time, got %v", got)
+		}
+	})
+}
