@@ -33,7 +33,8 @@ import (
 // callers will simply recompile on next use.
 const regexCacheMaxEntries = 500
 
-var regexCache sync.Map // map[string]*regexp.Regexp
+var regexCache sync.Map     // map[string]*regexp.Regexp
+var regexCacheMu sync.Mutex // protects size-check-and-clear in compileRegexCache
 
 // compileRegexCache returns a cached compiled regex, compiling on first use.
 func compileRegexCache(pattern string) (*regexp.Regexp, error) {
@@ -46,22 +47,35 @@ func compileRegexCache(pattern string) (*regexp.Regexp, error) {
 	}
 	// audit P3: enforce size cap to prevent unbounded growth from
 	// LLM-generated exit criteria. Clearing is safe — callers recompile.
+	// audit FIX: mutex around count-and-clear eliminates TOCTOU race where
+	// entries added between count and clear were lost.
 	actual, loaded := regexCache.LoadOrStore(pattern, re)
 	if !loaded {
-		// New entry inserted — check size and clear if over limit.
+		regexCacheMu.Lock()
 		count := 0
 		regexCache.Range(func(_, _ any) bool {
 			count++
-			return count <= regexCacheMaxEntries+1
+			return true
 		})
 		if count > regexCacheMaxEntries {
+			// audit FIX (2026-11-21): was clearing ALL entries (cliff-edge →
+			// thundering herd of recompilation on next use). Delete half to
+			// spread the recompilation cost across subsequent calls. sync.Map
+			// iteration order is randomized, so this keeps a random half.
+			deleted := 0
 			regexCache.Range(func(k, _ any) bool {
+				if deleted >= count/2 {
+					return false
+				}
 				regexCache.Delete(k)
+				deleted++
 				return true
 			})
-			// Re-store our entry since we just cleared it.
+			// Ensure the just-added pattern survives even if it was in
+			// the deleted half.
 			regexCache.Store(pattern, re)
 		}
+		regexCacheMu.Unlock()
 	}
 	return actual.(*regexp.Regexp), nil
 }

@@ -28,6 +28,10 @@ type followUpProvider struct {
 	answer string
 	calls  int
 	lastIn string
+	// err makes every call fail, which is how the wake-turn failure path is
+	// exercised offline: the real trigger is a provider refusal (request budget
+	// spent by the sub-agent), and that must not require a live account.
+	err error
 }
 
 func (p *followUpProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
@@ -37,6 +41,9 @@ func (p *followUpProvider) Complete(ctx context.Context, req schemas.CompleteReq
 func (p *followUpProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(string) error) (*schemas.ProviderResponse, error) {
 	p.calls++
 	p.lastIn = req.System + "\n" + req.User
+	if p.err != nil {
+		return nil, p.err
+	}
 	onChunk(p.answer)
 	return &schemas.ProviderResponse{Text: p.answer}, nil
 }

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/daybeam/vortex/schemas"
@@ -9,16 +10,37 @@ import (
 )
 
 type mockAntiPatternBackend struct {
+	mu       sync.RWMutex
 	upserted []store.AntiPatternPrecedent
 }
 
 func (m *mockAntiPatternBackend) Upsert(ctx context.Context, p store.AntiPatternPrecedent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.upserted = append(m.upserted, p)
 	return nil
 }
 
 func (m *mockAntiPatternBackend) LoadAll(ctx context.Context) ([]store.AntiPatternPrecedent, error) {
 	return nil, nil
+}
+
+// UpsertedCount returns the number of upserted entries under a read lock.
+// audit FIX (2026-11-21): race detector found concurrent read of upserted
+// (in drainRejectionDeposits) vs write (in Upsert via goBackground).
+func (m *mockAntiPatternBackend) UpsertedCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.upserted)
+}
+
+// Upserted returns a snapshot copy of the upserted slice under a read lock.
+func (m *mockAntiPatternBackend) Upserted() []store.AntiPatternPrecedent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	cp := make([]store.AntiPatternPrecedent, len(m.upserted))
+	copy(cp, m.upserted)
+	return cp
 }
 
 func TestDepositExperienceEvolution(t *testing.T) {
@@ -51,11 +73,12 @@ func TestDepositExperienceEvolution(t *testing.T) {
 
 	engine.DepositExperienceEvolution(context.Background(), graph, step)
 
-	if len(backend.upserted) == 0 {
+	if backend.UpsertedCount() == 0 {
 		t.Fatal("expected one anti-pattern to be deposited")
 	}
 
-	p := backend.upserted[0]
+	upserted := backend.Upserted()
+	p := upserted[0]
 	if p.AntiPattern != "Pitfall in s1 (test_role)" {
 		t.Errorf("expected AntiPattern 'Pitfall in s1 (test_role)', got '%s'", p.AntiPattern)
 	}
@@ -160,8 +183,8 @@ func TestDepositExperienceEvolution_EarlyReturns(t *testing.T) {
 
 			// ...and must NOT deposit when the guard clause fired. Pre-fix this
 			// assertion did not exist, so a deleted guard would go unnoticed.
-			if tt.backend != nil && len(tt.backend.upserted) != 0 {
-				t.Errorf("guard clause deposited %d anti-pattern(s); expected 0", len(tt.backend.upserted))
+		if tt.backend != nil && tt.backend.UpsertedCount() != 0 {
+			t.Errorf("guard clause deposited %d anti-pattern(s); expected 0", tt.backend.UpsertedCount())
 			}
 		})
 	}
@@ -204,11 +227,12 @@ func TestDepositExperienceEvolution_LongIntentTruncation(t *testing.T) {
 
 	engine.DepositExperienceEvolution(context.Background(), graph, step)
 
-	if len(backend.upserted) == 0 {
+	if backend.UpsertedCount() == 0 {
 		t.Fatal("expected one anti-pattern to be deposited")
 	}
 
-	p := backend.upserted[0]
+	upserted := backend.Upserted()
+	p := upserted[0]
 	// The TriggerCondition field is formatted as "Task: <intent>".
 	// With truncation, intent should be 100 chars, so TriggerCondition
 	// should be "Task: " (6 chars) + 100 chars = 106 chars.

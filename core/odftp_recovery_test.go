@@ -25,6 +25,7 @@ func TestDirectedEngine_ODFTP_RecoveryChoices(t *testing.T) {
 	defer logger.Close()
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
+	defer engine.Stop()
 	// Cancel lifecycle context to prevent run() goroutines (started by
 	// SubmitDecision) from racing with this test's direct handleOutput calls.
 	engine.lifecycleCancel()
@@ -125,6 +126,7 @@ func TestDirectedEngine_AutoFork_Trigger(t *testing.T) {
 	defer logger.Close()
 
 	engine := NewDirectedEngine(reg, ts, nil, nil, logger, nil, tasksDir, tasksDir, nil)
+	defer engine.Stop()
 	if engine == nil {
 		t.Fatal("NewDirectedEngine returned nil — auto-fork engine initialization failed")
 	}

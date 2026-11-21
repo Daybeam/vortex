@@ -390,6 +390,12 @@ func (r *Registry) loadLocked() error {
 			continue // FIX (2026-09-03): restored empty-ID skip, dropped during the loader.go split
 		}
 		m.InitFilter()
+		if existing, ok := r.MCPs[m.ID]; ok &&
+			existing.SchemaFingerprint != "" && m.SchemaFingerprint != "" &&
+			existing.SchemaFingerprint != m.SchemaFingerprint {
+			log.Printf("[EventMCPToolsChanged] mcp=%s old_hash=%s new_hash=%s — MCP schema changed on config reload",
+				m.ID, existing.SchemaFingerprint, m.SchemaFingerprint)
+		}
 		r.MCPs[m.ID] = &m
 		keepMCPs[m.ID] = true
 	}

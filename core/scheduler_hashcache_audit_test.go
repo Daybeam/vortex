@@ -27,12 +27,12 @@ func TestHashCache_BoundedGrowth(t *testing.T) {
 		t.Fatalf("expected 5 entries after filling to cap, got %d", len(s.hashCache))
 	}
 
-	// Add one more entry — this triggers eviction (keep half + add 1).
-	// With cap=5, keep=5/2=2, so after add: 2+1=3 entries.
+	// Add one more entry — this triggers PERF-4 eviction (keep half + add 1).
+	// With 5 entries, keep half = 5/2 = 2, then add the new entry → 3 total.
 	s.recordHashCacheEntry("/path/to/file-F", "hash-F")
 
-	if len(s.hashCache) > 3 {
-		t.Fatalf("expected ≤3 entries after eviction (keep half + 1), got %d — cache is growing unbounded", len(s.hashCache))
+	if len(s.hashCache) != 3 {
+		t.Fatalf("expected 3 entries after keep-half eviction, got %d — cache is growing unbounded", len(s.hashCache))
 	}
 
 	if _, ok := s.hashCache["/path/to/file-F"]; !ok {

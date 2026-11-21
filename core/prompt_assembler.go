@@ -156,6 +156,26 @@ func (s *PromptAssembler) SetRecentInteractions(trace []store.ToolInteraction) {
 	s.recentInteractionsMu.Unlock()
 }
 
+func (s *PromptAssembler) collectCurrentSchemaFingerprints() map[string]string {
+	if s.registry == nil {
+		return nil
+	}
+	s.registry.Mu.RLock()
+	defer s.registry.Mu.RUnlock()
+	out := make(map[string]string, len(s.registry.MCPs)+len(s.registry.DynamicMCPs))
+	for id, mcp := range s.registry.MCPs {
+		if mcp.SchemaFingerprint != "" {
+			out[id] = mcp.SchemaFingerprint
+		}
+	}
+	for id, mcp := range s.registry.DynamicMCPs {
+		if mcp.SchemaFingerprint != "" {
+			out[id] = mcp.SchemaFingerprint
+		}
+	}
+	return out
+}
+
 // RecordSubagentDuration records the last subagent execution duration and
 // adjusts the dynamic warm context budget (P2-11 feedback loop).
 //
@@ -370,20 +390,43 @@ func (s *PromptAssembler) Build(
 	// Tier 3 (trimmable): Top-N hard cap (precedentsTopN=2) + single-sentence
 	// summary per §4.2.
 	if len(precedents) > 0 {
-		topPrecedents := s.budgetEnforcer.TopNPrecedents(precedents, precedentsTopN)
-		var pPart strings.Builder
-		pPart.WriteString("# Past Decision Precedents\n")
-		pPart.WriteString("The following reasoning paths were used successfully for similar tasks in the past. Use them to guide your own reasoning:\n\n")
-		for _, p := range topPrecedents {
-			pPart.WriteString("## Task Intent Similarity: ")
-			pPart.WriteString(p.Outcome)
-			pPart.WriteString("\n")
-			pPart.WriteString(s.budgetEnforcer.SummarizePrecedent(p))
-			pPart.WriteString("\n\n")
+		currentFingerprints := s.collectCurrentSchemaFingerprints()
+		var filtered []*schemas.DecisionNode
+		var dropped, unbound int
+		for _, p := range precedents {
+			if len(p.SchemaHashes) == 0 {
+				unbound++
+				filtered = append(filtered, p)
+				continue
+			}
+			if schemas.PrecedentPassesSchemaGate(p.SchemaHashes, currentFingerprints) {
+				filtered = append(filtered, p)
+			} else {
+				dropped++
+			}
 		}
-		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-			Text: pPart.String(),
-		}, GovTier3, CategoryPastPrecedents))
+		if dropped > 0 && s.logger != nil {
+			s.logger.Log(obs.EventSchemaRotQuarantine, "", "", map[string]any{
+				"precedents_dropped": dropped,
+				"precedents_unbound": unbound,
+			})
+		}
+		if len(filtered) > 0 {
+			topPrecedents := s.budgetEnforcer.TopNPrecedents(filtered, precedentsTopN)
+			var pPart strings.Builder
+			pPart.WriteString("# Past Decision Precedents\n")
+			pPart.WriteString("The following reasoning paths were used successfully for similar tasks under the tool versions recorded with each entry. Verify the current tool schema before reusing any call pattern:\n\n")
+			for _, p := range topPrecedents {
+				pPart.WriteString("## Task Intent Similarity: ")
+				pPart.WriteString(p.Outcome)
+				pPart.WriteString("\n")
+				pPart.WriteString(s.budgetEnforcer.SummarizePrecedent(p))
+				pPart.WriteString("\n\n")
+			}
+			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
+				Text: pPart.String(),
+			}, GovTier3, CategoryPastPrecedents))
+		}
 	}
 
 	// Anti-Cliff Priority 6+: Inject Anti-Pattern Precedents into ProtectedZone

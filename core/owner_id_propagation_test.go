@@ -52,8 +52,14 @@ func TestRequestPlanning_AcceptsOwnerID(t *testing.T) {
 }
 
 // TestDispatchGroup_AcceptsOwnerID verifies that DispatchGroup's signature
-// includes the ownerID parameter. This is the group-dispatch path — if the
-// parameter is removed, this test will not compile.
+// includes the ownerID parameter AND that the ownerID actually reaches the
+// task graph. DispatchGroup may legitimately create a task graph even
+// without a spawner (steps fail later during execution, not submission),
+// so the key behavioral assertion is that the submitted graph carries the
+// correct OwnerID — not just that the call compiles.
+//
+// This is both a compile-time check (removing the ownerID parameter breaks
+// the call) and a behavioral check (the task graph must carry the ownerID).
 func TestDispatchGroup_AcceptsOwnerID(t *testing.T) {
 	reg := &config.Registry{
 		RoleGroups: map[string]*config.RoleGroup{
@@ -75,15 +81,27 @@ func TestDispatchGroup_AcceptsOwnerID(t *testing.T) {
 	defer engine.Stop()
 	dispatcher := NewGroupDispatcher(engine, reg)
 
-	// DispatchGroup will fail because the engine has no spawner, but the
-	// ownerID parameter must still be accepted by the signature. If someone
-	// removes the parameter, this call won't compile.
-	_, err := dispatcher.DispatchGroup("test-group", "test task", nil, nil, nil, nil, "", false, "tenant-A")
-	// The call must compile (verifying ownerID parameter exists) and not panic.
-	// It should return either a task ID or an error — not both empty/nil.
+	taskID, err := dispatcher.DispatchGroup("test-group", "test task", nil, nil, nil, nil, "", false, "tenant-A")
+
 	if err != nil {
-		// Expected: error is fine (e.g., group not found, no spawner).
-		t.Logf("DispatchGroup returned error (expected with test setup): %v", err)
+		// An error is acceptable with this test setup (no spawner).
+		// The compile-time guarantee (ownerID parameter exists) still holds.
+		return
+	}
+
+	// If DispatchGroup succeeded, the task graph MUST carry the ownerID.
+	// This is the behavioral assertion that was missing (audit T-1: was
+	// vacuous — just logged the error and accepted any outcome).
+	if taskID == "" {
+		t.Fatal("T-1 REGRESSION: DispatchGroup returned empty taskID with nil error — silent failure")
+	}
+	graph := engine.GetTaskGraph(taskID)
+	if graph == nil {
+		t.Fatalf("T-1 REGRESSION: task graph %q not found after DispatchGroup", taskID)
+	}
+	if graph.OwnerID != "tenant-A" {
+		t.Fatalf("T-1 REGRESSION: ownerID not propagated to task graph. "+
+			"Expected %q, got %q", "tenant-A", graph.OwnerID)
 	}
 }
 

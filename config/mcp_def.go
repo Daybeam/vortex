@@ -87,4 +87,8 @@ type MCPDef struct {
 	// Set to "per_tenant" when each tenant has their own credential.
 	// See docs/plan/OAUTH_SHARED_MCP_MULTI_TENANT_DESIGN.md §4 L1.
 	CredentialScope CredentialScope `json:"credential_scope,omitempty"`
+
+	SchemaFingerprint  string    `json:"schema_fingerprint,omitempty"`
+	SurfaceFingerprint string    `json:"surface_fingerprint,omitempty"`
+	FingerprintAt      time.Time `json:"fingerprint_at,omitempty"`
 }

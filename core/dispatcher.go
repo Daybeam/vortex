@@ -89,7 +89,7 @@ func (s *DirectedEngine) dispatchNotifications(graph *schemas.TaskGraph, eventTy
 			// backpressure instead of unbounded goroutine spawn.
 			webhookSem <- struct{}{}
 			defer func() { <-webhookSem }()
-			sendWebhook(route.TargetURL, route.SecretEnv, body)
+			sendWebhook(s.lifecycleCtx, route.TargetURL, route.SecretEnv, body)
 		})
 	}
 }
@@ -116,8 +116,8 @@ func matchesTrigger(route config.NotificationRoute, eventType obs.EventType, gra
 	return false
 }
 
-func sendWebhook(targetURL, secretEnv string, body []byte) {
-	req, err := http.NewRequestWithContext(context.Background(), "POST", targetURL, bytes.NewReader(body))
+func sendWebhook(ctx context.Context, targetURL, secretEnv string, body []byte) {
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return
 	}

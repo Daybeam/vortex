@@ -54,16 +54,17 @@ const embeddingWorkers = 4
 // timeout, and Route already degrades to keyword matching while the cache is
 // empty.
 //
-// A 5-minute timeout bounds the goroutine so a hung embedding provider cannot
-// leak it indefinitely (audit F-5).
-func (r *IntentRouter) RefreshEmbeddingsAsync(reg *config.Registry) {
+// The ctx parameter should be a lifecycle context so the goroutine exits on
+// shutdown. A 5-minute timeout bounds the goroutine so a hung embedding
+// provider cannot leak it indefinitely (audit F-5).
+func (r *IntentRouter) RefreshEmbeddingsAsync(ctx context.Context, reg *config.Registry) {
 	if r.embedClient == nil || reg == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	refreshCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	go func() {
 		defer cancel()
-		r.RefreshEmbeddings(ctx, reg)
+		r.RefreshEmbeddings(refreshCtx, reg)
 	}()
 }
 

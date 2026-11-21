@@ -90,24 +90,49 @@ func (g *ExternalScriptGuard) Check(command string, args []string, body string) 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
-		// Timeout or execution failure.
-		if ctx.Err() == context.DeadlineExceeded {
-			if g.mode == "deny" {
-				return CommandGuardResult{Block: true, Message: fmt.Sprintf("guard %s: timeout after %v", g.name, g.timeout)}
-			}
-			return CommandGuardResult{}
+	// Use Start + Wait-in-goroutine instead of Run so that on context
+	// cancellation we can return immediately. On Windows, cmd.Run() blocks
+	// indefinitely after context cancellation because the internal copy
+	// goroutines for stdout/stderr are stuck on ReadFile when child
+	// processes inherit the pipe handles (e.g. sh → sleep).
+	if err := cmd.Start(); err != nil {
+		if g.mode == "deny" {
+			return CommandGuardResult{Block: true, Message: fmt.Sprintf("guard %s: start failed: %v", g.name, err)}
 		}
-		// Non-zero exit code = block (both modes).
-		reason := strings.TrimSpace(stdout.String())
-		if reason == "" {
-			reason = fmt.Sprintf("guard %s rejected (exit code non-zero)", g.name)
-		}
-		return CommandGuardResult{Block: true, Message: reason}
+		return CommandGuardResult{}
 	}
 
-	// Exit 0 = allow (both modes).
-	return CommandGuardResult{}
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				if g.mode == "deny" {
+					return CommandGuardResult{Block: true, Message: fmt.Sprintf("guard %s: timeout after %v", g.name, g.timeout)}
+				}
+				return CommandGuardResult{}
+			}
+			// Non-zero exit code = block (both modes).
+			reason := strings.TrimSpace(stdout.String())
+			if reason == "" {
+				reason = fmt.Sprintf("guard %s rejected (exit code non-zero)", g.name)
+			}
+			return CommandGuardResult{Block: true, Message: reason}
+		}
+		// Exit 0 = allow (both modes).
+		return CommandGuardResult{}
+	case <-ctx.Done():
+		// Timeout: kill the process and return immediately. The goroutine
+		// running cmd.Wait() will eventually complete when the OS reclaims
+		// the pipe handles.
+		_ = cmd.Process.Kill()
+		if g.mode == "deny" {
+			return CommandGuardResult{Block: true, Message: fmt.Sprintf("guard %s: timeout after %v", g.name, g.timeout)}
+		}
+		return CommandGuardResult{}
+	}
 }
 
 // resolveInterpreter determines how to execute the guard script based on

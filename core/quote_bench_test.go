@@ -146,14 +146,18 @@ func TestQuoteBench_PowerShell_BacktickExpansion(t *testing.T) {
 
 	t.Logf("Direct Stdout: %q", string(res.Stdout))
 
-	if res.Diagnostic != nil {
-		t.Logf("TransportDamage: %v", res.Diagnostic.TransportDamage)
-		t.Logf("ScriptStdout: %q", string(res.Diagnostic.ScriptStdout))
+	// T-3 fix: assert Diagnostic is non-nil when DiagnosticMode is enabled.
+	// Without this, a silent diagnostic failure (nil Diagnostic) makes the
+	// TransportDamage assertion below vacuously pass.
+	if res.Diagnostic == nil {
+		t.Fatal("T-3 REGRESSION: DiagnosticMode enabled but res.Diagnostic is nil — diagnostic path did not run")
 	}
+	t.Logf("TransportDamage: %v", res.Diagnostic.TransportDamage)
+	t.Logf("ScriptStdout: %q", string(res.Diagnostic.ScriptStdout))
 
 	// T-H07 fix: assert that the executor handles backticks correctly
 	// (no transport damage). If damage IS detected, the executor regressed.
-	if res.Diagnostic != nil && res.Diagnostic.TransportDamage {
+	if res.Diagnostic.TransportDamage {
 		t.Error("unexpected TransportDamage for backtick expansion — executor should handle this correctly")
 	}
 }
@@ -180,15 +184,19 @@ func TestQuoteBench_PowerShell_QuoteStripping(t *testing.T) {
 
 	t.Logf("Direct Stdout: %q", string(res.Stdout))
 
-	if res.Diagnostic != nil {
-		t.Logf("TransportDamage: %v", res.Diagnostic.TransportDamage)
-		t.Logf("ScriptStdout: %q", string(res.Diagnostic.ScriptStdout))
-		t.Logf("FixAttempted: %v", res.Diagnostic.FixAttempted)
+	// T-3 fix: assert Diagnostic is non-nil when DiagnosticMode is enabled.
+	// Without this, a silent diagnostic failure (nil Diagnostic) makes the
+	// TransportDamage assertion below vacuously pass.
+	if res.Diagnostic == nil {
+		t.Fatal("T-3 REGRESSION: DiagnosticMode enabled but res.Diagnostic is nil — diagnostic path did not run")
 	}
+	t.Logf("TransportDamage: %v", res.Diagnostic.TransportDamage)
+	t.Logf("ScriptStdout: %q", string(res.Diagnostic.ScriptStdout))
+	t.Logf("FixAttempted: %v", res.Diagnostic.FixAttempted)
 
 	// T-H08 fix: assert that the executor handles quote stripping correctly
 	// (no transport damage). If damage IS detected, the executor regressed.
-	if res.Diagnostic != nil && res.Diagnostic.TransportDamage {
+	if res.Diagnostic.TransportDamage {
 		t.Error("unexpected TransportDamage for quote stripping — executor should handle this correctly")
 	}
 }

@@ -43,6 +43,7 @@ func TestEvoXCoordination(t *testing.T) {
 	// correctly waits for the writer to drain before returning.
 	defer logger.Close()
 	engine := NewDirectedEngine(reg, ts, es, nil, logger, nil, t.TempDir(), t.TempDir(), nil)
+	defer engine.Stop()
 
 	// 1. Test Programmatic Merge
 	graph := &schemas.TaskGraph{
@@ -193,6 +194,7 @@ func TestHandleOutput_LowConfidenceTriggersFailure(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), sys)
 	defer logger.Close()
 	engine := NewDirectedEngine(reg, ts, es, nil, logger, nil, t.TempDir(), t.TempDir(), nil)
+	defer engine.Stop()
 
 	graph := &schemas.TaskGraph{
 		TaskID:          "test_low_conf",
@@ -250,6 +252,7 @@ func TestHandleOutput_StatusFailedTriggersFailure(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), sys)
 	defer logger.Close()
 	engine := NewDirectedEngine(reg, ts, es, nil, logger, nil, t.TempDir(), t.TempDir(), nil)
+	defer engine.Stop()
 
 	graph := &schemas.TaskGraph{
 		TaskID:          "test_status_failed",
@@ -306,6 +309,7 @@ func TestHandleOutput_BudgetDeductionNilGuard(t *testing.T) {
 	logger := mustNewLogger(t, t.TempDir(), sys)
 	defer logger.Close()
 	engine := NewDirectedEngine(reg, ts, es, nil, logger, nil, t.TempDir(), t.TempDir(), nil)
+	defer engine.Stop()
 
 	// budgetGuard should be nil (not set up by NewDirectedEngine in test).
 	graph := &schemas.TaskGraph{

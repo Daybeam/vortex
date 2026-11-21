@@ -1089,6 +1089,7 @@ type SystemOneConfig struct {
 	EnableFailureClassify bool    `json:"enable_failure_classify,omitempty"`
 	EnableSieve           bool    `json:"enable_sieve,omitempty"`
 	MinConfidence         float64 `json:"min_confidence,omitempty"`
+	Envelope              string  `json:"envelope,omitempty"`
 }
 
 // CommandGuardConfig declares an external command guard script that can

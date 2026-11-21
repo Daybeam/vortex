@@ -453,5 +453,10 @@ func TestOAuthAcceptance_O8_401FailureDomainIsolation(t *testing.T) {
 		t.Errorf("O8: expected at least 2 token fetches (A initial + A refresh after 401 + B initial), got %d", tokenCount.Load())
 	}
 
-	_ = errA // A's result is not asserted — the point is B is unaffected
+	// A's 401 may be handled internally (token refresh) — log the result
+	// instead of discarding it silently. The test's focus is that B is
+	// unaffected regardless of A's outcome.
+	if errA != nil {
+		t.Logf("O8: user-A call returned error (expected from 401): %v", errA)
+	}
 }
