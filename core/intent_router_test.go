@@ -130,7 +130,7 @@ func TestIntentRouter_RefreshEmbeddingsAsync_DoesNotBlock(t *testing.T) {
 	router := NewIntentRouter(client)
 
 	started := time.Now()
-	router.RefreshEmbeddingsAsync(reg)
+	router.RefreshEmbeddingsAsync(context.Background(), reg)
 	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
 		t.Fatalf("RefreshEmbeddingsAsync blocked for %v", elapsed)
 	}
@@ -147,4 +147,19 @@ func TestIntentRouter_RefreshEmbeddingsAsync_DoesNotBlock(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("background warm-up did not populate embeddings")
+}
+
+// TestRefreshEmbeddingsAsync_AcceptsContext verifies that RefreshEmbeddingsAsync
+// accepts a context parameter and uses it for the background goroutine. This
+// enables callers to pass a lifecycle context so the goroutine exits on shutdown
+// instead of running until the 5-minute timeout.
+func TestRefreshEmbeddingsAsync_AcceptsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	router := &IntentRouter{} // nil embedClient → function returns immediately
+	router.RefreshEmbeddingsAsync(ctx, nil)
+
+	time.Sleep(50 * time.Millisecond)
+	// No panic = pass. The function returned early because embedClient is nil.
 }

@@ -123,6 +123,9 @@ func (e *ControlledExecutor) Run(ctx context.Context, command string, args []str
 	var stdoutBuf, stderrBuf bytes.Buffer
 
 	if err := cmd.Start(); err != nil {
+		stdoutPipe.Close()
+		stderrPipe.Close()
+		stdinPipe.Close()
 		return nil, err
 	}
 

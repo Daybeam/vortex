@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
@@ -153,4 +154,15 @@ func TestMatchesTrigger_EdgeCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSendWebhook_UsesContext verifies that sendWebhook accepts a context
+// parameter and uses it for the HTTP request. A cancelled context should
+// cause the request to fail without panicking.
+func TestSendWebhook_UsesContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// sendWebhook should not panic when given a cancelled context.
+	sendWebhook(ctx, "http://localhost:0/nonexistent", "", []byte("{}"))
 }

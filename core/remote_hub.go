@@ -24,6 +24,10 @@ type RemoteTaskHub struct {
 	Spawner    *Spawner
 	notifyChan chan struct{}
 
+	// lifecycleCtx is used for HTTP requests so they can be cancelled on shutdown.
+	// Defaults to context.Background() if not set via SetLifecycleCtx.
+	lifecycleCtx context.Context
+
 	// Cache for currently claimed task data (protected by mu)
 	mu           sync.Mutex
 	currentStep  *schemas.Step
@@ -40,12 +44,13 @@ var _ interfaces.TaskHubInterface = (*RemoteTaskHub)(nil)
 
 func NewRemoteTaskHub(baseURL, apiKey string, spawner *Spawner) *RemoteTaskHub {
 	h := &RemoteTaskHub{
-		BaseURL:    baseURL,
-		APIKey:     apiKey,
-		HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}},
-		Spawner:    spawner,
-		notifyChan: make(chan struct{}),
-		stopChan:   make(chan struct{}),
+		BaseURL:      baseURL,
+		APIKey:       apiKey,
+		HTTPClient:   &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 100}},
+		Spawner:      spawner,
+		notifyChan:   make(chan struct{}),
+		stopChan:     make(chan struct{}),
+		lifecycleCtx: context.Background(),
 	}
 	// Background "pulse" to trigger sensing if Hub doesn't support push notifications yet
 	h.wg.Add(1)
@@ -80,6 +85,23 @@ func (h *RemoteTaskHub) Stop() {
 	h.wg.Wait()
 }
 
+// SetLifecycleCtx sets the context used for HTTP requests so they can be
+// cancelled on engine shutdown. Must be called before any HTTP request is made.
+func (h *RemoteTaskHub) SetLifecycleCtx(ctx context.Context) {
+	if ctx != nil {
+		h.lifecycleCtx = ctx
+	}
+}
+
+// getLifecycleCtx returns the lifecycle context, falling back to
+// context.Background() when not set (e.g. in tests using struct literals).
+func (h *RemoteTaskHub) getLifecycleCtx() context.Context {
+	if h.lifecycleCtx != nil {
+		return h.lifecycleCtx
+	}
+	return context.Background()
+}
+
 func (h *RemoteTaskHub) GetSignalField() interfaces.SignalFieldInterface {
 	return &RemoteSignalField{Hub: h}
 }
@@ -94,7 +116,7 @@ func (h *RemoteTaskHub) ClaimTask(stepID string) bool {
 
 	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic
 	// if BaseURL contains invalid URL characters.
-	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(h.getLifecycleCtx(), "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		log.Printf("WARN: remote_hub: ClaimTask failed to build request: %v", err)
 		return false
@@ -135,7 +157,7 @@ func (h *RemoteTaskHub) ReleaseTask(stepID string) {
 	}
 
 	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic.
-	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(h.getLifecycleCtx(), "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		log.Printf("WARN: remote_hub: ReleaseTask failed to build request: %v", err)
 		return
@@ -195,7 +217,7 @@ func (h *RemoteTaskHub) ExecuteTask(ctx context.Context, stepID string) (*schema
 	}
 
 	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic.
-	yReq, yErr := http.NewRequestWithContext(context.Background(), "POST", yieldURL, bytes.NewBuffer(yieldBody))
+	yReq, yErr := http.NewRequestWithContext(ctx, "POST", yieldURL, bytes.NewBuffer(yieldBody))
 	if yErr != nil {
 		log.Printf("WARN: remote_hub: yield failed to build request: %v", yErr)
 	} else {
@@ -231,7 +253,7 @@ var _ interfaces.SignalFieldInterface = (*RemoteSignalField)(nil)
 func (f *RemoteSignalField) SensingGlobal(limit int, agentLoad float64) []string {
 	url := fmt.Sprintf("%s/api/swarm/sensing", f.Hub.BaseURL)
 	// audit L-NEW-1: check NewRequest error to prevent nil-deref panic.
-	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
+	req, err := http.NewRequestWithContext(f.Hub.getLifecycleCtx(), "GET", url, nil)
 	if err != nil {
 		log.Printf("WARN: remote_hub: SensingGlobal failed to build request: %v", err)
 		return nil

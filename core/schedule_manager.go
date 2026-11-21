@@ -43,6 +43,7 @@ func NewScheduleManager(
 }
 
 func (sm *ScheduleManager) Start() {
+	sm.cleanupLocks()
 	sm.wg.Add(1)
 	go func() {
 		defer sm.wg.Done()
