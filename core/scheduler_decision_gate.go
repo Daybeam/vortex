@@ -361,7 +361,7 @@ func (s *DirectedEngine) resolveNonInteractiveDecision(
 	}
 	// System One strategy: fast probability-based pick (38.8ms vs 2-5s LLM).
 	if s.systemOneProvider != nil && s.systemOneCfg.EnableDecisionGate {
-		if choice, ok := s.askSystemOneForDecision(taskID, stepID, dtype, ctx, options); ok {
+		if choice, _, ok := s.askSystemOneForDecision(taskID, decID, stepID, dtype, ctx, options); ok {
 			return choice
 		}
 		s.logger.Log(obs.EventDecisionAutoResolved, taskID, stepID, map[string]any{
@@ -498,11 +498,11 @@ func isWordChar(b byte) bool {
 // confidence. The call has a 3s timeout — on timeout or error, the caller
 // falls back to the LLM decider or conservative defaults.
 func (s *DirectedEngine) askSystemOneForDecision(
-	taskID, stepID string,
+	taskID, decID, stepID string,
 	dtype schemas.DecisionType,
 	decisionCtx map[string]any,
 	options []string,
-) (string, bool) {
+) (string, float64, bool) {
 	state := fmt.Sprintf("Task %s step %s blocked. Decision type: %s. Context: %v. Available options: %s.",
 		taskID, stepID, dtype, decisionCtx, strings.Join(options, ", "))
 
@@ -526,7 +526,12 @@ func (s *DirectedEngine) askSystemOneForDecision(
 
 	resp, err := s.systemOneProvider.Complete(ctx, req)
 	if err != nil {
-		return "", false
+		s.logger.LogWithConfidence(obs.EventDecisionAutoResolved, taskID, stepID, 0, map[string]any{
+			"decision_id": decID,
+			"outcome":     "systemone_error",
+			"error":       err.Error(),
+		})
+		return "", 0, false
 	}
 
 	minConf := s.systemOneCfg.MinConfidence
@@ -541,15 +546,37 @@ func (s *DirectedEngine) askSystemOneForDecision(
 		choice, _ := tc.Arguments["choice"].(string)
 		confidence, _ := tc.Arguments["confidence"].(float64)
 		if confidence < minConf {
-			return "", false
+			s.logger.LogWithConfidence(obs.EventDecisionAutoResolved, taskID, stepID, confidence, map[string]any{
+				"decision_id":    decID,
+				"outcome":        "systemone_low_confidence",
+				"picked":         choice,
+				"min_confidence": minConf,
+			})
+			return "", confidence, false
 		}
 		for _, opt := range options {
 			if opt == choice {
-				return opt, true
+				s.logger.LogWithConfidence(obs.EventDecisionAutoResolved, taskID, stepID, confidence, map[string]any{
+					"decision_id":    decID,
+					"outcome":        "systemone_resolved",
+					"choice":         opt,
+					"min_confidence": minConf,
+				})
+				return opt, confidence, true
 			}
 		}
+		s.logger.LogWithConfidence(obs.EventDecisionAutoResolved, taskID, stepID, confidence, map[string]any{
+			"decision_id": decID,
+			"outcome":     "systemone_invalid_choice",
+			"picked":      choice,
+		})
+		return "", confidence, false
 	}
-	return "", false
+	s.logger.Log(obs.EventDecisionAutoResolved, taskID, stepID, map[string]any{
+		"decision_id": decID,
+		"outcome":     "systemone_no_answer",
+	})
+	return "", 0, false
 }
 
 // publicTierOptions is the set of decision options a public-tier submitter may
