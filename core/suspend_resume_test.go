@@ -149,11 +149,15 @@ func TestResumeSuspendedTask_ResetsZombieSteps(t *testing.T) {
 	s, _ := newAbortTestEngine(t)
 	defer s.Stop()
 
+	// Steps have a circular dependency (s1→s2→s1) so that after resume,
+	// neither step is "ready" per ReadySteps(). This prevents the graph
+	// executor from immediately picking up s1 and setting it back to
+	// StepRunning before the test can observe the reset to StepPending.
 	graph := &schemas.TaskGraph{
 		TaskID: "task-zombie-1",
 		Steps: map[string]*schemas.Step{
-			"s1": {ID: "s1", Status: schemas.StepRunning, Task: "do work"},
-			"s2": {ID: "s2", Status: schemas.StepPending, Task: "next work"},
+			"s1": {ID: "s1", Status: schemas.StepRunning, Task: "do work", DependsOn: []string{"s2"}},
+			"s2": {ID: "s2", Status: schemas.StepPending, Task: "next work", DependsOn: []string{"s1"}},
 		},
 		Status: schemas.GraphSuspended,
 	}

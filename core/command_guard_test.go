@@ -377,9 +377,21 @@ func TestCheckAll_BuiltinGuardsRegistered(t *testing.T) {
 
 // ─── External Script Guard Tests ──────────────────────────────────────────
 
+// checkShAvailable skips the test if sh is not in PATH.
+// ExternalScriptGuard tests create .sh scripts that require sh to execute.
+// audit FIX (2026-11-21): on Windows, sh is not available, causing 3 test
+// failures in safe_build.bat. Skip instead of failing.
+func checkShAvailable(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh not available: %v — ExternalScriptGuard tests require sh in PATH", err)
+	}
+}
+
 // TestExternalScriptGuard_DenyMode_AllowOnExit0 tests that a deny-mode
 // guard allows the command when the script exits 0.
 func TestExternalScriptGuard_DenyMode_AllowOnExit0(t *testing.T) {
+	checkShAvailable(t)
 	g := &ExternalScriptGuard{
 		name:    "test-deny",
 		script:  writeGuardScript(t, "exit 0"),
@@ -395,6 +407,7 @@ func TestExternalScriptGuard_DenyMode_AllowOnExit0(t *testing.T) {
 // TestExternalScriptGuard_DenyMode_BlockOnExit1 tests that a deny-mode
 // guard blocks the command when the script exits non-zero.
 func TestExternalScriptGuard_DenyMode_BlockOnExit1(t *testing.T) {
+	checkShAvailable(t)
 	g := &ExternalScriptGuard{
 		name:    "test-deny",
 		script:  writeGuardScript(t, "echo 'dangerous command'; exit 1"),
@@ -413,6 +426,7 @@ func TestExternalScriptGuard_DenyMode_BlockOnExit1(t *testing.T) {
 // TestExternalScriptGuard_DenyMode_BlockOnTimeout tests that a deny-mode
 // guard blocks when the script times out.
 func TestExternalScriptGuard_DenyMode_BlockOnTimeout(t *testing.T) {
+	checkShAvailable(t)
 	g := &ExternalScriptGuard{
 		name:    "test-deny",
 		script:  writeGuardScript(t, "sleep 10"),
@@ -428,6 +442,7 @@ func TestExternalScriptGuard_DenyMode_BlockOnTimeout(t *testing.T) {
 // TestExternalScriptGuard_AllowMode_AllowOnExit0 tests that an allow-mode
 // guard allows the command when the script exits 0.
 func TestExternalScriptGuard_AllowMode_AllowOnExit0(t *testing.T) {
+	checkShAvailable(t)
 	g := &ExternalScriptGuard{
 		name:    "test-allow",
 		script:  writeGuardScript(t, "exit 0"),
@@ -443,6 +458,7 @@ func TestExternalScriptGuard_AllowMode_AllowOnExit0(t *testing.T) {
 // TestExternalScriptGuard_AllowMode_BlockOnExit1 tests that an allow-mode
 // guard blocks when the script exits non-zero.
 func TestExternalScriptGuard_AllowMode_BlockOnExit1(t *testing.T) {
+	checkShAvailable(t)
 	g := &ExternalScriptGuard{
 		name:    "test-allow",
 		script:  writeGuardScript(t, "echo 'not on allowlist'; exit 1"),
@@ -458,6 +474,7 @@ func TestExternalScriptGuard_AllowMode_BlockOnExit1(t *testing.T) {
 // TestExternalScriptGuard_AllowMode_AllowOnTimeout tests that an allow-mode
 // guard allows when the script times out (fail-open for allow mode).
 func TestExternalScriptGuard_AllowMode_AllowOnTimeout(t *testing.T) {
+	checkShAvailable(t)
 	g := &ExternalScriptGuard{
 		name:    "test-allow",
 		script:  writeGuardScript(t, "sleep 10"),

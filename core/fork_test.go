@@ -28,9 +28,7 @@ func TestForkTask_StepNotFound(t *testing.T) {
 		Steps:  map[string]*schemas.Step{"s1": {ID: "s1", Status: schemas.StepOK}},
 		Status: schemas.GraphRunning,
 	}
-	s.Mu.Lock()
-	s.graphs["src-1"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	_, err := s.ForkTask("src-1", "nonexistent_step")
 	if err == nil {
@@ -55,18 +53,14 @@ func TestForkTask_CreatesNewGraphWithLineage(t *testing.T) {
 		Status:    schemas.GraphRunning,
 		CreatedAt: time.Now(),
 	}
-	s.Mu.Lock()
-	s.graphs["src-1"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	newTaskID, err := s.ForkTask("src-1", "s1")
 	if err != nil {
 		t.Fatalf("ForkTask failed: %v", err)
 	}
 
-	s.Mu.RLock()
-	forked := s.graphs[newTaskID]
-	s.Mu.RUnlock()
+	forked := s.GetTaskGraph(newTaskID)
 
 	if forked == nil {
 		t.Fatalf("forked graph not found")
@@ -96,22 +90,18 @@ func TestForkTask_DownstreamStepsReset(t *testing.T) {
 		Status:    schemas.GraphRunning,
 		CreatedAt: time.Now(),
 	}
-	s.Mu.Lock()
-	s.graphs["src-2"] = graph
-	s.Mu.Unlock()
+	injectTestGraph(t, s, graph)
 
 	newTaskID, err := s.ForkTask("src-2", "s1")
 	if err != nil {
 		t.Fatalf("ForkTask failed: %v", err)
 	}
 
-	s.Mu.RLock()
-	forked := s.graphs[newTaskID]
+	forked := s.GetTaskGraph(newTaskID)
 	s1Status := forked.Steps["s1"].Status
 	s2Status := forked.Steps["s2"].Status
 	s2Retry := forked.Steps["s2"].RetryCount
 	s3Status := forked.Steps["s3"].Status
-	s.Mu.RUnlock()
 
 	// s1 should be OK (fork point)
 	if s1Status != schemas.StepOK {
