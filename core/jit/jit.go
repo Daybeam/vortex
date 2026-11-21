@@ -300,6 +300,11 @@ func (m *JITManager) RestoreLocalMCPs(snapshot map[string]json.RawMessage) []str
 			}
 		}
 		m.registry.DynamicMCPs[id] = &mcp
+		if mcp.SchemaFingerprint != "" {
+			if existing, ok := m.registry.MCPs[id]; ok && existing.SchemaFingerprint != "" && existing.SchemaFingerprint != mcp.SchemaFingerprint {
+				log.Printf("[EventMCPRestoredStale] mcp=%s snapshot_hash=%s registry_hash=%s — restored old schema (intentional for task consistency)", id, mcp.SchemaFingerprint, existing.SchemaFingerprint)
+			}
+		}
 		restored = append(restored, id)
 	}
 	return restored

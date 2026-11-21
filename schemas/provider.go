@@ -57,6 +57,17 @@ type ContentBlock struct {
 	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 
+// ToolAnnotations mirrors the MCP standard tool annotations (MCP spec
+// 2026-07-28). These are hints from the server, treated as untrusted input
+// by, the host — the host policy can only be stricter, never more permissive.
+type ToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    bool   `json:"readOnlyHint,omitempty"`
+	DestructiveHint bool   `json:"destructiveHint,omitempty"`
+	IdempotentHint  bool   `json:"idempotentHint,omitempty"`
+	OpenWorldHint   bool   `json:"openWorldHint,omitempty"`
+}
+
 // ToolDefinition represents a single tool's schema.
 type ToolDefinition struct {
 	Name         string         `json:"name"`
@@ -67,6 +78,8 @@ type ToolDefinition struct {
 	// LlamaHub-inspired metadata for standardized SAV loops
 	VerificationMethod []string `json:"verification_method,omitempty"` // e.g. ["read_file", "ls"]
 	RiskLevel          string   `json:"risk_level,omitempty"`          // e.g. "low", "medium", "high"
+
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
 }
 
 // MCPServerDef defines an MCP server to be used by the provider.

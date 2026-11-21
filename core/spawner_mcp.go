@@ -347,6 +347,9 @@ func (s *Spawner) discoverStdioMCP(ctx context.Context, mcp *config.MCPDef, task
 		mcp.FullToolDefinitions = append(mcp.FullToolDefinitions, def)
 		mcp.AvailableTools = append(mcp.AvailableTools, name)
 	}
+	mcp.SchemaFingerprint = schemas.ComputeSchemaFingerprint(mcp.FullToolDefinitions)
+	mcp.SurfaceFingerprint = schemas.ComputeSurfaceFingerprint(mcp.FullToolDefinitions)
+	mcp.FingerprintAt = time.Now()
 	s.registry.Mu.Unlock()
 
 	mcp.InitFilter()

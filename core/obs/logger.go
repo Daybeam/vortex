@@ -109,6 +109,10 @@ const (
 	EventCommandStarted   EventType = "command_started"
 	EventCommandCompleted EventType = "command_completed"
 	EventCommandTimeout   EventType = "command_timeout"
+
+	EventMCPToolsChanged     EventType = "mcp_tools_changed"
+	EventSchemaRotQuarantine EventType = "schema_rot_quarantine"
+	EventMCPRestoredStale    EventType = "mcp_restored_stale"
 )
 
 type LogEvent struct {

@@ -345,6 +345,8 @@ type DecisionNode struct {
 	Source     string  `json:"source,omitempty"`     // "user" | "model" | "verifier"
 	Confidence float64 `json:"confidence,omitempty"` // 0.0-1.0
 	Domain     string  `json:"domain,omitempty"`     // topic facet (design §4: frozen at write time)
+
+	SchemaHashes map[string]string `json:"schema_hashes,omitempty"`
 }
 
 // ─── OutputFile ───────────────────────────────────────────────────────────
