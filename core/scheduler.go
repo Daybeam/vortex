@@ -673,26 +673,38 @@ func (s *DirectedEngine) evictTerminalGraphs(ctx context.Context) {
 		}
 
 		now := time.Now()
-		s.Mu.Lock()
+		var toEvict []string
+		s.Mu.RLock()
 		for taskID, graph := range s.graphs {
 			if !isTerminalStatus(graph.Status) {
 				continue
 			}
-			// If CompletedAt was not set at the transition site, stamp it
-			// on first observation so we can age it out next cycle.
 			if graph.CompletedAt == nil {
 				ts := now
 				graph.CompletedAt = &ts
 				continue
 			}
 			if now.Sub(*graph.CompletedAt) >= evictTTL {
-				delete(s.graphs, taskID)
-				delete(s.cancelFuncs, taskID)
-				delete(s.doneChans, taskID)
-				delete(s.stepWGs, taskID) // L-7.3
-				s.dropFence(taskID)
-				s.cleanRecentDecisions(taskID)
+				toEvict = append(toEvict, taskID)
 			}
+		}
+		s.Mu.RUnlock()
+
+		if len(toEvict) == 0 {
+			continue
+		}
+
+		s.Mu.Lock()
+		for _, taskID := range toEvict {
+			if _, ok := s.graphs[taskID]; !ok {
+				continue
+			}
+			delete(s.graphs, taskID)
+			delete(s.cancelFuncs, taskID)
+			delete(s.doneChans, taskID)
+			delete(s.stepWGs, taskID)
+			s.dropFence(taskID)
+			s.cleanRecentDecisions(taskID)
 		}
 		s.Mu.Unlock()
 	}
@@ -703,7 +715,7 @@ func (s *DirectedEngine) evictTerminalGraphs(ctx context.Context) {
 func isTerminalStatus(status schemas.GraphStatus) bool {
 	switch status {
 	case schemas.GraphCompleted, schemas.GraphCompletedWithSkips,
-		schemas.GraphFailed, schemas.GraphCancelled:
+		schemas.GraphFailed, schemas.GraphCancelled, schemas.GraphOrphaned:
 		return true
 	}
 	return false

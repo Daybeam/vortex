@@ -95,3 +95,35 @@ func TestListGraphs_CompletedPersistedNotOrphaned(t *testing.T) {
 	}
 	t.Fatal("completed task not found in ListGraphs output")
 }
+
+// TestIsTerminalStatus_OrphanedIsTerminal verifies that GraphOrphaned is
+// recognized as a terminal status by isTerminalStatus(). Without this,
+// the terminal-graph evictor never cleans up orphaned tasks from
+// s.graphs, s.cancelFuncs, s.doneChans, s.stepWGs — causing unbounded
+// memory growth in long-running servers.
+func TestIsTerminalStatus_OrphanedIsTerminal(t *testing.T) {
+	if !isTerminalStatus(schemas.GraphOrphaned) {
+		t.Error("GraphOrphaned must be a terminal status so the evictor can clean it up")
+	}
+	// Verify all other terminal statuses are still recognized.
+	for _, s := range []schemas.GraphStatus{
+		schemas.GraphCompleted,
+		schemas.GraphCompletedWithSkips,
+		schemas.GraphFailed,
+		schemas.GraphCancelled,
+	} {
+		if !isTerminalStatus(s) {
+			t.Errorf("status %q must remain terminal", s)
+		}
+	}
+	// Non-terminal statuses must still return false.
+	for _, s := range []schemas.GraphStatus{
+		schemas.GraphRunning,
+		schemas.GraphBlocked,
+		schemas.GraphPendingReview,
+	} {
+		if isTerminalStatus(s) {
+			t.Errorf("status %q must NOT be terminal", s)
+		}
+	}
+}
