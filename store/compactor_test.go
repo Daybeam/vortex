@@ -149,8 +149,12 @@ func TestRunCompaction_KeepsRunningTasks(t *testing.T) {
 	db := s.DB
 
 	old := time.Now().AddDate(0, 0, -40).Format("2006-01-02 15:04:05")
-	_, _ = db.Exec(`INSERT INTO tasks (task_id, status, updated_at) VALUES ('old_running', 'running', ?)`, old)
-	_, _ = db.Exec(`INSERT INTO tasks (task_id, status, updated_at) VALUES ('old_completed', 'completed', ?)`, old)
+	if _, err := db.Exec(`INSERT INTO tasks (task_id, status, updated_at) VALUES ('old_running', 'running', ?)`, old); err != nil {
+		t.Fatalf("setup insert old_running: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tasks (task_id, status, updated_at) VALUES ('old_completed', 'completed', ?)`, old); err != nil {
+		t.Fatalf("setup insert old_completed: %v", err)
+	}
 
 	c := NewStorageCompactor(db, RetentionConfig{TaskHistoryDays: 30, MaxCompletedTasks: 1000})
 	if err := c.RunCompaction(context.Background()); err != nil {

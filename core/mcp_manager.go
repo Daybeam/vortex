@@ -58,14 +58,15 @@ func (m *MCPConnectionManager) invalidateSessionCacheEntry(mcpID, ownerID string
 
 func cachedGetenv(key string) string {
 	if v, ok := mcpEnvCache.Load(key); ok {
-		return v.(string)
+		if s, ok := v.(string); ok {
+			return s
+		}
 	}
-	// audit L6: LoadOrStore makes the check-then-act atomic. os.Getenv is
-	// deterministic so both racing callers compute the same value; this just
-	// replaces the non-atomic Load-then-Store idiom. Cache stays effective
-	// (os.Getenv runs only on the miss path).
 	v, _ := mcpEnvCache.LoadOrStore(key, os.Getenv(key))
-	return v.(string)
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return os.Getenv(key)
 }
 
 // MCPConnectionManager isolates all stdio subprocess handling and JSON-RPC
@@ -143,11 +144,23 @@ func (m *MCPConnectionManager) CloseAll() {
 		return
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	clients := make([]*client.MCPClient, 0, len(m.processCache))
 	for id, cli := range m.processCache {
-		cli.Close()
+		clients = append(clients, cli)
 		delete(m.processCache, id)
 	}
+	m.mu.Unlock()
+	for _, cli := range clients {
+		cli.Close()
+	}
+	m.handshakeLocks.Range(func(k, _ any) bool {
+		m.handshakeLocks.Delete(k)
+		return true
+	})
+	m.discoveryLocks.Range(func(k, _ any) bool {
+		m.discoveryLocks.Delete(k)
+		return true
+	})
 }
 
 // mcpSpawnFailureTTL defines how long to keep an MCP in the failure ledger
@@ -267,6 +280,9 @@ func (m *MCPConnectionManager) ensureRemoteMCPSession(ctx context.Context, mcp *
 }
 
 func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mcp *config.MCPDef, ownerID string) string {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	resolvedURL, err := resolveMCPURL(mcp)
 	if err != nil {
 		return ""
@@ -333,7 +349,7 @@ func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mc
 			if _, err := io.Copy(io.Discard, notifResp.Body); err != nil {
 				log.Printf("WARN: mcp_manager: failed to drain notification response body: %v", err)
 			}
-			notifResp.Body.Close()
+				notifResp.Body.Close()
 		}
 	}
 
@@ -642,12 +658,13 @@ func (m *MCPConnectionManager) ensureMCPClient(ctx context.Context, mcp *config.
 			newCli.Close()
 			cli = existing
 		} else {
-			// P-H9: evict stale entry if cache is full
 			if len(m.processCache) >= maxMCPCacheSize {
 				for k, v := range m.processCache {
-					v.Close()
-					delete(m.processCache, k)
-					break
+					if v.IsDead() {
+						v.Close()
+						delete(m.processCache, k)
+						break
+					}
 				}
 			}
 			m.processCache[mcp.ID] = newCli

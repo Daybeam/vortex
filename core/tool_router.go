@@ -36,6 +36,7 @@ type ToolRouter struct {
 	mu           sync.RWMutex
 	embeddings   map[string][]float32 // tool ID -> vec
 	toolVersions map[string]string    // tool ID -> version key
+	lastRefreshSig string             // audit FIX 2026-11-22: skip rebuild when registry unchanged
 
 	systemOneProvider *providers.SystemOneProvider
 	systemOneModel    string
@@ -71,6 +72,33 @@ func (r *ToolRouter) SetLazyDiscoveryHook(fn func(ctx context.Context, mcpID, ta
 // RefreshToolEmbeddings builds or updates BM25 + embedding caches for all
 // registered MCP tools. Skips unchanged tools (versionKey unchanged).
 // Embedding I/O happens outside locks, mirroring IntentRouter.RefreshEmbeddings.
+// computeRefreshSig returns a deterministic signature of the MCP registry state
+// that captures all changes relevant to tool routing: MCP IDs, their available
+// tool counts, and their full tool definition counts. If the signature is
+// unchanged since the last RefreshToolEmbeddings call, the rebuild can be skipped
+// entirely (audit FIX 2026-11-22).
+func computeRefreshSig(mcpCopy map[string]*config.MCPDef) string {
+	ids := make([]string, 0, len(mcpCopy))
+	for id := range mcpCopy {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var sb strings.Builder
+	for _, id := range ids {
+		mcp := mcpCopy[id]
+		if mcp == nil {
+			continue
+		}
+		sb.WriteString(id)
+		sb.WriteByte(':')
+		sb.WriteString(strconv.Itoa(len(mcp.AvailableTools)))
+		sb.WriteByte(':')
+		sb.WriteString(strconv.Itoa(len(mcp.FullToolDefinitions)))
+		sb.WriteByte(';')
+	}
+	return sb.String()
+}
+
 func (r *ToolRouter) RefreshToolEmbeddings(ctx context.Context, reg *config.Registry) {
 	if reg == nil {
 		return
@@ -83,6 +111,18 @@ func (r *ToolRouter) RefreshToolEmbeddings(ctx context.Context, reg *config.Regi
 		mcpCopy[k] = v
 	}
 	reg.Mu.RUnlock()
+
+	// Audit FIX 2026-11-22: compute a registry signature and skip the entire
+	// rebuild (BM25 corpus + doc building + embedding) when nothing has changed
+	// since the last call. This avoids O(N×M) work on every config reload when
+	// the registry is unchanged.
+	sig := computeRefreshSig(mcpCopy)
+	r.mu.RLock()
+	if sig == r.lastRefreshSig && r.BM25Corpus != nil {
+		r.mu.RUnlock()
+		return
+	}
+	r.mu.RUnlock()
 
 	// Build rich embedding text and version key per tool.
 	type toolDoc struct {
@@ -146,6 +186,7 @@ func (r *ToolRouter) RefreshToolEmbeddings(ctx context.Context, reg *config.Regi
 	newCorpus := NewBM25Corpus(1.2, 0.75, bm25Docs)
 	r.mu.Lock()
 	r.BM25Corpus = newCorpus
+	r.lastRefreshSig = sig
 	r.mu.Unlock()
 
 	if r.EmbedClient == nil {
@@ -326,19 +367,39 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 		wasRestricted := b.IsRestricted()
 
 		var available []string
-		if wasRestricted {
+	if wasRestricted {
 			available = b.AllowedTools
 		} else {
 			available = mcpDef.AvailableTools
 		}
 
+		// Pre-build token estimate cache for this binding's MCP to avoid
+		// O(N×M) linear scan of FullToolDefinitions per estimateToolTokens call
+		// (audit FIX 2026-11-22: was linear scan at each of 3 call sites below).
+		tokenCache := make(map[string]int, len(mcpDef.FullToolDefinitions))
+		for _, dt := range mcpDef.FullToolDefinitions {
+			rough := len(dt.Name) + len(dt.Description)
+			if dt.InputSchema != nil {
+				rough += jsonSchemaApproxSize(dt.InputSchema)
+			}
+			tokenCache[dt.Name] = rough/4 + 8
+		}
+		// tokenEstimate returns cached estimate or fallback formula.
+		tokenEstimate := func(toolName string) int {
+			if t, ok := tokenCache[toolName]; ok {
+				return t
+			}
+			return len(toolName)/4 + 8
+		}
+
 		var filtered []string
-		explicitlyRelevant := make(map[string]bool)
+		// Audit FIX 2026-11-22: pre-size maps to reduce allocation overhead.
+		explicitlyRelevant := make(map[string]bool, len(available))
 
 		// --- RRF Hybrid Ranking (SCOUT-style) ---
 		var bm25Rank map[string]float64
 		var denseRank map[string]float64
-		stringRank := make(map[string]float64)
+		stringRank := make(map[string]float64, len(available))
 
 		// 1. Sparse Channel: BM25
 		// Snapshot under RLock: RefreshToolEmbeddings may swap the corpus from a
@@ -442,7 +503,7 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 				var usedBudget int
 				for i := 0; i < len(sorted); i++ {
 					selected := sorted[i].id
-					tokens := r.estimateToolTokens(selected, mcpDef)
+					tokens := tokenEstimate(selected)
 					// The very first tool of the entire routing call is always
 					// admitted so a single oversized schema cannot produce an
 					// empty tool surface. Once any tool has been selected (in
@@ -467,7 +528,7 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 			var usedBudget int
 			for _, tool := range available {
 				if explicitlyRelevant[tool] {
-					tokens := r.estimateToolTokens(tool, mcpDef)
+					tokens := tokenEstimate(tool)
 					if (len(filtered) > 0 || totalUsedBudget > 0) && usedBudget+tokens > remaining {
 						continue
 					}
@@ -509,7 +570,7 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 			remaining := totalBudget - totalUsedBudget
 			var usedBudget int
 			for _, tool := range candidates {
-				tokens := r.estimateToolTokens(tool, mcpDef)
+				tokens := tokenEstimate(tool)
 				if (len(filtered) > 0 || totalUsedBudget > 0) && usedBudget+tokens > remaining {
 					continue
 				}
@@ -569,7 +630,7 @@ func (r *ToolRouter) Route(ctx context.Context, req RouteRequest) []config.MCPBi
 		//  3. always_include must NOT manufacture tools the MCP does not have
 		//     (see the `known` comment below).
 		if len(b.AlwaysInclude) > 0 {
-			inScope := make(map[string]bool)
+			inScope := make(map[string]bool, len(b.AllowedTools))
 			if wasRestricted {
 				for _, t := range b.AllowedTools {
 					inScope[t] = true

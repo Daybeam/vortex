@@ -156,8 +156,10 @@ func (s *DirectedEngine) persistGraph(graph *schemas.TaskGraph) {
 	// so meaningful persists are never skipped.
 	now := time.Now()
 	if last, ok := s.lastPersistAt.Load(graph.TaskID); ok {
-		if now.Sub(last.(time.Time)) < 200*time.Millisecond {
-			return
+		if t, ok := last.(time.Time); ok {
+			if now.Sub(t) < 200*time.Millisecond {
+				return
+			}
 		}
 	}
 	s.lastPersistAt.Store(graph.TaskID, now)

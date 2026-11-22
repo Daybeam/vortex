@@ -37,6 +37,9 @@ func (s *DirectedEngine) retryWait(role *config.Role, attempt int) int {
 		}
 	}
 	defaults := []int{5, 30, 120}
+	if len(defaults) == 0 {
+		return 30 // fallback if defaults ever becomes empty
+	}
 	if attempt >= len(defaults) {
 		return defaults[len(defaults)-1]
 	}
