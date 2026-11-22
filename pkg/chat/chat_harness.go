@@ -92,7 +92,6 @@ type ChatHarness struct {
 	HelpProvider func(topic string) string
 	// OnTerminalTaskSeen is called when the model has just been shown a task's
 	// terminal state — through orchestrator_task_status or the delegate receipt.
-	//
 	// The API layer uses it to record that the *running turn* consumed that
 	// result, so a follow-up wake queued for the same task can be suppressed
 	// instead of answered twice. Without this signal the follow-up queue can
@@ -104,6 +103,7 @@ type ChatHarness struct {
 	// Optional. Installed per request (it closes over the session id), so it is
 	// deliberately not carried by cloneHarnessForRequest.
 	OnTerminalTaskSeen func(taskID string)
+	ScheduleExec       func(action string, args map[string]any) (string, error)
 	MaxTurns           int
 	// MaxOutputTokens caps the output tokens per LLM call. 0 = default 2048.
 	// (ADDED 2026-10-28: previously hardcoded to 2048 with no config wiring
@@ -288,7 +288,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			}
 		}
 	}
-
+	appendTimeContext(messages, history)
 	// ── Tiered Auto-Handling for Oversized Inputs ───────────────────
 	// When the user's input is large relative to the model's context window:
 	//   Tier 1 (>50% of context): mount as file, replace with summary + reference
@@ -405,22 +405,17 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	// the harness emitted events but never summarised a run. These counters
 	// make the verdict one line of `docker logs`, and they are hard counts, so
 	// they do not depend on the scoring policy (which is still undecided).
-	rs := newRunStats(len(declaredArtifacts), len(declaredFields))
-	// Consecutive-no-output guard (P1-1, docs/plan/DELEGATION_ARTIFACT_DELIVERY_
-	// REMEDIATION.md §4.3). execute_code cannot be counted by writeTargetOf, so
-	// the streak is the only thing that can see a loop on it.
+	s := newRunStats(len(declaredArtifacts), len(declaredFields))
 	execGuardMode, execStreakLimit := codeExecGuardSettings()
-	// Guard counters live in a struct so afterToolCall can mutate them without
-	// Run carrying the branches (Q6-1). writeCounts keys successful writes per
-	// (tool, normalized path): a rewrite changes content but not the path, and
-	// that is the only stable key a signature guard could use. D7.
 	eg := exploreGuard{writeTargets: make(map[string]struct{}), writeCounts: make(map[string]int)}
 
 	log.Printf("[chat-harness] task=%s sieve_nil=%v turns=%d", taskID, h.Sieve == nil, maxTurns)
 
 	// One structured line per run, on every exit path. Emitted from a defer so
 	// a new early return can never silently skip the measurement.
-	defer func() { rs.emitSummary(h, taskID, err, &eg, contractSteers, contractDefectSteers) }()
+	defer func() {
+		s.emitSummary(h, taskID, err, &eg, contractSteers, contractDefectSteers)
+	}()
 
 	defer func() {
 		if err == nil && finalText.Len() > 0 && query != "" {
@@ -436,7 +431,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 
 		prevLen := finalText.Len()
-		rs.turns++
+		s.turns++
 		turnToolsOK := false // reset per turn: did THIS turn land a usable tool result?
 
 		req := providers.CompleteRequest{
@@ -444,7 +439,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			User:        flattenChatMessages(messages),
 			Model:       h.Model,
 			MaxTokens:   maxOutputTokens,
-			MCPServers:  []schemas.MCPServerDef{{Name: "core", Tools: rs.offerTools(h)}},
+			MCPServers:  []schemas.MCPServerDef{{Name: "core", Tools: s.offerTools(h)}},
 			Attachments: h.Attachments,
 		}
 
@@ -494,6 +489,9 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				turn-- // retry same turn with truncated input
 				continue
 			}
+			// Turn budget exhaustion: distinguish "our clock killed the
+			// turn" from "the model/provider actually errored" so downstream
+			// scoring doesn't mislabel a budget timeout as model_error.
 			// See emitTimeoutError in chat_budget.go for the two paths and
 			// the rate-limit-aware labelling.
 			providerName := h.Provider.Name()
@@ -505,7 +503,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 
 		if len(resp.ToolCalls) == 0 {
-			rs.exitReason = "done"
+			s.exitReason = "done"
 			emit(ChatEvent{Type: "done"})
 			return finalText.String(), nil
 		}
@@ -534,7 +532,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 			noTextTurns = 0
 			if !noTextNudged && !lastTurnToolsOK {
 				noTextNudged = true
-				rs.noTextSteers++
+				s.noTextSteers++
 				emit(ChatEvent{Type: "steer", Data: fmt.Sprintf("no text output for %d consecutive turns", n)})
 				messages = append(messages, ChatMessage{
 					Role:    "user",
@@ -587,8 +585,8 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 
 		for i, tc := range resp.ToolCalls {
-			rs.recordTool(tc.Name)
-			emit(ChatEvent{Type: "tool_call", Data: tc.Name, Meta: map[string]any{"args": tc.Arguments}})
+			s.recordTool(tc.Name)
+			emit(ChatEvent{Type: "tool_call", Data: tc.Name, Meta: map[string]any{"args": tc.Arguments, "session_task_id": taskID}}) // not task_id (that means task_* on this stream); not role (the emit wrapper stamps role_id/role_name)
 
 			h.checkPlanDrift(i, taskID, tc, emit)
 
@@ -769,8 +767,8 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 				break
 			}
 			if rule.endRun {
-				rs.exitReason = "exploration_exhausted"
-				emit(ChatEvent{Type: "error", Data: fmt.Sprintf("exploration ceiling: %d calls without a write", eg.streak)})
+				s.exitReason = "exploration_exhausted"
+				emit(ChatEvent{Type: "error", Data: fmt.Sprintf("exploration ceiling: %d calls without a write", eg.streak), Meta: map[string]any{"exit_reason": "exploration_exhausted", "cap": eg.streak}})
 				return markExplorationTruncated(finalText.String(), eg.streak),
 					fmt.Errorf("exploration ceiling reached (%d calls without a write): %w", eg.streak, ErrExplorationExhausted)
 			}
@@ -780,8 +778,8 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		lastTurnToolsOK = turnToolsOK
 	}
 
-	rs.exitReason = "max_turns"
-	emit(ChatEvent{Type: "error", Data: fmt.Sprintf("max turns (%d) exceeded", maxTurns)})
+	s.exitReason = "max_turns"
+	emit(ChatEvent{Type: "error", Data: fmt.Sprintf("max turns (%d) exceeded", maxTurns), Meta: map[string]any{"exit_reason": "max_turns", "cap": maxTurns}})
 	return markTruncated(finalText.String(), maxTurns), fmt.Errorf("max turns (%d) exceeded: %w", maxTurns, ErrMaxTurnsExceeded)
 }
 

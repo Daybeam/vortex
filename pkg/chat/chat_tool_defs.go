@@ -112,6 +112,9 @@ func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
 			},
 		},
 	})
+	if h.ScheduleExec != nil {
+		tools = append(tools, scheduleToolDefs()...)
+	}
 	// hard arm of the post-delegation lockout (see post_deleg_lockout.go):
 	// once a task has been delegated, the work tools leave the table entirely,
 	// so the model cannot keep doing the task it just handed over. Applied

@@ -79,7 +79,7 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 		if !ok || prompt == "" {
 			return "", fmt.Errorf("delegate_to_orchestrator: missing or empty 'prompt' argument")
 		}
-		if len(h.declaredArtifacts) > 0 && h.SessionRoot != "" {
+		if h.completionEnforced() && len(h.declaredArtifacts) > 0 && h.SessionRoot != "" {
 			if _, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, h.declaredArtifacts); missing == 0 &&
 				len(core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields)) == 0 {
 				return core.MarkerDelegationSkipped, nil
@@ -128,7 +128,7 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 		}
 		if st, ok := h.DelegateStatus(id, time.Duration(wait*float64(time.Second))); ok && st != nil {
 			h.noteTerminalTask(id, st)
-			out := formatTaskStatus(id, st, h.declaredArtifacts)
+			out := formatTaskStatus(id, st, h.declaredForStatus())
 			if s, _ := st["status"].(string); wake && !isTerminalChatStatus(s) {
 				out += "\n" + postDelegWakeNote
 			}
@@ -172,6 +172,10 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 			}
 		}
 		return sb.String(), nil
+	}
+	if strings.HasPrefix(name, "schedule_") && h.ScheduleExec != nil {
+		action := strings.TrimPrefix(name, "schedule_")
+		return h.ScheduleExec(action, args)
 	}
 	if h.SessionRoot != "" {
 		taskDir := filepath.Join(h.OutputBase, taskID)
