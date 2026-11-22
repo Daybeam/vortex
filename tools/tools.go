@@ -168,6 +168,7 @@ type App struct {
 	PendingSkillGC    *core.PendingSkillGC
 	CostTracker       *core.CostTracker
 	DB                *sql.DB
+	LifecycleCtx      context.Context
 	editionSubsystems []EditionSubsystem
 	archiveStop       chan struct{} // stops the TTL pruning goroutine (audit: was goroutine leak)
 	// shadowWg tracks background shadow-learning goroutines from the proxy

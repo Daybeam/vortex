@@ -42,6 +42,10 @@ func (r *SubsystemRegistry) Register(s *Subsystem) {
 // Global registry instance
 var registry = NewSubsystemRegistry()
 
+func InvokeSubsystem(ctx context.Context, app *App, subsystem, action string, args map[string]any) (any, error) {
+	return registry.Invoke(ctx, app, subsystem, action, args)
+}
+
 // tier1AllowedActions is the set of subsystem actions safe for Tier1 (public SSE) callers.
 // Anything not in this map is Tier2-only by default.
 var tier1AllowedActions = map[string]bool{
