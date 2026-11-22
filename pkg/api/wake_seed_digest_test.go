@@ -250,7 +250,7 @@ func TestFollowUpTrigger_CarriesTheArtifactDigest(t *testing.T) {
 	if !strings.Contains(digest, "total_hourly_cost_usd: 0.552") {
 		t.Fatalf("digest did not render the headline scalar:\n%s", digest)
 	}
-	if !h.startFollowUpTurnWithDigest("s_digest", "task-abc", outcome.summary(), digest) {
+	if !h.startFollowUpTurnWithDigest("s_digest", "task-abc", outcome.summary(), digest, "") {
 		t.Fatal("follow-up turn was not started for an idle session")
 	}
 	h.wg.Wait()
@@ -301,7 +301,7 @@ func TestWakeGateOff_SendsTheSamePromptAsBeforeTheDigest(t *testing.T) {
 
 	h2, s2, p2 := newFollowUpHandler(t, "noted")
 	s2.GetOrCreate("s_gate")
-	if !h2.startFollowUpTurnWithDigest("s_gate", "task-abc", outcome.summary(), gateOff) {
+	if !h2.startFollowUpTurnWithDigest("s_gate", "task-abc", outcome.summary(), gateOff, "") {
 		t.Fatal("gate-off follow-up did not start")
 	}
 	h2.wg.Wait()

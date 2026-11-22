@@ -32,6 +32,7 @@ var harnessCloneExcluded = map[string]string{
 	"OnTerminalTaskSeen": "replaced per request: a shared value would attribute " +
 		"one session's consumption to another",
 	"HelpProvider": "replaced per request with a closure bound to the user's tier",
+	"ScheduleExec": "replaced per request with a closure bound to the user's tier",
 	"declaredArtifacts": "per-request state, set fresh at the start of Run (not by the API layer)",
 	"declaredFields":    "per-request state, set fresh at the start of Run (not by the API layer)",
 	"contract":          "per-request state, set fresh at the start of Run (not by the API layer)",

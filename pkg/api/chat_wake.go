@@ -87,6 +87,23 @@ type pendingWakeEntry struct {
 	taskID string
 	reason string
 	text   string
+	// fallback is carried with the entry because a queued wake is delivered later,
+	// by a different goroutine, and it can fail there for the same reasons it can
+	// fail here (request budget, deadline). Dropping it at enqueue time would
+	// reintroduce the silence this queue exists to avoid (wake_fallback.go).
+	fallback string
+	// declared is the finished task's completion contract, carried through the
+	// queue for the same reason fallback is: delivery happens later, in another
+	// goroutine, and by then the task outcome that knows the artifact names is
+	// gone. Empty for a decision wake — a blocked task has produced nothing to
+	// check against.
+	declared []string
+	// figures is the canonical headline-figure token list, computed at enqueue
+	// time from the declared artifacts. Used by the content-suppression check
+	// (VORTEX_WAKE_CONTENT_SUPPRESS) to decide whether the previous turn's
+	// answer already carries the artifact's headline numbers. Empty for a
+	// decision wake — a blocked task has produced nothing to check against.
+	figures []string
 	// budgeted marks the entries that must pass the per-task wake budget
 	// (wakeMaxPerTask / wakeMinInterval). Only pushed state — a blocked task's
 	// decision notice — is budgeted; a finished task's result is not, because it
@@ -254,7 +271,7 @@ func (h *ChatHandler) wakeMain(sessionID, taskID, reason, text, dedupeKey string
 	if !h.reserveWake(taskID) {
 		return false
 	}
-	switch h.startFollowUpTurnWithTrigger(sessionID, taskID, "wake:"+reason, text) {
+	switch h.startFollowUpTurnWithTrigger(sessionID, taskID, "wake:"+reason, text, "") {
 	case followUpStarted:
 		return true
 	case followUpBusy:
@@ -428,20 +445,56 @@ func (h *ChatHandler) deliverPendingWake(sessionID string) {
 		if !ok {
 			return
 		}
-		// The turn that just ended already read this result. Delivering it
+		// The turn that just ended already saw this result. Delivering it
 		// again would produce a second answer and a second turn for work that
 		// was finished — the defect the old "claim fails ⇒ drop" rule was
 		// written to avoid, now applied only when it is actually true.
+		//
+		// The message says "terminal state", not "result", because that is the
+		// whole of what the marker knows: noteTaskConsumed is written by
+		// OnTerminalTaskSeen when the model polls task_status and sees a
+		// terminal state. It never observes which files were read. Measured on
+		// 041 (2026-11-18): of 58 runs dropped this way that did produce an
+		// answer, 41 (71%) do not contain the artifact's own total — so the
+		// claim "already read the result" was false most of the time it was
+		// logged, and a log that asserts a false fact is how the next reader
+		// sizes the wrong fix (FINDINGS §1.9.3, §3.11).
 		if h.takeTaskConsumed(sessionID, entry.taskID) {
-			h.followUpSeen.Store(sessionID+"|"+entry.taskID+"|"+entry.reason, struct{}{})
-			fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s wake dropped: "+
-				"the turn that just ended already read this task's result\n", sessionID, entry.taskID)
-			continue
+			mode := wakeContentSuppressSetting()
+			if mode == wakeContentSuppressOn {
+				answer := h.lastAssistantText(sessionID)
+				hits := figureHits(answer, entry.figures)
+				if len(hits) > 0 {
+					h.followUpSeen.Store(sessionID+"|"+entry.taskID+"|"+entry.reason, struct{}{})
+					fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s suppressed: "+
+						"answer carries %d/%d headline figures (%s)\n",
+						sessionID, entry.taskID, len(hits), len(entry.figures),
+						formatFigureList(hits, 5))
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s not suppressed: "+
+					"answer carries 0/%d headline figures; delivering wake\n",
+					sessionID, entry.taskID, len(entry.figures))
+			} else {
+				if mode == wakeContentSuppressObserve {
+					answer := h.lastAssistantText(sessionID)
+					hits := figureHits(answer, entry.figures)
+					fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s would suppress: "+
+						"answer carries %d/%d headline figures (%s)\n",
+						sessionID, entry.taskID, len(hits), len(entry.figures),
+						formatFigureList(hits, 5))
+				}
+				h.followUpSeen.Store(sessionID+"|"+entry.taskID+"|"+entry.reason, struct{}{})
+				fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s wake dropped: "+
+					"the turn that just ended already saw this task's terminal state\n", sessionID, entry.taskID)
+				continue
+			}
 		}
 		if entry.budgeted && !h.reserveWake(entry.taskID) {
 			continue // budget spent — the event is still in the session queue
 		}
-		switch h.startFollowUpTurnWithTrigger(sessionID, entry.taskID, entry.reason, entry.text) {
+		switch h.startFollowUpTurnWithTriggerSeed(sessionID, entry.taskID, entry.reason, entry.text,
+			wakeSeed{fallback: entry.fallback, declared: entry.declared, figures: entry.figures}) {
 		case followUpStarted:
 			return
 		case followUpBusy:

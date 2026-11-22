@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/daybeam/vortex/core/sieve"
 	"log"
@@ -809,6 +810,19 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	// needing to know about tiers.
 	hCopy.HelpProvider = func(topic string) string {
 		return core.BuildSystemManual(h.App.Registry, topic, req.UserTier)
+	}
+	hCopy.ScheduleExec = func(action string, args map[string]any) (string, error) {
+		tier := tools.TierPublic
+		if req.UserTier == tools.TierAdmin {
+			tier = tools.TierAdmin
+		}
+		ctx := context.WithValue(context.Background(), tools.AuthTierKey, tier)
+		result, err := tools.InvokeSubsystem(ctx, h.App, "schedule", action, args)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(result)
+		return string(data), nil
 	}
 	// Resolve VLM attachments: convert relative paths (e.g. "uploads/seg.png")
 	// to absolute paths under the session workspace root.
