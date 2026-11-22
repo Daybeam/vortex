@@ -127,7 +127,10 @@ func (h *ChatHandler) handleDirectTask(req ChatRequest, session *chat.ChatSessio
 			return
 		}
 		result := fmt.Sprintf("Direct task submitted to orchestrator: task %s (role=%s)", submitID, req.RoleID)
-		session.AddEvent(chat.ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": "delegate_to_orchestrator"}})
+		// `task_id`, not `submit_id`: the value is `task_<hex>`, the same
+		// identifier the stream already publishes as `meta.task_id` on progress
+		// and task_callback. A join key needs one spelling (see chat_handlers.go).
+		session.AddEvent(chat.ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": "delegate_to_orchestrator", "task_id": submitID}})
 		session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: result}, "")
 		h.persistSession(session)
 		session.AddEvent(chat.ChatEvent{Type: "done"})
