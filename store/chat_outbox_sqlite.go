@@ -68,49 +68,42 @@ func (o *SQLiteChatOutbox) ClaimPending(ctx context.Context, holder string, limi
 		return nil, err
 	}
 
+	// Audit FIX 2026-11-22: replaced 1+2N query pattern (SELECT ids → N×UPDATE →
+	// N×SELECT) with a single UPDATE...RETURNING. The inner SELECT picks claimable
+	// IDs; the outer predicate re-checks claimability for atomicity (if another hub
+	// claims a row between SELECT and UPDATE, the outer predicate won't match and
+	// RETURNING won't emit that row). SQLite 3.35+ supports RETURNING; modernc/sqlite
+	// v1.29.0 embeds 3.45+.
 	rows, err := o.db.QueryContext(ctx, `
-		SELECT id FROM chat_outbox
-		WHERE `+claimablePredicate+`
-		ORDER BY id LIMIT ?
-	`, now, maxOutboxAttempts, limit)
+		UPDATE chat_outbox
+		SET status = 'claimed', claim_holder = ?, claim_expires_at = ?, attempts = attempts + 1
+		WHERE id IN (
+			SELECT id FROM chat_outbox
+			WHERE `+claimablePredicate+`
+			ORDER BY id LIMIT ?
+		)
+		AND `+claimablePredicate+`
+		RETURNING id, session_id, kind, dedupe_key, text, meta_json, created_at, attempts
+	`, holder, now+int64(lease.Seconds()), now, maxOutboxAttempts, limit,
+		now, maxOutboxAttempts)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var ids []int64
+	var out []OutboxItem
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
+		var item OutboxItem
+		var createdAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.Kind, &item.DedupeKey,
+			&item.Text, &item.MetaJSON, &createdAt, &item.Attempts); err != nil {
+			return out, err
 		}
-		ids = append(ids, id)
+		item.CreatedAt = createdAt.Time
+		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	out := make([]OutboxItem, 0, len(ids))
-	for _, id := range ids {
-		res, err := o.db.ExecContext(ctx, `
-			UPDATE chat_outbox
-			SET status = 'claimed', claim_holder = ?, claim_expires_at = ?, attempts = attempts + 1
-			WHERE id = ? AND `+claimablePredicate+`
-		`, holder, now+int64(lease.Seconds()), id, now, maxOutboxAttempts)
-		if err != nil {
-			return out, err
-		}
-		// Zero rows means another hub won this row between the SELECT and the
-		// UPDATE. Skipping it is the whole at-most-once guarantee: no mutex is
-		// involved, so it holds across processes and nodes.
-		if n, _ := res.RowsAffected(); n != 1 {
-			continue
-		}
-		item, err := o.loadHeld(ctx, id, holder)
-		if err != nil {
-			return out, err
-		}
-		out = append(out, item)
+		return out, err
 	}
 	return out, nil
 }
@@ -173,4 +166,16 @@ func (o *SQLiteChatOutbox) Purge(ctx context.Context, before time.Time) (int, er
 		return 0, err
 	}
 	return int(n), nil
+}
+
+func (o *SQLiteChatOutbox) RowExists(ctx context.Context, dedupeKey string) (bool, error) {
+	var id int64
+	err := o.db.QueryRowContext(ctx, `SELECT id FROM chat_outbox WHERE dedupe_key = ? LIMIT 1`, dedupeKey).Scan(&id)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }

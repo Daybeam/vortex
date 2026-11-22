@@ -190,3 +190,12 @@ func (f *fakeListBackend) SaveMessage(ctx context.Context, msg *store.ChatMessag
 func (f *fakeListBackend) LoadSession(ctx context.Context, sessionID string) (rootID, leafID string, msgs map[string]*store.ChatMessageRow, err error) {
 	return "", "", nil, nil
 }
+func (f *fakeListBackend) SavePendingReply(ctx context.Context, row store.PendingReplyRow) error {
+	return nil
+}
+func (f *fakeListBackend) ClearPendingReply(ctx context.Context, sessionID string) error {
+	return nil
+}
+func (f *fakeListBackend) ListPendingReplies(ctx context.Context) ([]store.PendingReplyRow, error) {
+	return nil, nil
+}

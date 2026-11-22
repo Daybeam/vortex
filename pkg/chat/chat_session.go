@@ -23,6 +23,16 @@ const (
 	maxChatMessages     = 5000  // audit P-MED-9: cap on in-memory messages; persisted to disk/SQLite so eviction is safe
 )
 
+// AwaitingReplyInfo records that a user message is awaiting an assistant
+// reply. Set on turn start, cleared on turn completion. Persisted to the
+// chat_pending_replies table so the startup scan can detect turns
+// interrupted by a crash. See docs/plan/CHAT_REPLY_FAULT_RECOVERY_PLAN.md.
+type AwaitingReplyInfo struct {
+	MessageID string    `json:"message_id"`
+	Content   string    `json:"content"`
+	StartedAt time.Time `json:"started_at"`
+}
+
 // ChatSession holds a chat thread's messages as a tree (map by ID) and its
 // in-memory event ring buffer (ephemeral, used for SSE Last-Event-ID resume).
 // Messages form a tree via ChatMessage.ParentID; ActiveLeafID points at the
@@ -41,6 +51,11 @@ type ChatSession struct {
 	// AuthOwnerKey with this value. See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md.
 	OwnerID string `json:"owner_id,omitempty"`
 	Shared  bool   `json:"shared,omitempty"`
+
+	// AwaitingReply is non-nil while a user message is awaiting an assistant
+	// reply. Persisted to chat_pending_replies for crash recovery.
+	// See docs/plan/CHAT_REPLY_FAULT_RECOVERY_PLAN.md.
+	AwaitingReply *AwaitingReplyInfo `json:"awaiting_reply,omitempty"`
 
 	mu         sync.Mutex
 	events     []ChatEvent
@@ -100,6 +115,34 @@ func (s *ChatSession) SetShared(shared bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Shared = shared
+}
+
+// GetAwaitingReply returns the pending reply info, or nil if no turn is
+// outstanding (thread-safe).
+func (s *ChatSession) GetAwaitingReply() *AwaitingReplyInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.AwaitingReply == nil {
+		return nil
+	}
+	cp := *s.AwaitingReply
+	return &cp
+}
+
+// SetAwaitingReply marks that a user message is awaiting an assistant reply
+// (thread-safe). Called on turn start.
+func (s *ChatSession) SetAwaitingReply(info *AwaitingReplyInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.AwaitingReply = info
+}
+
+// ClearAwaitingReply clears the pending reply mark (thread-safe). Called on
+// turn completion.
+func (s *ChatSession) ClearAwaitingReply() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.AwaitingReply = nil
 }
 
 // AddEvent assigns the next sequence number and appends to the ring buffer.
@@ -242,6 +285,17 @@ func (s *ChatSession) AppendMessage(msg ChatMessage, parentID string) {
 	}
 	m := msg
 	s.Messages[m.ID] = &m
+	// Register the client-supplied id for non-user messages too. The web client
+	// creates assistant messages with a deterministic ClientID ("asst_"+
+	// <user message_id>) and quotes that id; without registration here
+	// resolveClientIDLocked cannot map it to the persisted UUID, so every quote
+	// to an assistant message breaks after a history reload (2026-11-22).
+	if m.ClientID != "" {
+		if s.clientIDs == nil {
+			s.clientIDs = make(map[string]string)
+		}
+		s.clientIDs[m.ClientID] = m.ID
+	}
 	s.dirtyMsgs = append(s.dirtyMsgs, m.ID) // audit PERF-6: track new messages for incremental persist
 	if s.RootID == "" {
 		s.RootID = m.ID
@@ -458,6 +512,7 @@ func (s *ChatSession) Clear() {
 	s.RootID = ""
 	s.ActiveLeafID = ""
 	s.ActiveRoleID = ""
+	s.AwaitingReply = nil
 	s.events = nil
 	s.seenMsg = make(map[string]bool)
 	s.clientIDs = make(map[string]string)
@@ -502,6 +557,31 @@ func (st *ChatSessionStore) dbCtx() (context.Context, context.CancelFunc) {
 		parent = context.Background()
 	}
 	return context.WithTimeout(parent, 30*time.Second)
+}
+
+// ListPendingReplies returns all sessions with an outstanding pending reply
+// mark from the DB backend. Returns nil if no backend is configured.
+// Used by the startup scan for crash recovery.
+func (st *ChatSessionStore) ListPendingReplies(ctx context.Context) ([]store.PendingReplyRow, error) {
+	st.mu.Lock()
+	backend := st.backend
+	st.mu.Unlock()
+	if backend == nil {
+		return nil, nil
+	}
+	return backend.ListPendingReplies(ctx)
+}
+
+// ClearPendingReply removes the pending reply mark for a session from the
+// DB backend. No-op if no backend is configured.
+func (st *ChatSessionStore) ClearPendingReply(ctx context.Context, sessionID string) error {
+	st.mu.Lock()
+	backend := st.backend
+	st.mu.Unlock()
+	if backend == nil {
+		return nil
+	}
+	return backend.ClearPendingReply(ctx, sessionID)
 }
 
 func (st *ChatSessionStore) GetOrCreate(id string) *ChatSession {
@@ -602,10 +682,11 @@ func (st *ChatSessionStore) ListSessions(ctx context.Context, limit, offset int)
 
 // chatSessionData is the on-disk format for tree-based sessions.
 type chatSessionData struct {
-	Messages     map[string]*ChatMessage `json:"messages"`
-	RootID       string                  `json:"root_id,omitempty"`
-	ActiveLeafID string                  `json:"active_leaf_id,omitempty"`
-	ActiveRoleID string                  `json:"active_role_id,omitempty"` // regression for audit LOGIC-5: was missing — role lost on restart
+	Messages      map[string]*ChatMessage `json:"messages"`
+	RootID        string                  `json:"root_id,omitempty"`
+	ActiveLeafID  string                  `json:"active_leaf_id,omitempty"`
+	ActiveRoleID  string                  `json:"active_role_id,omitempty"` // regression for audit LOGIC-5: was missing — role lost on restart
+	AwaitingReply *AwaitingReplyInfo      `json:"awaiting_reply,omitempty"` // crash recovery: non-nil = turn interrupted
 }
 
 // Persist writes the session's tree to <dir>/<id>.json and/or SQLite backend.
@@ -622,11 +703,14 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 	// The JSON file still gets the full snapshot (one write, not N).
 	dirtyIDs := s.dirtyMsgs
 	s.dirtyMsgs = nil
+	// Snapshot AwaitingReply under lock for both JSON and DB persistence.
+	awaiting := s.AwaitingReply
 	data := chatSessionData{
-		Messages:     msgCopy,
-		RootID:       s.RootID,
-		ActiveLeafID: s.ActiveLeafID,
-		ActiveRoleID: s.ActiveRoleID, // regression for audit LOGIC-5: persist active role
+		Messages:      msgCopy,
+		RootID:        s.RootID,
+		ActiveLeafID:  s.ActiveLeafID,
+		ActiveRoleID:  s.ActiveRoleID, // regression for audit LOGIC-5: persist active role
+		AwaitingReply: awaiting,
 	}
 	s.mu.Unlock()
 
@@ -654,6 +738,22 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 				if err := st.backend.SaveMessage(ctx, row); err != nil {
 					log.Printf("WARN: chat_session: SaveMessage failed for %s/%s: %v", s.ID, msg.ID, err)
 				}
+			}
+		}
+		// Sync pending reply mark to DB for crash recovery.
+		// See docs/plan/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.4–3.5.
+		if awaiting != nil {
+			if err := st.backend.SavePendingReply(ctx, store.PendingReplyRow{
+				SessionID: s.ID,
+				MessageID: awaiting.MessageID,
+				Content:   awaiting.Content,
+				StartedAt: awaiting.StartedAt,
+			}); err != nil {
+				log.Printf("WARN: chat_session: SavePendingReply failed for %s: %v", s.ID, err)
+			}
+		} else {
+			if err := st.backend.ClearPendingReply(ctx, s.ID); err != nil {
+				log.Printf("WARN: chat_session: ClearPendingReply failed for %s: %v", s.ID, err)
 			}
 		}
 		cancel()
@@ -714,6 +814,7 @@ func (st *ChatSessionStore) loadLocked(s *ChatSession) {
 		s.RootID = tsd.RootID
 		s.ActiveLeafID = tsd.ActiveLeafID
 		s.ActiveRoleID = tsd.ActiveRoleID // regression for audit LOGIC-5: restore active role
+		s.AwaitingReply = tsd.AwaitingReply
 		s.rebuildClientIDsLocked()
 		return
 	}

@@ -98,6 +98,47 @@ func (b *SQLiteChatBackend) ListSessions(ctx context.Context, limit, offset int)
 	return sessions, nil
 }
 
+func (b *SQLiteChatBackend) SavePendingReply(ctx context.Context, row PendingReplyRow) error {
+	_, err := b.db.ExecContext(ctx, `
+		INSERT INTO chat_pending_replies (session_id, message_id, content, started_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			message_id = excluded.message_id,
+			content = excluded.content,
+			started_at = excluded.started_at
+	`, row.SessionID, row.MessageID, row.Content, row.StartedAt.Format(time.RFC3339))
+	return err
+}
+
+func (b *SQLiteChatBackend) ClearPendingReply(ctx context.Context, sessionID string) error {
+	_, err := b.db.ExecContext(ctx, `DELETE FROM chat_pending_replies WHERE session_id = ?`, sessionID)
+	return err
+}
+
+func (b *SQLiteChatBackend) ListPendingReplies(ctx context.Context) ([]PendingReplyRow, error) {
+	rows, err := b.db.QueryContext(ctx, `SELECT session_id, message_id, content, started_at FROM chat_pending_replies`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pending []PendingReplyRow
+	for rows.Next() {
+		var p PendingReplyRow
+		var startedStr string
+		if err := rows.Scan(&p.SessionID, &p.MessageID, &p.Content, &startedStr); err != nil {
+			continue
+		}
+		p.StartedAt = parseTimeField(startedStr)
+		pending = append(pending, p)
+	}
+	return pending, nil
+}
+
+// parseTimeField parses a stored created_at/started_at value back into
+// time.Time. Tries RFC3339 first (new format); falls back to the legacy
+// time.String() format for rows written before the fix. Returns zero
+// time.Time on unparseable input (zero-value defense).
 func parseTimeField(s string) time.Time {
 	if s == "" {
 		return time.Time{}

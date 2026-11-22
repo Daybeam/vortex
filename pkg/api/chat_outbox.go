@@ -32,6 +32,8 @@ import (
 const (
 	kindTaskCallback   = "task_callback"
 	kindDecisionNeeded = "decision_needed"
+	kindChatReply      = "chat_reply"       // turn completion reply (fault recovery)
+	kindChatInterrupt  = "chat_interrupted" // turn interrupted by crash (fault recovery)
 )
 
 // Structured-log sink for this pipeline. Naming the queue its own file keeps
