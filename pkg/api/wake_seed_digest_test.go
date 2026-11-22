@@ -216,14 +216,18 @@ func TestBuildArtifactDigest_InvalidUTF8IsReplaced(t *testing.T) {
 	}
 }
 
-func TestWakeSeedDigestMode_DefaultsOff(t *testing.T) {
+func TestWakeSeedDigestMode_DefaultsOn(t *testing.T) {
 	t.Setenv("VORTEX_WAKE_SEED_DIGEST", "")
-	if wakeSeedDigestMode() {
-		t.Fatal("digest must be off unless explicitly enabled")
+	if !wakeSeedDigestMode() {
+		t.Fatal("digest must be on by default (Fisher p=1.1e-05, harness-bench 041)")
 	}
 	t.Setenv("VORTEX_WAKE_SEED_DIGEST", "on")
 	if !wakeSeedDigestMode() {
 		t.Fatal("VORTEX_WAKE_SEED_DIGEST=on must enable the digest")
+	}
+	t.Setenv("VORTEX_WAKE_SEED_DIGEST", "off")
+	if wakeSeedDigestMode() {
+		t.Fatal("VORTEX_WAKE_SEED_DIGEST=off must disable the digest")
 	}
 }
 
