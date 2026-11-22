@@ -72,6 +72,10 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	_, _ = db.Exec(`ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT 'default'`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)`)
 
+	// Migration (2026-11-22): add schema_hashes_json to anti_patterns for
+	// schema fingerprint binding (§C Expiry anti-corruption).
+	_, _ = db.Exec(`ALTER TABLE anti_patterns ADD COLUMN schema_hashes_json TEXT`)
+
 	bootmetrics.Mark("db")
 	return db, nil
 }
@@ -270,6 +274,7 @@ func runMigrations(db *sql.DB) error {
 		source_text TEXT,
 		embedding BLOB,
 		embedding_model TEXT,
+		schema_hashes_json TEXT,
 		last_seen DATETIME,
 		created_at DATETIME
 	);
@@ -382,6 +387,18 @@ func runMigrations(db *sql.DB) error {
 		last_error       TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_chat_outbox_claimable ON chat_outbox(status, claim_expires_at, id);
+
+	-- Chat Pending Replies (ADDED 2026-11-19 for chat reply fault recovery)
+	-- Tracks user messages that are awaiting an assistant reply. On crash/restart,
+	-- the startup scan finds rows here and either clears them (if the reply was
+	-- already delivered via the outbox) or enqueues a chat_interrupted notice.
+	-- See docs/plan/CHAT_REPLY_FAULT_RECOVERY_PLAN.md
+	CREATE TABLE IF NOT EXISTS chat_pending_replies (
+		session_id  TEXT PRIMARY KEY,
+		message_id  TEXT NOT NULL,
+		content     TEXT NOT NULL,
+		started_at  DATETIME NOT NULL
+	);
 
 	-- P7 Promotion Audit Log (ADDED 2026-09-15 for A31 DB collapse)
 	CREATE TABLE IF NOT EXISTS promotion_audit (

@@ -390,10 +390,11 @@ func (s *PromptAssembler) Build(
 	// Tier 3 (trimmable): Top-N hard cap (precedentsTopN=2) + single-sentence
 	// summary per §4.2.
 	if len(precedents) > 0 {
+		topPrecedents := s.budgetEnforcer.TopNPrecedents(precedents, precedentsTopN)
 		currentFingerprints := s.collectCurrentSchemaFingerprints()
 		var filtered []*schemas.DecisionNode
 		var dropped, unbound int
-		for _, p := range precedents {
+		for _, p := range topPrecedents {
 			if len(p.SchemaHashes) == 0 {
 				unbound++
 				filtered = append(filtered, p)
@@ -412,11 +413,10 @@ func (s *PromptAssembler) Build(
 			})
 		}
 		if len(filtered) > 0 {
-			topPrecedents := s.budgetEnforcer.TopNPrecedents(filtered, precedentsTopN)
 			var pPart strings.Builder
 			pPart.WriteString("# Past Decision Precedents\n")
 			pPart.WriteString("The following reasoning paths were used successfully for similar tasks under the tool versions recorded with each entry. Verify the current tool schema before reusing any call pattern:\n\n")
-			for _, p := range topPrecedents {
+			for _, p := range filtered {
 				pPart.WriteString("## Task Intent Similarity: ")
 				pPart.WriteString(p.Outcome)
 				pPart.WriteString("\n")
@@ -861,16 +861,27 @@ func (s *PromptAssembler) resolveAntiPatternWarnings(capability string, toolCons
 		return ""
 	}
 
-	var warn strings.Builder
-	warn.WriteString("# ⚠️ Historical Anti-Pattern Warnings\n")
-	warn.WriteString("The following development pitfalls have occurred in this codebase before. DO NOT repeat them — follow the correct pattern:\n\n")
+	currentFingerprints := s.collectCurrentSchemaFingerprints()
+	var filtered []store.AntiPatternPrecedent
+	var dropped int
 	for _, p := range precedents {
-		warn.WriteString(fmt.Sprintf("## %s\n", p.AntiPattern))
-		warn.WriteString(fmt.Sprintf("- **Symptom**: %s\n", p.Symptom))
-		warn.WriteString(fmt.Sprintf("- **Trigger**: %s\n", p.TriggerCondition))
-		warn.WriteString(fmt.Sprintf("- **✅ Correct Pattern**: %s\n\n", p.CorrectPattern))
+		if schemas.PrecedentPassesSchemaGate(p.SchemaHashes, currentFingerprints) {
+			filtered = append(filtered, p)
+		} else {
+			dropped++
+		}
 	}
-	return warn.String()
+	if dropped > 0 {
+		s.logger.Log("EventSchemaRotQuarantine", "", "", map[string]any{
+			"source":             "prompt_assembler_antipattern",
+			"precedents_dropped": dropped,
+			"precedents_kept":    len(filtered),
+		})
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	return formatAntiPatternWarnings(filtered)
 }
 
 // resolveSimilarTaskExperience queries the ExperienceStore for similar past task

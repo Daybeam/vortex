@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
 
@@ -22,6 +23,26 @@ import (
 // maxAntiPatternInjection caps how many precedents we inject per retry.
 // Three is the sweet spot: enough signal, not enough to dilute the prompt.
 const maxAntiPatternInjection = 3
+
+func (s *DirectedEngine) collectCurrentSchemaFingerprints() map[string]string {
+	if s.registry == nil {
+		return nil
+	}
+	s.registry.Mu.RLock()
+	defer s.registry.Mu.RUnlock()
+	out := make(map[string]string, len(s.registry.MCPs)+len(s.registry.DynamicMCPs))
+	for id, mcp := range s.registry.MCPs {
+		if mcp.SchemaFingerprint != "" {
+			out[id] = mcp.SchemaFingerprint
+		}
+	}
+	for id, mcp := range s.registry.DynamicMCPs {
+		if mcp.SchemaFingerprint != "" {
+			out[id] = mcp.SchemaFingerprint
+		}
+	}
+	return out
+}
 
 // buildAntiPatternGuidance queries the experience store for anti-pattern
 // precedents relevant to the failing step and formats them as a protected
@@ -52,6 +73,28 @@ func (s *DirectedEngine) buildAntiPatternGuidance(stepTask, rejectionReason stri
 	if len(precedents) == 0 {
 		return ""
 	}
+
+	currentFingerprints := s.collectCurrentSchemaFingerprints()
+	var filtered []store.AntiPatternPrecedent
+	var dropped int
+	for _, p := range precedents {
+		if schemas.PrecedentPassesSchemaGate(p.SchemaHashes, currentFingerprints) {
+			filtered = append(filtered, p)
+		} else {
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		s.logger.Log("EventSchemaRotQuarantine", "", "", map[string]any{
+			"source":             "antipattern_injection",
+			"precedents_dropped": dropped,
+			"precedents_kept":    len(filtered),
+		})
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	precedents = filtered
 
 	var b strings.Builder
 	b.WriteString(MarkerPrevFailureAntiPattern + "\n")

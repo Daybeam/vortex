@@ -42,9 +42,10 @@ func (s *DirectedEngine) DepositExperienceEvolution(ctx context.Context, graph *
 	concreteES.AntiPatternStore.AutoDepositDecisionRecovery(
 		ctx,
 		intent,
-		fmt.Sprintf("Pitfall in %s", trigger), // AntiPattern field
-		fmt.Sprintf("Task: %s", intent),       // TriggerCondition field
-		failurePattern,                        // Symptom field
-		recoveryAction,                        // CorrectPattern field
+		fmt.Sprintf("Pitfall in %s", trigger),
+		fmt.Sprintf("Task: %s", intent),
+		failurePattern,
+		recoveryAction,
+		nil,
 	)
 }

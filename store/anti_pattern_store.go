@@ -27,6 +27,7 @@ type AntiPatternPrecedent struct {
 	SourceText       string    `json:"source_text,omitempty"`
 	Embedding        []float32 `json:"embedding,omitempty"`
 	EmbeddingModel   string    `json:"embedding_model,omitempty"`
+	SchemaHashes     map[string]string `json:"schema_hashes,omitempty"`
 	LastSeen         time.Time `json:"last_seen"`
 	CreatedAt        time.Time `json:"created_at"`
 }
@@ -175,16 +176,17 @@ func (s *AntiPatternStore) PrecedentCount() int {
 // AutoDepositDecisionRecovery creates a new AntiPatternPrecedent from a
 // successful decision recovery and persists it. ADDED (2026-09-08) for
 // Decision-Driven Experience Evolution.
-func (s *AntiPatternStore) AutoDepositDecisionRecovery(ctx context.Context, intent, failureMode, trigger, symptom, recovery string) {
+func (s *AntiPatternStore) AutoDepositDecisionRecovery(ctx context.Context, intent, failureMode, trigger, symptom, recovery string, schemaHashes map[string]string) {
 	p := AntiPatternPrecedent{
 		AntiPattern:      failureMode,
 		CorrectPattern:   recovery,
 		TriggerCondition: trigger,
 		Symptom:          symptom,
 		Category:         "auto_recovery",
-		Confidence:       0.8, // Initial confidence for auto-deposited patterns
+		Confidence:       0.8,
 		Tags:             []string{"auto_evolution", intent},
 		SourceText:       fmt.Sprintf("%s: %s", failureMode, symptom),
+		SchemaHashes:     schemaHashes,
 		LastSeen:         time.Now().UTC(),
 		CreatedAt:        time.Now().UTC(),
 	}

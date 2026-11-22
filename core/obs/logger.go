@@ -31,6 +31,7 @@ const (
 	EventStepRetrying      EventType = "step_retrying"
 	EventRoleMissing       EventType = "role_missing"
 	EventRateLimited       EventType = "rate_limited"
+	EventContractFileMissing EventType = "contract_file_missing"
 	EventDecisionRequired  EventType = "decision_required"
 	EventDecisionSubmitted EventType = "decision_submitted"
 	// EventDecisionAutoResolved is emitted when NonInteractive mode auto-selects

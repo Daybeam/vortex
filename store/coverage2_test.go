@@ -255,7 +255,7 @@ func TestStorageCompactor_Start_CancelledContext(t *testing.T) {
 
 func TestAutoDepositDecisionRecovery(t *testing.T) {
 	s := NewAntiPatternStore(nil, nil)
-	s.AutoDepositDecisionRecovery(context.Background(), "routing", "timeout_exceeded", "slow_api", "hangs on large input", "add timeout")
+	s.AutoDepositDecisionRecovery(context.Background(), "routing", "timeout_exceeded", "slow_api", "hangs on large input", "add timeout", nil)
 	if s.PrecedentCount() != 1 {
 		t.Errorf("expected 1 precedent, got %d", s.PrecedentCount())
 	}
