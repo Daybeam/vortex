@@ -3,7 +3,7 @@ module github.com/daybeam/vortex
 go 1.26.0
 
 require (
-	github.com/bits-and-blooms/bloom/v3 v3.7.1
+	github.com/bits-and-blooms/bloom/v3 v3.7.2
 	github.com/dop251/goja v0.0.0-20260911104922-fabc3b8078ad
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v1.5.0
@@ -17,7 +17,7 @@ require (
 )
 
 require (
-	github.com/bits-and-blooms/bitset v1.24.2 // indirect
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/dgryski/go-metro v0.0.0-20200812162917-85c65e2d0165 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
