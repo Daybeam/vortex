@@ -111,6 +111,19 @@ func (s *DirectedEngine) Submit(inputs []schemas.StepInput) (string, error) {
 	return s.SubmitWithSessionIR(inputs, nil, nil, nil, "", "", "", 0, 0, "")
 }
 
+func (s *DirectedEngine) SubmitOwned(inputs []schemas.StepInput, ownerID string) (string, error) {
+	return s.SubmitWithSessionIR(inputs, nil, nil, nil, "", "", "", 0, 0, ownerID)
+}
+
+func firstScheduleDelivery(inputs []schemas.StepInput) *schemas.ScheduleDelivery {
+	for i := range inputs {
+		if inputs[i].Delivery != nil {
+			return inputs[i].Delivery
+		}
+	}
+	return nil
+}
+
 // SubmitWithSession is a convenience wrapper that propagates sessionID to the
 // task graph so the WireTaskCompletionCallbacks callback can find the chat
 // session and notify it when the task completes. Without this, delegated tasks
@@ -215,26 +228,9 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	inputs = expandInputs
 	// ────────────────────────────────────────────────────────────────
 
-	// ── Tier 1(b) Pre-Submission Planning (ADDED 2026-10-18) ─────────
-	// A weak main agent submits ONE step ("do the whole thing"). The
-	// engine then hands that request to the builtin task_planner role,
-	// which returns a validated DAG. Without this, the fast-path below
-	// catches every such submission and the whole concept of task-level
-	// planning never executes.
-	//
-	// Risk containment (this function is the entry point of every
-	// submission flow — impact=HIGH):
-	//   - Opt-in. system.enable_planner_first defaults to false, so
-	//     existing deployments see byte-identical behaviour.
-	//   - Only fires for a lone dependency-free step. Multi-step
-	//     submissions mean the main agent already designed the DAG;
-	//     re-planning them would override an explicit decision.
-	//   - Best-effort. Any failure (role missing, timeout, unparseable
-	//     plan) leaves `inputs` untouched and execution proceeds exactly
-	//     as before.
-	//   - Budgeted. system.planner_timeout_secs caps the single extra
-	//     call (default 90s).
-	// See docs 52-planner-wiring-design.md §S6.
+	// Planner-first is opt-in, budgeted and best-effort for one dependency-free
+	// step. Multi-step submissions already carry the caller's DAG design.
+	// See docs/52-planner-wiring-design.md §S6.
 	if len(inputs) == 1 && len(inputs[0].DependsOn) == 0 && s.plannerFirstEnabled() {
 		probeTask := inputs[0].Task
 		planTaskID := schemas.NewTaskID()
@@ -327,6 +323,8 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			AdditionalMCPs:      inp.AdditionalMCPs,
 			ContextRefs:         inp.ContextRefs,
 			Deliver:             inp.Deliver,
+			Delivery:            inp.Delivery,
+			MaxTurnsCap:         inp.MaxTurnsCap,
 			ExitCriteria:        inp.ExitCriteria,
 			DeterministicChecks: inp.DeterministicChecks,
 			VerifierModel:       inp.VerifierModel,
@@ -367,9 +365,11 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			SessionSkills:    map[string]any{},
 			GlobalWorkspace:  map[string]any{},
 			IsSmartRouted:    true,
+			FastPath:         true,
 			SessionID:        sessionID,
 			OwnerID:          ownerID,
 			WorkspaceRoot:    workspaceRoot,
+			Delivery:         firstScheduleDelivery(inputs),
 			TimeoutSecs:      timeoutSecs,
 			TokenBudget:      tokenBudget,
 		}
@@ -460,6 +460,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			Hub:                      hub,
 			Isolation:                inp.Isolation,
 			EnableStepPlan:           inp.EnableStepPlan,
+			MaxTurnsCap:              inp.MaxTurnsCap,
 		}
 
 		// Execute asynchronously — same fire-and-forget semantics as
@@ -716,6 +717,8 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			EnableStepPlan:           inp.EnableStepPlan,
 			OutputContract:           inp.OutputContract,
 			Deliver:                  inp.Deliver, // ADDED 2026-08-30
+			Delivery:                 inp.Delivery,
+			MaxTurnsCap:              inp.MaxTurnsCap,
 			ProviderOverride:         inp.ProviderOverride,
 			LastWorkedOn:             time.Now(),
 			GroupID:                  inp.GroupID,
@@ -767,6 +770,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		SessionID:        sessionID,
 		OwnerID:          ownerID,
 		WorkspaceRoot:    workspaceRoot,
+		Delivery:         firstScheduleDelivery(inputs),
 		TimeoutSecs:      timeoutSecs,
 		TokenBudget:      tokenBudget,
 	}
@@ -842,5 +846,3 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 	return taskID, nil
 }
-
-

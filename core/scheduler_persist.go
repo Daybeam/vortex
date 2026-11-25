@@ -268,6 +268,11 @@ func (s *DirectedEngine) buildArtifactsLocked(graph *schemas.TaskGraph) []schema
 		}
 		// Provenance: source steps that fed this step
 		if owner, ok := graph.Steps[of.StepID]; ok {
+			constraints := owner.OutputContract.Clone()
+			ac.RequiredFields = constraints.RequiredFields
+			ac.OptionalFields = constraints.OptionalFields
+			ac.TypeSchema = constraints.TypeSchema
+			ac.SourceRefs = append(ac.SourceRefs, constraints.SourceRefs...)
 			for _, dep := range owner.DependsOn {
 				if depStep, ok := graph.Steps[dep]; ok && depStep.ResultRef != "" {
 					ac.SourceRefs = append(ac.SourceRefs, depStep.ResultRef)

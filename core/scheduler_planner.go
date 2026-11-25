@@ -52,8 +52,8 @@ func plannerRetryNudge(prev string) string {
 		prev + "\n\n" +
 		"Discard that answer completely. Reply again with ONLY the JSON object " +
 		"defined by the Output Contract above: no <thought> block, no " +
-	"explanation, no numbered outline, no markdown fence. Your first " +
-	"character must be { and you must stop after the closing }."
+		"explanation, no numbered outline, no markdown fence. Your first " +
+		"character must be { and you must stop after the closing }."
 }
 
 // buildPlanDelegationPrompt constructs the planner prompt for D5 P1b
@@ -823,6 +823,8 @@ func inheritCallerSettings(planned []schemas.StepInput, original schemas.StepInp
 		}
 		planned[i].AdditionalSkills = original.AdditionalSkills
 		planned[i].Deliver = original.Deliver
+		planned[i].Delivery = original.Delivery
+		planned[i].MaxTurnsCap = original.MaxTurnsCap
 		planned[i].ContextRefs = original.ContextRefs
 		planned[i].VerifierModel = original.VerifierModel
 		planned[i].MaxAutoRefine = original.MaxAutoRefine

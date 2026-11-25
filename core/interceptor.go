@@ -81,6 +81,9 @@ type SpawnRequest struct {
 	// step actually get more room instead of re-hitting the same cap.
 	// ADDED (2026-09-07).
 	TurnsBudgetBonus int
+	// MaxTurnsCap is the parent chat's remaining sub-agent ceiling. Zero means
+	// uncapped; the spawner applies it after IRT and resume bonuses.
+	MaxTurnsCap int
 	// MaxOutputTokens overrides the per-spawn response token cap. 0 keeps the
 	// engine default (4096).
 	//

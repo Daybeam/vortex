@@ -463,6 +463,28 @@ func WorkspaceArtifactDefects(root string, fields map[string][]string) []string 
 	return defects
 }
 
+// WorkspaceArtifactContractDefects keeps required/optional/type constraints intact across a wake handoff.
+func WorkspaceArtifactContractDefects(root string, contracts []schemas.ArtifactContract) []string {
+	ordered := schemas.CloneArtifactContracts(contracts)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Path < ordered[j].Path })
+	var defects []string
+	for _, contract := range ordered {
+		name := contract.Path
+		path, ok := resolveArtifactPath(root, name)
+		if !ok {
+			continue
+		}
+		if info, err := os.Stat(path); err != nil || info.IsDir() {
+			continue
+		}
+		contract.Path = path
+		for _, problem := range InspectArtifact(contract) {
+			defects = append(defects, describeArtifactProblem(name, problem))
+		}
+	}
+	return defects
+}
+
 // describeArtifactProblem renders one problem as a line a model can act on.
 func describeArtifactProblem(name string, problem ArtifactProblem) string {
 	switch problem.Reason {

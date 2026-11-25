@@ -92,6 +92,9 @@ func (s *Spawner) doSpawn(ctx context.Context, req *SpawnRequest) (*SpawnResult,
 	stagnationGraceTurns := s.registry.System.FeatureFlags.StagnationGraceTurns
 	stagnationHintAt := 0
 	const maxConsecutiveDuplicates = 3
+	// Echo guard — verbatim prose repetition across no-tool turns.
+	// Loop-local, same lifecycle as B2's lastResultHash/consecutiveRepeatCount.
+	echoGuard := NewEchoGuard(stagnationGraceTurns)
 	// P1 fix (2026-10-03, eval §0.5): Consecutive parse failure counter.
 	// After 3 consecutive unparseable outputs, break the spin loop instead
 	// of burning 19-43 provider calls on identical failures.
@@ -689,7 +692,10 @@ turnLoop:
 				req.Hub.Graph.RecordDecision(turnDecisionID, node)
 				decisionIDs = append(decisionIDs, turnDecisionID)
 
-				// Priority 6: Learn from the new decision
+				if len(resp.ToolCalls) > 0 {
+					node.SchemaHashes = s.collectCurrentSchemaFingerprints()
+				}
+
 				if s.expStore != nil {
 					s.expStore.UpsertDecisionPrecedent(ctx, node)
 				}
@@ -759,6 +765,26 @@ turnLoop:
 		}
 
 		if len(resp.ToolCalls) == 0 {
+			// Echo guard: detect verbatim identical prose across consecutive
+			// no-tool turns. Sits after heartbeat handling (which may consume
+			// the turn) and before completeTurn (which may accept the output).
+			switch echoGuard.Check(resp.Text) {
+			case EchoHint:
+				s.logger.Log("EventOutputStagnationHinted", req.TaskID, req.StepID, map[string]any{
+					"turn": turn, "signal": "text",
+				})
+				userBlocks = append(userBlocks, schemas.ContentBlock{Text: EchoHintText})
+			case EchoKill:
+				s.logger.Log(obs.EventStepFailed, req.TaskID, req.StepID, map[string]any{
+					"error":      "text_echo: identical response repeated after hint",
+					"root_cause": "model_stuck",
+					"signal":     "text",
+				})
+				return s.partialEchoOutput(role.BaseCapability,
+					"text_echo: identical response repeated after intervention hint",
+					trace), nil
+			}
+
 			st := &spawnTurnState{
 				consecutiveParseFailures: consecutiveParseFailures,
 				zeroEffectNudged:         zeroEffectNudged,

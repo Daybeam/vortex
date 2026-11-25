@@ -29,6 +29,7 @@ type IntentRouter struct {
 	embeddings  map[string][]float32 // SOP ID -> embedding vector
 	sopVersions map[string]string    // SOP ID -> version/hash tracking for hot-reload
 	embedClient EmbeddingClient
+	wg          sync.WaitGroup // audit FIX 2026-11-24: track RefreshEmbeddingsAsync goroutine
 }
 
 type SOPRouteResult struct {
@@ -62,10 +63,23 @@ func (r *IntentRouter) RefreshEmbeddingsAsync(ctx context.Context, reg *config.R
 		return
 	}
 	refreshCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	r.wg.Add(1) // audit FIX 2026-11-24: track goroutine so Wait() can drain it
 	go func() {
+		defer r.wg.Done()
 		defer cancel()
+		defer func() {
+			if rec := recover(); rec != nil {
+				fmt.Fprintf(os.Stderr, "[intent-router] RefreshEmbeddingsAsync panic: %v\n%s", rec, debug.Stack())
+			}
+		}()
 		r.RefreshEmbeddings(refreshCtx, reg)
 	}()
+}
+
+// Wait blocks until the RefreshEmbeddingsAsync goroutine has finished.
+// Call from the engine's Stop() path to prevent goroutine leaks on shutdown.
+func (r *IntentRouter) Wait() {
+	r.wg.Wait()
 }
 
 // RefreshEmbeddings updates SOP vector cache incrementally on reload.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"sort"
@@ -169,7 +170,8 @@ func (a *ContextArchive) expandWithLinkedItems(items []MemoryItem) []MemoryItem 
 	if len(linkedIDs) == 0 {
 		return items
 	}
-	// Fetch linked items from archive.
+	// Fetch linked items from archive using nodeIndex for O(1) lookup
+	// (audit 2026-11-25: was O(m×n) linear scan, now O(m) with index).
 	a.mu.RLock()
 	expanded := make([]MemoryItem, 0, len(items)+len(linkedIDs))
 	expanded = append(expanded, items...)
@@ -177,12 +179,9 @@ func (a *ContextArchive) expandWithLinkedItems(items []MemoryItem) []MemoryItem 
 		if seen[id] {
 			continue
 		}
-		for _, item := range a.items {
-			if item.NodeID == id {
-				expanded = append(expanded, item)
-				seen[id] = true
-				break
-			}
+		if idx, ok := a.nodeIndex[id]; ok {
+			expanded = append(expanded, a.items[idx])
+			seen[id] = true
 		}
 	}
 	a.mu.RUnlock()
@@ -193,18 +192,38 @@ func (a *ContextArchive) expandWithLinkedItems(items []MemoryItem) []MemoryItem 
 // Append is sync.WriteFile append; read is incremental.
 // Zero-CGO, no SQLite dependency.
 type ContextArchive struct {
-	mu         sync.RWMutex
-	path       string // .jsonl file
-	items      []MemoryItem
-	index      *search.BM25Corpus // lazy-built
-	indexMu    sync.RWMutex
-	lastOffset int64 // Last read position in file
-	indexDirty bool  // True if new items appended but index not rebuilt
-	ttlPruned  int   // count of items pruned by TTL since start
+	mu           sync.RWMutex
+	path         string // .jsonl file
+	items        []MemoryItem
+	nodeIndex    map[string]int    // NodeID → index in items; rebuilt on writes (audit 2026-11-25)
+	index        *search.BM25Corpus // lazy-built
+	indexMu      sync.RWMutex
+	lastOffset   int64 // Last read position in file
+	indexDirty   bool  // True if new items appended but index not rebuilt
+	ttlPruned    int   // count of items pruned by TTL since start
+	lifecycleCtx context.Context // for embedding call cancellation (audit 2026-11-25)
 }
 
 func NewContextArchive(path string) *ContextArchive {
-	return &ContextArchive{path: path}
+	return &ContextArchive{path: path, lifecycleCtx: context.Background()}
+}
+
+// SetLifecycleCtx sets the context used to derive timeouts for embedding
+// calls inside Search/SearchForest. When the lifecycle context is cancelled
+// (e.g. on shutdown), in-flight embedding calls are cancelled too.
+// Call this from the engine's startup path, similar to FMCBatchTicker.
+func (a *ContextArchive) SetLifecycleCtx(ctx context.Context) {
+	a.mu.Lock()
+	a.lifecycleCtx = ctx
+	a.mu.Unlock()
+}
+
+// rebuildNodeIndexLocked rebuilds the NodeID → index map. Caller MUST hold a.mu.
+func (a *ContextArchive) rebuildNodeIndexLocked() {
+	a.nodeIndex = make(map[string]int, len(a.items))
+	for i, item := range a.items {
+		a.nodeIndex[item.NodeID] = i
+	}
 }
 
 // Items returns the in-memory items slice. Read-only callers should treat the
@@ -238,13 +257,18 @@ func (a *ContextArchive) Append(item MemoryItem) error {
 	if len(a.items) > maxInMemoryItems {
 		a.items = a.items[len(a.items)-maxInMemoryItems:]
 	}
+	a.rebuildNodeIndexLocked() // audit 2026-11-25: maintain NodeID→index for O(1) lookups
 	a.indexDirty = true
 
 	// Create directory if not exists
 	dir := strings.ReplaceAll(a.path, "\\", "/")
 	lastSlash := strings.LastIndex(dir, "/")
 	if lastSlash != -1 {
-		os.MkdirAll(dir[:lastSlash], 0755)
+		if mkErr := os.MkdirAll(dir[:lastSlash], 0755); mkErr != nil {
+			// Log but don't return — the subsequent OpenFile will fail with
+			// a more specific error if the directory truly can't be created.
+			log.Printf("[context-archive] MkdirAll failed for %s: %v", dir[:lastSlash], mkErr)
+		}
 	}
 
 	f, err := os.OpenFile(a.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -271,14 +295,11 @@ func (a *ContextArchive) GetByNodeIDs(nodeIDs []string) []MemoryItem {
 	if len(nodeIDs) == 0 {
 		return nil
 	}
-	idSet := make(map[string]bool, len(nodeIDs))
-	for _, id := range nodeIDs {
-		idSet[id] = true
-	}
+	// Use nodeIndex for O(1) lookup per ID (audit 2026-11-25: was O(n×m)).
 	var result []MemoryItem
-	for _, item := range a.items {
-		if idSet[item.NodeID] {
-			result = append(result, item)
+	for _, id := range nodeIDs {
+		if idx, ok := a.nodeIndex[id]; ok {
+			result = append(result, a.items[idx])
 		}
 	}
 	return result
@@ -302,6 +323,7 @@ func (a *ContextArchive) Load() error {
 	if info.Size() < a.lastOffset {
 		a.lastOffset = 0
 		a.items = nil
+		a.rebuildNodeIndexLocked()
 	}
 
 	if info.Size() == a.lastOffset {
@@ -338,6 +360,7 @@ func (a *ContextArchive) Load() error {
 	if newCount > 0 {
 		a.indexDirty = true
 	}
+	a.rebuildNodeIndexLocked() // audit 2026-11-25: rebuild after load
 	a.lastOffset, _ = f.Seek(0, 1) // current position
 
 	return nil
@@ -469,12 +492,19 @@ func (a *ContextArchive) SearchWithOptions(query string, embedClient EmbeddingCl
 
 	denseRank := map[string]float64{}
 	if embedClient != nil && len(embeds) > 0 {
-		// audit L-NEW-11: add timeout to prevent blocking forever if embedding service hangs.
-		embedCtx, embedCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if qVec, err := embedClient.Embed(embedCtx, query); err == nil {
+		// audit 2026-11-25: derive from lifecycleCtx so embedding is
+		// cancellable on shutdown, instead of context.Background().
+		a.mu.RLock()
+		lifecycleCtx := a.lifecycleCtx
+		a.mu.RUnlock()
+		embedCtx, embedCancel := context.WithTimeout(lifecycleCtx, 10*time.Second)
+		qVec, err := embedClient.Embed(embedCtx, query)
+		embedCancel()
+		if err != nil {
+			log.Printf("[context-archive] embedding query failed, degrading to BM25-only: %v", err)
+		} else {
 			denseRank = search.CosineRank(qVec, embeds)
 		}
-		embedCancel()
 	}
 
 	merged := search.RRFMergeCapped(defaultRRFMaxPerSource, bm25Rank, denseRank)
@@ -532,6 +562,7 @@ func (a *ContextArchive) PruneExpired(now time.Time) (pruned int, err error) {
 	}
 
 	a.items = keep
+	a.rebuildNodeIndexLocked() // audit 2026-11-25: rebuild after prune
 	if err := a.writeFileLocked(); err != nil {
 		return pruned, err
 	}
@@ -591,6 +622,7 @@ func (a *ContextArchive) DeleteByScope(scope ArchiveScope) (deleted int, err err
 	}
 
 	a.items = keep
+	a.rebuildNodeIndexLocked() // audit 2026-11-25: rebuild after delete
 	if err := a.writeFileLocked(); err != nil {
 		return deleted, err
 	}

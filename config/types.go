@@ -744,11 +744,11 @@ type SystemSettings struct {
 	// agent loop. 0 = default 2048. (ADDED 2026-10-28: previously hardcoded
 	// to 2048 with no config wiring — harness-bench report §4.1.)
 	ChatMaxOutputTokens int `json:"chat_max_output_tokens,omitempty"`
-	// ChatMaxTurns caps the tool-turn budget of the chat agent loop alone.
-	// 0 = fall back to max_tool_turns, then to chat.DefaultMaxTurns (50).
-	// Added 2026-11-04: max_tool_turns is the DAG step loop's knob, and sharing
-	// it meant a DAG-side change silently re-cut the chat budget.
-	ChatMaxTurns int `json:"chat_max_turns,omitempty"`
+	// ChatMaxTurns caps the chat loop alone; 0 falls back to max_tool_turns, then 50.
+	// Wake reserve fields keep parent turns available; 0 uses package defaults.
+	ChatMaxTurns     int     `json:"chat_max_turns,omitempty"`
+	WakeReserve      int     `json:"wake_reserve,omitempty"`
+	WakeReserveRatio float64 `json:"wake_reserve_ratio,omitempty"`
 	// ReadinessGateSoft softens the delegation readiness gate language from
 	// "NEVER blindly delegate" to a suggestion. Set true for weak models (≤7B)
 	// that over-apply the hard rule and ask excessive clarifying questions
@@ -1084,12 +1084,12 @@ type SystemOneConfig struct {
 	BaseURL               string  `json:"base_url,omitempty"`
 	Model                 string  `json:"model,omitempty"`
 	APIKey                string  `json:"api_key,omitempty"`
+	Envelope              string  `json:"envelope,omitempty"` // "" | "cloudflare" | "gemini" (Gemini Decisions API, 2026-11-18)
 	EnableDecisionGate    bool    `json:"enable_decision_gate,omitempty"`
 	EnableToolRouter      bool    `json:"enable_tool_router,omitempty"`
 	EnableFailureClassify bool    `json:"enable_failure_classify,omitempty"`
 	EnableSieve           bool    `json:"enable_sieve,omitempty"`
 	MinConfidence         float64 `json:"min_confidence,omitempty"`
-	Envelope              string  `json:"envelope,omitempty"`
 }
 
 // CommandGuardConfig declares an external command guard script that can

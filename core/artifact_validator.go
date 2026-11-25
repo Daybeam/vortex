@@ -91,6 +91,12 @@ func InspectArtifact(ac schemas.ArtifactContract) []ArtifactProblem {
 			problems = append(problems, ArtifactProblem{Field: field, Reason: ProblemMissing})
 		}
 	}
+	optional := make(map[string]struct{}, len(ac.OptionalFields))
+	for _, field := range ac.OptionalFields {
+		if _, required := seen[field]; !required {
+			optional[field] = struct{}{}
+		}
+	}
 
 	fields := make([]string, 0, len(ac.TypeSchema))
 	for field := range ac.TypeSchema {
@@ -103,6 +109,9 @@ func InspectArtifact(ac schemas.ArtifactContract) []ArtifactProblem {
 		if !ok {
 			if _, declared := seen[field]; declared {
 				continue // already reported as a missing required field
+			}
+			if _, declared := optional[field]; declared {
+				continue
 			}
 			problems = append(problems, ArtifactProblem{Field: field, Reason: ProblemTypeSchemaAbsent})
 			continue

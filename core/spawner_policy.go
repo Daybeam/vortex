@@ -22,10 +22,14 @@ func (s *Spawner) calculateMaxTurns(ctx context.Context, req *SpawnRequest, role
 	// files construct &Spawner{} directly — a nil interface call would panic.
 	if s.signalCollector == nil || s.policyDecider == nil {
 		// Safe fallback: 50 matches NewIRTBudgetEstimator's default.
+		maxTurns := 50
 		if s.registry != nil && s.registry.System.MaxToolTurns > 0 {
-			return s.registry.System.MaxToolTurns
+			maxTurns = s.registry.System.MaxToolTurns
 		}
-		return 50
+		if req.MaxTurnsCap > 0 && maxTurns > req.MaxTurnsCap {
+			return req.MaxTurnsCap
+		}
+		return maxTurns
 	}
 	signals := s.signalCollector.Collect(ctx, req, role)
 	decision := s.policyDecider.Decide(signals, req, role)
@@ -33,7 +37,11 @@ func (s *Spawner) calculateMaxTurns(ctx context.Context, req *SpawnRequest, role
 	// Apply injected skills from the decision
 	req.AdditionalSkills = append(req.AdditionalSkills, decision.InjectedSkills...)
 
-	return decision.MaxTurns + req.TurnsBudgetBonus
+	maxTurns := decision.MaxTurns + req.TurnsBudgetBonus
+	if req.MaxTurnsCap > 0 && maxTurns > req.MaxTurnsCap {
+		return req.MaxTurnsCap
+	}
+	return maxTurns
 }
 
 // GetEffectiveHandoffThreshold resolves the actual threshold used for

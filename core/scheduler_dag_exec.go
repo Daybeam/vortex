@@ -69,6 +69,37 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			}, []string{"resume", "abort"})
 			return
 		}
+
+		// ── Phase 0.1b: Budget Look-ahead (OCR pattern) ─────────────────
+		// Stop BEFORE dispatching a step whose prompt-side cost is already
+		// known to overrun the budget, instead of discovering the overrun
+		// after the step has spent its tokens. This mirrors alibaba's
+		// open-code-review dispatchBatch per-file look-ahead. Projection is
+		// the step task text plus a conservative fixed system-prompt
+		// overhead; output tokens are not estimated (safeMargin covers
+		// them). TokenBudget <= 0 disables the look-ahead, exactly like
+		// CheckBudget. See docs/plan/OCR_P1_PRESCAN_AND_BUDGET_LOOKAHEAD.md.
+		if graph.TokenBudget > 0 {
+			projected := int64(estimateStepPromptTokens(step))
+			if projected > 0 {
+				s.Mu.RLock()
+				lookaheadErr := s.budgetGuard.CheckBudgetLookahead(graph, projected)
+				s.Mu.RUnlock()
+				if lookaheadErr != nil {
+					s.Mu.Lock()
+					graph.BudgetPaused = true
+					step.Status = schemas.StepBlocked
+					s.Mu.Unlock()
+					s.addDecision(graph, step, schemas.DecisionBudgetExhausted, map[string]any{
+						"error":          lookaheadErr.Error(),
+						"tokens_used":    graph.TokensUsed,
+						"projected_cost": projected,
+						"token_budget":   graph.TokenBudget,
+					}, []string{"resume", "abort"})
+					return
+				}
+			}
+		}
 	}
 
 	// ── Cost Governance: Budget progress sentinel (P1) ──────────────────
@@ -131,10 +162,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 	s.persistGraph(graph) // Checkpoint state change
 	taskID := graph.TaskID
 
-	// ── StagedWorkspace pre-step snapshot (WIRED 2026-08-21) ────────────
-	// Opt-in via system.staging_enabled (default false, zero behavior change
-	// for existing configs). See docs/STAGED_WORKSPACE_DESIGN.md and
-	// core/staged_workspace.go's own doc comment for scope/limitations.
+	// Opt-in staged snapshot; see docs/STAGED_WORKSPACE_DESIGN.md.
 	var stagedWS *StagedWorkspace
 	var preSnapshot *SnapshotIndex
 	if s.registry.System.StagingEnabled {
@@ -317,6 +345,7 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			RoutingMode:              step.RoutingMode,
 			CompressionHint:          step.CompressionHint,
 			TurnsBudgetBonus:         step.TurnsBudgetBonus,
+			MaxTurnsCap:              step.MaxTurnsCap,
 			SessionRoot:              graph.WorkspaceRoot,
 			OwnerID:                  graph.OwnerID,
 			PredecessorSkillID:       predecessorSkillID,
@@ -850,4 +879,27 @@ func (s *DirectedEngine) resolveStepInputs(ctx context.Context, graph *schemas.T
 	}
 	s.Mu.RUnlock()
 	return resolvedInputs
+}
+
+// estimateStepPromptTokens returns a conservative prompt-side token estimate
+// for a step about to run. It is the look-ahead projection for the budget
+// gate (Phase 0.1b): only the INPUT side (task text + a fixed system-prompt
+// overhead) is estimated, because output tokens cannot be predicted without
+// a tokenizer and are already covered by BudgetGuard's safeMargin. A
+// conservative fixed overhead keeps the estimate from being wildly low on
+// steps whose prompt is mostly role system-prompt rather than task text.
+//
+// Returns 0 when there is nothing to estimate (empty task), which the caller
+// treats as "unknown cost → skip the look-ahead, rely on CheckBudget".
+func estimateStepPromptTokens(step *schemas.Step) int {
+	if step == nil || step.Task == "" {
+		return 0
+	}
+	// Task text dominates the input side; add a fixed conservative allowance
+	// for the role system prompt + tool schema + context blocks. 2000 is a
+	// deliberate floor, not an exact model — it only needs to be in the right
+	// ballpark for the overrun check to be useful, and underestimating here is
+	// bounded by safeMargin on the other side.
+	const systemPromptOverhead = 2000
+	return providers.EstimateTokens(step.Task) + systemPromptOverhead
 }
