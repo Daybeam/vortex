@@ -31,8 +31,8 @@ type StepInput struct {
 	AdditionalMCPs           []string            `json:"additional_mcps"`
 	AdditionalToolAllowlists map[string][]string `json:"additional_tool_allowlists"`
 	ContextRefs              map[string]string   `json:"context_refs"`
-	SubmitterIsAdmin         bool                `json:"-"` // set by entry handler; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
-	OwnerID                  string              `json:"-"` // set by entry handler from AuthOwnerKey; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
+	SubmitterIsAdmin         bool                `json:"-"`                    // set by entry handler; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
+	OwnerID                  string              `json:"-"`                    // set by entry handler from AuthOwnerKey; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
 	ProjectID                string              `json:"project_id,omitempty"` // project space; defaults to "default" if empty
 	FallbackFor              string              `json:"fallback_for,omitempty"`
 	MaxRetries               int                 `json:"max_retries"`
@@ -69,6 +69,14 @@ type StepInput struct {
 
 	// Deliver specifies artifact delivery destination/method (ADDED 2026-08-30)
 	Deliver string `json:"deliver,omitempty"`
+
+	// Delivery is set only by the schedule manager. JSON exclusion prevents API
+	// callers from forging the marker that owns terminal result delivery.
+	Delivery *ScheduleDelivery `json:"-"`
+
+	// MaxTurnsCap is an internal ceiling derived from the chat parent's
+	// remaining turn budget. JSON exclusion prevents callers from forging it.
+	MaxTurnsCap int `json:"-"`
 
 	// GroupID, when non-empty, records which RoleGroup produced this step.
 	// Set automatically by GroupDispatcher; callers need not set this manually.
@@ -207,6 +215,9 @@ type Step struct {
 	// Deliver specifies artifact delivery destination/method (ADDED 2026-08-30)
 	Deliver string `json:"deliver,omitempty"`
 
+	// Delivery records the schedule-owned terminal delivery for this step.
+	Delivery *ScheduleDelivery `json:"delivery,omitempty"`
+
 	// TargetFile (ADDED 2026-09-13) — declares the primary file path this step
 	// writes to. Used by PathLockManager to acquire a write lock preventing
 	// concurrent steps from clobbering the same file. Empty = no lock needed.
@@ -225,6 +236,7 @@ type Step struct {
 	// a step genuinely resumes with more room instead of re-running the same
 	// capped loop and hitting the wall again. ADDED (2026-09-07).
 	TurnsBudgetBonus int       `json:"turns_budget_bonus,omitempty"`
+	MaxTurnsCap      int       `json:"max_turns_cap,omitempty"`
 	LastError        string    `json:"last_error,omitempty"`
 	TriggerError     string    `json:"trigger_error,omitempty"`  // First error that led to successful retry (ADDED 2026-08-16)
 	PartialOutput    string    `json:"partial_output,omitempty"` // B1: model's last output before Sieve interception; passed to auditor/next step as context
@@ -369,7 +381,33 @@ type ArtifactContract struct {
 
 	// ─── Artifact Constraint Shield (arXiv:2608.24569) ───────────────────
 	RequiredFields []string          `json:"required_fields,omitempty"`
+	OptionalFields []string          `json:"optional_fields,omitempty"`
 	TypeSchema     map[string]string `json:"type_schema,omitempty"` // field -> type (string, number, array, object)
+}
+
+func (c ArtifactContract) Clone() ArtifactContract {
+	c.RequiredFields = append([]string(nil), c.RequiredFields...)
+	c.OptionalFields = append([]string(nil), c.OptionalFields...)
+	c.SourceRefs = append([]string(nil), c.SourceRefs...)
+	if c.TypeSchema != nil {
+		schema := make(map[string]string, len(c.TypeSchema))
+		for field, typ := range c.TypeSchema {
+			schema[field] = typ
+		}
+		c.TypeSchema = schema
+	}
+	return c
+}
+
+func CloneArtifactContracts(contracts []ArtifactContract) []ArtifactContract {
+	if contracts == nil {
+		return nil
+	}
+	out := make([]ArtifactContract, len(contracts))
+	for i := range contracts {
+		out[i] = contracts[i].Clone()
+	}
+	return out
 }
 
 // ReadDep records an actual file-level read dependency for coordination tracking.
@@ -422,14 +460,14 @@ type ContextNode struct {
 // ─── TaskGraph ────────────────────────────────────────────────────────────
 
 type TaskGraph struct {
-	TaskID  string           `json:"task_id"`
-	TraceID string           `json:"trace_id,omitempty"`
+	TaskID  string `json:"task_id"`
+	TraceID string `json:"trace_id,omitempty"`
 	// ProjectID identifies the project space this task belongs to. Tasks
 	// sharing the same ProjectID can recall each other's ScopeProject memory
 	// items. Defaults to "default" when unspecified (backward-compatible).
 	ProjectID string           `json:"project_id,omitempty"`
 	Steps     map[string]*Step `json:"steps"`
-	Status  GraphStatus      `json:"status"`
+	Status    GraphStatus      `json:"status"`
 	// SubmitterIsAdmin is the authoritative mount-gate source: read via
 	// core/mount_gate.go's effectiveSubmitterIsAdmin, enforced in
 	// core/validator.go's ResolveFinalMCPs. Persisted so fork/reload retain the tier.
@@ -498,6 +536,10 @@ type TaskGraph struct {
 	SessionID     string `json:"session_id,omitempty"`
 	WorkspaceRoot string `json:"workspace_root,omitempty"`
 
+	// Delivery marks a scheduled run whose terminal result is owned by the
+	// schedule delivery queue, not the ordinary task_done follow-up path.
+	Delivery *ScheduleDelivery `json:"delivery,omitempty"`
+
 	// OwnerID is set at submission time from the caller's resolved identity
 	// (tools.AuthOwnerKey). When empty (no APIKeys configured), all ownership
 	// checks are no-ops — backward compatible with single-operator deployments.
@@ -505,6 +547,12 @@ type TaskGraph struct {
 	OwnerID string `json:"owner_id,omitempty"`
 
 	IsSmartRouted bool `json:"is_smart_routed,omitempty"`
+
+	// FastPath is true when the task took the single-step inline branch
+	// (scheduler_submit.go:300). Chat delegations always submit one prompt,
+	// so this is structurally always true unless the planner expands the step
+	// or RequirePlanReview is set. Measured so the assumption is observable.
+	FastPath bool `json:"fastpath,omitempty"`
 
 	// Time Travel & Fork (ADDED 2026-09-14): records task lineage for
 	// counterfactual branching. See docs/architecture/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md

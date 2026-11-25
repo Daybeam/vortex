@@ -24,8 +24,21 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		}
 	}
 
-	// Open connection with WAL mode and normal synchronous flags for high concurrency
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath)
+	// Journal mode: WAL is the default for concurrency, but it is UNSAFE on a
+	// cross-VM filesystem (Docker Desktop / OrbStack / Podman host bind mounts
+	// exposed as virtiofs or 9p). SQLite WAL's -shm file must be coherent shared
+	// memory for every opener; across the VM boundary it is not, and the failure
+	// is SILENT (zero-filled pages) — so WAL must be refused BEFORE the pragma,
+	// not reacted to after corruption. On such mounts fall back to journal_mode=DELETE
+	// (single-writer, rollback journal, no shared memory). Port of hermes_state_wal.py.
+	journalMode := "WAL"
+	if onCrossVMFilesystem(dbPath) {
+		journalMode = "DELETE"
+	}
+
+	// Open connection. DELETE mode trades concurrency for crash-consistency on
+	// cross-VM mounts; WAL supports concurrent readers and a single writer.
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(%s)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath, journalMode)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite db: %w", err)
@@ -75,6 +88,10 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	// Migration (2026-11-22): add schema_hashes_json to anti_patterns for
 	// schema fingerprint binding (§C Expiry anti-corruption).
 	_, _ = db.Exec(`ALTER TABLE anti_patterns ADD COLUMN schema_hashes_json TEXT`)
+
+	// Migration (2026-11-25): preserve the complete schedule contract and runtime
+	// ledger; the legacy columns cannot represent delivery targets or run quotas.
+	_, _ = db.Exec(`ALTER TABLE schedules ADD COLUMN schedule_json TEXT`)
 
 	bootmetrics.Mark("db")
 	return db, nil
@@ -248,7 +265,8 @@ func runMigrations(db *sql.DB) error {
 		last_run DATETIME,
 		next_run DATETIME,
 		is_enabled BOOLEAN DEFAULT TRUE,
-		created_at DATETIME
+		created_at DATETIME,
+		schedule_json TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS memory_bank (

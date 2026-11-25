@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -50,6 +51,14 @@ func (o *SQLiteChatOutbox) Enqueue(ctx context.Context, item OutboxItem) (bool, 
 const claimablePredicate = `(status = 'pending' OR (status = 'claimed' AND claim_expires_at < ?)) AND attempts < ?`
 
 func (o *SQLiteChatOutbox) ClaimPending(ctx context.Context, holder string, limit int, lease time.Duration) ([]OutboxItem, error) {
+	return o.claimPending(ctx, holder, limit, lease, nil)
+}
+
+func (o *SQLiteChatOutbox) ClaimPendingKinds(ctx context.Context, holder string, limit int, lease time.Duration, kinds []string) ([]OutboxItem, error) {
+	return o.claimPending(ctx, holder, limit, lease, kinds)
+}
+
+func (o *SQLiteChatOutbox) claimPending(ctx context.Context, holder string, limit int, lease time.Duration, kinds []string) ([]OutboxItem, error) {
 	if limit <= 0 {
 		limit = 1
 	}
@@ -57,14 +66,15 @@ func (o *SQLiteChatOutbox) ClaimPending(ctx context.Context, holder string, limi
 		lease = defaultOutboxLease
 	}
 	now := time.Now().Unix()
+	kindSQL, kindArgs := outboxKindFilter(kinds)
 
 	// A row whose attempts ran out while its holder died mid-send is otherwise
 	// stuck non-terminal and unclaimable forever; close it here so Purge can
 	// eventually remove it.
 	if _, err := o.db.ExecContext(ctx, `
 		UPDATE chat_outbox SET status = 'dropped', last_error = 'attempts exhausted'
-		WHERE attempts >= ? AND (status = 'pending' OR (status = 'claimed' AND claim_expires_at < ?))
-	`, maxOutboxAttempts, now); err != nil {
+		WHERE attempts >= ? AND (status = 'pending' OR (status = 'claimed' AND claim_expires_at < ?))`+kindSQL,
+		append([]any{maxOutboxAttempts, now}, kindArgs...)...); err != nil {
 		return nil, err
 	}
 
@@ -74,18 +84,21 @@ func (o *SQLiteChatOutbox) ClaimPending(ctx context.Context, holder string, limi
 	// claims a row between SELECT and UPDATE, the outer predicate won't match and
 	// RETURNING won't emit that row). SQLite 3.35+ supports RETURNING; modernc/sqlite
 	// v1.29.0 embeds 3.45+.
+	args := []any{holder, now + int64(lease.Seconds()), now, maxOutboxAttempts}
+	args = append(args, kindArgs...)
+	args = append(args, limit, now, maxOutboxAttempts)
+	args = append(args, kindArgs...)
 	rows, err := o.db.QueryContext(ctx, `
 		UPDATE chat_outbox
 		SET status = 'claimed', claim_holder = ?, claim_expires_at = ?, attempts = attempts + 1
 		WHERE id IN (
 			SELECT id FROM chat_outbox
-			WHERE `+claimablePredicate+`
+			WHERE `+claimablePredicate+kindSQL+`
 			ORDER BY id LIMIT ?
 		)
-		AND `+claimablePredicate+`
+		AND `+claimablePredicate+kindSQL+`
 		RETURNING id, session_id, kind, dedupe_key, text, meta_json, created_at, attempts
-	`, holder, now+int64(lease.Seconds()), now, maxOutboxAttempts, limit,
-		now, maxOutboxAttempts)
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +119,49 @@ func (o *SQLiteChatOutbox) ClaimPending(ctx context.Context, holder string, limi
 		return out, err
 	}
 	return out, nil
+}
+
+func (o *SQLiteChatOutbox) ListPendingKinds(ctx context.Context, kinds []string, limit int) ([]OutboxItem, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	kindSQL, args := outboxKindFilter(kinds)
+	args = append(args, limit)
+	rows, err := o.db.QueryContext(ctx, `
+		SELECT id, session_id, kind, dedupe_key, text, meta_json, created_at, attempts
+		FROM chat_outbox WHERE status = 'pending'`+kindSQL+`
+		ORDER BY id LIMIT ?
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OutboxItem
+	for rows.Next() {
+		var item OutboxItem
+		var createdAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.Kind, &item.DedupeKey,
+			&item.Text, &item.MetaJSON, &createdAt, &item.Attempts); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = createdAt.Time
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func outboxKindFilter(kinds []string) (string, []any) {
+	if len(kinds) == 0 {
+		return "", nil
+	}
+	args := make([]any, len(kinds))
+	for i, kind := range kinds {
+		args[i] = kind
+	}
+	return " AND kind IN (" + strings.TrimSuffix(strings.Repeat("?,", len(kinds)), ",") + ")", args
 }
 
 // loadHeld re-reads a row the caller just won. Matching on claim_holder is a

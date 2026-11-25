@@ -274,6 +274,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 			// Charter present: non-nil means the task has an explicit intent /
 			// non-goals / constraints charter. See §P1.
 			"has_charter": g.Charter != nil,
+			"fastpath":    g.FastPath,
 		}
 	}
 
@@ -283,6 +284,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 			"id":                s.ID,
 			"role_id":           s.RoleID,
 			"task":              s.Task,
+			"output_contract":   s.OutputContract,
 			"depends_on":        s.DependsOn,
 			"read_deps":         s.ReadDeps,
 			"additional_skills": s.AdditionalSkills,
@@ -450,9 +452,16 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 		"substitutions": g.GetSubstitutions(),
 		// Task charter: intent, non-goals, constraints. See §P1.
 		"charter": g.Charter,
+		// FastPath: true when the task took the single-step inline branch
+		// (no planner expansion, no review gate). See §M of
+		// DELEGATION_INTENT_TRIGGER_ANALYSIS.md (now in docs/completed/2026-11-24/).
+		"fastpath": g.FastPath,
 	}
 	if g.CompletedAt != nil {
 		res["completed_at"] = g.CompletedAt.Format(time.RFC3339)
+	}
+	if g.Delivery != nil {
+		res["delivery"] = g.Delivery
 	}
 	return res
 }
