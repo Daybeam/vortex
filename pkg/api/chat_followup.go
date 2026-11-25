@@ -123,6 +123,8 @@ type wakeSeed struct {
 	// and declared: delivery happens later, in another goroutine, and by then
 	// the task outcome that knows the artifact contents is gone.
 	figures []string
+	// contracts keeps field types and optionality intact through the same deferred hop.
+	contracts []schemas.ArtifactContract
 }
 
 // startFollowUpTurnWithDigest is the form that also carries the artifact digest.

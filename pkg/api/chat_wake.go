@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/daybeam/vortex/schemas"
 )
 
 // Push actionable task states to the agent.
@@ -87,6 +89,7 @@ type pendingWakeEntry struct {
 	taskID string
 	reason string
 	text   string
+	digest string
 	// fallback is carried with the entry because a queued wake is delivered later,
 	// by a different goroutine, and it can fail there for the same reasons it can
 	// fail here (request budget, deadline). Dropping it at enqueue time would
@@ -104,6 +107,8 @@ type pendingWakeEntry struct {
 	// answer already carries the artifact's headline numbers. Empty for a
 	// decision wake — a blocked task has produced nothing to check against.
 	figures []string
+	// contracts keeps field types and optionality intact through the same deferred hop.
+	contracts []schemas.ArtifactContract
 	// budgeted marks the entries that must pass the per-task wake budget
 	// (wakeMaxPerTask / wakeMinInterval). Only pushed state — a blocked task's
 	// decision notice — is budgeted; a finished task's result is not, because it

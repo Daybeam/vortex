@@ -317,6 +317,10 @@ type IChatOutbox interface {
 	// duration and returns them.
 	ClaimPending(ctx context.Context, holder string, limit int, lease time.Duration) ([]OutboxItem, error)
 
+	// ClaimPendingKinds is ClaimPending restricted to the listed row kinds.
+	// Independent pumps must not consume one another's delivery work.
+	ClaimPendingKinds(ctx context.Context, holder string, limit int, lease time.Duration, kinds []string) ([]OutboxItem, error)
+
 	// MarkDelivered closes a row still held by holder, reporting false when the
 	// claim was already lost.
 	MarkDelivered(ctx context.Context, id int64, holder string) (bool, error)

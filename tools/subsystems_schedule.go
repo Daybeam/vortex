@@ -38,6 +38,7 @@ func registerScheduleSubsystem(app *App) {
 			"task_inputs": "[]object (required) - step definitions",
 			"max_runs":    "int (optional)",
 			"on_failure":  "string (optional) - ignore|retry_next_window|alert",
+			"deliver":     "object (optional) - mode=session_current|webhook, session_id, webhook_url, on_missing=inbox|webhook",
 		},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			data, err := json.Marshal(args)
@@ -53,6 +54,7 @@ func registerScheduleSubsystem(app *App) {
 				TaskInputs []schemas.StepInput     `json:"task_inputs"`
 				MaxRuns    int                     `json:"max_runs"`
 				OnFailure  schemas.OnFailurePolicy `json:"on_failure"`
+				Deliver    schemas.DeliverTarget   `json:"deliver"`
 			}
 			if err := json.Unmarshal(data, &req); err != nil {
 				return nil, err
@@ -60,6 +62,12 @@ func registerScheduleSubsystem(app *App) {
 
 			if req.Name == "" || req.Type == "" || len(req.TaskInputs) == 0 {
 				return nil, fmt.Errorf("missing name, type, or task_inputs")
+			}
+			if err := schemas.ValidateDeliverTarget(req.Deliver); err != nil {
+				return nil, err
+			}
+			if req.Deliver.Mode == "session_current" && req.Deliver.OnMissing == "" {
+				req.Deliver.OnMissing = "inbox"
 			}
 
 			sch := &schemas.Schedule{
@@ -73,6 +81,8 @@ func registerScheduleSubsystem(app *App) {
 				Status:     schemas.ScheduleActive,
 				MaxRuns:    req.MaxRuns,
 				OnFailure:  req.OnFailure,
+				Deliver:    req.Deliver,
+				OwnerID:    CallerOwnerID(ctx),
 				CreatedAt:  time.Now(),
 			}
 
@@ -86,7 +96,9 @@ func registerScheduleSubsystem(app *App) {
 				sch.NextRun = *sch.RunAt
 			}
 
-			app.SStore.Set(sch)
+			if err := app.SStore.Set(sch); err != nil {
+				return nil, err
+			}
 			return map[string]any{"ok": true, "schedule_id": sch.ID}, nil
 		},
 	}
@@ -102,7 +114,9 @@ func registerScheduleSubsystem(app *App) {
 				return nil, fmt.Errorf("not found")
 			}
 			sch.Status = schemas.SchedulePaused
-			app.SStore.Set(sch)
+			if err := app.SStore.Set(sch); err != nil {
+				return nil, err
+			}
 			return map[string]any{"ok": true}, nil
 		},
 	}
@@ -118,10 +132,9 @@ func registerScheduleSubsystem(app *App) {
 		Parameters:  map[string]any{"schedule_id": "string"},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			id := strArg(args, "schedule_id")
-			app.SStore.Mu.Lock()
-			delete(app.SStore.Schedules, id)
-			app.SStore.Mu.Unlock()
-			app.SStore.Save()
+			if err := app.SStore.Delete(id); err != nil {
+				return nil, err
+			}
 			return map[string]any{"ok": true}, nil
 		},
 	}

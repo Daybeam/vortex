@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/daybeam/vortex/schemas"
+	"github.com/daybeam/vortex/tools"
 )
 
 // ─── Schedule Management Handlers (ADDED 2026-09-19) ──────────────────────
@@ -24,6 +26,31 @@ func (h *APIHandler) SchedulesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(schedules)
+}
+
+// ScheduleInboxHandler exposes durable fallbacks without claiming or removing
+// them. Authenticated owners see only their own entries; ownerless local mode
+// sees the full operator inbox.
+func (h *APIHandler) ScheduleInboxHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.App == nil || h.App.Schedule == nil {
+		http.Error(w, "schedule manager not available", http.StatusServiceUnavailable)
+		return
+	}
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || limit <= 0 {
+		limit = 100
+	}
+	entries, err := h.App.Schedule.ListPendingInbox(r.Context(), tools.CallerOwnerID(r.Context()), limit)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to read schedule inbox: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"items": entries})
 }
 
 // ScheduleCreateHandler handles POST /api/schedules/create.
@@ -50,15 +77,26 @@ func (h *APIHandler) ScheduleCreateHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "task_inputs is required", http.StatusBadRequest)
 		return
 	}
+	if err := schemas.ValidateDeliverTarget(s.Deliver); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.Deliver.Mode == "session_current" && s.Deliver.OnMissing == "" {
+		s.Deliver.OnMissing = "inbox"
+	}
 	if s.ID == "" {
 		s.ID = "sched_" + uuid.New().String()[:8]
 	}
 	s.Status = schemas.ScheduleActive
+	s.OwnerID = tools.CallerOwnerID(r.Context())
 	s.CreatedAt = time.Now()
 	if s.NextRun.IsZero() {
 		s.NextRun = time.Now().Add(1 * time.Minute)
 	}
-	h.App.SStore.Set(&s)
+	if err := h.App.SStore.Set(&s); err != nil {
+		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
+		return
+	}
 	if err := h.App.SStore.Save(); err != nil {
 		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
 		return
@@ -95,7 +133,10 @@ func (h *APIHandler) SchedulePauseHandler(w http.ResponseWriter, r *http.Request
 	} else if s.Status == schemas.SchedulePaused {
 		s.Status = schemas.ScheduleActive
 	}
-	h.App.SStore.Set(s)
+	if err := h.App.SStore.Set(s); err != nil {
+		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
+		return
+	}
 	if err := h.App.SStore.Save(); err != nil {
 		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
 		return
@@ -128,7 +169,10 @@ func (h *APIHandler) ScheduleDeleteHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.Status = schemas.ScheduleCompleted
-	h.App.SStore.Set(s)
+	if err := h.App.SStore.Set(s); err != nil {
+		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
+		return
+	}
 	if err := h.App.SStore.Save(); err != nil {
 		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
 		return
@@ -162,6 +206,13 @@ func (h *APIHandler) ScheduleUpdateHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "schedule not found", http.StatusNotFound)
 		return
 	}
+	if err := schemas.ValidateDeliverTarget(s.Deliver); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.Deliver.Mode == "session_current" && s.Deliver.OnMissing == "" {
+		s.Deliver.OnMissing = "inbox"
+	}
 	// Preserve runtime state that shouldn't be overwritten from the edit form.
 	createdAt := existing.CreatedAt
 	status := existing.Status
@@ -180,6 +231,7 @@ func (h *APIHandler) ScheduleUpdateHandler(w http.ResponseWriter, r *http.Reques
 	}
 	existing.OnFailure = s.OnFailure
 	existing.MaxRuns = s.MaxRuns
+	existing.Deliver = s.Deliver
 
 	// Restore preserved fields
 	existing.CreatedAt = createdAt
@@ -188,7 +240,10 @@ func (h *APIHandler) ScheduleUpdateHandler(w http.ResponseWriter, r *http.Reques
 	existing.LastRun = lastRun
 	existing.NextRun = nextRun
 
-	h.App.SStore.Set(existing)
+	if err := h.App.SStore.Set(existing); err != nil {
+		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
+		return
+	}
 	if err := h.App.SStore.Save(); err != nil {
 		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
 		return

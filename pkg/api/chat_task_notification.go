@@ -50,6 +50,9 @@ type taskOutcome struct {
 	// nothing there, so an empty Files list says nothing about what landed on
 	// disk. formatTaskStatus has used the same contract since it was written.
 	Declared []string
+	// Contracts is the structured artifact contract list (schemas.ArtifactContract),
+	// carrying field types and optionality alongside the Declared names.
+	Contracts []schemas.ArtifactContract
 }
 
 // collectTaskOutcome reads what this notification needs out of the scheduler's
