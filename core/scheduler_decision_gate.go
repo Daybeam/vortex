@@ -111,6 +111,15 @@ func (s *DirectedEngine) addDecision(
 	if s.registry != nil {
 		ctx["available_models"] = s.registry.GetHealthyModelsSummary()
 	}
+	// Resume-at-cap: annotate the decision context so interactive operators
+	// and auto-resolvers can see that resume_more_turns would be a no-op.
+	if dtype == schemas.DecisionMaxTurnsExhausted {
+		chunk := 50
+		if s.registry != nil && s.registry.System.MaxToolTurns > 0 {
+			chunk = s.registry.System.MaxToolTurns
+		}
+		ctx["bonus_at_cap"] = step.TurnsBudgetBonus >= chunk*4
+	}
 	// [CORE: DAG Surgery Option Injection] (2026-09-07)
 	// When the decision type is upstream_insufficient or step_failed with
 	// context_deficit, add "rewrite_dag" as a valid option for the external
@@ -302,6 +311,25 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	s.recentDecisions[graph.TaskID][step.ID] = time.Now()
 	s.recentDecisionsMu.Unlock()
 	taskID, decID := graph.TaskID, dec.ID
+	// Resume-at-cap guard: when TurnsBudgetBonus is already at the chunk*4
+	// cap, resume_more_turns is a no-op (add+clamp = net zero). Filter it
+	// from the options so the auto-resolver picks a productive alternative
+	// (escalate_model / refine_and_retry / abort) instead of looping forever.
+	if dtype == schemas.DecisionMaxTurnsExhausted {
+		chunk := 50
+		if s.registry != nil && s.registry.System.MaxToolTurns > 0 {
+			chunk = s.registry.System.MaxToolTurns
+		}
+		if step.TurnsBudgetBonus >= chunk*4 {
+			filtered := make([]string, 0, len(options))
+			for _, o := range options {
+				if o != "resume_more_turns" {
+					filtered = append(filtered, o)
+				}
+			}
+			options = filtered
+		}
+	}
 	// Captured OUTSIDE the goroutine: the decider must run as the tier of the
 	// task that owns the decision. Reading graph.SubmitterIsAdmin inside the
 	// closure would let a later mutation change it mid-flight, and the whole
@@ -687,7 +715,7 @@ func defaultNonInteractiveChoice(dtype schemas.DecisionType, options []string) (
 		schemas.DecisionBudgetExhausted:
 		preferences = []string{"skip", "retry", "refine_and_retry", "abort"}
 	case schemas.DecisionMaxTurnsExhausted:
-		preferences = []string{"resume_more_turns"}
+		preferences = []string{"resume_more_turns", "refine_and_retry", "skip", "abort"}
 	case schemas.DecisionAutonomousAbortRequested:
 		preferences = []string{"continue"}
 	case schemas.DecisionHumanApprovalRequired:
