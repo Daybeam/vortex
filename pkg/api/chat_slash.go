@@ -261,7 +261,7 @@ func (h *ChatHandler) handleSlashCommand(content string, session *chat.ChatSessi
 		if h.Harness.Delegate == nil {
 			return true, "Error: delegate is not configured in this session."
 		}
-		taskID, err := h.Harness.Delegate(arg)
+		taskID, err := h.Harness.Delegate(arg, h.Harness.SubAgentBudgetCap())
 		if err != nil {
 			return true, fmt.Sprintf("Delegate failed: %v", err)
 		}

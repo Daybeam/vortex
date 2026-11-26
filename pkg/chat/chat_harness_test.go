@@ -1,9 +1,9 @@
 package chat
 
 import (
-	"github.com/daybeam/vortex/core/sieve"
 	"context"
 	"fmt"
+	"github.com/daybeam/vortex/core/sieve"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,7 +107,7 @@ func TestChatHarnessDelegate(t *testing.T) {
 		Model:      "mock",
 		OutputBase: t.TempDir(),
 		MaxTurns:   4,
-		Delegate:   func(prompt string) (string, error) { return "orch_123", nil },
+		Delegate:   func(prompt string, _ int) (string, error) { return "orch_123", nil },
 	}
 	if _, err := h.execTool(context.Background(), "delegate_to_orchestrator", map[string]any{"prompt": "do work"}, "task1"); err != nil {
 		t.Fatalf("delegate failed: %v", err)
@@ -683,7 +683,7 @@ func TestChatHarness_Tier3_AutoDelegate(t *testing.T) {
 		OutputBase:       outBase,
 		MaxTurns:         2,
 		MaxContextWindow: 1000, // 100% = 1000 tokens = 4000 chars
-		Delegate: func(prompt string) (string, error) {
+		Delegate: func(prompt string, _ int) (string, error) {
 			delegateCalled = true
 			return "orch_task_456", nil
 		},

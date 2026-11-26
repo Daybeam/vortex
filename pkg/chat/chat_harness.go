@@ -72,9 +72,9 @@ type ChatHarness struct {
 	// ScopeProject cross-task recall (Phase 3). Nil-safe: ProjectOf returns
 	// "default" when nil. Set via SetProjectResolver.
 	projectResolver func(taskID string) string
-	// Delegate hands off heavy multi-step work to the orchestrator.
-	// Returns the orchestrator task id.
-	Delegate func(prompt string) (string, error)
+	// Delegate hands off heavy multi-step work to the orchestrator and receives
+	// the parent's remaining sub-agent turn cap. Returns the orchestrator task id.
+	Delegate func(prompt string, maxTurnsCap int) (string, error)
 	// DelegateStatus reports the orchestrator's view of a task started by
 	// Delegate. wait > 0 blocks up to that long for a terminal status (bounded
 	// so a chat turn can never hang); wait == 0 reads the current state.
@@ -103,8 +103,28 @@ type ChatHarness struct {
 	// Optional. Installed per request (it closes over the session id), so it is
 	// deliberately not carried by cloneHarnessForRequest.
 	OnTerminalTaskSeen func(taskID string)
-	ScheduleExec       func(action string, args map[string]any) (string, error)
-	MaxTurns           int
+	// OnFileRead is called when a read_file call succeeded, with the file's base
+	// name. Deliberately blind to *which* task the file belongs to: the harness
+	// knows the front-desk prompt's contract, but the wake entry is the only
+	// thing that knows which finished task a read should count for, so the
+	// matching happens there (deliverPendingWake).
+	//
+	// It exists because OnTerminalTaskSeen turned out to be a bad proxy for "the
+	// model has the result": formatTaskStatus never carries artifact content, and
+	// measured over 283 archived firings the turn had read no declared artifact
+	// by the time the wake was dropped in 137 of them (48%) — at most 146 (52%)
+	// had touched one at all. See pkg/api/wake_content_suppress.go wakeDropDecision.
+	//
+	// Optional. Installed per request (it closes over the session id), so it is
+	// deliberately not carried by cloneHarnessForRequest.
+	OnFileRead   func(basename string)
+	ScheduleExec func(action string, args map[string]any) (string, error)
+	MaxTurns     int
+	// WakeReserve and WakeReserveRatio keep part of the parent turn budget out
+	// of delegated work. Zero values use the package defaults.
+	WakeReserve      int
+	WakeReserveRatio float64
+	currentTurn      int
 	// MaxOutputTokens caps the output tokens per LLM call. 0 = default 2048.
 	// (ADDED 2026-10-28: previously hardcoded to 2048 with no config wiring
 	// — harness-bench report §4.1.)
@@ -132,6 +152,8 @@ type ChatHarness struct {
 	// `recommended`, or a participant map keyed by name instead of email.
 	// Existence alone called every one of them done.
 	declaredFields map[string][]string
+	// declaredContracts carries wake-only type and optionality constraints; nil on ordinary prompt-parsed turns.
+	declaredContracts []schemas.ArtifactContract
 	// taskPrompt is the last user message verbatim, captured once at the start
 	// of Run. It is the only copy of the original specification this process
 	// holds: the delegation path appends its two sections to whatever summary
@@ -180,7 +202,7 @@ type ChatHarness struct {
 	// Segments (ADDED 2026-10-10): optional topic segment manager for chat memory.
 	// When non-nil, each indexed turn is processed by the core.SegmentManager
 	// for topic segmentation (STAY/SEAL decisions). See CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.1.
-	Segments *core.SegmentManager
+	Segments       *core.SegmentManager
 	SkillQuickPath func(query string) *QuickPathMatch // verified-skill quick path hook
 }
 
@@ -226,6 +248,7 @@ func (h *ChatHarness) buildTurnContext(query, taskID string) string {
 // Run executes the agent loop and streams events via emit. It returns the
 // final assistant text (for persistence) and any error.
 func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMessage, emit func(ChatEvent) error) (output string, err error) {
+	defer func() { h.currentTurn = 0 }()
 	maxTurns := h.MaxTurns
 	if maxTurns <= 0 {
 		maxTurns = DefaultMaxTurns
@@ -248,14 +271,12 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	// it needs no new parameter and no harness change. nil means "this prompt
 	// carries no contract" — the ordinary case outside the benchmark — and
 	// must leave behaviour exactly as it was.
+	h.contract.wakeSeeded = false
 	declaredArtifacts := h.initContract(query)
 	h.declaredArtifacts = declaredArtifacts
 	h.taskPrompt = query
 	LogDelegationSpecOnce()
-	// Same prompt, same parsing philosophy: the field lists sit in a
-	// "Create `path` containing:" block, so no new parameter is needed.
-	declaredFields := core.ParseDeclaredArtifactFields(query)
-	h.declaredFields = declaredFields
+	h.initDeclaredFields(query)
 	contractSteers := 0 // at most one per run; doubles as the latch and the metric
 	// Bounded separately from contractSteers: a defect report must not consume
 	// the one-shot done steer, or a run that fixes its plan after the report
@@ -350,7 +371,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 							"Read and process the file at %s.\nUser intent (preview): %s\nFile summary: %s\n"+
 								"Use read_file with start_line/end_line to read in batches. Analyze and respond to the user's request.",
 							filePath, intent, summary)
-						delTaskID, delErr := h.Delegate(delegatePrompt)
+						delTaskID, delErr := h.Delegate(delegatePrompt, h.SubAgentBudgetCap())
 						if delErr == nil {
 							emit(ChatEvent{Type: "tool_call", Data: "auto_delegated_to_orchestrator", Meta: map[string]any{
 								"task_id": delTaskID,
@@ -384,6 +405,8 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	recentSigs := make([]string, 0, 5)          // fallback windowed loop detection when sieve.Sieve is nil (Gap-3)
 	toolFailErrors := make(map[string][]string) // per-tool recent error messages (capped at 5)
 	noTextTurns := 0                            // consecutive turns with tool calls but no text output
+	// Echo guard — verbatim prose repetition across no-tool turns.
+	echoGuard := core.NewEchoGuard(0)
 	// D8 (2026-11-01): the no-text nudge must fire at most once per run, and
 	// must stay silent while tools are landing results.
 	//
@@ -405,7 +428,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 	// the harness emitted events but never summarised a run. These counters
 	// make the verdict one line of `docker logs`, and they are hard counts, so
 	// they do not depend on the scoring policy (which is still undecided).
-	s := newRunStats(len(declaredArtifacts), len(declaredFields))
+	s := newRunStats(len(declaredArtifacts), len(h.declaredFields))
 	execGuardMode, execStreakLimit := codeExecGuardSettings()
 	eg := exploreGuard{writeTargets: make(map[string]struct{}), writeCounts: make(map[string]int)}
 
@@ -431,6 +454,7 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 
 		prevLen := finalText.Len()
+		h.currentTurn = turn + 1
 		s.turns++
 		turnToolsOK := false // reset per turn: did THIS turn land a usable tool result?
 
@@ -503,6 +527,26 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		}
 
 		if len(resp.ToolCalls) == 0 {
+			// Echo guard: detect verbatim identical prose across consecutive
+			// no-tool turns. In the chat layer, a no-tool turn normally means
+			// "done" — but if the model emits the same text repeatedly, it's
+			// stuck. Steer on hint, return partial on kill.
+			turnText := finalText.String()[prevLen:]
+			switch echoGuard.Check(turnText) {
+			case core.EchoHint:
+				emit(ChatEvent{Type: "loop_guard", Data: "text echo detected"})
+				emit(ChatEvent{Type: "steer", Data: core.EchoHintText})
+				messages = append(messages, ChatMessage{
+					Role:    "user",
+					Content: core.EchoHintText,
+				})
+				continue
+			case core.EchoKill:
+				emit(ChatEvent{Type: "loop_guard", Data: "text echo: killed after grace"})
+				s.exitReason = "text_echo_killed"
+				return finalText.String(), nil
+			}
+
 			s.exitReason = "done"
 			emit(ChatEvent{Type: "done"})
 			return finalText.String(), nil
@@ -513,15 +557,13 @@ func (h *ChatHarness) Run(ctx context.Context, taskID string, history []ChatMess
 		// "reasoning-only loops" where the model churns through tool calls
 		// without ever generating a response.
 		//
-		// D8 (2026-11-01): latched. Two independent defects made this a no-op
-		// on p22:
+		// D8: latch this nudge; it previously re-armed and repeated on p22.
 		//  1. `noTextTurns` was cleared after every fire ⇒ it re-armed every 3
 		//     turns and fired 36 times in one run, all with the same string.
 		//  2. The predicate is true for the whole run when the model works
 		//     through tools instead of prose — the normal shape here, not a
 		//     stall. `lastTurnToolsOK` suppresses the nudge in that case.
-		// Net effect: at most one nudge per run, and only when tools are also
-		// failing — i.e. the model really is spinning with nothing to show.
+		// At most one nudge per run, only when tools are also failing.
 		if finalText.Len()-prevLen == 0 {
 			noTextTurns++
 		} else {

@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"runtime/debug"
 
+	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/pkg/chat"
+	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -41,6 +43,8 @@ func cloneHarnessForRequest(src *chat.ChatHarness) *chat.ChatHarness {
 		Embed:             src.Embed,
 		OutputBase:        src.OutputBase,
 		MaxTurns:          src.MaxTurns,
+		WakeReserve:       src.WakeReserve,
+		WakeReserveRatio:  src.WakeReserveRatio,
 		MaxOutputTokens:   src.MaxOutputTokens,
 		SessionRoot:       src.SessionRoot,
 		Sieve:             src.Sieve,
@@ -61,6 +65,29 @@ func cloneHarnessForRequest(src *chat.ChatHarness) *chat.ChatHarness {
 	// precisely because this class of omission is invisible at build time.
 	h.SetProjectResolver(src.ProjectOf)
 	return &h
+}
+
+func harnessForResolvedProvider(src *chat.ChatHarness, p providers.Provider, model string, role *config.Role, maxContextWindow int) *chat.ChatHarness {
+	return &chat.ChatHarness{
+		Provider:          p,
+		Model:             model,
+		Role:              role,
+		Archive:           src.Archive,
+		MemoryBank:        src.MemoryBank,
+		Embed:             src.Embed,
+		OutputBase:        src.OutputBase,
+		Delegate:          src.Delegate,
+		DelegateStatus:    src.DelegateStatus,
+		MaxTurns:          src.MaxTurns,
+		WakeReserve:       src.WakeReserve,
+		WakeReserveRatio:  src.WakeReserveRatio,
+		MaxOutputTokens:   src.MaxOutputTokens,
+		SessionRoot:       src.SessionRoot,
+		Sieve:             src.Sieve,
+		Memory:            src.Memory,
+		ReadinessGateSoft: src.ReadinessGateSoft,
+		MaxContextWindow:  maxContextWindow,
+	}
 }
 
 // chatWorkspaceRoot is the workspace root a chat-initiated orchestrator task

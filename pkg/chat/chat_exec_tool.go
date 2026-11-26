@@ -81,12 +81,12 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 		}
 		if h.completionEnforced() && len(h.declaredArtifacts) > 0 && h.SessionRoot != "" {
 			if _, missing := core.WorkspaceArtifactsComplete(h.SessionRoot, h.declaredArtifacts); missing == 0 &&
-				len(core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields)) == 0 {
+				len(h.workspaceArtifactDefects()) == 0 {
 				return core.MarkerDelegationSkipped, nil
 			}
 		}
 		prompt = h.delegatedPromptWithSpec(prompt)
-		id, err := h.Delegate(prompt)
+		id, err := h.Delegate(prompt, h.SubAgentBudgetCap())
 		if err != nil {
 			return "", err
 		}
@@ -102,6 +102,16 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 		// matches (a turn can hand off twice), the last id the messages quote,
 		// and the per-turn flag the lockout reads.
 		h.pd.recordDelegation(id)
+		// Check if the delegated task took the fastpath (single-step inline
+		// execution). This is a zero-wait status check — the graph already
+		// exists because Delegate submitted it. See §M.
+		if h.DelegateStatus != nil {
+			if st, ok := h.DelegateStatus(id, 0); ok && st != nil {
+				if fp, _ := st["fastpath"].(bool); fp {
+					h.pd.fastpathHit = true
+				}
+			}
+		}
 		return h.delegateReceipt(id), nil
 	}
 	if name == "orchestrator_task_status" {
@@ -180,7 +190,29 @@ func (h *ChatHarness) execTool(ctx context.Context, name string, args map[string
 	if h.SessionRoot != "" {
 		taskDir := filepath.Join(h.OutputBase, taskID)
 		validator := core.NewSafePathValidator(taskDir, h.SessionRoot, []string{h.SessionRoot})
-		return core.HandleCoreTool(ctx, name, args, h.OutputBase, taskID, validator)
+		out, err := core.HandleCoreTool(ctx, name, args, h.OutputBase, taskID, validator)
+		h.noteFileRead(name, args, err)
+		return out, err
 	}
-	return core.HandleCoreTool(ctx, name, args, h.OutputBase, taskID)
+	out, err := core.HandleCoreTool(ctx, name, args, h.OutputBase, taskID)
+	h.noteFileRead(name, args, err)
+	return out, err
+}
+
+// noteFileRead reports a successful read_file, by base name, to the API layer.
+//
+// Only success counts: a read that failed showed the model an error message, not
+// the file, and telling the wake rule otherwise would drop a wake the turn
+// needed. Only read_file counts: execute_code can read anything through a shell
+// and guessing from its source would be a heuristic in the one direction that
+// loses data (guess "read" ⇒ drop the wake). Not guessing means an execute_code
+// read is reported as "not read", i.e. the wake is delivered — the cheap
+// mistake. See OnFileRead in the harness struct.
+func (h *ChatHarness) noteFileRead(name string, args map[string]any, err error) {
+	if h == nil || h.OnFileRead == nil || err != nil || name != "read_file" {
+		return
+	}
+	if p, _ := args["path"].(string); p != "" {
+		h.OnFileRead(filepath.Base(p))
+	}
 }

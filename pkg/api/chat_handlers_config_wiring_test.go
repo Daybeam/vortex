@@ -100,6 +100,32 @@ func TestNewChatHandler_ChatMaxTurnsBeatsMaxToolTurns(t *testing.T) {
 // Regression: chat_harness.go execTool didn't pass a SafePathValidator
 // to HandleCoreTool, so relative paths resolved against outputs/<taskID>
 // instead of the workspace. (harness-bench report §4.2, 2026-10-28)
+// Regression (BUDGET_POOL_ISOLATION_DESIGN §6/P0): reserve configuration must
+// reach the base harness, or the per-request and wake clones inherit zero values
+// and silently use a different budget policy from the one the operator set.
+func TestNewChatHandler_WiresWakeReserveFromConfig(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		h := NewChatHandler(&tools.App{Registry: &config.Registry{}})
+		if h.Harness.WakeReserve != chat.DefaultWakeReserve || h.Harness.WakeReserveRatio != chat.DefaultWakeReserveRatio {
+			t.Fatalf("wake reserve defaults = %d/%v, want %d/%v", h.Harness.WakeReserve,
+				h.Harness.WakeReserveRatio, chat.DefaultWakeReserve, chat.DefaultWakeReserveRatio)
+		}
+	})
+	t.Run("configured", func(t *testing.T) {
+		h := NewChatHandler(&tools.App{Registry: &config.Registry{System: config.SystemSettings{
+			WakeReserve: 8, WakeReserveRatio: 0.2,
+		}}})
+		clone := cloneHarnessForRequest(h.Harness)
+		if clone.WakeReserve != 8 || clone.WakeReserveRatio != 0.2 {
+			t.Fatalf("request clone lost configured reserve: %d/%v", clone.WakeReserve, clone.WakeReserveRatio)
+		}
+		roleClone := harnessForResolvedProvider(h.Harness, h.Harness.Provider, "role-model", &config.Role{}, 8192)
+		if roleClone.WakeReserve != 8 || roleClone.WakeReserveRatio != 0.2 {
+			t.Fatalf("role-bound harness lost configured reserve: %d/%v", roleClone.WakeReserve, roleClone.WakeReserveRatio)
+		}
+	})
+}
+
 func TestNewChatHandler_WiresSessionRootFromEnvVar(t *testing.T) {
 	wsRoot := t.TempDir()
 	t.Setenv("HARNESSBENCH_WORKSPACE", wsRoot)

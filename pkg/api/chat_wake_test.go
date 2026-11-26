@@ -283,11 +283,12 @@ func TestEnqueueWake_KeepsEveryEntry(t *testing.T) {
 	}
 }
 
-// TestDeliverPendingWake_SkipsConsumedResult pins the amendment that keeps
-// "queue instead of drop" from turning into "answer twice". The turn that was in
-// flight reported a task's terminal state to the model (OnTerminalTaskSeen), so
-// the queued wake for that task has been delivered by that turn already.
+// TestDeliverPendingWake_SkipsConsumedResult pins the `off` arm — the original
+// rule, kept so archived runs stay comparable. The default arm is `read`
+// (VORTEX_WAKE_CONTENT_SUPPRESS unset), where the same marker is no longer
+// enough on its own: see TestDeliverPendingWake_ReadMode*.
 func TestDeliverPendingWake_SkipsConsumedResult(t *testing.T) {
+	t.Setenv(wakeContentSuppressEnv, "off")
 	h, store, provider := newFollowUpHandler(t, "should not appear")
 	sess := store.GetOrCreate("s_consumed")
 	sess.AppendMessage(chat.ChatMessage{Role: "user", Content: "run the task"}, "")
@@ -358,5 +359,94 @@ func TestDeliverPendingWake_KeepsEntryWhenStillBusy(t *testing.T) {
 	}
 	if !waitForAssistantMessage(t, sess, "delivered later", 2*time.Second) {
 		t.Fatalf("no answer; messages=%+v", sess.SnapshotMessages())
+	}
+}
+
+// TestDeliverPendingWake_ReadModeDropsOnlyWhenArtifactRead is the default arm:
+// the terminal-state marker is a precondition, and the evidence that actually
+// justifies a drop is that this turn read one of the task's declared artifacts.
+//
+// The marker alone was the whole rule until 2026-11-23. Over 283 archived
+// firings the model had read no declared artifact in 137 of them (48%) — the
+// wake was the only channel, and the rule closed it.
+func TestDeliverPendingWake_ReadModeDropsOnlyWhenArtifactRead(t *testing.T) {
+	t.Setenv(wakeContentSuppressEnv, "read")
+	h, store, provider := newFollowUpHandler(t, "should not appear")
+	sess := store.GetOrCreate("s_read_drop")
+	sess.AppendMessage(chat.ChatMessage{Role: "user", Content: "run the task"}, "")
+
+	if !h.enqueueWake("s_read_drop", pendingWakeEntry{
+		taskID: "task-r", reason: "task_done", text: "task-r finished",
+		declared: []string{"plan.json", "notes.md"},
+	}) {
+		t.Fatal("wake was not queued")
+	}
+	h.noteTaskConsumed("s_read_drop", "task-r")
+	// Base name only: read_file is called with a container path, the declared
+	// list carries a relative one, and the wake entry is what joins them.
+	h.noteFileRead("s_read_drop", "plan.json")
+
+	h.finishTurn(sess, true, nil)
+	h.wg.Wait()
+
+	if provider.calls != 0 {
+		t.Errorf("a wake whose artifact this turn read must not start a turn, got %d call(s)", provider.calls)
+	}
+	if n := countEvents(sess, "followup_turn"); n != 0 {
+		t.Errorf("a suppressed wake must announce nothing, got %d event(s)", n)
+	}
+	if _, dup := h.followUpSeen.Load("s_read_drop|task-r|task_done"); !dup {
+		t.Error("a suppressed wake must still be marked delivered, or the cause returns")
+	}
+}
+
+// TestDeliverPendingWake_ReadModeDeliversWithoutReadEvidence is the same setup
+// with the read removed: the marker is set, but the turn never read the
+// artifact, so the wake must be delivered.
+func TestDeliverPendingWake_ReadModeDeliversWithoutReadEvidence(t *testing.T) {
+	t.Setenv(wakeContentSuppressEnv, "read")
+	h, store, provider := newFollowUpHandler(t, "delivered result")
+	sess := store.GetOrCreate("s_read_keep")
+	sess.AppendMessage(chat.ChatMessage{Role: "user", Content: "run the task"}, "")
+
+	if !h.enqueueWake("s_read_keep", pendingWakeEntry{
+		taskID: "task-k", reason: "task_done", text: "task-k finished",
+		declared: []string{"plan.json"},
+	}) {
+		t.Fatal("wake was not queued")
+	}
+	h.noteTaskConsumed("s_read_keep", "task-k")
+	// A read of some *other* file must not count as evidence for this task.
+	h.noteFileRead("s_read_keep", "unrelated.md")
+
+	h.finishTurn(sess, true, nil)
+	h.wg.Wait()
+
+	if provider.calls == 0 {
+		t.Fatal("the wake was dropped without read evidence — the only channel closed")
+	}
+	if !waitForAssistantMessage(t, sess, "delivered result", 2*time.Second) {
+		t.Fatalf("no answer; messages=%+v", sess.SnapshotMessages())
+	}
+}
+
+// TestDeliverPendingWake_ReadEvidenceIsClearedPerTurn pins the lifetime: read
+// evidence describes the turn that did the reading, so the next turn must not
+// inherit it and drop a wake for a task it never touched.
+func TestDeliverPendingWake_ReadEvidenceIsClearedPerTurn(t *testing.T) {
+	t.Setenv(wakeContentSuppressEnv, "read")
+	h, _, _ := newFollowUpHandler(t, "")
+	h.noteFileRead("s_scope", "plan.json")
+	if got := h.readDeclared("s_scope", []string{"plan.json"}); len(got) != 1 {
+		t.Fatalf("read evidence not recorded: %+v", got)
+	}
+	h.clearReadFiles("s_scope")
+	if got := h.readDeclared("s_scope", []string{"plan.json"}); len(got) != 0 {
+		t.Errorf("read evidence survived the turn boundary: %+v", got)
+	}
+	// Another session's identical read must not be visible here either.
+	h.noteFileRead("s_other", "plan.json")
+	if got := h.readDeclared("s_scope", []string{"plan.json"}); len(got) != 0 {
+		t.Errorf("read evidence leaked across sessions: %+v", got)
 	}
 }

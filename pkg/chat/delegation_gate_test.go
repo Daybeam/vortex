@@ -64,7 +64,7 @@ type delegateSpy struct {
 	prompts []string
 }
 
-func (s *delegateSpy) delegate(prompt string) (string, error) {
+func (s *delegateSpy) delegate(prompt string, _ int) (string, error) {
 	s.prompts = append(s.prompts, prompt)
 	return "task_gate0", nil
 }
@@ -224,7 +224,7 @@ func TestDelegationGate_BranchMatrix(t *testing.T) {
 			}
 			h := &ChatHarness{
 				SessionRoot: tc.session(t),
-				Delegate:    func(prompt string) (string, error) { return "task_gate0", nil },
+				Delegate:    func(prompt string, _ int) (string, error) { return "task_gate0", nil },
 			}
 			h.declaredArtifacts = tc.declared
 

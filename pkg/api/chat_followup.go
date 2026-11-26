@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/daybeam/vortex/pkg/chat"
 	"github.com/daybeam/vortex/schemas"
@@ -127,6 +128,17 @@ type wakeSeed struct {
 	contracts []schemas.ArtifactContract
 }
 
+func normalizeWakeSeed(seed wakeSeed) wakeSeed {
+	if len(seed.contracts) == 0 && len(seed.declared) > 0 {
+		seed.contracts = make([]schemas.ArtifactContract, 0, len(seed.declared))
+		for _, path := range seed.declared {
+			seed.contracts = append(seed.contracts, schemas.ArtifactContract{Path: path})
+		}
+	}
+	seed.contracts = schemas.CloneArtifactContracts(seed.contracts)
+	return seed
+}
+
 // startFollowUpTurnWithDigest is the form that also carries the artifact digest.
 //
 // It exists as a separate method rather than a fourth parameter because the digest
@@ -146,6 +158,7 @@ func (h *ChatHandler) startFollowUpTurnWithDigest(sessionID, taskID, summary, di
 
 // startFollowUpTurnWithSeed is the form that carries all three channels.
 func (h *ChatHandler) startFollowUpTurnWithSeed(sessionID, taskID, summary string, seed wakeSeed) bool {
+	seed = normalizeWakeSeed(seed)
 	reason := "task_done"
 	text := fmt.Sprintf(followUpTriggerFmt, taskID)
 	// The trigger says "read the artifacts it produced" without naming them, so
@@ -168,9 +181,9 @@ func (h *ChatHandler) startFollowUpTurnWithSeed(sessionID, taskID, summary strin
 		return true
 	case followUpBusy:
 		h.enqueueWake(sessionID, pendingWakeEntry{
-			taskID: taskID, reason: reason, text: text,
+			taskID: taskID, reason: reason, text: text, digest: seed.digest,
 			fallback: seed.fallback, declared: seed.declared,
-			figures: seed.figures,
+			figures: seed.figures, contracts: seed.contracts,
 		})
 		return false
 	default:
@@ -196,14 +209,14 @@ func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, tr
 func (h *ChatHandler) prepareWakeHarness(sessionID string, seed wakeSeed) *chat.ChatHarness {
 	hCopy := cloneHarnessForRequest(h.harnessForWake(sessionID))
 	if mode := wakeContractMode(); mode != chat.WakeContractOff {
-		hCopy.SeedWakeContract(seed.declared, mode)
+		hCopy.SeedWakeContract(seed.contracts, mode)
 	}
 	hCopy.SeedDelegatedTasks(h.delegatedTasksFor(sessionID))
 	isAdmin, _ := h.lastSubmitterAdmin.Load(sessionID)
 	admin, _ := isAdmin.(bool)
-	hCopy.Delegate = func(prompt string) (string, error) {
+	hCopy.Delegate = func(prompt string, maxTurnsCap int) (string, error) {
 		id, err := h.submitChatTask(
-			[]schemas.StepInput{{ID: "s1", Task: prompt, SubmitterIsAdmin: admin}},
+			[]schemas.StepInput{{ID: "s1", Task: prompt, SubmitterIsAdmin: admin, MaxTurnsCap: maxTurnsCap}},
 			sessionID)
 		if err == nil {
 			h.noteDelegatedTask(sessionID, id)
@@ -213,10 +226,14 @@ func (h *ChatHandler) prepareWakeHarness(sessionID string, seed wakeSeed) *chat.
 	hCopy.OnTerminalTaskSeen = func(taskID string) {
 		h.noteTaskConsumed(sessionID, taskID)
 	}
+	hCopy.OnFileRead = func(basename string) {
+		h.noteFileRead(sessionID, basename)
+	}
 	return hCopy
 }
 
 func (h *ChatHandler) startFollowUpTurnWithTriggerSeed(sessionID, taskID, reason, trigger string, seed wakeSeed) followUpOutcome {
+	seed = normalizeWakeSeed(seed)
 	// The failure path below is the only reader; aliased once so the delivery
 	// code keeps reading as it did before the other two channels existed.
 	fallback := seed.fallback
@@ -240,11 +257,16 @@ func (h *ChatHandler) startFollowUpTurnWithTriggerSeed(sessionID, taskID, reason
 		return followUpSuppressed
 	}
 
+	// Cron-prefixed reasons (scheduled task delivery) bypass the session-level
+	// follow-up depth cap: per-job quota is enforced by Schedule.MaxRuns, not
+	// maxFollowUpDepth. Without this, a schedule running every 10 minutes would
+	// exhaust the session's depth cap (3) in 30 minutes and become un-wakeable.
 	depth := 0
 	if v, ok := h.followUpDepth.Load(sessionID); ok {
 		depth, _ = v.(int)
 	}
-	if depth >= maxFollowUpDepth {
+	isCronWake := strings.HasPrefix(reason, "cron:")
+	if !isCronWake && depth >= maxFollowUpDepth {
 		fmt.Fprintf(os.Stderr, "[chat-followup] session=%s task=%s skipped: follow-up depth %d reached the cap (%d)\n",
 			sessionID, taskID, depth, maxFollowUpDepth)
 		return followUpSuppressed
@@ -260,9 +282,12 @@ func (h *ChatHandler) startFollowUpTurnWithTriggerSeed(sessionID, taskID, reason
 		return followUpBusy
 	}
 	h.followUpSeen.Store(seenKey, struct{}{})
-	h.followUpDepth.Store(sessionID, depth+1)
+	if !isCronWake {
+		h.followUpDepth.Store(sessionID, depth+1)
+	}
 	// New turn: markers left by the previous one must not suppress its wakes.
 	h.clearConsumedTasks(sessionID)
+	h.clearReadFiles(sessionID)
 
 	// Announce the turn before it starts. Two consumers depend on it: an SSE
 	// client that reconnected after `done` (it can then keep reading instead of

@@ -31,17 +31,21 @@ var harnessCloneExcluded = map[string]string{
 	"Delegate": "replaced per request with a session-scoped closure",
 	"OnTerminalTaskSeen": "replaced per request: a shared value would attribute " +
 		"one session's consumption to another",
-	"HelpProvider": "replaced per request with a closure bound to the user's tier",
-	"ScheduleExec": "replaced per request with a closure bound to the user's tier",
+	"OnFileRead": "replaced per request for the same reason as OnTerminalTaskSeen: " +
+		"a shared value would attribute one session's reads to another",
+	"HelpProvider":      "replaced per request with a closure bound to the user's tier",
+	"ScheduleExec":      "replaced per request with a closure bound to the user's tier",
 	"declaredArtifacts": "per-request state, set fresh at the start of Run (not by the API layer)",
 	"declaredFields":    "per-request state, set fresh at the start of Run (not by the API layer)",
+	"declaredContracts": "per-request typed wake state, rebuilt from the wake seed at Run entry",
 	"contract":          "per-request state, set fresh at the start of Run (not by the API layer)",
 	// Set on the same line of Run as the two fields above (chat_harness.go:515),
 	// and consumed only during that Run by delegatedPromptWithSpec, so carrying
 	// it would leak the *previous* request's spec into a follow-up's clone.
-	"taskPrompt": "per-request state, set fresh at the start of Run (not by the API layer)",
-	"PendingSteer": "per-request drift correction, must not leak between requests",
-	"SteerLock":    "the mutex this whole function exists to avoid copying",
+	"taskPrompt":        "per-request state, set fresh at the start of Run (not by the API layer)",
+	"currentTurn":       "per-run turn counter, reset at Run entry and exit",
+	"PendingSteer":      "per-request drift correction, must not leak between requests",
+	"SteerLock":         "the mutex this whole function exists to avoid copying",
 	"fileReadCalls":     "per-turn delegation drift counter, zero-initialized per request",
 	"delegationSteered": "per-turn delegation drift flag, zero-initialized per request",
 	// Post-delegation lockout (pkg/chat/post_deleg_lockout.go). Resolved from
@@ -53,7 +57,7 @@ var harnessCloneExcluded = map[string]string{
 
 var harnessCloneCarried = []string{
 	"Provider", "Model", "Role", "Archive", "MemoryBank", "Embed", "OutputBase",
-	"MaxTurns", "MaxOutputTokens", "SessionRoot", "Sieve", "Memory", "Attachments",
+	"MaxTurns", "WakeReserve", "WakeReserveRatio", "MaxOutputTokens", "SessionRoot", "Sieve", "Memory", "Attachments",
 	"ReadinessGateSoft", "Segments", "DelegateStatus", "MaxContextWindow",
 	"SkillQuickPath",
 	// Unexported — reflection cannot set a sentinel on it, so
@@ -169,7 +173,7 @@ func TestCloneHarnessForRequest_CarriesEveryField(t *testing.T) {
 // must NOT carry: Delegate is replaced with a session-scoped closure, so copying
 // the base one would submit tasks against the wrong session.
 func TestCloneHarnessForRequest_DelegateIsPerRequest(t *testing.T) {
-	src := &chat.ChatHarness{Delegate: func(string) (string, error) { return "task_base", nil }}
+	src := &chat.ChatHarness{Delegate: func(string, int) (string, error) { return "task_base", nil }}
 	if dst := cloneHarnessForRequest(src); dst.Delegate != nil {
 		t.Error("cloneHarnessForRequest must not copy Delegate; SendHandler installs its own")
 	}

@@ -67,7 +67,7 @@ func TestHandleSlashCommand_DelegateNilFunc(t *testing.T) {
 
 func TestHandleSlashCommand_DelegateSuccess(t *testing.T) {
 	h := &ChatHandler{Harness: &chat.ChatHarness{
-		Delegate: func(prompt string) (string, error) {
+		Delegate: func(prompt string, _ int) (string, error) {
 			return "task-123", nil
 		},
 	}}

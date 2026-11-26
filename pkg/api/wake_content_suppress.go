@@ -1,3 +1,20 @@
+// VORTEX_WAKE_CONTENT_SUPPRESS selects the evidence a queued wake must overcome
+// before it is dropped. All four values keep the same precondition (the turn was
+// shown the task's terminal state); they differ in what else has to be true:
+//
+//	off     — nothing. Any turn that saw a terminal status drops the wake.
+//	observe — same behaviour as off, plus one stderr line per suppression
+//	          saying what the `on` rule would have decided.
+//	on      — the answer already quotes 4-significant-digit numbers from the
+//	          declared artifacts. Blind on tasks whose artifacts carry no such
+//	          numbers (011/030/028/009/002: measured 0/181 firings could ever
+//	          be suppressed), so it degenerates to "always deliver" there.
+//	read    — the turn read a declared artifact (read_file). This is the fact
+//	          the marker was supposed to stand for. Default: measured over 283
+//	          archived firings, the terminal-status marker is wrong in 137-169
+//	          of them (48-60%), while read evidence is observable exactly.
+//
+// `observe` previews `on`, not `read`: it was written for the content rule.
 package api
 
 import (
@@ -24,6 +41,7 @@ const (
 	wakeContentSuppressOff wakeContentSuppressMode = iota
 	wakeContentSuppressObserve
 	wakeContentSuppressOn
+	wakeContentSuppressRead
 )
 
 func (m wakeContentSuppressMode) String() string {
@@ -32,6 +50,8 @@ func (m wakeContentSuppressMode) String() string {
 		return "observe"
 	case wakeContentSuppressOn:
 		return "on"
+	case wakeContentSuppressRead:
+		return "read"
 	default:
 		return "off"
 	}
@@ -43,8 +63,15 @@ func parseWakeContentSuppressMode(raw string) wakeContentSuppressMode {
 		return wakeContentSuppressObserve
 	case "on", "1", "true", "yes":
 		return wakeContentSuppressOn
-	default:
+	case "off", "0", "false", "no":
 		return wakeContentSuppressOff
+	default:
+		// Unset and `read` land here on purpose: the default is the evidence
+		// rule. A typo therefore enables it rather than silently reverting to
+		// the marker rule that is wrong in half its firings — and the decision
+		// is logged per suppression, so a surprising arm is visible in the log
+		// rather than inferred from the score.
+		return wakeContentSuppressRead
 	}
 }
 
@@ -209,4 +236,39 @@ func formatFigureList(figures []string, limit int) string {
 		return strings.Join(figures, ", ")
 	}
 	return strings.Join(figures[:limit], ", ") + fmt.Sprintf(", …(%d more)", len(figures)-limit)
+}
+
+// wakeDropDecision answers, for an entry whose terminal-state marker has already
+// been taken, whether the wake should be dropped and why — the reason is what the
+// log line prints.
+//
+// The four arms differ only in the second form of evidence they demand (see this
+// file's header). off/observe keep the original rule verbatim so archived runs
+// stay comparable, and observe additionally previews `on` exactly as before.
+func (h *ChatHandler) wakeDropDecision(sessionID string, e pendingWakeEntry, mode wakeContentSuppressMode) (bool, string) {
+	const markerReason = "the turn that just ended already saw this task's terminal state"
+	switch mode {
+	case wakeContentSuppressRead:
+		read := h.readDeclared(sessionID, e.declared)
+		if len(read) == 0 {
+			return false, ""
+		}
+		return true, fmt.Sprintf("read %d/%d declared artifact(s) this turn (%s)",
+			len(read), len(e.declared), formatFigureList(read, 3))
+	case wakeContentSuppressOn:
+		hits := figureHits(h.lastAssistantText(sessionID), e.figures)
+		if len(hits) == 0 {
+			return false, ""
+		}
+		return true, fmt.Sprintf("answer carries %d/%d headline figures (%s)",
+			len(hits), len(e.figures), formatFigureList(hits, 5))
+	case wakeContentSuppressObserve:
+		hits := figureHits(h.lastAssistantText(sessionID), e.figures)
+		fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s would suppress: "+
+			"answer carries %d/%d headline figures (%s)\n",
+			sessionID, e.taskID, len(hits), len(e.figures), formatFigureList(hits, 5))
+		return true, markerReason
+	default:
+		return true, markerReason
+	}
 }

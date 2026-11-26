@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // Contract scope on the chat path: the section split by column, plus the
@@ -35,9 +36,10 @@ type contractScope struct {
 	// wakeDeclared / wakeMode / wakeSeeded carry the same contract into a wake
 	// turn, which has no prompt to parse it from (see SeedWakeContract). All
 	// three stay zero on an ordinary turn, so nothing here can change one.
-	wakeDeclared []string
-	wakeMode     WakeContractMode
-	wakeSeeded   bool
+	wakeDeclared  []string
+	wakeContracts []schemas.ArtifactContract
+	wakeMode      WakeContractMode
+	wakeSeeded    bool
 }
 
 // initContract is the one place Run parses the contract section
@@ -67,6 +69,19 @@ func (h *ChatHarness) initContract(query string) []string {
 		}
 	}
 	return c.Create
+}
+
+func (h *ChatHarness) initDeclaredFields(query string) {
+	declaredFields := core.ParseDeclaredArtifactFields(query)
+	h.declaredFields = declaredFields
+	h.declaredContracts = nil
+	if h.contract.wakeSeeded && declaredFields == nil {
+		h.declaredContracts = schemas.CloneArtifactContracts(h.contract.wakeContracts)
+		h.declaredFields = make(map[string][]string, len(h.declaredContracts))
+		for _, contract := range h.declaredContracts {
+			h.declaredFields[contract.Path] = append([]string(nil), contract.RequiredFields...)
+		}
+	}
 }
 
 // extrasArmed reports whether this contract has the modify-only shape: a section
@@ -180,12 +195,18 @@ func (m WakeContractMode) String() string {
 // Empty declared is not an error and stores nothing — 011/029/030-style tasks
 // whose prompt names no artifact must not acquire a contract by being woken, or
 // presence would be computed against a list nobody wrote.
-func (h *ChatHarness) SeedWakeContract(declared []string, mode WakeContractMode) {
-	if h == nil || mode == WakeContractOff || len(declared) == 0 {
+func (h *ChatHarness) SeedWakeContract(contracts []schemas.ArtifactContract, mode WakeContractMode) {
+	if h == nil || mode == WakeContractOff || len(contracts) == 0 {
 		return
 	}
 	h.contract.wakeMode = mode
-	h.contract.wakeDeclared = append([]string(nil), declared...)
+	h.contract.wakeContracts = schemas.CloneArtifactContracts(contracts)
+	h.contract.wakeDeclared = make([]string, 0, len(contracts))
+	for _, contract := range contracts {
+		if contract.Path != "" {
+			h.contract.wakeDeclared = append(h.contract.wakeDeclared, contract.Path)
+		}
+	}
 }
 
 // completionEnforced reports whether presence may be acted on during this turn.

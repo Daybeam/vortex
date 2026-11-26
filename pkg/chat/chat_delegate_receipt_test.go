@@ -29,7 +29,7 @@ func TestToolDefinitions_ExposeTaskStatus(t *testing.T) {
 // actionable, so the result must name the follow-up call.
 func TestDelegate_ReturnsReadableReceipt(t *testing.T) {
 	h := &ChatHarness{
-		Delegate: func(prompt string) (string, error) { return "task_abc123", nil },
+		Delegate: func(prompt string, _ int) (string, error) { return "task_abc123", nil },
 		DelegateStatus: func(taskID string, wait time.Duration) (map[string]any, bool) {
 			return map[string]any{"status": "running"}, true
 		},

@@ -319,7 +319,9 @@ func TestWakeContentSuppressSetting(t *testing.T) {
 		env  string
 		want wakeContentSuppressMode
 	}{
-		{"", wakeContentSuppressOff},
+		{"", wakeContentSuppressRead},
+		{"read", wakeContentSuppressRead},
+		{"READ", wakeContentSuppressRead},
 		{"off", wakeContentSuppressOff},
 		{"OFF", wakeContentSuppressOff},
 		{"observe", wakeContentSuppressObserve},
@@ -330,7 +332,10 @@ func TestWakeContentSuppressSetting(t *testing.T) {
 		{"1", wakeContentSuppressOn},
 		{"true", wakeContentSuppressOn},
 		{"yes", wakeContentSuppressOn},
-		{"garbage", wakeContentSuppressOff},
+		// Unset and unrecognized both mean "the evidence rule". A typo must not
+		// silently restore the marker rule, which is wrong in half its firings.
+		{"garbage", wakeContentSuppressRead},
+		{"0", wakeContentSuppressOff},
 	}
 	for _, c := range cases {
 		t.Setenv(wakeContentSuppressEnv, c.env)

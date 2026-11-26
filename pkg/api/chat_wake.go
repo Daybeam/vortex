@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -106,8 +107,7 @@ type pendingWakeEntry struct {
 	// (VORTEX_WAKE_CONTENT_SUPPRESS) to decide whether the previous turn's
 	// answer already carries the artifact's headline numbers. Empty for a
 	// decision wake — a blocked task has produced nothing to check against.
-	figures []string
-	// contracts keeps field types and optionality intact through the same deferred hop.
+	figures   []string
 	contracts []schemas.ArtifactContract
 	// budgeted marks the entries that must pass the per-task wake budget
 	// (wakeMaxPerTask / wakeMinInterval). Only pushed state — a blocked task's
@@ -196,6 +196,7 @@ func (h *ChatHandler) enqueueWake(sessionID string, e pendingWakeEntry) bool {
 	if h == nil || sessionID == "" || e.taskID == "" || e.text == "" {
 		return false
 	}
+	e.contracts = schemas.CloneArtifactContracts(e.contracts)
 	v, _ := h.pendingWake.LoadOrStore(sessionID, &wakeQueue{})
 	q, ok := v.(*wakeQueue)
 	if !ok {
@@ -227,6 +228,57 @@ func (h *ChatHandler) takeTaskConsumed(sessionID, taskID string) bool {
 	}
 	_, ok := h.consumedTasks.LoadAndDelete(sessionID + "|" + taskID)
 	return ok
+}
+
+// noteFileRead records "sessionID|basename" when the running turn successfully
+// read a file. Which of those count as a finished task's artifact is decided at
+// wake time (wakeDropDecision), because only the wake entry carries the task's
+// declared list.
+//
+// Cleared when the session's next turn claims the slot, exactly like
+// consumedTasks: a read is evidence about the turn that did it, and a later
+// turn reading a different file must not inherit it.
+func (h *ChatHandler) noteFileRead(sessionID, basename string) {
+	if h == nil || sessionID == "" || basename == "" {
+		return
+	}
+	h.readFiles.Store(sessionID+"|"+basename, struct{}{})
+}
+
+// readDeclared returns the subset of declared whose base name this turn read.
+// Non-destructive: one turn can queue several wakes, and each of them is
+// entitled to the same evidence. Growth is bounded by the turn (cleared at
+// claim), not by the number of wakes.
+func (h *ChatHandler) readDeclared(sessionID string, declared []string) []string {
+	if h == nil || sessionID == "" || len(declared) == 0 {
+		return nil
+	}
+	var hits []string
+	for _, d := range declared {
+		base := filepath.Base(d)
+		if base == "" || base == "." || base == "/" {
+			continue
+		}
+		if _, ok := h.readFiles.Load(sessionID + "|" + base); ok {
+			hits = append(hits, base)
+		}
+	}
+	return hits
+}
+
+// clearReadFiles drops a session's read evidence. Mirrors clearConsumedTasks and
+// is called from the same two places.
+func (h *ChatHandler) clearReadFiles(sessionID string) {
+	if h == nil || sessionID == "" {
+		return
+	}
+	prefix := sessionID + "|"
+	h.readFiles.Range(func(k, _ any) bool {
+		if s, ok := k.(string); ok && strings.HasPrefix(s, prefix) {
+			h.readFiles.Delete(k)
+		}
+		return true
+	})
 }
 
 // clearConsumedTasks drops any leftover markers for a session. Called when a
@@ -466,40 +518,31 @@ func (h *ChatHandler) deliverPendingWake(sessionID string) {
 		// sizes the wrong fix (FINDINGS §1.9.3, §3.11).
 		if h.takeTaskConsumed(sessionID, entry.taskID) {
 			mode := wakeContentSuppressSetting()
-			if mode == wakeContentSuppressOn {
-				answer := h.lastAssistantText(sessionID)
-				hits := figureHits(answer, entry.figures)
-				if len(hits) > 0 {
-					h.followUpSeen.Store(sessionID+"|"+entry.taskID+"|"+entry.reason, struct{}{})
-					fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s suppressed: "+
-						"answer carries %d/%d headline figures (%s)\n",
-						sessionID, entry.taskID, len(hits), len(entry.figures),
-						formatFigureList(hits, 5))
-					continue
-				}
-				fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s not suppressed: "+
-					"answer carries 0/%d headline figures; delivering wake\n",
-					sessionID, entry.taskID, len(entry.figures))
-			} else {
-				if mode == wakeContentSuppressObserve {
-					answer := h.lastAssistantText(sessionID)
-					hits := figureHits(answer, entry.figures)
-					fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s would suppress: "+
-						"answer carries %d/%d headline figures (%s)\n",
-						sessionID, entry.taskID, len(hits), len(entry.figures),
-						formatFigureList(hits, 5))
-				}
+			if drop, why := h.wakeDropDecision(sessionID, entry, mode); drop {
 				h.followUpSeen.Store(sessionID+"|"+entry.taskID+"|"+entry.reason, struct{}{})
-				fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s wake dropped: "+
-					"the turn that just ended already saw this task's terminal state\n", sessionID, entry.taskID)
+				label := "suppressed"
+				if mode == wakeContentSuppressOff || mode == wakeContentSuppressObserve {
+					// Keep the historical wording: archived logs and every
+					// census of this rule grep for "wake dropped".
+					label = "wake dropped"
+				}
+				fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s %s: %s\n",
+					sessionID, entry.taskID, label, why)
 				continue
+			}
+			if mode == wakeContentSuppressRead {
+				fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s not suppressed: "+
+					"no declared artifact was read this turn; delivering wake\n", sessionID, entry.taskID)
+			} else {
+				fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s not suppressed: "+
+					"answer carries 0/%d headline figures; delivering wake\n", sessionID, entry.taskID, len(entry.figures))
 			}
 		}
 		if entry.budgeted && !h.reserveWake(entry.taskID) {
 			continue // budget spent — the event is still in the session queue
 		}
 		switch h.startFollowUpTurnWithTriggerSeed(sessionID, entry.taskID, entry.reason, entry.text,
-			wakeSeed{fallback: entry.fallback, declared: entry.declared, figures: entry.figures}) {
+			wakeSeed{digest: entry.digest, fallback: entry.fallback, declared: entry.declared, figures: entry.figures, contracts: entry.contracts}) {
 		case followUpStarted:
 			return
 		case followUpBusy:

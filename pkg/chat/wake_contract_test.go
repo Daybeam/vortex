@@ -3,10 +3,13 @@ package chat
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/core"
+	"github.com/daybeam/vortex/schemas"
 )
 
 // The wake turn's contract, pinned at the layer that decides what it costs.
@@ -29,11 +32,19 @@ const wakeTrigger = "[System notice] Delegated task task_abc has finished; its o
 
 // seededHarness mirrors what Run does: parse the trigger, then publish the
 // result on the harness the way chat_harness.go:251-252 does.
-func seededHarness(root string, declared []string, mode WakeContractMode) *ChatHarness {
+func pathContracts(paths ...string) []schemas.ArtifactContract {
+	contracts := make([]schemas.ArtifactContract, len(paths))
+	for i, path := range paths {
+		contracts[i].Path = path
+	}
+	return contracts
+}
+
+func seededHarness(root string, contracts []schemas.ArtifactContract, mode WakeContractMode) *ChatHarness {
 	h := &ChatHarness{SessionRoot: root}
-	h.SeedWakeContract(declared, mode)
+	h.SeedWakeContract(contracts, mode)
 	h.declaredArtifacts = h.initContract(wakeTrigger)
-	h.declaredFields = core.ParseDeclaredArtifactFields(wakeTrigger)
+	h.initDeclaredFields(wakeTrigger)
 	return h
 }
 
@@ -43,7 +54,7 @@ func seededHarness(root string, declared []string, mode WakeContractMode) *ChatH
 func TestWakeContract_OffStoresNothing(t *testing.T) {
 	root := t.TempDir()
 	plant(t, root, "capacity_plan.json")
-	h := seededHarness(root, []string{"capacity_plan.json"}, WakeContractOff)
+	h := seededHarness(root, pathContracts("capacity_plan.json"), WakeContractOff)
 
 	if h.contract.wakeDeclared != nil || h.contract.wakeMode != WakeContractOff {
 		t.Fatalf("off must not store the seed, got declared=%v mode=%v",
@@ -70,7 +81,7 @@ func TestWakeContract_ObserveFillsObservationOnly(t *testing.T) {
 	root := t.TempDir()
 	plant(t, root, "capacity_plan.json")
 
-	h := seededHarness(root, []string{"capacity_plan.json"}, WakeContractObserve)
+	h := seededHarness(root, pathContracts("capacity_plan.json"), WakeContractObserve)
 	if !h.contract.wakeSeeded {
 		t.Fatal("observe must mark the turn as seeded — that is what holds the other three consumers back")
 	}
@@ -102,7 +113,7 @@ func TestWakeContract_ObserveFillsObservationOnly(t *testing.T) {
 // an accusation in a tool result.
 func TestWakeContract_ObserveReportsMissingWithoutAccusing(t *testing.T) {
 	root := t.TempDir() // nothing planted
-	h := seededHarness(root, []string{"capacity_plan.json"}, WakeContractObserve)
+	h := seededHarness(root, pathContracts("capacity_plan.json"), WakeContractObserve)
 
 	got := h.contractObservation()
 	if want := "contract_present=0 contract_missing=1"; !strings.HasPrefix(got, want) {
@@ -116,7 +127,7 @@ func TestWakeContract_ObserveReportsMissingWithoutAccusing(t *testing.T) {
 func TestWakeContract_FullArmsTheBlock(t *testing.T) {
 	root := t.TempDir()
 	plant(t, root, "capacity_plan.json")
-	h := seededHarness(root, []string{"capacity_plan.json"}, WakeContractFull)
+	h := seededHarness(root, pathContracts("capacity_plan.json"), WakeContractFull)
 
 	if !h.contractArmed() {
 		t.Fatal("full must arm the completion block")
@@ -129,26 +140,38 @@ func TestWakeContract_FullArmsTheBlock(t *testing.T) {
 	}
 }
 
-// Full mode can tell the wake turn "everything is present". It can never tell it
-// "present and wrong", and that is not a policy choice — the shape half of the
-// contract is parsed out of a "Create `path` containing:" block that a wake
-// trigger does not carry, so declaredFields is empty and there is nothing to
-// judge against.
-//
-// Pinned because §6.3d lists contract_defect_steer as the signal that the arm
-// turned into treatment. On a wake turn it cannot fire, so a reader who does not
-// know that reads defect_steer=0 as "the artifacts were clean".
-func TestWakeContract_FullCanOnlySayDone(t *testing.T) {
-	root := t.TempDir()
-	plant(t, root, "capacity_plan.json")
-	h := seededHarness(root, []string{"capacity_plan.json"}, WakeContractFull)
-
-	if len(h.declaredFields) != 0 {
-		t.Fatalf("a wake trigger declares no fields, got %v", h.declaredFields)
+// Full mode checks the finished task's typed contract, not just file presence.
+// Regression for FINDINGS §6.3d: wake turns previously had no field declarations.
+func TestWakeContract_FullChecksTypedFields(t *testing.T) {
+	contract := schemas.ArtifactContract{
+		Path:           "report.json",
+		RequiredFields: []string{"count"},
+		OptionalFields: []string{"note"},
+		TypeSchema:     map[string]string{"count": "number", "note": "string"},
 	}
-	defects := h.artifactDefects(context.Background(), "task_wc", func(ChatEvent) error { return nil })
-	if len(defects) != 0 {
-		t.Fatalf("a wake turn produced defects, so the defect steer could fire: %v", defects)
+	for _, tc := range []struct {
+		name    string
+		content string
+		defect  bool
+	}{
+		{"valid", `{"count":2}`, false},
+		{"missing required", `{}`, true},
+		{"malformed", `{"count":`, true},
+		{"wrong required type", `{"count":"two"}`, true},
+		{"absent optional", `{"count":2}`, false},
+		{"wrong optional type", `{"count":2,"note":7}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "report.json"), []byte(tc.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			h := seededHarness(root, []schemas.ArtifactContract{contract}, WakeContractFull)
+			defects := h.artifactDefects(context.Background(), "task_wc", func(ChatEvent) error { return nil })
+			if (len(defects) > 0) != tc.defect {
+				t.Fatalf("defects=%v, want defect=%v", defects, tc.defect)
+			}
+		})
 	}
 }
 
@@ -160,7 +183,7 @@ func TestWakeContract_PromptContractWins(t *testing.T) {
 	plant(t, root, "capacity_plan.json")
 
 	h := &ChatHarness{SessionRoot: root}
-	h.SeedWakeContract([]string{"capacity_plan.json"}, WakeContractObserve)
+	h.SeedWakeContract(pathContracts("capacity_plan.json"), WakeContractObserve)
 	h.declaredArtifacts = h.initContract(createContract)
 
 	if h.contract.wakeSeeded {
@@ -182,7 +205,7 @@ func TestWakeContract_ObserveStillDelegates(t *testing.T) {
 	plant(t, root, "capacity_plan.json")
 
 	calls := 0
-	delegate := func(prompt string) (string, error) { calls++; return "task_gate0", nil }
+	delegate := func(prompt string, _ int) (string, error) { calls++; return "task_gate0", nil }
 
 	for _, tc := range []struct {
 		mode WakeContractMode
@@ -193,7 +216,7 @@ func TestWakeContract_ObserveStillDelegates(t *testing.T) {
 		{WakeContractFull, true, "full is the arm where presence is allowed to stop a redundant hand-off"},
 	} {
 		calls = 0
-		h := seededHarness(root, []string{"capacity_plan.json"}, tc.mode)
+		h := seededHarness(root, pathContracts("capacity_plan.json"), tc.mode)
 		h.Delegate = delegate
 
 		out, err := h.execTool(context.Background(), "delegate_to_orchestrator",
@@ -221,7 +244,7 @@ func TestWakeContract_ObserveKeepsStatusAnswer(t *testing.T) {
 	plant(t, root, "capacity_plan.json")
 	status := map[string]any{"status": "completed", "workspace_root": root}
 
-	observe := seededHarness(root, []string{"capacity_plan.json"}, WakeContractObserve)
+	observe := seededHarness(root, pathContracts("capacity_plan.json"), WakeContractObserve)
 	old := formatTaskStatus("task_abc", status, nil)
 	got := formatTaskStatus("task_abc", status, observe.declaredForStatus())
 	if got != old {
@@ -233,7 +256,7 @@ func TestWakeContract_ObserveKeepsStatusAnswer(t *testing.T) {
 
 	// The same answer in full mode does carry the counts, which is what makes the
 	// line above a real assertion rather than a string that never appears.
-	full := seededHarness(root, []string{"capacity_plan.json"}, WakeContractFull)
+	full := seededHarness(root, pathContracts("capacity_plan.json"), WakeContractFull)
 	if !strings.Contains(formatTaskStatus("task_abc", status, full.declaredForStatus()), "declared 1 artifact") {
 		t.Fatal("full mode must quote the counts; otherwise the observe assertion proves nothing")
 	}
@@ -257,12 +280,21 @@ func TestWakeContract_EmptyDeclarationStoresNothing(t *testing.T) {
 // The declared slice is copied, because the caller's slice comes from a task
 // outcome that is still owned by the notification path.
 func TestWakeContract_CopiesTheDeclaration(t *testing.T) {
-	src := []string{"a.json"}
+	src := []schemas.ArtifactContract{{
+		Path: "a.json", RequiredFields: []string{"count"},
+		TypeSchema: map[string]string{"count": "number"},
+	}}
 	h := &ChatHarness{}
 	h.SeedWakeContract(src, WakeContractObserve)
-	src[0] = "mutated"
-	if h.contract.wakeDeclared[0] != "a.json" {
-		t.Fatalf("the seed aliased the caller's slice: %v", h.contract.wakeDeclared)
+	src[0].Path = "mutated"
+	src[0].RequiredFields[0] = "mutated"
+	src[0].TypeSchema["count"] = "string"
+	got := h.contract.wakeContracts[0]
+	if got.Path != "a.json" || got.RequiredFields[0] != "count" || got.TypeSchema["count"] != "number" {
+		t.Fatalf("the seed aliased the caller's contract: %+v", got)
+	}
+	if len(h.contract.wakeDeclared) != 1 || h.contract.wakeDeclared[0] != "a.json" {
+		t.Fatalf("the declaration did not follow the copied contract: %v", h.contract.wakeDeclared)
 	}
 	_ = fmt.Sprintf("%v", h.contract.wakeDeclared)
 }
