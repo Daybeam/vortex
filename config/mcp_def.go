@@ -78,7 +78,7 @@ type MCPDef struct {
 	// Approver gates who may resolve a mount_policy=approval decision for
 	// this MCP: "admin" (default; empty ⇒ admin) requires an admin-tier
 	// resolver; "owner" allows the task owner (graph.OwnerID) or an admin.
-	// See docs/plan/DECISION_APPROVAL_AUTHORITY_DESIGN.md §2.
+	// See docs/completed/2026-10-24/DECISION_APPROVAL_AUTHORITY_DESIGN.md §2.
 	Approver string `json:"approver,omitempty"`
 
 	// CredentialScope declares whose credential this MCP uses. Empty ⇒ operator

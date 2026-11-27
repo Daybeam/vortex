@@ -252,6 +252,15 @@ func writeSection[T any](baseDir, sectionPath string, items []T, getID func(T) s
 	}
 	return nil
 }
+
+// WriteConfigFileAtomic exposes the registry's temp-file-and-rename writer for
+// runtime asset sidecars. Callers must validate the path/ID before writing; this
+// only guarantees replacement is atomic, not that a multi-file update is a
+// transaction. Registry configuration changes still go through CommitOps.
+func WriteConfigFileAtomic(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteFile(path, data, perm)
+}
+
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if dir == "" {

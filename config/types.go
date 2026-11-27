@@ -20,7 +20,7 @@ var envAPIKeyCache sync.Map
 // InvalidateAllEnvAPIKeys clears all cached env API keys. Called after a
 // config reload (loadLocked) so ResolveAPIKey re-reads os.Getenv, picking
 // up .env changes when StartWatcher triggers a reload.
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 4.
+// See docs/completed/2026-10-17/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 4.
 func InvalidateAllEnvAPIKeys() {
 	envAPIKeyCache.Range(func(key, _ any) bool {
 		envAPIKeyCache.Delete(key)
@@ -147,10 +147,10 @@ type ProviderConfig struct {
 }
 
 type ProviderInstance struct {
-	ID        string     `json:"id"`
-	APIKey    string     `json:"api_key,omitempty"`
-	APIKeyEnv string     `json:"api_key_env,omitempty"`
-	BaseURL   string     `json:"base_url,omitempty"`
+	ID         string     `json:"id"`
+	APIKey     string     `json:"api_key,omitempty"`
+	APIKeyEnv  string     `json:"api_key_env,omitempty"`
+	BaseURL    string     `json:"base_url,omitempty"`
 	ValidFrom  *time.Time `json:"valid_from,omitempty"`
 	ValidUntil *time.Time `json:"valid_until,omitempty"`
 }
@@ -265,7 +265,7 @@ type Skill struct {
 	// Guardrails are exempt from PruneSkills. See SKILL_EVOLUTION_TRIAGE_GUARDRAILS_PLAN.md §2.
 	Guardrails []string `json:"guardrails,omitempty"`
 
-	// agentskills.io standard frontmatter fields (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md).
+	// agentskills.io standard frontmatter fields (docs/completed/2026-10-26/AGENTIC_SKILL_EXPLORATION_DESIGN.md).
 	// Parsed at import; surfaced as prompt hints at activation. Non-functional
 	// for execution — compatibility warns, allowed-tools is advisory only.
 	Compatibility string            `json:"compatibility,omitempty"`
@@ -274,7 +274,7 @@ type Skill struct {
 	Metadata      map[string]string `json:"metadata,omitempty"`
 
 	// Trial marks a skill submitted from PendingSkills for one-shot instant use
-	// (docs/plan/TRIAL_SKILL_INSTANT_USE_DESIGN.md §4.1). Set by list_pending_skills
+	// (docs/completed/2026-10-24/TRIAL_SKILL_INSTANT_USE_DESIGN.md §4.1). Set by list_pending_skills
 	// on the returned copy; never persisted by the registry (PendingSkills entries
 	// themselves are not mutated — the flag travels with the session copy only).
 	Trial bool `json:"trial,omitempty"`
@@ -346,7 +346,7 @@ const (
 
 // ── Unified Capability Driver Pattern ──────────────────────────────────────
 //
-// Implements docs/architecture/UNIFIED_CAPABILITY_DISCOVERY_DESIGN.md.
+// Implements docs/completed/2026-09-15/UNIFIED_CAPABILITY_DISCOVERY_DESIGN.md.
 // Decouples capability discovery from execution: whether a capability is a
 // remote SSE endpoint or (future) a local binary, the orchestrator interacts
 // with it through the same CapabilityDriver lifecycle.
@@ -591,7 +591,7 @@ type RetentionSettings struct {
 // enables hot-reload via StartWatcher. Env vars still override config values
 // for backward compatibility (see applySystemDefaults).
 //
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
+// See docs/completed/2026-10-17/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
 type FeatureFlags struct {
 	Debug                  bool `json:"debug,omitempty"`
 	CoreToolsOrderLast     bool `json:"core_tools_order_last,omitempty"`
@@ -653,7 +653,7 @@ type SystemSettings struct {
 	// ApprovalExpiry caps how long a human_approval_required decision stays
 	// approvable. nil ⇒ default 30m; *0 (or negative) ⇒ never expires (stays
 	// pending until approved/rejected). Seconds.
-	// See docs/plan/DECISION_APPROVAL_AUTHORITY_DESIGN.md §7.
+	// See docs/completed/2026-10-24/DECISION_APPROVAL_AUTHORITY_DESIGN.md §7.
 	ApprovalExpiry     *int `json:"approval_expiry,omitempty"`
 	MaxToolResultChars int  `json:"max_tool_result_chars,omitempty"` // 0 = dynamic from model context window; >0 = explicit override
 	// MaxToolSchemaBudgetTokens caps the total size of the tool schemas the
@@ -661,9 +661,10 @@ type SystemSettings struct {
 	// (core.defaultToolSchemaBudgetTokens). Expressed in tokens rather than a
 	// tool count because schema size, not entry count, is what consumes the
 	// context window.
-	MaxToolSchemaBudgetTokens int            `json:"max_tool_schema_budget_tokens,omitempty"`
-	MaxToolTurns              int            `json:"max_tool_turns,omitempty"`
-	MaxSpawnDepth             int            `json:"max_spawn_depth,omitempty"`
+	MaxToolSchemaBudgetTokens int `json:"max_tool_schema_budget_tokens,omitempty"`
+	MaxToolTurns              int `json:"max_tool_turns,omitempty"`
+	MaxSpawnDepth             int `json:"max_spawn_depth,omitempty"`
+	// Zero preserves reflection's built-in TTLs; positive values override in seconds.
 	DefaultJITTTL             int            `json:"default_jit_ttl"`
 	SandboxedMemoryMB         int            `json:"sandboxed_memory_mb"`
 	SandboxedCPUSecs          int            `json:"sandboxed_cpu_secs"`
@@ -715,7 +716,7 @@ type SystemSettings struct {
 	// MemoryBankEnabled controls whether MemoryBank injection (ChatHarness
 	// system prompt) and auto-extraction (ReflectionEngine) are active.
 	// Default true (backward compatible). Set to false to disable.
-	// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md.
+	// ADDED 2026-10-17. See docs/completed/2026-10-17/MEMORYBANK_CONTROL_LAYER_DESIGN.md.
 	//
 	// N4 fix (DELEGATION_HANDOVER_REDESIGN.md §11.1): *bool distinguishes
 	// "omitted" (nil → default true) from "explicit false" (&false →
@@ -847,7 +848,7 @@ type SystemSettings struct {
 
 	// WarmContextBudgetTokens (ADDED 2026-10-10): token budget for the
 	// Warm layer in PromptAssembler (ActiveContextAssembler). Default 2000.
-	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §5.
+	// See docs/completed/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §5.
 	WarmContextBudgetTokens int `json:"warm_context_budget_tokens,omitempty"`
 	// WarmContextEmbedEnabled (ADDED 2026-10-10): when true, the Warm layer
 	// uses vector recall via the embedding client from ContextHub. When
@@ -877,7 +878,7 @@ type SystemSettings struct {
 
 	// FeatureFlags (ADDED 2026-10-17): behavior toggles migrated from env vars.
 	// Hot-reloadable via StartWatcher. Env vars override for backward compat.
-	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
+	// See docs/completed/2026-10-17/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
 	FeatureFlags FeatureFlags `json:"feature_flags,omitempty"`
 
 	// CriticalRiskKeywords / ModerateRiskKeywords (ADDED 2026-10-18):
@@ -907,7 +908,7 @@ type SystemSettings struct {
 	// stdio MCPs runs lazily inside ToolRouter.Route on first access (when
 	// AvailableTools is empty), instead of eagerly in spawner_prepare.go.
 	// Default false: eager discovery (backward compatible).
-	// See docs/plan/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md §10 Phase 2.
+	// See docs/completed/2026-10-30/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md §10 Phase 2.
 	LazyDiscovery bool `json:"lazy_discovery,omitempty"`
 
 	// ProviderRouting (ADDED 2026-10-21): configures provider routing strategy
@@ -925,7 +926,7 @@ type SystemSettings struct {
 	// where operators want to prevent orchestrator misuse as a plain shell
 	// (e.g. submitting {"execute_code": "rm -rf /"}). Remote API deployments
 	// are never affected by this flag regardless of setting.
-	// See §3.4 of docs/plan/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md.
+	// See §3.4 of docs/completed/2026-10-30/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md.
 	RejectSimpleTasks bool `json:"reject_simple_tasks,omitempty"`
 	// PlannerTimeoutSecs bounds the planner spawn (0 => 90s default).
 	// A 60s hard limit proved too tight for a planner reading a large tool
@@ -966,7 +967,7 @@ type SystemSettings struct {
 	// heuristic, a cosine-similarity drop between the current node's cached
 	// embedding and the step's cached embedding also branches. false =
 	// heuristic only, exactly the pre-2026-10-25 behavior.
-	// See docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §3.2.
+	// See docs/completed/2026-10-26/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §3.2.
 	IntentShiftBranchingEnabled *bool `json:"intent_shift_branching_enabled,omitempty"`
 	// IntentShiftThreshold (ADDED 2026-10-25) is the cosine-similarity floor
 	// for semantic branching: score < threshold ⇒ intent shift ⇒ branch.
@@ -979,13 +980,13 @@ type SystemSettings struct {
 	// UpstreamSummarizer (ADDED 2026-10-28) controls semantic compression
 	// of upstream context before side-loading in applyRefBasedHandoff.
 	// When Enabled=false (default), behavior is unchanged (placeholder
-	// summary). See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md.
+	// summary). See docs/completed/2026-10-30/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md.
 	UpstreamSummarizer UpstreamSummarizerConfig `json:"upstream_summarizer,omitempty"`
 
 	// OversightMode (ADDED 2026-10-28) controls admin oversight for Live
 	// Co-pilot shared sessions. "off" (default) = no oversight, "observe" =
 	// admin can see shared sessions, "approve" = admin must approve actions.
-	// See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md.
+	// See docs/completed/2026-10-30/LIVE_COPILOT_SHARED_SESSION_DESIGN.md.
 	OversightMode string `json:"oversight_mode,omitempty"`
 
 	// DiscoverySources (ADDED 2026-11-09) configures external discovery
@@ -1018,7 +1019,7 @@ type DiscoverySourceConfig struct {
 
 // UpstreamSummarizerConfig controls upstream context semantic compression
 // before side-loading. Enabled=false (default) keeps existing behavior.
-// See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §2.4.
+// See docs/completed/2026-10-30/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §2.4.
 type UpstreamSummarizerConfig struct {
 	Enabled            bool   `json:"enabled,omitempty"`
 	Mode               string `json:"mode,omitempty"`                  // "deterministic" (default) | "llm" | "hybrid"
@@ -1098,7 +1099,7 @@ type SystemOneConfig struct {
 // means it acts as an allowlist (exit 0 = allow, non-zero = block — same
 // exit-code semantics, but timeout/exception defaults differ).
 type CommandGuardConfig struct {
-	Name      string `json:"name"`                // human-readable identifier
+	Name      string `json:"name"`                 // human-readable identifier
 	Script    string `json:"script"`               // path to guard script
 	TimeoutMs int    `json:"timeout_ms,omitempty"` // 0 = 500ms default
 	Mode      string `json:"mode,omitempty"`       // "deny" (default) | "allow"

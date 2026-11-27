@@ -10,7 +10,7 @@ import (
 // Mount-policy values, checked by ResolveFinalMCPs (MCPs) and
 // ResolveFinalSkills (skills). See
 // docs/completed/2026-10-22/MCP_MOUNT_POLICY_AND_TIER_PROPAGATION_DESIGN.md (MCPs) and
-// docs/plan/MOUNT_POLICY_REMAINDER_DESIGN.md §2.R-b (skills, D3).
+// docs/completed/2026-10-24/MOUNT_POLICY_REMAINDER_DESIGN.md §2.R-b (skills, D3).
 const (
 	// MountPolicyOpen: any submitter tier may mount/use the resource.
 	MountPolicyOpen = "open"

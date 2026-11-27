@@ -7,7 +7,7 @@ import (
 
 // ─── Model-Aware System Prompt Budget ─────────────────────────────────────
 //
-// Design ref: docs/architecture/PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md §3.
+// Design ref: docs/completed/2026-09-15/PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md §3.
 //
 // Different model tiers have wildly different context windows, attention
 // decay profiles, and tokenizer characteristics. A single fixed System
@@ -177,7 +177,7 @@ func (p *ProviderConfig) GetMaxSystemPromptChars() int {
 // being filled to 100% of the window, leaving no space for the model to
 // generate a reply.
 //
-// Design ref: docs/architecture/CONTEXT_WINDOW_RESERVE_DESIGN.md §3.3.
+// Design ref: docs/completed/2026-09-17/CONTEXT_WINDOW_RESERVE_DESIGN.md §3.3.
 func (p *ProviderConfig) GetReserveTokens() int {
 	if p != nil && p.ReserveTokens > 0 {
 		return p.ReserveTokens

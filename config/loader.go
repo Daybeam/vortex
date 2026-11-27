@@ -483,7 +483,7 @@ func (r *Registry) loadLocked() error {
 
 	// Invalidate env API key cache so ResolveAPIKey re-reads os.Getenv.
 	// This picks up .env changes when StartWatcher triggers a reload.
-	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 4.
+	// See docs/completed/2026-10-17/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 4.
 	InvalidateAllEnvAPIKeys()
 
 	return nil
@@ -536,7 +536,7 @@ func (r *Registry) loadSkillsLocked(cfg *Config) {
 	// against the manifest from the previous load. Logs warnings for any
 	// skill whose content hash changed or was removed. Writes the current
 	// manifest so the next load can detect drift against this baseline.
-	// See docs/plan/RESIDUAL_ISSUES_FIX.md §3.
+	// See docs/completed/2026-10-21/RESIDUAL_ISSUES_FIX.md §3.
 	CheckSkillDrift(r, skillsDir)
 }
 
@@ -561,9 +561,6 @@ func (r *Registry) bootstrapDefaultsLocked() {
 	}
 	if r.System.MaxContextKeep == 0 {
 		r.System.MaxContextKeep = 100
-	}
-	if r.System.DefaultJITTTL == 0 {
-		r.System.DefaultJITTTL = 3600
 	}
 	if r.System.SandboxedMemoryMB == 0 {
 		r.System.SandboxedMemoryMB = 256
@@ -633,9 +630,6 @@ func (r *Registry) applySystemDefaults() {
 	if r.System.MaxContextKeep == 0 {
 		r.System.MaxContextKeep = 100
 	}
-	if r.System.DefaultJITTTL == 0 {
-		r.System.DefaultJITTTL = 3600
-	}
 	if r.System.SandboxedMemoryMB == 0 {
 		r.System.SandboxedMemoryMB = 256
 	}
@@ -693,7 +687,7 @@ func (r *Registry) applySystemDefaults() {
 	// Env unset = use config.json value as-is. This allows operators to
 	// keep using .env for feature flags without editing config.json, while
 	// new deployments can set them in config.json and hot-reload.
-	// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 2.
+	// See docs/completed/2026-10-17/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 2.
 	ff := &r.System.FeatureFlags
 	if v := os.Getenv("VORTEX_DEBUG"); v != "" {
 		ff.Debug = true
