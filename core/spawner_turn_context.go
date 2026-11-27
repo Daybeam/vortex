@@ -39,10 +39,10 @@ func (s *Spawner) accumulateTurnObservations(
 // effect — it returns the new userBlocks slice.
 func (s *Spawner) appendTurnObservation(
 	userBlocks []schemas.ContentBlock, resp *providers.ProviderResponse,
-	toolResults []string, needsVerification bool,
+	toolResults []string, vdaCaptured bool,
 ) []schemas.ContentBlock {
 	vdaPrompt := ""
-	if needsVerification {
+	if vdaCaptured {
 		vdaPrompt = SpawnerVDAPrompt
 	}
 

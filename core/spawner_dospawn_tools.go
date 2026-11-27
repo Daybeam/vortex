@@ -83,6 +83,7 @@ func (s *Spawner) executeSpawnToolTurn(ctx context.Context, req *SpawnRequest, r
 	s.runForcedVisualAudit(ctx, req, st.bindings, needsVerification, vdaSt)
 	turnAttachments, toolResults = vdaSt.turnAttachments, vdaSt.toolResults
 	s.persistAttachments(req.TaskID, req.StepID, turnAttachments)
+	st.vdaAttachments = appendUniqueAttachments(st.vdaAttachments, vdaSt.captured)
 
 	if turnDecisionID != "" && req.Hub != nil && req.Hub.Graph != nil {
 		req.Hub.Graph.UpdateDecisionOutcome(turnDecisionID, fmt.Sprintf("executed %d tools", len(resp.ToolCalls)))
@@ -91,7 +92,7 @@ func (s *Spawner) executeSpawnToolTurn(ctx context.Context, req *SpawnRequest, r
 		st.bindings = s.rerouteTurnZero(ctx, req, resp, prep.initialBindings, turn, prep.progressiveEnabled)
 	}
 	st.bindings = s.stickyUnionBindings(st.bindings, prep.initialBindings, st.calledTools)
-	st.userBlocks = s.appendTurnObservation(st.userBlocks, resp, toolResults, needsVerification)
+	st.userBlocks = s.appendTurnObservation(st.userBlocks, resp, toolResults, len(vdaSt.captured) > 0)
 
 	newStreak, stallErr := s.fsOnlyStallGuard(ctx, req, role, resp, st.trace,
 		st.fsOnlyTurnStreak, st.fsOnlyStreakLimit, turn, maxTurns, toolResults,

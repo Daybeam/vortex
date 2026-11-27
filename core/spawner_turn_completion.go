@@ -57,6 +57,8 @@ func (s *Spawner) completeTurn(
 		PromptTokens:     resp.PromptTokens,
 		CompletionTokens: resp.CompletionTokens,
 		TotalTokens:      resp.PromptTokens + resp.CompletionTokens,
+		CacheWriteTokens: resp.CacheWriteTokens,
+		CacheReadTokens:  resp.CacheReadTokens,
 	}
 	noToolCallsYet := len(st.trace) == 0
 	selfReportedLowConfidence := output.Status == schemas.StatusPartial && output.Confidence < 0.4

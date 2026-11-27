@@ -29,7 +29,7 @@ turnLoop:
 		}
 
 		turnCtx := NewTurnIdempotencyContext()
-		attachments := s.resolveContextAttachments(ctx, req.TaskID, req.StepID)
+		attachments := appendUniqueAttachments(s.resolveContextAttachments(ctx, req.TaskID, req.StepID), st.vdaAttachments)
 		if len(attachments) > 0 {
 			imgTokens := (&PromptBudgetEnforcer{}).EstimateImageTokens(attachments)
 			s.logger.Log("EventImageTokensEstimated", req.TaskID, req.StepID, map[string]any{
@@ -37,7 +37,7 @@ turnLoop:
 			})
 		}
 
-		resp, currentPCfg, result, action, err := s.completeSpawnTurn(&ctx, req, prep.role, prep, st, attachments, turn, maxTurns)
+		resp, currentPCfg, result, action, err := s.completeSpawnTurn(&ctx, req, prep.role, prep, st, attachments, st.vdaAttachments, turn, maxTurns)
 		if result != nil {
 			return result, nil
 		}

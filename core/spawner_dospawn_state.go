@@ -42,6 +42,7 @@ type spawnLoopState struct {
 	calledTools         map[string]bool
 	userBlocks          []schemas.ContentBlock
 	bindings            []config.MCPBinding
+	vdaAttachments      []schemas.Attachment
 }
 
 func newSpawnLoopState(s *Spawner, userBlocks []schemas.ContentBlock) *spawnLoopState {

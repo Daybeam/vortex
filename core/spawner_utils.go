@@ -1084,14 +1084,14 @@ type spawnCandidate struct {
 func (s *Spawner) buildCandidateConfigs(ctx context.Context, req *SpawnRequest, role *config.Role) []spawnCandidate {
 	var candidateConfigs []spawnCandidate
 	// Add primary
-	candidateConfigs = append(candidateConfigs, spawnCandidate{providerID: req.ProviderOverride, model: ""})
+	candidateConfigs = append(candidateConfigs, spawnCandidate{providerID: req.ProviderOverride, model: req.ModelOverride})
 
 	// ─── Phase 0.3: Multimodal Fallback Check (Graphify inspired) ─────────
 	// If the request is multimodal (has attachments) but the primary model
 	// is not known to support vision, automatically insert the DefaultProvider
 	// (Session Main) if it supports vision. ADDED (2026-07-24).
 	attachments := s.resolveContextAttachments(ctx, req.TaskID, req.StepID)
-	primaryPCfg := s.resolveCandidateConfig(req.Hub, role, req.ProviderOverride, "")
+	primaryPCfg := s.resolveCandidateConfig(req.Hub, role, req.ProviderOverride, req.ModelOverride)
 	if len(attachments) > 0 && !primaryPCfg.SupportsVisionHeuristic() {
 		// audit H1: use locked accessors — the Providers map is mutated in
 		// place by the config file-watcher reload, so a direct unlocked

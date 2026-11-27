@@ -27,35 +27,36 @@ const (
 // commits userBlocks and the sanitized context even when the attempt fails,
 // matching the original candidate loop's cross-candidate persistence.
 type spawnCandidateAttempt struct {
-	ctx           context.Context
-	resp          *providers.ProviderResponse
-	pCfg          *config.ProviderConfig
-	systemBlocks  []schemas.ContentBlock
-	userBlocks    []schemas.ContentBlock
-	mcpServers    []providers.MCPServerDef
-	attachments   []schemas.Attachment
-	provider      providers.Provider
-	bindings      []config.MCPBinding
-	streamBuffer  strings.Builder
-	temp          *float32
-	freqPen       *float32
-	forceTool     bool
-	constraints   map[string]any
-	early         *SpawnResult
-	terminalErr   error
-	skipCandidate bool
-	err           error
+	ctx            context.Context
+	resp           *providers.ProviderResponse
+	pCfg           *config.ProviderConfig
+	systemBlocks   []schemas.ContentBlock
+	userBlocks     []schemas.ContentBlock
+	mcpServers     []providers.MCPServerDef
+	attachments    []schemas.Attachment
+	vdaAttachments []schemas.Attachment
+	provider       providers.Provider
+	bindings       []config.MCPBinding
+	streamBuffer   strings.Builder
+	temp           *float32
+	freqPen        *float32
+	forceTool      bool
+	constraints    map[string]any
+	early          *SpawnResult
+	terminalErr    error
+	skipCandidate  bool
+	err            error
 }
 
 // completeSpawnTurn preserves the candidate fallback and empty-response retry
 // state machine. A retry restarts the outer turn; a candidate skip does not.
-func (s *Spawner) completeSpawnTurn(ctx *context.Context, req *SpawnRequest, role *config.Role, prep *spawnPreparation, st *spawnLoopState, attachments []schemas.Attachment, turn, maxTurns int) (*providers.ProviderResponse, *config.ProviderConfig, *SpawnResult, spawnTurnAction, error) {
+func (s *Spawner) completeSpawnTurn(ctx *context.Context, req *SpawnRequest, role *config.Role, prep *spawnPreparation, st *spawnLoopState, attachments, vdaAttachments []schemas.Attachment, turn, maxTurns int) (*providers.ProviderResponse, *config.ProviderConfig, *SpawnResult, spawnTurnAction, error) {
 	const maxEmptyRespRetries = 2
 	var resp *providers.ProviderResponse
 	var currentPCfg *config.ProviderConfig
 
 	for candIdx := range prep.candidateConfigs {
-		attempt := s.streamSpawnCandidate(ctx, req, role, prep, st, attachments, candIdx, turn, maxTurns)
+		attempt := s.streamSpawnCandidate(ctx, req, role, prep, st, attachments, vdaAttachments, candIdx, turn, maxTurns)
 		*ctx = attempt.ctx
 		st.userBlocks = attempt.userBlocks
 		currentPCfg = attempt.pCfg
@@ -91,8 +92,8 @@ func (s *Spawner) completeSpawnTurn(ctx *context.Context, req *SpawnRequest, rol
 // streamSpawnCandidate performs routing, prompt/Sieve preparation and exactly
 // one StreamComplete call (plus provider telemetry). Retry policy lives in
 // resolveSpawnCandidate so the network path remains linear.
-func (s *Spawner) streamSpawnCandidate(ctx *context.Context, req *SpawnRequest, role *config.Role, prep *spawnPreparation, st *spawnLoopState, attachments []schemas.Attachment, candIdx, turn, maxTurns int) spawnCandidateAttempt {
-	attempt := spawnCandidateAttempt{ctx: *ctx, userBlocks: st.userBlocks, attachments: attachments, bindings: st.bindings}
+func (s *Spawner) streamSpawnCandidate(ctx *context.Context, req *SpawnRequest, role *config.Role, prep *spawnPreparation, st *spawnLoopState, attachments, vdaAttachments []schemas.Attachment, candIdx, turn, maxTurns int) spawnCandidateAttempt {
+	attempt := spawnCandidateAttempt{ctx: *ctx, userBlocks: st.userBlocks, attachments: attachments, vdaAttachments: vdaAttachments, bindings: st.bindings}
 	cand := prep.candidateConfigs[candIdx]
 	pCfg := s.resolveCandidateConfig(req.Hub, role, cand.providerID, cand.model)
 	attempt.pCfg = pCfg
@@ -241,6 +242,12 @@ func (s *Spawner) streamSpawnCandidate(ctx *context.Context, req *SpawnRequest, 
 		s.providerRouter.RecordResult(pCfg.Model, time.Since(providerStart), err)
 	}
 	attempt.err = err
+	if len(attempt.vdaAttachments) > 0 {
+		s.logger.Log(obs.EventVDAIncluded, req.TaskID, req.StepID, map[string]any{
+			"turn": turn, "candidate_idx": candIdx, "attachment_count": len(attempt.vdaAttachments),
+			"attachments": attempt.vdaAttachments,
+		})
+	}
 	return attempt
 }
 
@@ -312,6 +319,7 @@ func (s *Spawner) resolveSpawnCandidate(req *SpawnRequest, role *config.Role, st
 	}
 
 	if err == nil {
+		st.vdaAttachments = nil
 		resp := attempt.resp
 		if resp.CompletionTokens == 0 && len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Text) == "" {
 			s.logger.Log(obs.EventProviderFallback, req.TaskID, req.StepID, map[string]any{
