@@ -96,6 +96,7 @@ Respond with ONE JSON object and nothing else. No prose, no markdown fences.
       "depends_on": ["<id of a predecessor step>", ...],
       "allowed_tools": ["<exact tool name from the catalog below>", ...],
       "exit_criteria": "<optional: 'regex:<pattern>' or 'file:<path>' or 'json' or empty>",
+      "require_audit": false,
       "deterministic_checks": [
         { "type": "<one of file_exists|command_pass|plan_checkboxes|code_entities|read_coverage>", "params": { "<key>": "<value>" } }
       ]
@@ -502,8 +503,10 @@ func (s *DirectedEngine) RequestPlanning(taskID, roleID, task string, timeoutSec
 	sb.WriteString("  the work is genuinely one or two calls.\n")
 	sb.WriteString("- Every step's \"task\" must be self-contained: assume the executing\n")
 	sb.WriteString("  agent sees only that text plus its own tool list.\n")
-	sb.WriteString("- Do NOT emit a verification/audit step. Verification is handled by\n")
-	sb.WriteString("  the engine, not by the plan.\n")
+	sb.WriteString("- Do not add an audit-only step merely to re-check the same work. Set\n")
+	sb.WriteString("  \"require_audit\": true on the producing step to request engine semantic\n")
+	sb.WriteString("  verification. Add an explicit verifier step only when downstream steps\n")
+	sb.WriteString("  must depend on a separately produced audit artifact or verdict.\n")
 	// 🔴 2026-10-21 (docs/54 §5.25): two rules were added here and then REMOVED.
 	// They read "describe the GOAL, not a call sequence" and "do NOT name a page
 	// size". They did fix the filter-scope loss — one trial went 3/8 -> 7/8 —
@@ -827,6 +830,7 @@ func inheritCallerSettings(planned []schemas.StepInput, original schemas.StepInp
 		planned[i].MaxTurnsCap = original.MaxTurnsCap
 		planned[i].ContextRefs = original.ContextRefs
 		planned[i].VerifierModel = original.VerifierModel
+		planned[i].RequireAudit = planned[i].RequireAudit || original.RequireAudit
 		planned[i].MaxAutoRefine = original.MaxAutoRefine
 		planned[i].EnableDebate = original.EnableDebate
 		planned[i].MaxDebateRounds = original.MaxDebateRounds

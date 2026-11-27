@@ -113,6 +113,7 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 			ContextRefs:              inp.ContextRefs,
 			ExitCriteria:             inp.ExitCriteria,
 			DeterministicChecks:      inp.DeterministicChecks,
+			RequireAudit:             inp.RequireAudit,
 			VerifierModel:            inp.VerifierModel,
 			MaxAutoRefine:            inp.MaxAutoRefine,
 			EnableDebate:             inp.EnableDebate,
@@ -148,6 +149,9 @@ func (s *DirectedEngine) mutateGraphTopologyLocked(graph *schemas.TaskGraph, dat
 			"task":     inp.Task,
 		})
 	}
+
+	// Replacement steps must exist before deployment verifier policy is bound.
+	s.resolveGraphVerifiers(graph)
 
 	// 4. Update Context Summary
 	if currNode != nil {

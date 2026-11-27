@@ -105,7 +105,14 @@ func (s *DirectedEngine) finalize(graph *schemas.TaskGraph) {
 		}
 		s.publishEvent(graph.TaskID, "", obs.EventTaskCompleted, payload)
 	} else {
-		s.publishEvent(graph.TaskID, "", obs.EventTaskFailed, map[string]any{"confidence": conf})
+		payload := map[string]any{"confidence": conf}
+		if graph.FailureClass != "" {
+			payload["failure_class"] = graph.FailureClass
+		}
+		if graph.RootCause != "" {
+			payload["root_cause"] = graph.RootCause
+		}
+		s.publishEvent(graph.TaskID, "", obs.EventTaskFailed, payload)
 	}
 
 	// Notify waiters

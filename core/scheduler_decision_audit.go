@@ -80,6 +80,15 @@ func compileRegexCache(pattern string) (*regexp.Regexp, error) {
 	return actual.(*regexp.Regexp), nil
 }
 
+// Spawn wraps unstructured model text as {"raw": ...}; auditing the whole map
+// makes even a valid PASS response fail its prefix check.
+func semanticAuditOutputText(result map[string]any) string {
+	if raw, ok := result["raw"].(string); ok {
+		return raw
+	}
+	return fmt.Sprintf("%v", result)
+}
+
 // runCriticAudit runs a single VerifierModel audit pass on the given content.
 // Returns (passed, critiqueText, failureType).
 func (s *DirectedEngine) runCriticAudit(ctx context.Context, graph *schemas.TaskGraph, step *schemas.Step, content string) (bool, string, schemas.VerificationFailureType) {
@@ -96,17 +105,21 @@ Respond ONLY with 'PASS' or 'FAIL: <category>: <reason>'.
 Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA`, step.Task, step.ExitCriteria, content)
 
 	auditRes, err := s.spawner.Spawn(ctx, &SpawnRequest{
-		TaskID:      graph.TaskID,
-		StepID:      step.ID + "_critic",
-		RoleID:      "auditor",
-		Task:        auditPrompt,
-		RoutingMode: schemas.RoutingModeLegacy,
-		Hub:         NewContextHub(s.registry, graph, s.expStore),
+		TaskID:           graph.TaskID,
+		StepID:           step.ID + "_critic",
+		RoleID:           "auditor",
+		ProviderOverride: step.VerifierProvider,
+		ModelOverride:    step.VerifierModel,
+		SubmitterIsAdmin: graph.SubmitterIsAdmin,
+		OwnerID:          graph.OwnerID,
+		Task:             auditPrompt,
+		RoutingMode:      schemas.RoutingModeLegacy,
+		Hub:              NewContextHub(s.registry, graph, s.expStore),
 	})
 	if err != nil {
 		return false, fmt.Sprintf("critic error: %v", err), schemas.FailureLogicError
 	}
-	auditText := fmt.Sprintf("%v", auditRes.Output.Result)
+	auditText := semanticAuditOutputText(auditRes.Output.Result)
 	upperText := strings.ToUpper(auditText)
 	if strings.HasPrefix(upperText, "PASS") {
 		return true, "", schemas.FailureNone
@@ -300,13 +313,13 @@ func (s *DirectedEngine) verifyExitCriteria(ctx context.Context, graph *schemas.
 			"matched":  checkOK,
 		})
 
-		if checkOK && step.VerifierModel == "" {
+		if checkOK && !step.RequireAudit && step.VerifierModel == "" {
 			return true, "", schemas.FailureNone
 		}
-		if !checkOK && step.VerifierModel == "" {
+		if !checkOK && !step.RequireAudit && step.VerifierModel == "" {
 			return false, checkErr, schemas.FailureLogicError
 		}
-		// VerifierModel set: defer final decision to LLM below.
+		// Audit requested: defer final decision to the semantic verifier below.
 	}
 
 	// Case 2.5: Structured Deterministic Checks (ADDED 2026-09-13)
@@ -336,7 +349,7 @@ func (s *DirectedEngine) verifyExitCriteria(ctx context.Context, graph *schemas.
 	}
 
 	// Case 3: Semantic Audit with Verifier Model (Relay Model)
-	if step.VerifierModel != "" {
+	if step.RequireAudit || step.VerifierModel != "" {
 		// Cross-Family Debate (ADDED 2026-09-14): when EnableDebate is true,
 		// run the Proposer→Critic→Synthesizer loop instead of a single audit.
 		// See docs/completed/2026-09-14/CROSS_FAMILY_DEBATE_DESIGN.md
@@ -381,15 +394,19 @@ Respond ONLY with 'PASS' or 'FAIL: <category>: <reason>'.
 Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA`, step.Task, step.ExitCriteria, content, dynamicRules)
 
 		auditRes, err := s.spawner.Spawn(ctx, &SpawnRequest{
-			TaskID:      graph.TaskID,
-			StepID:      step.ID + "_audit",
-			RoleID:      "auditor",
-			Task:        auditPrompt,
-			RoutingMode: schemas.RoutingModeLegacy,
-			Hub:         NewContextHub(s.registry, graph, s.expStore),
+			TaskID:           graph.TaskID,
+			StepID:           step.ID + "_audit",
+			RoleID:           "auditor",
+			ProviderOverride: step.VerifierProvider,
+			ModelOverride:    step.VerifierModel,
+			SubmitterIsAdmin: graph.SubmitterIsAdmin,
+			OwnerID:          graph.OwnerID,
+			Task:             auditPrompt,
+			RoutingMode:      schemas.RoutingModeLegacy,
+			Hub:              NewContextHub(s.registry, graph, s.expStore),
 		})
 		if err == nil {
-			auditText := fmt.Sprintf("%v", auditRes.Output.Result)
+			auditText := semanticAuditOutputText(auditRes.Output.Result)
 			upperText := strings.ToUpper(auditText)
 			if strings.HasPrefix(upperText, "PASS") {
 				return true, "", schemas.FailureNone
@@ -474,7 +491,8 @@ func (s *DirectedEngine) generateDynamicRubrics(ctx context.Context, graph *sche
 		SubmitterIsAdmin: graph.SubmitterIsAdmin, // inherit, do not default (2026-10-26)
 		OwnerID:          graph.OwnerID,          // inherit, do not default (2026-10-27 OAUTH §8.1)
 		Task:             prompt,
-		ProviderOverride: step.VerifierModel,
+		ProviderOverride: step.VerifierProvider,
+		ModelOverride:    step.VerifierModel,
 		Isolation:        true,
 	})
 	if err != nil {

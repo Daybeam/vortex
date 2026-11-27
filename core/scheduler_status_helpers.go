@@ -64,7 +64,14 @@ func (s *DirectedEngine) finalizeSmartRoutedAfterDecision(
 	*unlocked = true
 	s.persistGraph(graph)
 	if graph.Status == schemas.GraphFailed {
-		s.publishEvent(taskID, stepID, obs.EventTaskFailed, nil)
+		payload := map[string]any{}
+		if graph.FailureClass != "" {
+			payload["failure_class"] = graph.FailureClass
+		}
+		if graph.RootCause != "" {
+			payload["root_cause"] = graph.RootCause
+		}
+		s.publishEvent(taskID, stepID, obs.EventTaskFailed, payload)
 	} else {
 		s.publishEvent(taskID, stepID, obs.EventTaskCompleted, nil)
 	}

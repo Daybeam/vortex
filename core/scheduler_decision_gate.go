@@ -208,6 +208,18 @@ func (s *DirectedEngine) addDecision(
 		s.Mu.Unlock()
 		return
 	}
+	if dtype != schemas.DecisionHumanApprovalRequired {
+		if failureClass, _ := ctx["failure_class"].(string); failureClass != "" {
+			graph.FailureClass = failureClass
+		} else if dtype == schemas.DecisionStepFailed {
+			if rootCause, _ := ctx["root_cause"].(string); rootCause != "" {
+				graph.FailureClass = rootCause
+			}
+		}
+		if rootCause, _ := ctx["root_cause"].(string); rootCause != "" {
+			graph.RootCause = rootCause
+		}
+	}
 	graph.PendingDecisions = append(graph.PendingDecisions, dec)
 	// Step-level blocking: the step is already StepFailed/StepBlocked by
 	// maybeBlock/handleDefaultFailure. We do NOT set graph.Status = GraphBlocked

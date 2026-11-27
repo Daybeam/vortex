@@ -23,6 +23,7 @@ type fakeExperienceStore struct {
 	SelectSkillFn               func(ctx context.Context, availableSkills []string, capability, roleID, modelID string, epsilon float64) string
 	RecordSkillExposureFn       func(taskID, stepID string, ids []string)
 	TakeSkillExposuresFn        func(taskID, stepID string) []string
+	GetFamilyStatsSnapshotFn    func() map[string]*store.FamilyStats
 }
 
 var _ store.IExperienceStore = (*fakeExperienceStore)(nil)
@@ -123,6 +124,12 @@ func (f *fakeExperienceStore) Reindex(ctx context.Context, provider pkg_interfac
 }
 func (f *fakeExperienceStore) GetRoleProfilesSnapshot() map[string]*store.RoleProfile { return nil }
 func (f *fakeExperienceStore) GetTaskPatternsSnapshot() map[string]store.TaskPattern  { return nil }
+func (f *fakeExperienceStore) GetFamilyStatsSnapshot() map[string]*store.FamilyStats {
+	if f.GetFamilyStatsSnapshotFn != nil {
+		return f.GetFamilyStatsSnapshotFn()
+	}
+	return nil
+}
 func (f *fakeExperienceStore) GetTelemetrySnapshot(detailed bool) map[string]any      { return nil }
 func (f *fakeExperienceStore) GetCompoundCandidates(ctx context.Context, minCount int, minSuccessRate float64) ([]*store.CooccurrenceEntry, error) {
 	return nil, nil

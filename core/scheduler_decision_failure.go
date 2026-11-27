@@ -36,6 +36,32 @@ func (s *DirectedEngine) emitMountApprovalDecision(graph *schemas.TaskGraph, ste
 	s.addDecision(graph, step, schemas.DecisionHumanApprovalRequired, ctx, []string{"approve", "reject"})
 }
 
+// emitConfirmationDecision raises a DecisionHumanApprovalRequired carrying
+// the MCP confirmation context (template, risk, subject, effects, args_hash).
+// The host renders a confirmation card from this context + the real call
+// arguments. See docs/plan/mcp-confirmation-ui-design.md §3 L0.
+func (s *DirectedEngine) emitConfirmationDecision(graph *schemas.TaskGraph, step *schemas.Step, cc *schemas.ConfirmationContext) {
+	ctx := map[string]any{
+		"message":    fmt.Sprintf("Tool %s on %s requires human confirmation before execution.", cc.ToolName, cc.MCPID),
+		"root_cause": string(FailureClassApprovalRequired),
+		"confirmation": map[string]any{
+			"tool_name":  cc.ToolName,
+			"mcp_id":     cc.MCPID,
+			"args_hash":  cc.ArgsHash,
+			"template":   cc.Template,
+			"risk":       cc.Risk,
+			"subject":    cc.Subject,
+			"reversible": cc.Reversible,
+			"effects":    cc.Effects,
+			"arguments":  cc.Arguments,
+		},
+	}
+	s.addDecision(graph, step, schemas.DecisionHumanApprovalRequired, ctx, []string{"approve", "reject"})
+	if s.auditLogger != nil {
+		s.auditLogger.LogConfirmation("confirmation_requested", graph.TaskID, step.ID, "", "", cc.ArgsHash, cc.Template, "", "")
+	}
+}
+
 // reclassifyToolRefusal promotes a generative_uncertainty failure to
 // deterministic_tool_refusal when a tool has repeatedly failed at the task
 // level (E2/E3 fix, 2026-10-02): a same-role follow-up would just repeat the
@@ -75,7 +101,11 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 
 	// G2: an `approval` mount blocks the step on a human decision, not a failure.
 	if cause == FailureClassApprovalRequired {
-		s.emitMountApprovalDecision(graph, step, output.ApprovalRequiredMounts, output.ApprovalRequiredSkills)
+		if output.ConfirmationRequired != nil {
+			s.emitConfirmationDecision(graph, step, output.ConfirmationRequired)
+		} else {
+			s.emitMountApprovalDecision(graph, step, output.ApprovalRequiredMounts, output.ApprovalRequiredSkills)
+		}
 		return VerdictContinue
 	}
 
@@ -182,11 +212,12 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	// All values are already in scope; this is purely additive — the thin
 	// {blocked, root_cause} payload made external observability impossible.
 	s.publishEvent(taskID, step.ID, obs.EventStepFailed, map[string]any{
-		"root_cause": string(cause),
-		"blocked":    true,
-		"role_id":    step.RoleID,
-		"suggestion": suggestion,
-		"confidence": conf,
+		"failure_class": string(cause),
+		"root_cause":    string(cause),
+		"blocked":       true,
+		"role_id":       step.RoleID,
+		"suggestion":    suggestion,
+		"confidence":    conf,
 	})
 
 	if s.SignalField != nil {
@@ -202,6 +233,7 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 	}
 
 	s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
+		"failure_class":    string(cause),
 		"root_cause":       string(cause),
 		"suggested_action": suggestion,
 		"missing_details":  details,

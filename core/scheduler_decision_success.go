@@ -29,16 +29,18 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 	payload := map[string]any{"confidence": conf}
 	if output.Usage != nil {
 		payload["usage"] = map[string]any{
-			"prompt_tokens":     output.Usage.PromptTokens,
-			"completion_tokens": output.Usage.CompletionTokens,
-			"total_tokens":      output.Usage.TotalTokens,
+			"prompt_tokens":      output.Usage.PromptTokens,
+			"completion_tokens":  output.Usage.CompletionTokens,
+			"total_tokens":       output.Usage.TotalTokens,
+			"cache_write_tokens": output.Usage.CacheWriteTokens,
+			"cache_read_tokens":  output.Usage.CacheReadTokens,
 		}
 	}
 	payload["role_id"] = step.RoleID
 	s.publishEvent(taskID, step.ID, obs.EventStepCompleted, payload)
 
 	if output.Usage != nil {
-		s.costTracker.Record(result.ModelID, taskID, step.ID, output.Usage.PromptTokens, output.Usage.CompletionTokens)
+		s.costTracker.Record(result.ModelID, taskID, step.ID, output.Usage.PromptTokens, output.Usage.CompletionTokens, output.Usage.CacheWriteTokens, output.Usage.CacheReadTokens)
 	}
 
 	if step.TriggerError != "" && step.AdditionalPromptContext != "" {
@@ -156,6 +158,24 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 	}
 }
 
+// registerContractOutput appends the step's declared deliverable to
+// graph.OutputFiles when it can be resolved on disk.
+//
+// Three guards, one per failure this field has already produced or would
+// produce:
+//
+//   - A relative path with an empty WorkspaceRoot would be resolved against the
+//     daemon's own working directory, so a file that merely shares a name with
+//     the contract would be registered as this task's deliverable. Registering
+//     the wrong file is worse than registering none (→176).
+//   - The step may already be registered by the `output_ref` branch above. That
+//     branch only fires when the model volunteers the field; when it does, both
+//     branches see the same (step, path) and the run would report two
+//     deliverables. `len(graph.OutputFiles)` is read as the deliverable count
+//     (scheduler_decision_finalize.go) and walked (dag_walker.go), so a
+//     duplicate is a wrong number, not a harmless repeat.
+//   - A missing file is logged, never fatal: registration is an audit field,
+//     not a judgement (→172).
 func (s *DirectedEngine) registerContractOutput(graph *schemas.TaskGraph, step *schemas.Step, taskID string) {
 	contractPath := step.OutputContract.Path
 	if contractPath == "" {

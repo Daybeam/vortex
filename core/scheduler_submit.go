@@ -328,6 +328,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			ExitCriteria:        inp.ExitCriteria,
 			DeterministicChecks: inp.DeterministicChecks,
 			VerifierModel:       inp.VerifierModel,
+			RequireAudit:        inp.RequireAudit,
 			MaxAutoRefine:       inp.MaxAutoRefine,
 			EnableDebate:        inp.EnableDebate,
 			MaxDebateRounds:     inp.MaxDebateRounds,
@@ -391,6 +392,8 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 		if err := s.seedTaskInputs(graph, s.outputBase); err != nil {
 			s.logger.Log("EventInputSeedError", graph.TaskID, "", map[string]any{"error": err.Error()})
 		}
+
+		s.resolveGraphVerifiers(graph)
 
 		s.Mu.Lock()
 		s.graphs[taskID] = graph
@@ -711,6 +714,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			ExitCriteria:             inp.ExitCriteria,
 			DeterministicChecks:      inp.DeterministicChecks,
 			VerifierModel:            inp.VerifierModel,
+			RequireAudit:             inp.RequireAudit,
 			MaxAutoRefine:            inp.MaxAutoRefine,
 			EnableDebate:             inp.EnableDebate,
 			MaxDebateRounds:          inp.MaxDebateRounds,
@@ -800,6 +804,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 	}
 
 	applySessionAssets(graph, roles, skills, providers)
+	s.resolveGraphVerifiers(graph)
 
 	s.Mu.RLock()
 	rr := s.registry.RequirePlanReview
