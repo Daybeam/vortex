@@ -13,7 +13,7 @@ import (
 // All fields are optional — absence means "unspecified" and behavior is
 // identical to pre-charter tasks (backward compatible).
 //
-// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.
+// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P1.
 type TaskCharter struct {
 	Intent      string   `json:"intent,omitempty"`        // why this task exists, 1-3 sentences
 	NonGoals    []string `json:"non_goals,omitempty"`     // explicitly out of scope
@@ -69,7 +69,7 @@ func (c *TaskCharter) CharterPrompt(maxChars int) string {
 // is appended to TaskGraph.Substitutions and surfaced in get_task_status so
 // that task drift is visible without digging through logs.
 //
-// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
+// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P3.
 type Substitution struct {
 	Kind      string    `json:"kind"`                // role_fallback | ephemeral_role | mcp_degraded | fallback_step | model_escalation
 	Requested string    `json:"requested,omitempty"`  // what was originally requested

@@ -9,7 +9,7 @@ import (
 )
 
 // jit_runtime.go — Embedded JIT runtime declaration contract.
-// Implements §3.1 of docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md.
+// Implements §3.1 of docs/completed/2026-09-15/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md.
 //
 // Two execution tiers are declared here:
 //   - Embedded Tier  (IsEmbedded=true):  pure-Go engines compiled into the

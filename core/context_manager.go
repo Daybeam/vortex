@@ -148,7 +148,7 @@ func (cm *ContextManager) Audit(ctx context.Context, provider providers.Provider
 	// 2.1 Reserve: subtract reply reserve from the context window to get the
 	// effective input capacity. This prevents the context from being filled
 	// to 100% of maxCtx, leaving no space for the model to generate a reply.
-	// Design ref: docs/architecture/CONTEXT_WINDOW_RESERVE_DESIGN.md §3.1.
+	// Design ref: docs/completed/2026-09-17/CONTEXT_WINDOW_RESERVE_DESIGN.md §3.1.
 	reserveTokens := pCfg.GetReserveTokens()
 	effectiveMaxCtx := maxCtx - reserveTokens
 	if effectiveMaxCtx <= 0 {

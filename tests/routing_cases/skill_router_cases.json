@@ -1,0 +1,22 @@
+{
+  "cases": [
+    {
+      "id": "skill_must_call_direct_id_match",
+      "type": "must_call",
+      "description": "Baseline sanity for SkillRouter.Route: a task that literally names a skill ID (whole word) must surface it, using a candidate pool large enough (>3) to actually exercise the filtering logic (Route short-circuits to 'return everything' for pools of 3 or fewer).",
+      "task": "\u8bf7\u4f7f\u7528 skill_fetch_market_data \u83b7\u53d6\u6570\u636e",
+      "skills": ["skill_fetch_market_data", "skill_summarize_text", "skill_translate", "skill_code_review", "skill_image_caption"],
+      "gold_skills": ["skill_fetch_market_data"],
+      "severity": "critical"
+    },
+    {
+      "id": "skill_substring_trap_log_not_catalog",
+      "type": "substring_trap",
+      "description": "Regresses the exact bug class documented in core/skill_router.go's own 2026-07-17 fix comment: a skill ID like 'log' or 'run' must not falsely whole-word-match inside an unrelated word ('catalog', 'running') via raw substring containment. Uses a skill ID that is a substring of a word actually present in the task text.",
+      "task": "\u8bf7\u67e5\u770b\u5546\u54c1 catalog \u5217\u8868",
+      "skills": ["log", "skill_summarize_text", "skill_translate", "skill_code_review", "skill_image_caption"],
+      "must_not_include": ["log"],
+      "severity": "critical"
+    }
+  ]
+}

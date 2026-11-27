@@ -10,6 +10,9 @@ import (
 
 	"github.com/daybeam/vortex/core/obs"
 	"github.com/daybeam/vortex/pkg/bootmetrics"
+	"github.com/daybeam/vortex/pkg/chat"
+	"github.com/daybeam/vortex/store"
+	"github.com/daybeam/vortex/tools"
 )
 
 // ChatRequest is the transport-agnostic chat message request.
@@ -30,11 +33,78 @@ type ChatRequest struct {
 	ModelOverride  string
 	RoleID         string
 	DirectTask     bool
-	CallerID       string           // caller identity for task isolation (from tools.CallerIdentity)
+	CallerID       string           // task identity (from tools.CallerIdentity), separate from durable ownership
+	OwnerID        string           // stable resource owner (from tools.CallerOwnerID), never accepted from HTTP payloads
 	ReplyTo        string           // message ID being replied to (exact reference to old message)
 	ReplyToContent string           // content of the referenced message (if already available, e.g. Telegram payload)
 	Attachments    []AttachmentSpec // image/file attachments for VLM (relative paths under session workspace)
 	UserTier       string           // authorization tier: guest | authorized | admin (default: guest)
+}
+
+// sessionScope derives list visibility from the stable owner. Admin/local mode
+// sees all; exact-owner mode intentionally has no ownerless fallback.
+// See docs/completed/2026-11-27/OWNER_ISOLATION_SCHEDULE_SESSION_INBOX.md.
+func (h *ChatHandler) sessionScope(ctx context.Context) store.SessionScope {
+	if tools.EffectiveTier(ctx, h.App) == tools.TierAdmin || !tools.OwnerIsolationEnabled(h.App) {
+		return store.SessionScope{All: true}
+	}
+	return store.SessionScope{Owner: tools.CallerOwnerID(ctx)}
+}
+
+func (h *ChatHandler) canAccessSession(ctx context.Context, session *chat.ChatSession, userTier string) bool {
+	if session == nil {
+		return false
+	}
+	tier := userTier
+	if tier == "" {
+		tier = tools.EffectiveTier(ctx, h.App)
+	}
+	owner := session.GetOwnerID()
+	if (tier == TierGuest || tier == tools.TierPublic) && session.IsShared() && (!tools.OwnerIsolationEnabled(h.App) || owner != "") {
+		return true
+	}
+	return tools.CheckResourceOwnership(ctx, h.App, owner)
+}
+
+func (h *ChatHandler) loadAuthorizedSession(ctx context.Context, sessionID, userTier string) (*chat.ChatSession, bool) {
+	if h.Store == nil {
+		return nil, false
+	}
+	session := h.Store.Load(sessionID)
+	return session, h.canAccessSession(ctx, session, userTier)
+}
+
+func chatRequestOwner(ctx context.Context, req ChatRequest) string {
+	if req.OwnerID != "" {
+		return req.OwnerID
+	}
+	return tools.CallerOwnerID(ctx)
+}
+
+func (h *ChatHandler) prepareChatSession(ctx context.Context, sessionID, ownerID, userTier string, admin bool) (*chat.ChatSession, context.Context, error) {
+	session, err := h.Store.GetOrCreateOwned(sessionID, ownerID,
+		!admin && tools.OwnerIsolationEnabled(h.App),
+		func(existing *chat.ChatSession) error {
+			if !h.canAccessSession(ctx, existing, userTier) {
+				return fmt.Errorf("session not found")
+			}
+			return nil
+		})
+	if err != nil {
+		return nil, ctx, err
+	}
+	requestTier := userTier
+	if requestTier == "" {
+		requestTier = tools.EffectiveTier(ctx, h.App)
+	}
+	// Shared Live Co-pilot guests use the owner's approval pipeline without
+	// changing the durable owner or the caller-derived schedule scope.
+	if session.IsShared() && (requestTier == TierGuest || requestTier == tools.TierPublic) {
+		if ownerID := session.GetOwnerID(); ownerID != "" {
+			ctx = context.WithValue(ctx, tools.AuthOwnerKey, ownerID)
+		}
+	}
+	return session, ctx, nil
 }
 
 // AttachmentSpec is a frontend-supplied attachment descriptor.

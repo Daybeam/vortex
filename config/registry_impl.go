@@ -17,14 +17,14 @@ func (r *Registry) GetConfigPath() string {
 func (r *Registry) RegisterDynamicMCP(mcp *MCPDef) {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
-	if mcp.ToolFilter == nil {
-		mcp.InitFilter()
-	}
 	if existing, ok := r.DynamicMCPs[mcp.ID]; ok &&
 		existing.SchemaFingerprint != "" && mcp.SchemaFingerprint != "" &&
 		existing.SchemaFingerprint != mcp.SchemaFingerprint {
 		log.Printf("[EventMCPToolsChanged] mcp=%s old_hash=%s new_hash=%s — dynamic MCP re-registered with changed schema",
 			mcp.ID, existing.SchemaFingerprint, mcp.SchemaFingerprint)
+	}
+	if mcp.ToolFilter == nil {
+		mcp.InitFilter()
 	}
 	r.DynamicMCPs[mcp.ID] = mcp
 }

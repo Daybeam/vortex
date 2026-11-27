@@ -42,6 +42,15 @@ func (r *SubsystemRegistry) Register(s *Subsystem) {
 // Global registry instance
 var registry = NewSubsystemRegistry()
 
+// InvokeSubsystem is the exported gateway to the package-level registry's
+// Invoke method. Callers outside the tools package (e.g., the chat API layer)
+// use it to reuse subsystem handler logic including tier checking, arg
+// sanitization, and timeout safeguards, without needing direct access to the
+// unexported registry singleton.
+func InvokeSubsystem(ctx context.Context, app *App, subsystem, action string, args map[string]any) (any, error) {
+	return registry.Invoke(ctx, app, subsystem, action, args)
+}
+
 // tier1AllowedActions is the set of subsystem actions safe for Tier1 (public SSE) callers.
 // Anything not in this map is Tier2-only by default.
 var tier1AllowedActions = map[string]bool{
@@ -64,6 +73,10 @@ var tier1AllowedActions = map[string]bool{
 	"admin.get_step_result": true,
 	"admin.get_stats":       true,
 	"schedule.list":         true,
+	"schedule.create":       true,
+	"schedule.pause":        true,
+	"schedule.resume":       true,
+	"schedule.delete":       true,
 	"jit.list_scripts":      true,
 	"jit.list_active":       true,
 	"jit.list_runtimes":     true,
@@ -185,7 +198,12 @@ func (r *SubsystemRegistry) Invoke(ctx context.Context, app *App, subsystem, act
 	}
 	resChan := make(chan result, 1)
 
+	// Track the handler goroutine so Shutdown can wait for it to drain
+	// (audit RL-1: previously, when ictx.Done() fired the select returned
+	// but the goroutine kept running with no WaitGroup tracking it).
+	app.handlerWg.Add(1)
 	go func() {
+		defer app.handlerWg.Done()
 		// audit R-2: recover prevents panic in handler from crashing the process.
 		defer func() {
 			if r := recover(); r != nil {

@@ -15,7 +15,7 @@ type Metadata struct {
 	// mode (supplement missing fields rather than full re-run). Set by
 	// tryBacktrack before re-executing upstream; checked by prompt_assembler
 	// to inject PreviousOutputSummary. Cleared on user-initiated retry.
-	// See docs/plan/DELTA_BACKTRACK_DESIGN.md.
+	// See docs/completed/2026-10-17/DELTA_BACKTRACK_DESIGN.md.
 	DeltaBacktrack bool `json:"delta_backtrack,omitempty"`
 }
 
@@ -31,8 +31,8 @@ type StepInput struct {
 	AdditionalMCPs           []string            `json:"additional_mcps"`
 	AdditionalToolAllowlists map[string][]string `json:"additional_tool_allowlists"`
 	ContextRefs              map[string]string   `json:"context_refs"`
-	SubmitterIsAdmin         bool                `json:"-"` // set by entry handler; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
-	OwnerID                  string              `json:"-"` // set by entry handler from AuthOwnerKey; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
+	SubmitterIsAdmin         bool                `json:"-"`                    // set by entry handler; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
+	OwnerID                  string              `json:"-"`                    // set by entry handler from AuthOwnerKey; engine copies to TaskGraph (json:"-" ⇒ unforgeable)
 	ProjectID                string              `json:"project_id,omitempty"` // project space; defaults to "default" if empty
 	FallbackFor              string              `json:"fallback_for,omitempty"`
 	MaxRetries               int                 `json:"max_retries"`
@@ -51,7 +51,7 @@ type StepInput struct {
 	// here no SOP or submit body could reach Case 2.5 (register O1).
 	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
 	// Cross-Family Debate (ADDED 2026-09-14): opt-in Proposer→Critic→Synthesizer loop.
-	// See docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
+	// See docs/completed/2026-09-14/CROSS_FAMILY_DEBATE_DESIGN.md
 	EnableDebate    bool `json:"enable_debate,omitempty"`
 	MaxDebateRounds int  `json:"max_debate_rounds,omitempty"` // hard-capped at 2
 	// EnableStepPlan (ADDED 2026-10-10): see Step.EnableStepPlan.
@@ -69,6 +69,14 @@ type StepInput struct {
 
 	// Deliver specifies artifact delivery destination/method (ADDED 2026-08-30)
 	Deliver string `json:"deliver,omitempty"`
+
+	// Delivery is set only by the schedule manager. JSON exclusion prevents API
+	// callers from forging the marker that owns terminal result delivery.
+	Delivery *ScheduleDelivery `json:"-"`
+
+	// MaxTurnsCap is an internal ceiling derived from the chat parent's
+	// remaining turn budget. JSON exclusion prevents callers from forging it.
+	MaxTurnsCap int `json:"-"`
 
 	// GroupID, when non-empty, records which RoleGroup produced this step.
 	// Set automatically by GroupDispatcher; callers need not set this manually.
@@ -88,12 +96,11 @@ type StepInput struct {
 	// MaxLoopRounds bounds how many times a downstream step may trigger
 	// upstream backtracking via MissingContext before the cycle breaker
 	// fuses. 0 = disabled (not recommended — weak models may loop forever).
-	// See docs/architecture/CYCLE_BREAKER_DESIGN.md.
+	// See docs/completed/2026-09-16/CYCLE_BREAKER_DESIGN.md.
 	MaxLoopRounds int `json:"max_loop_rounds,omitempty"`
 
 	// InputDir declares a directory (relative to the session WorkspaceRoot)
 	// whose contents should be auto-copied into the task workspace at start.
-	// See docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2 ③.
 	// Empty = no input seeding (backward compatible).
 	InputDir string `json:"input_dir,omitempty"`
 
@@ -189,14 +196,14 @@ type Step struct {
 	AutoRefineCount int     `json:"auto_refine_count"`
 	RiskRating      float64 `json:"risk_rating"` // Captured numeric risk score
 	// Cross-Family Debate (ADDED 2026-09-14): opt-in Proposer→Critic→Synthesizer loop.
-	// See docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
+	// See docs/completed/2026-09-14/CROSS_FAMILY_DEBATE_DESIGN.md
 	EnableDebate    bool `json:"enable_debate,omitempty"`
 	MaxDebateRounds int  `json:"max_debate_rounds,omitempty"` // hard-capped at 2
 
 	// EnableStepPlan (ADDED 2026-10-10): forces this Step through a Planner
 	// Phase before execution. The Planner generates a markdown plan using
 	// read-only tools; the Executor then receives the plan as context.
-	// See docs/plan/STEP_PLAN_MODE_DESIGN.md.
+	// See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md.
 	EnableStepPlan bool `json:"enable_step_plan,omitempty"`
 
 	// OutputContract mirrors StepInput.OutputContract — the deterministic schema
@@ -206,6 +213,9 @@ type Step struct {
 
 	// Deliver specifies artifact delivery destination/method (ADDED 2026-08-30)
 	Deliver string `json:"deliver,omitempty"`
+
+	// Delivery records the schedule-owned terminal delivery for this step.
+	Delivery *ScheduleDelivery `json:"delivery,omitempty"`
 
 	// TargetFile (ADDED 2026-09-13) — declares the primary file path this step
 	// writes to. Used by PathLockManager to acquire a write lock preventing
@@ -225,6 +235,7 @@ type Step struct {
 	// a step genuinely resumes with more room instead of re-running the same
 	// capped loop and hitting the wall again. ADDED (2026-09-07).
 	TurnsBudgetBonus int       `json:"turns_budget_bonus,omitempty"`
+	MaxTurnsCap      int       `json:"max_turns_cap,omitempty"`
 	LastError        string    `json:"last_error,omitempty"`
 	TriggerError     string    `json:"trigger_error,omitempty"`  // First error that led to successful retry (ADDED 2026-08-16)
 	PartialOutput    string    `json:"partial_output,omitempty"` // B1: model's last output before Sieve interception; passed to auditor/next step as context
@@ -253,7 +264,7 @@ type Step struct {
 	// summary for delta-backtrack injection. Set by tryBacktrack before
 	// re-executing upstream. Cleared when the step is fully re-executed
 	// by a user-initiated retry. ADDED (2026-10-17).
-	// See docs/plan/DELTA_BACKTRACK_DESIGN.md.
+	// See docs/completed/2026-10-17/DELTA_BACKTRACK_DESIGN.md.
 	PreviousOutputSummary string `json:"previous_output_summary,omitempty"`
 
 	// Perception 2.0
@@ -369,7 +380,33 @@ type ArtifactContract struct {
 
 	// ─── Artifact Constraint Shield (arXiv:2608.24569) ───────────────────
 	RequiredFields []string          `json:"required_fields,omitempty"`
+	OptionalFields []string          `json:"optional_fields,omitempty"`
 	TypeSchema     map[string]string `json:"type_schema,omitempty"` // field -> type (string, number, array, object)
+}
+
+func (c ArtifactContract) Clone() ArtifactContract {
+	c.RequiredFields = append([]string(nil), c.RequiredFields...)
+	c.OptionalFields = append([]string(nil), c.OptionalFields...)
+	c.SourceRefs = append([]string(nil), c.SourceRefs...)
+	if c.TypeSchema != nil {
+		schema := make(map[string]string, len(c.TypeSchema))
+		for field, typ := range c.TypeSchema {
+			schema[field] = typ
+		}
+		c.TypeSchema = schema
+	}
+	return c
+}
+
+func CloneArtifactContracts(contracts []ArtifactContract) []ArtifactContract {
+	if contracts == nil {
+		return nil
+	}
+	out := make([]ArtifactContract, len(contracts))
+	for i := range contracts {
+		out[i] = contracts[i].Clone()
+	}
+	return out
 }
 
 // ReadDep records an actual file-level read dependency for coordination tracking.
@@ -422,14 +459,14 @@ type ContextNode struct {
 // ─── TaskGraph ────────────────────────────────────────────────────────────
 
 type TaskGraph struct {
-	TaskID  string           `json:"task_id"`
-	TraceID string           `json:"trace_id,omitempty"`
+	TaskID  string `json:"task_id"`
+	TraceID string `json:"trace_id,omitempty"`
 	// ProjectID identifies the project space this task belongs to. Tasks
 	// sharing the same ProjectID can recall each other's ScopeProject memory
 	// items. Defaults to "default" when unspecified (backward-compatible).
 	ProjectID string           `json:"project_id,omitempty"`
 	Steps     map[string]*Step `json:"steps"`
-	Status  GraphStatus      `json:"status"`
+	Status    GraphStatus      `json:"status"`
 	// SubmitterIsAdmin is the authoritative mount-gate source: read via
 	// core/mount_gate.go's effectiveSubmitterIsAdmin, enforced in
 	// core/validator.go's ResolveFinalMCPs. Persisted so fork/reload retain the tier.
@@ -493,10 +530,13 @@ type TaskGraph struct {
 	decisionMu sync.RWMutex `json:"-"`
 
 	// Session-level workspace binding (ADDED 2026-09-19).
-	// See docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2 ②.
 	// When SessionID is empty, behavior is identical to legacy (backward compatible).
 	SessionID     string `json:"session_id,omitempty"`
 	WorkspaceRoot string `json:"workspace_root,omitempty"`
+
+	// Delivery marks a scheduled run whose terminal result is owned by the
+	// schedule delivery queue, not the ordinary task_done follow-up path.
+	Delivery *ScheduleDelivery `json:"delivery,omitempty"`
 
 	// OwnerID is set at submission time from the caller's resolved identity
 	// (tools.AuthOwnerKey). When empty (no APIKeys configured), all ownership
@@ -506,8 +546,14 @@ type TaskGraph struct {
 
 	IsSmartRouted bool `json:"is_smart_routed,omitempty"`
 
+	// FastPath is true when the task took the single-step inline branch
+	// (scheduler_submit.go:300). Chat delegations always submit one prompt,
+	// so this is structurally always true unless the planner expands the step
+	// or RequirePlanReview is set. Measured so the assumption is observable.
+	FastPath bool `json:"fastpath,omitempty"`
+
 	// Time Travel & Fork (ADDED 2026-09-14): records task lineage for
-	// counterfactual branching. See docs/architecture/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
+	// counterfactual branching. See docs/completed/2026-09-14/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
 	ParentTaskID string `json:"parent_task_id,omitempty"` // if forked, points to source task
 	ForkedAtStep string `json:"forked_at_step,omitempty"` // step ID where fork occurred
 
@@ -515,7 +561,7 @@ type TaskGraph struct {
 	// referenced by this task's steps at submission time. If a JIT tool's
 	// global TTL expires mid-task, executeStep restores it from this snapshot
 	// so the task never hits "tool not found". See
-	// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
+	// docs/completed/2026-09-15/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
 	// Stored as map[string]any (JSON-serialized *config.MCPDef) to avoid a
 	// circular dependency with the config package — same pattern as
 	// SessionRoles/SessionSkills above.
@@ -524,19 +570,19 @@ type TaskGraph struct {
 	// CycleCounters tracks active local-loop backtracking rounds.
 	// Key = cycle signature (sorted participant step IDs joined by ":")
 	// Value = current round count. Removed on fuse.
-	// See docs/architecture/CYCLE_BREAKER_DESIGN.md.
+	// See docs/completed/2026-09-16/CYCLE_BREAKER_DESIGN.md.
 	CycleCounters map[string]int `json:"cycle_counters,omitempty"`
 
 	// Substitutions records every instance where actual execution differed from
 	// the request (role fallback, MCP degradation, etc.). Surfaced in
 	// get_task_status so drift is visible without log mining.
-	// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
+	// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P3.
 	Substitutions []Substitution `json:"substitutions,omitempty"`
 
 	// Charter captures the task's intent, non-goals, and constraints.
 	// Optional — nil means "unspecified" and behavior is identical to
 	// pre-charter tasks (backward compatible).
-	// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.
+	// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P1.
 	Charter *TaskCharter `json:"charter,omitempty"`
 
 	// substitutionMu guards Substitutions append.

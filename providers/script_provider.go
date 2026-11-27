@@ -445,7 +445,14 @@ func (sp *ScriptProvider) registerBridge(vm *lua.LState) {
 			return 3
 		}
 
-		httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader([]byte(body)))
+		// audit FIX (2026-11-21): was context.Background() with no timeout —
+		// a hung remote endpoint could block the Lua goroutine indefinitely.
+		// The HTTP client has a 120s timeout, but 30s is a tighter bound for
+		// script-initiated HTTP POSTs. Use a dedicated context so the request
+		// is cancelled even if the client timeout fires later.
+		httpCtx, httpCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer httpCancel()
+		httpReq, err := http.NewRequestWithContext(httpCtx, http.MethodPost, url, bytes.NewReader([]byte(body)))
 		if err != nil {
 			L.Push(lua.LNil)
 			L.Push(lua.LNumber(0))

@@ -10,7 +10,7 @@ import (
 )
 
 // scheduler_intent_shift_test.go — Context Tree Intent-Shift Branching (B11).
-// See docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §4.
+// See docs/completed/2026-10-26/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §4.
 //
 // Pattern note: we call engine.transitionContextTree directly on a
 // hand-built graph (same approach as TestDirectedEngine_ContextTreeBranching)

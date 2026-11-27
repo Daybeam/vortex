@@ -28,17 +28,14 @@ func TestGuardStepOutput_DelegationHandoverIsNeverVetoed(t *testing.T) {
 	s := &DirectedEngine{sieve: sieve.NewSieve(10)}
 
 	handover := &SpawnResult{Output: schemas.SubagentOutput{Status: schemas.StatusDelegationRequired}}
-	// requiredSchema is "json" for a step with ExitCriteria == "json"
-	// (core/scheduler_dag_exec.go:607-609), which is the shape both recorded
-	// incidents had.
-	if ok, reason := s.guardStepOutput(context.Background(), handover, stuckText(), "json"); !ok {
+	if ok, reason := s.guardStepOutput(context.Background(), handover, stuckText()); !ok {
 		t.Errorf("hand-over vetoed with %q; an assembled input is not an output that can be in a logic loop", reason)
 	}
 
 	// The same text from a real provider answer is still inspected — the
 	// exemption must not become a way to switch the Guardian off.
 	normal := &SpawnResult{Output: schemas.SubagentOutput{Status: schemas.StatusOK}}
-	if ok, reason := s.guardStepOutput(context.Background(), normal, stuckText(), ""); ok {
+	if ok, reason := s.guardStepOutput(context.Background(), normal, stuckText()); ok {
 		t.Error("a stuck provider output passed the Guardian, so the exemption disabled the check")
 	} else if !strings.Contains(reason, "logic loop") {
 		t.Errorf("reason = %q, want the repetition verdict to survive", reason)
@@ -46,7 +43,7 @@ func TestGuardStepOutput_DelegationHandoverIsNeverVetoed(t *testing.T) {
 
 	// Partial and failed answers are outputs too and must not inherit the pass.
 	for _, st := range []schemas.SubagentStatus{schemas.StatusPartial, schemas.StatusFailed} {
-		if ok, _ := s.guardStepOutput(context.Background(), &SpawnResult{Output: schemas.SubagentOutput{Status: st}}, stuckText(), ""); ok {
+		if ok, _ := s.guardStepOutput(context.Background(), &SpawnResult{Output: schemas.SubagentOutput{Status: st}}, stuckText()); ok {
 			t.Errorf("status %q was exempted as if it were a hand-over", st)
 		}
 	}

@@ -2,149 +2,35 @@ package core
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"math"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/daybeam/vortex/core/obs"
-	"github.com/daybeam/vortex/pkg/types"
 	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
-	"github.com/daybeam/vortex/store"
 )
 
+// executeStep owns the path lock and retry lifecycle. Phase implementations are
+// split into cohesive companions without changing state, security, or event
+// ordering.
 func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGraph, step *schemas.Step) {
-	// ── Phase 0: Task-Local Closure Restore (ADDED 2026-09-15) ──────────
-	// If JIT tools referenced by this task have expired globally (TTL GC),
-	// re-register them from the task-local snapshot taken at submit time.
-	// See docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
-	if s.jit != nil && len(graph.LocalMCPs) > 0 {
-		if restored := s.jit.RestoreLocalMCPs(graph.LocalMCPs); len(restored) > 0 {
-			s.logger.Log("JITClosureRestored", graph.TaskID, step.ID, map[string]any{
-				"restored_ids": restored,
-			})
-		}
-	}
+	s.restoreTaskLocalClosure(graph, step)
 
-	// ── Phase 0: Path-Level Mutex (ADDED 2026-09-13) ──────────────────────
-	// If the step declares a TargetFile, acquire a write lock so concurrent
-	// steps writing to the same path serialize. Different paths stay parallel.
-	// See docs/completed/2026-09-13/PATH_LEVEL_MUTEX_CONCURRENCY_DESIGN.md
+	// Serialize steps declaring the same target path; different paths stay parallel.
 	if step.TargetFile != "" && s.pathLocks != nil {
 		unlock := s.pathLocks.Acquire(step.TargetFile, true)
 		defer unlock()
 	}
-
-	// ── Phase 0.1: Token Budget Pre-check (ADDED 2026-08-30) ─────────────
-	// FIX (2026-08-31): removed the s.Mu.Lock()/Unlock() wrap around this
-	// whole block. addDecision (invoked below via the CheckBudget error
-	// path) internally calls broadcastDone, which itself takes s.Mu.Lock()
-	// -- since Go's sync.RWMutex is not reentrant, holding s.Mu.Lock() here
-	// and then calling addDecision would deadlock the engine's mutex the
-	// first time a task's token budget was actually exceeded. Every other
-	// addDecision call site in this file calls it without holding s.Mu,
-	// which this now matches. The CheckBudget read is taken under a short
-	// RLock instead, since graph.TokensUsed/TokenBudget are graph-level
-	// counters written concurrently by every step of the same graph via
-	// DeductBudget below (s.run's Phase 2 runs up to 10 steps of one graph
-	// in parallel goroutines), unlike most other per-step fields in this
-	// function which are only ever touched by their own owning goroutine.
-	if s.budgetGuard != nil {
-		s.Mu.RLock()
-		budgetErr := s.budgetGuard.CheckBudget(graph)
-		s.Mu.RUnlock()
-		if budgetErr != nil {
-			s.Mu.Lock()
-			graph.BudgetPaused = true
-			step.Status = schemas.StepBlocked
-			s.Mu.Unlock()
-			s.addDecision(graph, step, schemas.DecisionBudgetExhausted, map[string]any{
-				"error":        budgetErr.Error(),
-				"tokens_used":  graph.TokensUsed,
-				"token_budget": graph.TokenBudget,
-			}, []string{"resume", "abort"})
-			return
-		}
+	if !s.precheckStepBudget(graph, step) {
+		return
 	}
-
-	// ── Cost Governance: Budget progress sentinel (P1) ──────────────────
-	// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 2.
-	// Soft alert at 60/80/90% + linear prediction from step completion ratio.
-	// Never auto-extends budget. Prediction ≠ decision.
-	//
-	// RLock guard: graph.TokensUsed/TokenBudget/Steps are graph-level fields
-	// written concurrently by parallel step goroutines (s.run Phase 2 runs up
-	// to 10 steps of one graph in parallel). Snapshot under RLock, then release
-	// before calling Observe/Log to avoid holding the lock during I/O (audit M4).
-	if s.budgetSentinel != nil {
-		s.Mu.RLock()
-		tokensUsed := graph.TokensUsed
-		tokenBudget := graph.TokenBudget
-		taskID := graph.TaskID
-		totalSteps, doneSteps := 0, 0
-		for _, st := range graph.Steps {
-			totalSteps++
-			if st.Status == schemas.StepOK || st.Status == schemas.StepFailed {
-				doneSteps++
-			}
-		}
-		s.Mu.RUnlock()
-
-		if tokenBudget > 0 && tokensUsed > 0 {
-			pct := int(100 * tokensUsed / tokenBudget)
-			predictedPct := 0
-			if doneSteps > 0 && totalSteps > 0 {
-				predictedPct = pct * totalSteps / doneSteps
-			}
-			if tier := s.budgetSentinel.Observe(taskID, pct, predictedPct); tier > 0 {
-				s.logger.Log(obs.EventBudgetPredictExceed, taskID, step.ID, map[string]any{
-					"tier":          tier,
-					"pct_used":      pct,
-					"predicted_pct": predictedPct,
-					"tokens_used":   tokensUsed,
-					"token_budget":  tokenBudget,
-					"steps_done":    doneSteps,
-					"steps_total":   totalSteps,
-				})
-				// E6 fix: wire cost_overrun into the failure classification path.
-				// At tier ≥ 90 (critical), request an autonomous abort classified
-				// as FailureClassCostOverrun. This flows through the event system
-				// and replay scheduler (mapCauseToMutation correctly treats
-				// cost_overrun as unfixable). Previously cost_overrun was a dead
-				// constant — BudgetSentinel only logged, never classified.
-				if tier >= 90 {
-					s.RequestAutonomousAbort(taskID, step.ID, FailureClassCostOverrun,
-						fmt.Sprintf("budget predicted to exceed: %d%% used, %d%% predicted (%d/%d tokens)", pct, predictedPct, tokensUsed, tokenBudget))
-				}
-			}
-		}
-	}
+	s.observeBudgetSentinel(graph, step)
 
 	s.Mu.Lock()
 	step.Status = schemas.StepRunning
 	step.LastWorkedOn = time.Now()
 	s.Mu.Unlock()
 	s.persistGraph(graph) // Checkpoint state change
-	taskID := graph.TaskID
-
-	// ── StagedWorkspace pre-step snapshot (WIRED 2026-08-21) ────────────
-	// Opt-in via system.staging_enabled (default false, zero behavior change
-	// for existing configs). See docs/STAGED_WORKSPACE_DESIGN.md and
-	// core/staged_workspace.go's own doc comment for scope/limitations.
-	var stagedWS *StagedWorkspace
-	var preSnapshot *SnapshotIndex
-	if s.registry.System.StagingEnabled {
-		stagedWS = NewStagedWorkspace(filepath.Join(s.outputBase, taskID))
-		if snap, serr := stagedWS.TakePreStepSnapshot(step.ID); serr == nil {
-			preSnapshot = snap
-		} else {
-			s.logger.Log("EventStagingError", taskID, step.ID, map[string]any{"phase": "pre_snapshot", "error": serr.Error()})
-		}
-	}
+	stagedWS, preSnapshot := s.beginStagedStep(graph, step)
 
 	s.registry.Mu.RLock()
 	role := s.registry.Roles[step.RoleID]
@@ -159,623 +45,37 @@ func (s *DirectedEngine) executeStep(ctx context.Context, graph *schemas.TaskGra
 			}
 			dynTemp = &t
 		}
-
-		// ── Phase 0.7: Tree-based Context Assembly ─────────────────────────────
-		var treeHistory []map[string]any
-		s.Mu.RLock()
-		if g, ok := s.graphs[taskID]; ok {
-			currID := g.CurrentNodeID
-			for currID != "" {
-				node := g.ContextTree[currID]
-				if node == nil {
-					break
-				}
-				nodeData := map[string]any{
-					"id":      node.ID,
-					"intent":  node.Intent,
-					"summary": node.Summary,
-					"status":  node.Status,
-				}
-				treeHistory = append(treeHistory, nodeData)
-				currID = node.ParentID
-			}
-			for i, j := 0, len(treeHistory)-1; i < j; i, j = i+1, j-1 {
-				treeHistory[i], treeHistory[j] = treeHistory[j], treeHistory[i]
-			}
-		}
-		s.Mu.RUnlock()
-
-		// Resolve InputMapping (ADDED 2026-08-17)
-		resolvedInputs := s.resolveStepInputs(ctx, graph, step, taskID)
-
-		// ── Coordination Edge for ContextRefs (arXiv:2608.16801) ──
-		if len(step.ContextRefs) > 0 {
-			// audit P-H2: batch-fetch all referenced step results in one query.
-			refStepIDs := make([]string, 0, len(step.ContextRefs))
-			for _, ref := range step.ContextRefs {
-				parts := strings.SplitN(ref, ":", 2)
-				if len(parts) == 2 {
-					refStepIDs = append(refStepIDs, parts[0])
-				}
-			}
-			refResults, _ := s.taskStore.GetBatch(ctx, taskID, refStepIDs)
-			for _, ref := range step.ContextRefs {
-				parts := strings.SplitN(ref, ":", 2)
-				if len(parts) == 2 {
-					if res := refResults[parts[0]]; res != nil && res.Data != nil {
-						payloadSize := estimateJSONSize(res.Data) // audit H-4: no allocation
-						s.recordCoordinationEdge(graph, parts[0], step.ID, "reference", payloadSize)
-					}
-				}
-			}
-		}
-
-		// ── Phase 0.8: Tracing & Spans ─────────────────────────────
-		traceID := graph.TraceID
-		if traceID == "" {
-			traceID = NewTraceID()
-		}
-		spanID := NewSpanID()
-		ctx = ContextWithTrace(ctx, traceID, spanID)
-
-		hub := NewContextHub(s.registry, graph, s.expStore)
-		// CaSKG: find the first completed dependency's RoleID for causal boost.
-		var predecessorSkillID string
-		for _, depID := range step.DependsOn {
-			if dep, ok := graph.Steps[depID]; ok && (dep.Status == schemas.StepOK || dep.Status == schemas.StepPartial) {
-				predecessorSkillID = dep.RoleID
-				break
-			}
-		}
-		// B1: If any upstream step has PartialOutput (from Sieve interception),
-		// inject it as context so the auditor/next step can build on it.
-		// C2 fix (2026-10-18): sanitize before passthrough — truncate, egress-
-		// redact, wrap in untrusted-data delimiters, and skip for security-
-		// class interception reasons (injection/PII). Without this, intercepted
-		// content (which may contain prompt injection or secrets) is sent
-		// directly to the model as trusted instructions.
-		taskText := step.Task
-		for _, depID := range step.DependsOn {
-			if dep, ok := graph.Steps[depID]; ok && dep.PartialOutput != "" {
-				sanitized := sanitizePartialOutputForPassthrough(dep.PartialOutput, dep.LastError, graph.OwnerID)
-				if sanitized != "" {
-					taskText = fmt.Sprintf("%s\n\nUPSTREAM PARTIAL OUTPUT (step %s was intercepted by Sieve Guardian; verify or build on this):\n%s", taskText, depID, sanitized)
-				}
-				break
-			}
-		}
-		// Auto-inject upstream step results as text (Issue 2-B):
-		// Steps with DependsOn but no explicit InputMapping receive zero
-		// upstream results in their prompt — the model doesn't know what
-		// the predecessors produced and falls back to calling execute_code
-		// to fetch them, causing non-convergence. Inject completed upstream
-		// results as a text block so the model can use them directly.
-		if len(step.DependsOn) > 0 && len(step.InputMapping) == 0 {
-			upstreamIDs := make([]string, 0, len(step.DependsOn))
-			for _, depID := range step.DependsOn {
-				if dep, ok := graph.Steps[depID]; ok && dep.Status == schemas.StepOK {
-					upstreamIDs = append(upstreamIDs, depID)
-				}
-			}
-			if len(upstreamIDs) > 0 {
-				upResults, _ := s.taskStore.GetBatch(ctx, taskID, upstreamIDs)
-				var upstreamBlock string
-				for _, depID := range upstreamIDs {
-					res := upResults[depID]
-					if res == nil || res.Data == nil {
-						continue
-					}
-					// N2 fix (DELEGATION_HANDOVER_REDESIGN.md §11.1): render upstream
-					// data as JSON for machine consumers, not Go %v syntax.
-					// D-PROMPT-3 fix (§4.3): reduce budget from 4000→1200 rune and
-					// add artifact path ref so subagent can read_file for full output.
-					var summary string
-					if b, err := json.Marshal(res.Data); err == nil {
-						summary = string(b)
-					} else {
-						summary = fmt.Sprintf("%v", res.Data) // fallback
-					}
-					if r := []rune(summary); len(r) > 1200 {
-						summary = string(r[:1200]) + "...(truncated)"
-					}
-					artifactRef := filepath.Join("outputs", taskID, depID)
-					upstreamBlock += fmt.Sprintf("\n  %s: %s\n  (full output at %s/ — use read_file if needed)", depID, summary, artifactRef)
-				}
-				if upstreamBlock != "" {
-					taskText = fmt.Sprintf("%s\n\nUPSTREAM RESULTS (from completed predecessor steps — use these directly, do not re-fetch):%s", taskText, upstreamBlock)
-				}
-			}
-		}
-		// P-2.1 Step 2: GraphMu removed; DecisionHistory is now protected by
-		// TaskGraph.decisionMu (accessed via RecordDecision/UpdateDecisionOutcome).
-		// SharedContext (ADDED 2026-10-27): per-task append-only knowledge board
-		// for real-time cross-agent knowledge sharing. Nil-safe: if creation
-		// fails, the spawn proceeds without shared context tools.
-		// See docs/plan/TYPED_SHARED_CONTEXT_DESIGN.md.
-		var sharedCtx *store.SharedContext
-		scDir := filepath.Join(s.outputBase, taskID, "shared_context")
-		sharedCtx, scErr := store.NewSharedContext(scDir, taskID)
-		if scErr != nil {
-			s.logger.Log("EventSharedContextInitFailed", taskID, step.ID, map[string]any{"error": scErr.Error()})
-			sharedCtx = nil
-		}
-		result, err := s.spawner.Spawn(ctx, &SpawnRequest{
-			TaskID:                   taskID,
-			StepID:                   step.ID,
-			TraceID:                  traceID,
-			SpanID:                   spanID,
-			RoleID:                   step.RoleID,
-			SubmitterIsAdmin:         graph.SubmitterIsAdmin, // inherit the owning graph's mount-gate tier (2026-10-26)
-			Task:                     taskText,
-			AdditionalSkills:         step.AdditionalSkills,
-			AdditionalMCPs:           step.AdditionalMCPs,
-			AdditionalToolAllowlists: step.AdditionalToolAllowlists,
-			ContextRefs:              step.ContextRefs,
-			Temperature:              dynTemp,
-			FrequencyPenalty:         nil,
-			ProviderOverride:         step.ProviderOverride,
-			RoutingMode:              step.RoutingMode,
-			CompressionHint:          step.CompressionHint,
-			TurnsBudgetBonus:         step.TurnsBudgetBonus,
-			SessionRoot:              graph.WorkspaceRoot,
-			OwnerID:                  graph.OwnerID,
-			PredecessorSkillID:       predecessorSkillID,
-			Metadata: map[string]any{
-				"context_tree_path": treeHistory,
-			},
-			Hub:                     hub,
-			InputMapping:            resolvedInputs,
-			Isolation:               step.Isolation,
-			AdditionalPromptContext: step.AdditionalPromptContext,
-			EnableStepPlan:          step.EnableStepPlan,
-			PreviousOutputSummary:   step.PreviousOutputSummary,
-			SharedContext:           sharedCtx,
-			ExecutionProtocol:       step.ExecutionProtocol,
-			ACPConfig:               step.ACPConfig,
-		})
-
-		if err == nil {
-			// Record effective provider/model (ADDED 2026-07-24)
-			// audit C-3: protect field write — persistGraph reads under RLock.
-			s.Mu.Lock()
-			step.ProviderID = result.ProviderID
-			s.Mu.Unlock()
-			// FIX (2026-08-21, playbook follow-up): this block previously called
-			// s.handleOutput(...) and returned immediately here on every successful
-			// Spawn. That skipped the Sieve Guardian repetition/schema check, the
-			// Context Tree transition logic, and the Phase 4 exit-criteria auto-
-			// refine loop further down this same function -- none of which were
-			// reachable from any error path either, making that code entirely dead
-			// for the success case since whatever introduced this early return.
-			// Removed the early return so execution now falls through to that
-			// existing logic instead, matching what handleOutput/Sieve/exit-criteria
-			// were actually written to handle. step.ModelID is set once, at its
-			// original call site further down, to avoid a duplicate assignment.
-		}
-
+		req, spawnCtx := s.buildStepSpawnRequest(ctx, graph, step, dynTemp)
+		ctx = spawnCtx
+		result, err := s.spawner.Spawn(ctx, req)
 		if err != nil {
-			// Check for Dynamic Escalation (Fork) signal
-			if strings.Contains(err.Error(), "DYNAMIC_ESCALATION_REQUIRED") {
-				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
-					"error":      "Dynamic Escalation Required",
-					"reason":     err.Error(),
-					"root_cause": string(s.classifyErrorWithSystemOne(err, step.ID, step.RoleID, step.Task)),
-				})
-				s.Mu.Lock()
-				step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write
-				s.Mu.Unlock()
-				s.addDecision(graph, step, schemas.DecisionDelegationRequired, map[string]any{
-					"kind":            DelegationKindDAGSurgery,
-					"error":           "Context overflow: task too complex for single model.",
-					"action_required": "Please split this step into smaller sub-tasks.",
-				}, []string{"skip", "abort"})
+			switch s.handleStepSpawnError(ctx, graph, step, role, err) {
+			case stepErrorReturn:
 				return
-			}
-
-			// ── Max-Turns Suspension (ADDED 2026-09-07) ─────────────────
-			// The Spawner's tool-execution loop hit maxTurns without a final
-			// answer. Rather than hard-failing the step, suspend it as a
-			// resumable pending decision so an operator or Main Agent can
-			// resume (more turns), retry with context, or escalate the model.
-			// Semantics mirror the DYNAMIC_ESCALATION_REQUIRED block above.
-			if strings.Contains(err.Error(), ErrMaxTurnsExhausted) {
-				s.Mu.Lock()
-				step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write (max-turns block)
-				step.LastError = err.Error()
-				s.Mu.Unlock()
-				s.logger.Log(obs.EventDecisionRequired, taskID, step.ID, map[string]any{
-					"reason":      "max_tool_turns_exhausted",
-					"error":       err.Error(),
-					"retry_count": step.RetryCount,
-					"resume_hint": "choice 'retry' re-spawns this step from scratch; choose 'refine_and_retry' to inject additional_prompt_context carrying the partial progress",
-				})
-				s.addDecision(graph, step, schemas.DecisionMaxTurnsExhausted, map[string]any{
-					"error":           err.Error(),
-					"retry_count":     step.RetryCount,
-					"action_required": "Step exhausted its tool-turn budget before producing a final answer. Choose an option to proceed.",
-					"partial_context": "Prior tool interactions are recorded in this step's trace. Use refine_and_retry with feedback to carry that context forward.",
-				}, []string{"resume_more_turns", "refine_and_retry", "escalate_model", "retry", "skip", "abort"})
-				return
-			}
-
-			// ... existing error handling ...
-			var rl *providers.RateLimitError
-			if errors.As(err, &rl) {
-				// FIX (2026-07-21): previously always used the fixed/role-configured
-				// backoff schedule via retryWait, silently discarding rl.RetryAfter
-				// even though it's parsed correctly one layer up (providers/provider.go's
-				// parseRetryAfter). This could both under-wait (hammering the API again
-				// before its own suggested cooldown elapsed, burning through retries/quota
-				// faster) and over-wait (when the real RetryAfter was shorter than the
-				// fixed schedule's next step). Now prefer the server-provided value when
-				// present, falling back to the existing schedule when unknown (0).
-				wait := s.retryWait(role, step.RetryCount)
-				usedServerHint := false
-				if rl.RetryAfter > 0 {
-					wait = rl.RetryAfter
-					// Defensive cap: don't let a misbehaving/huge Retry-After value stall
-					// a step for an unreasonable amount of wall-clock time.
-					if wait > 300 {
-						wait = 300
-					}
-					usedServerHint = true
-				}
-				s.logger.Log(obs.EventRateLimited, taskID, step.ID, map[string]any{
-					"attempt": step.RetryCount, "wait_seconds": wait, "used_server_retry_after": usedServerHint,
-					"provider_id": step.ProviderID, // ADDED (2026-08-16)
-				})
-
-				// Set global cooldown for this provider (ADDED 2026-08-16)
-				if step.ProviderID != "" {
-					s.registry.SetCooldown(step.ProviderID, time.Duration(wait)*time.Second)
-				}
-
-				s.Mu.Lock() // audit C-3: protect field write — persistGraph reads under RLock.
-				step.RetryCount++
-				s.Mu.Unlock()
-				if step.RetryCount > step.MaxRetries {
-					break
-				}
-				// audit P-20-1: use NewTimer+Stop instead of time.After to avoid
-				// leaking Timers in retry loops (time.After can't be Stop()'d).
-				timer := time.NewTimer(time.Duration(wait) * time.Second)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return
-				case <-timer.C:
-				}
+			case stepErrorRetry:
 				continue
-			}
-
-			// D3 (2026-11-11): the run's provider-request allowance is spent.
-			// Two things were wrong while this shared BadRequestError's branch:
-			// the step's request was well-formed, so "graceful degradation"
-			// skipped it and silently dropped output the graph still needs; and
-			// the recorded reason said `bad request: {...}`. Retrying cannot
-			// help either -- the allowance does not grow between attempts -- so
-			// fail fast and name the cause, the same shape as the auth circuit
-			// breaker below.
-			var be *providers.BudgetExhaustedError
-			if errors.As(err, &be) {
-				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
-					"error":      "Provider request budget exhausted",
-					"details":    be.Msg,
-					"root_cause": string(FailureClassCostOverrun),
-				})
-				s.Mu.Lock()
-				step.LastError = store.SanitizeError(be.Error())
-				if step.TriggerError == "" {
-					step.TriggerError = step.LastError // Capture first failure signal
-				}
-				s.Mu.Unlock()
-				break
-			}
-
-			var br *providers.BadRequestError
-			if errors.As(err, &br) {
-				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
-					"error":      "Bad Request - triggering graceful degradation",
-					"details":    br.Msg,
-					"root_cause": string(FailureClassBadRequest),
-				})
-				s.Mu.Lock()
-				step.Status = schemas.StepSkipped // audit C-3: protect 2-word string write
-				step.LastError = store.SanitizeError("degraded: " + br.Msg)
-				s.Mu.Unlock()
+			case stepErrorExhausted:
+				s.finishExhaustedStep(graph, step, stagedWS, preSnapshot)
 				return
 			}
-
-			s.Mu.Lock() // audit C-3: protect field writes — persistGraph reads under RLock.
-			step.LastError = store.SanitizeError(err.Error())
-			if step.TriggerError == "" {
-				step.TriggerError = step.LastError // Capture first failure signal (ADDED 2026-08-16)
-			}
-			s.Mu.Unlock()
-
-			// Circuit Breaker: Fail fast on authentication/permission errors
-			if strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), "PERMISSION_DENIED") || strings.Contains(err.Error(), "HTTP 401") {
-				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
-					"error":      "Circuit Breaker triggered: Auth failure",
-					"details":    err.Error(),
-					"root_cause": string(FailureClassAuthPermission),
-				})
-				break
-			}
-
-			// Pre-flight health check circuit breaker
-			if strings.Contains(err.Error(), "missing dependency:") {
-				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
-					"error":      "Environment check failed",
-					"details":    err.Error(),
-					"root_cause": string(FailureClassMissingDependency),
-				})
-				s.Mu.Lock()
-				step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write
-				s.Mu.Unlock()
-				// FIX (2026-07-24): honor a step-level FailurePolicy override for
-				// this failure class, if the caller declared one -- see
-				// schemas/task.go's FailurePolicy type. A nil FailurePolicy (the
-				// default) falls straight through to the unchanged decision_
-				// required behavior below.
-				if s.applyStepFailurePolicy(graph, step, taskID, FailureClassMissingDependency) {
-					return
-				}
-				s.addDecision(graph, step, schemas.DecisionEnvironmentMissing, map[string]any{
-					"missing_dependency": err.Error(),
-				}, []string{"skip", "abort", "retry_with_skill:shell"})
-				return
-			}
-
-			// Permanent Error Check: Role Not Found
-			if strings.Contains(err.Error(), "role \"") && (strings.Contains(err.Error(), "\" not found") || strings.Contains(err.Error(), "generation failed") || strings.Contains(err.Error(), "generation is disabled")) {
-				s.logger.Log(obs.EventRoleMissing, taskID, step.ID, map[string]any{
-					"error": err.Error(),
-					"role":  step.RoleID,
-				})
-				// CRITICAL: Mark step as blocked (prevents re-dispatch via ReadySteps).
-				// Graph stays GraphRunning — independent branches continue.
-				s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphRunning)
-
-				// ACAIS: Deposit critical signal for role missing
-				if s.SignalField != nil {
-					s.SignalField.Deposit(types.LayerCritical, step.ID, 2.0)
-				}
-
-				// FIX (2026-07-24): honor a step-level FailurePolicy override for
-				// this failure class, if the caller declared one -- see
-				// schemas/task.go's FailurePolicy type. A nil FailurePolicy (the
-				// default) falls straight through to the unchanged decision_
-				// required behavior below. Graph stays GraphRunning (step is
-				// StepBlocked); applyStepFailurePolicy's "abort" case will
-				// correctly override to GraphFailed, matching what a caller
-				// submitting choice="abort" against the decision below would
-				// have produced.
-				if s.applyStepFailurePolicy(graph, step, taskID, FailureClassRoleMissing) {
-					s.persistGraph(graph)
-					return
-				}
-
-				// create_role is offered as a decision option again (RESTORED
-				// 2026-10-18, see docs 52 §11.5/§12.3). It had been removed
-				// because the old handler flipped the GLOBAL EnableDynamicRoleGen
-				// and could persist LLM-authored roles with AllowDynamicMCPs:true
-				// -- a real security hole. The restored handler does neither: it
-				// generates a task-scoped draft via GenerateRoleObjects, parks it
-				// in graph.SessionRoles, and never touches the registry or disk
-				// config. See SubmitDecisionWithPayload's "create_role" case.
-				s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
-					"error":           "Role missing: " + err.Error(),
-					"role_id":         step.RoleID,
-					"action_required": "Choose create_role to synthesise a task-scoped role from the cookbook, or register one globally via orchestrator_invoke(subsystem=\"config\", action=\"register_role\").",
-				}, []string{"create_role", "retry", "skip", "abort"})
-
-				// FORCE PERSIST: Ensure Docker volumes see the blocked status immediately
-				s.persistGraph(graph)
-				return
-			}
-
-			// Permanent Error Check: Skill Not Found
-			if strings.Contains(err.Error(), "skill \"") && strings.Contains(err.Error(), "\" not found") {
-				s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
-					"error":      err.Error(),
-					"role":       step.RoleID,
-					"root_cause": string(FailureClassRoleMissing),
-				})
-				// Race fix: protect graph.Status with Mu.
-				// Step is blocked; graph stays running for independent branches.
-				s.setStepAndGraphStatus(step, schemas.StepBlocked, graph, schemas.GraphRunning)
-
-				s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
-					"error":           "Infrastructure failure: " + err.Error(),
-					"action_required": "Please register the missing skill or remove it from the role's bound_skills",
-				}, []string{"create_skill", "retry", "skip", "abort"})
-
-				s.persistGraph(graph)
-				return
-			}
-
-			s.Mu.Lock() // audit C-3: protect field write — persistGraph reads under RLock.
-			step.RetryCount++
-			s.Mu.Unlock()
-			// Fix: check ctx cancellation BEFORE logging EventStepRetrying.
-			// Without this, cancel_task can produce a misleading step_retrying
-			// log entry even though the retry never executes (the select below
-			// would immediately fire ctx.Done and return).
-			if ctx.Err() != nil {
-				return
-			}
-			s.logger.Log(obs.EventStepRetrying, taskID, step.ID, map[string]any{
-				"attempt": step.RetryCount, "error": err.Error(),
-			})
-			if step.RetryCount > step.MaxRetries {
-				break
-			}
-			// Exponential Backoff: base 2s * 2^attempt
-			wait := time.Duration(math.Pow(2, float64(step.RetryCount))) * time.Second
-			// audit P-20-1: use NewTimer+Stop instead of time.After (timer leak).
-			timer := time.NewTimer(wait)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-			continue
 		}
 
-		// ── Sieve: Guardian Check ──────────────────────────────────────────
-		// Use Sieve to check for repetition or schema violations
-		outputText := fmt.Sprintf("%v", result.Output.Result)
-		requiredSchema := ""
-		if step.ExitCriteria == "json" {
-			requiredSchema = "json"
-		}
-
-		if valid, reason := s.guardStepOutput(ctx, result, outputText, requiredSchema); !valid {
-			s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
-				"error":      "Sieve Guardian intercepted",
-				"reason":     reason,
-				"root_cause": string(FailureClassContractViolation),
-			})
-			s.Mu.Lock() // audit C-3: protect field writes — persistGraph reads under RLock.
-			step.LastError = store.SanitizeError("sieve_intercepted: " + reason)
-			step.PartialOutput = outputText
-			step.RetryCount++
-			s.Mu.Unlock()
-			if step.RetryCount > step.MaxRetries {
-				break
-			}
-			// Adjust parameters for retry to break loops
-			dynTemp = setFloat32(0.8)
-
-			// Trigger immediate retry without backoff
-			continue
-		}
-
-		s.Mu.Lock() // audit C-3: protect field write — persistGraph reads under RLock.
-		step.ModelID = result.ModelID
+		s.Mu.Lock()
+		step.ProviderID = result.ProviderID
 		s.Mu.Unlock()
-		s.handleOutput(graph, step, result)
-
-		// ── StagedWorkspace post-step snapshot (success, WIRED 2026-08-21) ──
-		var postSnapshot *SnapshotIndex
-		if stagedWS != nil {
-			if entry, post, serr := stagedWS.RecordPostStepSnapshot(taskID, step.ID, "completed", preSnapshot); serr != nil {
-				s.logger.Log("EventStagingError", taskID, step.ID, map[string]any{"phase": "post_snapshot", "error": serr.Error()})
-			} else {
-				postSnapshot = post
-				s.logger.Log("EventStagingSnapshotRecorded", taskID, step.ID, map[string]any{"diff_summary": entry.DiffSummary})
-			}
-		}
-
-		// ── Read-Dependency Detection (WIRED 2026-08-21, see detectReadDeps'
-		// own doc comment above for the full history) ───────────────────────
-		// handleOutput's call chain persists this step's trace to the task
-		// store (see doSpawn's taskStoreSet call in spawner.go), so it is
-		// available here immediately after handleOutput returns.
-		if stepRes, terr := s.taskStore.Get(ctx, taskID, step.ID); terr == nil && stepRes != nil {
-			if deps := s.detectReadDeps(graph, step.ID, stepRes.Trace, postSnapshot); len(deps) > 0 {
-				step.ReadDeps = deps
-			}
-		}
-
-		// ── JITSessions cleanup (success, WIRED 2026-08-25) ─────────────────
-		if s.JITSessions != nil {
-			s.JITSessions.CloseSessionsForStep(taskID, step.ID)
-		}
-
-		// ── Phase 3.5: Context Tree Transition ───────────────────────────────
-		s.transitionContextTree(graph, step, result)
-
-		// ACAIS: Signal field deposit is handled in handleOutput based on quality.
-
-		// ── Phase 4: Auto-Audit (Conditional Exit) ───────────────────────────
-		if step.Status == schemas.StepOK && step.ExitCriteria != "" {
-			if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
-				if step.AutoRefineCount < step.MaxAutoRefine {
-					step.AutoRefineCount++
-					s.Mu.Lock()
-					step.Status = schemas.StepPending // audit C-3: protect 2-word string write
-					step.LastError = store.SanitizeError(fmt.Sprintf("[%s] Exit criteria not met: %s. Retrying...", failType, reason))
-					s.Mu.Unlock()
-					if ctx.Err() != nil {
-						return
-					}
-					s.logger.Log(obs.EventStepRetrying, taskID, step.ID, map[string]any{
-						"reason": "exit_criteria_fail", "details": reason, "refine_attempt": step.AutoRefineCount, "fail_type": failType,
-					})
-
-					// Specialized recovery prompts (Branching logic)
-					recoveryAdvice := ""
-					switch failType {
-					case schemas.FailurePermission:
-						recoveryAdvice = "It seems like a permission issue. Please check if you need to use a different tool or request elevated access."
-					case schemas.FailureTimeout:
-						recoveryAdvice = "The operation timed out. Consider breaking the task into smaller sub-tasks, increasing efficiency, or using a more performant tool if available."
-					case schemas.FailureConflict:
-						recoveryAdvice = "A state conflict (e.g. file modified by another process) was detected. Please RE-READ the current state (file or UI) before attempting to write again to ensure your changes are based on the latest version."
-					case schemas.FailureSchemaViolation:
-						recoveryAdvice = "Your output violates the required schema. Please strictly follow the formatting instructions provided in the tool definition or task description."
-					default:
-						recoveryAdvice = "Your output failed logical or semantic verification. Please carefully review the 'Reason' above and adjust your approach accordingly."
-					}
-
-					// Adjust prompt for refinement
-					step.Task = fmt.Sprintf("%s\n\n%s\nYour previous output failed verification.\nFailure Category: %s\nReason: %s\nAdvice: %s", step.Task, MarkerRefinementRequired, failType, reason, recoveryAdvice)
-					continue
-				} else {
-					s.Mu.Lock()
-					step.Status = schemas.StepBlocked // audit C-3: protect 2-word string write
-					s.Mu.Unlock()
-					s.addDecision(graph, step, schemas.DecisionStepFailed, map[string]any{
-						"error":  "Failed exit criteria after max refinements",
-						"reason": reason,
-					}, []string{"skip", "abort", "retry"})
-				}
-			}
-		}
-
-		s.runInterceptors(step, result)
-		s.persistGraph(graph)
-		return
-	}
-
-	// Exhausted retries
-	s.Mu.Lock()
-	step.Status = schemas.StepFailed // audit C-3: protect 2-word string write
-	s.Mu.Unlock()
-	s.logger.Log(obs.EventStepFailed, taskID, step.ID, map[string]any{
-		"last_error": step.LastError,
-		"root_cause": string(s.classifyErrorWithSystemOne(errors.New(step.LastError), step.ID, step.RoleID, step.Task)),
-	})
-
-	// ── StagedWorkspace post-step snapshot + rollback (failure, WIRED 2026-08-21) ──
-	if stagedWS != nil {
-		if _, _, serr := stagedWS.RecordPostStepSnapshot(taskID, step.ID, "failed", preSnapshot); serr != nil {
-			s.logger.Log("EventStagingError", taskID, step.ID, map[string]any{"phase": "post_snapshot_failed", "error": serr.Error()})
-		}
-		if preSnapshot != nil {
-			if rerr := stagedWS.Rollback(preSnapshot); rerr != nil {
-				s.logger.Log("EventStagingError", taskID, step.ID, map[string]any{"phase": "rollback", "error": rerr.Error()})
-			} else {
-				// audit fix L2: surface MarkRolledBack failure — previously
-				// swallowed, so a step could be rolled back on disk with no
-				// record, risking re-execution of undone side effects.
-				if merr := stagedWS.MarkRolledBack(step.ID); merr != nil {
-					s.logger.Log("EventStagingError", taskID, step.ID, map[string]any{"phase": "mark_rolled_back", "error": merr.Error()})
-				}
-				s.logger.Log("EventStagingRolledBack", taskID, step.ID, nil)
-			}
+		switch s.finishSuccessfulStep(ctx, graph, step, result, stagedWS, preSnapshot) {
+		case stepSuccessRetry:
+			continue
+		case stepSuccessReturn:
+			return
+		case stepSuccessExhausted:
+			s.finishExhaustedStep(graph, step, stagedWS, preSnapshot)
+			return
+		default:
+			return
 		}
 	}
-
-	// ── JITSessions cleanup (failure, WIRED 2026-08-25) ─────────────────
-	if s.JITSessions != nil {
-		s.JITSessions.CloseSessionsForStep(taskID, step.ID)
-	}
-
-	s.maybeBlock(graph, step)
+	s.finishExhaustedStep(graph, step, stagedWS, preSnapshot)
 }
 
 // resolveStepInputs resolves step.InputMapping into the argument values handed
@@ -850,4 +150,27 @@ func (s *DirectedEngine) resolveStepInputs(ctx context.Context, graph *schemas.T
 	}
 	s.Mu.RUnlock()
 	return resolvedInputs
+}
+
+// estimateStepPromptTokens returns a conservative prompt-side token estimate
+// for a step about to run. It is the look-ahead projection for the budget
+// gate (Phase 0.1b): only the INPUT side (task text + a fixed system-prompt
+// overhead) is estimated, because output tokens cannot be predicted without
+// a tokenizer and are already covered by BudgetGuard's safeMargin. A
+// conservative fixed overhead keeps the estimate from being wildly low on
+// steps whose prompt is mostly role system-prompt rather than task text.
+//
+// Returns 0 when there is nothing to estimate (empty task), which the caller
+// treats as "unknown cost → skip the look-ahead, rely on CheckBudget".
+func estimateStepPromptTokens(step *schemas.Step) int {
+	if step == nil || step.Task == "" {
+		return 0
+	}
+	// Task text dominates the input side; add a fixed conservative allowance
+	// for the role system prompt + tool schema + context blocks. 2000 is a
+	// deliberate floor, not an exact model — it only needs to be in the right
+	// ballpark for the overrun check to be useful, and underestimating here is
+	// bounded by safeMargin on the other side.
+	const systemPromptOverhead = 2000
+	return providers.EstimateTokens(step.Task) + systemPromptOverhead
 }

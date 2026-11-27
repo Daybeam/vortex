@@ -95,6 +95,7 @@ func staleDecisionError(stale []StaleDecision, timeout time.Duration) string {
 // dict. Called while the caller holds s.Mu, from GetStatus, WaitTask and
 // ListGraphs, so every surface a host reads carries the same signal.
 func (s *DirectedEngine) attachStaleDecisionReportLocked(status map[string]any, graph *schemas.TaskGraph, now time.Time) {
+	s.attachDecisionStaleLocked(status, graph, now)
 	timeout := s.decisionStaleTimeout()
 	stale := s.staleFailedDecisionsLocked(graph, now, timeout)
 	if len(stale) == 0 {

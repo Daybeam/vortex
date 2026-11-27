@@ -14,7 +14,7 @@ func (s *intentRouterSubsystem) Init(app *App) error {
 	hub := core.NewContextHub(app.Registry, nil, nil)
 	embedClient := core.NewHubEmbeddingClient(hub)
 	intentRouter := core.NewIntentRouter(embedClient)
-	intentRouter.RefreshEmbeddingsAsync(app.Registry)
+	intentRouter.RefreshEmbeddingsAsync(app.LifecycleCtx, app.Registry)
 	app.IntentRouter = intentRouter
 	return nil
 }

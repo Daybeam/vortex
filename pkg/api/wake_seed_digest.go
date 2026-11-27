@@ -73,15 +73,16 @@ const (
 // and moves on; it is not an error in the round, so it must not abort the digest.
 var errArtifactBinary = errors.New("artifact is binary")
 
-// wakeSeedDigestMode reads VORTEX_WAKE_SEED_DIGEST. Default off: the digest
-// changes what the model sees at the start of a wake turn, so it must be turned
-// on deliberately and measured, exactly like the ETA and watchdog gates.
+// wakeSeedDigestMode reads VORTEX_WAKE_SEED_DIGEST. Default on: the digest
+// gives the wake turn artifact content to quote, without which it cites
+// nothing (Fisher p=1.1e-05, harness-bench 041). Set to off/0/false/no to
+// disable.
 func wakeSeedDigestMode() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("VORTEX_WAKE_SEED_DIGEST"))) {
-	case "on", "1", "true", "yes":
-		return true
+	case "off", "0", "false", "no":
+		return false
 	}
-	return false
+	return true
 }
 
 // wakeArtifactDigest renders the digest for a finished task, or "" when the gate

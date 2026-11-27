@@ -1,10 +1,10 @@
 package tools
 
 import (
-	"github.com/daybeam/vortex/core/capability"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/daybeam/vortex/core/capability"
 	"log"
 	"path/filepath"
 	"strings"
@@ -155,6 +155,7 @@ type App struct {
 	ConfigPath        string
 	RootDir           string // project root dir for absolute path resolution (desktop: walked-up config dir)
 	Tier              string
+	OwnerIsolation    bool // explicit multi-user mode for auth systems without named API keys (for example OAuth)
 	ResourceLoader    *core.ResourceLoader
 	IntentRouter      *core.IntentRouter
 	EmbedClient       core.EmbeddingClient
@@ -168,11 +169,15 @@ type App struct {
 	PendingSkillGC    *core.PendingSkillGC
 	CostTracker       *core.CostTracker
 	DB                *sql.DB
+	LifecycleCtx      context.Context // cancelled on shutdown; passed to subsystems for cancellable background work
 	editionSubsystems []EditionSubsystem
 	archiveStop       chan struct{} // stops the TTL pruning goroutine (audit: was goroutine leak)
 	// shadowWg tracks background shadow-learning goroutines from the proxy
 	// subsystem so Shutdown can wait for them to drain (audit R2).
 	shadowWg sync.WaitGroup
+	// handlerWg tracks subsystem handler goroutines started by Invoke so
+	// Shutdown can wait for in-flight handlers to drain (audit RL-1).
+	handlerWg sync.WaitGroup
 }
 
 // WireQualityTracker creates a QualityTracker, assigns it to app, and returns
@@ -237,6 +242,25 @@ func (app *App) WaitShadow() {
 	app.shadowWg.Wait()
 }
 
+// WaitIntentRouter waits for the IntentRouter's background embedding refresh
+// goroutine to finish (audit FIX 2026-11-24). Nil-safe: when IntentRouter
+// is not wired (non-web editions), this is a no-op. Call during shutdown
+// to prevent goroutine leaks.
+func (app *App) WaitIntentRouter() {
+	if app.IntentRouter != nil {
+		app.IntentRouter.Wait()
+	}
+}
+
+// WaitHandlers waits for all in-flight subsystem handler goroutines to
+// drain (audit RL-1). Call during shutdown so a handler that ignores its
+// context doesn't keep running after the process has started shutting down.
+// The handlers are started with a derived timeout context, so even a
+// non-cooperative handler will eventually exit when that timeout fires.
+func (app *App) WaitHandlers() {
+	app.handlerWg.Wait()
+}
+
 // jsonOK marshals v and returns a text result.
 func jsonOK(v any) (*mcp.CallToolResult, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
@@ -273,7 +297,6 @@ func (app *App) loggedHandler(name string, handler func(context.Context, mcp.Cal
 		// main_web.go:855-861. Without this, stdio tool calls fail with
 		// cross_owner_denied because CheckTaskOwnership sees tier="" (not
 		// admin) and the caller identity doesn't match the task owner.
-		// See docs/53-appworld-transport-fix-20261018.md §4.
 		//
 		// SECURITY FIX (2026-10-19): loggedHandler wraps ALL transports, not
 		// just stdio. If an SSE/HTTP path fails to set AuthTierKey, the request

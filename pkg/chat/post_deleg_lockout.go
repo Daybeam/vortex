@@ -11,7 +11,7 @@ import (
 )
 
 // Post-delegation tool lockout — the lever asked for by §9.11 of
-// docs/plan/DELEGATION_INTENT_TRIGGER_ANALYSIS.md.
+// docs/completed/2026-11-24/DELEGATION_INTENT_TRIGGER_ANALYSIS.md.
 //
 // Measured (235 delegating runs, harness-bench): 82% delegate as their FIRST
 // action, then make a median of 11 more tool calls; execute_code alone accounts
@@ -98,6 +98,7 @@ type postDelegState struct {
 	delegations  int // successful delegate_to_orchestrator calls made BY THIS harness
 	polls        int // status checks that ran for a delegated task
 	pollBlocked  int // status checks refused after the first
+	fastpathHit  bool // at least one delegated task took the single-step inline branch
 }
 
 // armMode resolves the arm lazily, once per harness. Lazy so Run needs no init

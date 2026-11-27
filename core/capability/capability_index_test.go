@@ -12,7 +12,7 @@ import (
 // "QA", "go", "js" from the Cuckoo filter and tag index. These are common
 // capability tags that should be discoverable.
 //
-// See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-2.
+// See docs/completed/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-2.
 func TestCapabilityIndex_TwoCharTokensNotDropped(t *testing.T) {
 	reg := &config.Registry{
 		Skills: map[string]*config.Skill{

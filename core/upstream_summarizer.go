@@ -15,7 +15,7 @@ import (
 // injected to the downstream agent so it can work without reading the
 // full artifact file.
 //
-// See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §2.2.
+// See docs/completed/2026-10-30/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §2.2.
 
 // UpstreamSummarizer turns a long upstream payload into a concise key-facts
 // summary. Implementations must be pure functions (no side effects) and

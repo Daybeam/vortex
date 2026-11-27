@@ -251,9 +251,14 @@ func registerCommandList(s *server.MCPServer, app *App) {
 					defer activeSandboxRuns.Delete(sandboxDir)
 				}
 
-				// Detached context — the request context is already cancelled
-				// by the time this goroutine runs (handler returned).
-				bgCtx, cancel := context.WithTimeout(context.Background(), exec.TotalTimeout)
+			// Lifecycle-aware context: derive from app.LifecycleCtx so the
+			// background command is cancelled on shutdown (audit RL-3).
+			// Falls back to Background when LifecycleCtx is not wired.
+			baseCtx := app.LifecycleCtx
+			if baseCtx == nil {
+				baseCtx = context.Background()
+			}
+			bgCtx, cancel := context.WithTimeout(baseCtx, exec.TotalTimeout)
 				defer cancel()
 
 				var res *core.ExecutionResult

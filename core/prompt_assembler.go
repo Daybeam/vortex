@@ -1,15 +1,11 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"log"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"text/template"
 	"time"
 
 	"github.com/daybeam/vortex/config"
@@ -26,7 +22,7 @@ import (
 // Spawner.buildSystemPrompt delegates to PromptAssembler.Build.
 //
 // The budgetEnforcer implements the model-aware System Prompt budget from
-// docs/architecture/PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md. It is applied
+// docs/completed/2026-09-15/PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md. It is applied
 // as the final step of Build (the runtime two-level interception layer).
 type PromptAssembler struct {
 	expStore       store.IExperienceStore
@@ -38,7 +34,7 @@ type PromptAssembler struct {
 	// archive (ADDED 2026-10-10): ContextArchive for Path D — querying
 	// current-task step summaries to inject into the Warm layer.
 	// Nil-safe: set via SetArchive from Spawner.
-	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
+	// See docs/completed/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
 	archive *ContextArchive
 
 	// projectResolver resolves a taskID to its project space identifier.
@@ -49,13 +45,13 @@ type PromptAssembler struct {
 	// foldEngine (ADDED 2026-10-13): Segment-Based Incremental Fold engine.
 	// Performs reversible compression of sealed segments before budget enforcement.
 	// Nil-safe: when nil, fold is skipped (zero behavior change).
-	// See docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
+	// See docs/completed/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
 	foldEngine *FoldEngine
 
 	// memoryBankStore (ADDED 2026-10-17): injects UserProfile into sub-agent
 	// prompts so spawned agents know user preferences/expertise.
 	// Nil-safe: set via SetMemoryBankStore from Spawner.
-	// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
+	// See docs/completed/2026-10-17/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
 	memoryBankStore *store.MemoryBankStore
 
 	// promptManager (ADDED 2026-10-18): loads external prompt templates
@@ -78,7 +74,7 @@ type PromptAssembler struct {
 	// When subagent duration exceeds the baseline, the budget is tightened
 	// (reduced) to speed up execution. When duration is below baseline,
 	// the budget is gradually restored.
-	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §P2.
+	// See docs/completed/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §P2.
 	dynamicWarmMu      sync.Mutex
 	dynamicWarmBudget  int // 0 = use config value; >0 = override
 	lastSubagentDur    time.Duration
@@ -142,7 +138,7 @@ func (s *PromptAssembler) SetFoldEngine(fe *FoldEngine) {
 
 // SetMemoryBankStore injects the MemoryBankStore for UserProfile injection
 // into sub-agent prompts. Nil-safe: when nil, no UserProfile is injected.
-// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
+// ADDED 2026-10-17. See docs/completed/2026-10-17/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
 func (s *PromptAssembler) SetMemoryBankStore(mb *store.MemoryBankStore) {
 	s.memoryBankStore = mb
 }
@@ -285,7 +281,10 @@ func (s *PromptAssembler) Build(
 	taskID string, // P1-5: for Archive Path D query
 	stepID string, // D-PROMPT-4: for base_role.md template
 ) ([]schemas.ContentBlock, error) {
-	var blocks []schemas.ContentBlock
+	// O14: keep Build as the sequential contract. Phase helpers preserve the
+	// original query/side-effect order as well as the emitted block order.
+	blocks := s.buildRoleAndMemoryBlocks(hub, role, precedents, taskID, stepID)
+
 	// KV-2 (2026-10-27): volatile blocks (anti-pattern, similar-task,
 	// active-context) are collected separately and appended AFTER the
 	// constraints block (the cache marker). These blocks query the
@@ -293,407 +292,15 @@ func (s *PromptAssembler) Build(
 	// during the turn loop (spawner_dospawn.go:652) → they can change
 	// mid-step. Placing them after the stable prefix keeps the prefix
 	// byte-identical across turns → prefix cache hits.
-	var volatileBlocks []schemas.ContentBlock
+	volatileBlocks := s.buildVolatileExperienceBlocks(ctx, hub, role, capability, toolConstraints, taskText, latestError)
 
-	// Prepend Role-specific Instructions (agent.md) - Precedence for KVCache.
-	// Tier 1 (compressible): if the instruction exceeds the governance threshold,
-	// CompressRoleInstruction retains the first 3 + last 2 paragraphs.
-	if role != nil && role.Instruction != "" {
-		instruction := s.budgetEnforcer.CompressRoleInstruction(role.Instruction)
-		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-			Text:         fmt.Sprintf("# Role: %s\n%s", role.Name, instruction),
-			CacheControl: "ephemeral",
-		}, GovTier1, CategoryRoleInstruction))
-	} else if role != nil && s.promptManager != nil {
-		// PromptManager fallback (ADDED 2026-10-18): when a role has no
-		// custom instruction, try loading base_role.md template from prompts/.
-		// Error-safe: on any failure (file missing, parse error), silently
-		// skip — zero behavior change from pre-fallback.
-		tmplCtx := map[string]any{
-			"task": map[string]any{
-				"id":   taskID,
-				"step": stepID,
-				"role": role.Name,
-			},
-			"env": map[string]string{
-				"Time": stablePromptTime(hub).Format(time.RFC3339),
-			},
-		}
-		// D-PROMPT-4 fix (§4.4): log render errors instead of silently dropping.
-		// With missingkey=error, a missing key now returns an error — we log it
-		// but still skip the block (preserve existing skip behavior, but observable).
-		rendered, renderErr := s.promptManager.GetAndRender("base_role.md", tmplCtx)
-		if renderErr != nil {
-			log.Printf("prompt_assembler: base_role.md render failed for task %s: %v", taskID, renderErr)
-		} else if rendered != "" {
-			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-				Text:         rendered,
-				CacheControl: "ephemeral",
-			}, GovTier1, CategoryRoleInstruction))
-		}
-	}
+	blocks = append(blocks, s.buildKnowledgeBlocks(ctx, hub, skillIDs, capability, providerCfg, fewShots, mergedContext, isolation)...)
 
-	// MemoryBank UserProfile injection (ADDED 2026-10-17).
-	// Sub-agents get the same user context as the gateway agent, so they can
-	// tailor output to user expertise/preferences. Only UserProfile is injected
-	// (not full MemoryBank) to avoid token bloat from ActiveContext/Decisions.
-	// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
-	//
-	// L1 fix (DELEGATION_HANDOVER_REDESIGN.md §12.6): in delegation mode the
-	// assembled prompt is handed to an external subagent (the envelope). The
-	// MemoryBank is a process-global singleton with no owner parameter, so
-	// injecting UserProfile here would leak the operator's (or a prior user's)
-	// expertise/preferences/communication-style to every SaaS caller. Skip
-	// injection in delegation mode; the per-owner path (§12.9.3) is a larger
-	// change that requires plumbing ownerID through Build and is out of scope.
-	if s.memoryBankStore != nil && s.registry != nil && s.registry.System.MemoryBankEnabledEffective() && !s.registry.System.DelegationMode {
-		if mb, err := s.memoryBankStore.Load(); err == nil && mb != nil {
-			up := mb.UserProfile
-			if len(up.Expertise) > 0 || len(up.Preferences) > 0 || up.CommunicationStyle != "" {
-				var b strings.Builder
-				b.WriteString("\n## User Context\n")
-				if len(up.Expertise) > 0 {
-					b.WriteString("Expertise: " + strings.Join(up.Expertise, ", ") + "\n")
-				}
-				if len(up.Preferences) > 0 {
-					b.WriteString("Preferences: " + strings.Join(up.Preferences, ", ") + "\n")
-				}
-				if up.CommunicationStyle != "" {
-					b.WriteString("Communication style: " + up.CommunicationStyle + "\n")
-				}
-				blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-					Text:         b.String(),
-					CacheControl: "ephemeral",
-				}, GovTier1, CategoryRoleInstruction))
-			}
-		}
-	}
-
-	// Epistemic Grounding Rule (self-healing §2): injected whenever the memory
-	// system is active. Tells sub-agents that long-term memory and past
-	// experience are heuristics, NOT immutable truth — fresh tool output and
-	// current observations always win over cached facts. Prevents "epistemic
-	// rigidity" where agents blindly trust outdated API contracts, revoked
-	// preferences, or superseded document states.
-	if s.registry != nil && s.registry.System.MemoryBankEnabledEffective() {
-		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-			Text: "\n## ⚠️ Epistemic Grounding Rule\n" +
-				"Long-term memory and past experience are heuristics, NOT immutable truth. " +
-				"If any cached fact regarding external APIs, user constraints, document states, or environment conditions " +
-				"conflicts with fresh tool output or current observation, TRUST THE TOOL/OBSERVATION. " +
-				"Emit a correction memo if memory is stale.\n",
-			CacheControl: "ephemeral",
-		}, GovTier1, CategoryRoleInstruction))
-	}
-
-	// Priority 6: Inject Semantic Precedents (Cognitive Feedback Loop).
-	// Tier 3 (trimmable): Top-N hard cap (precedentsTopN=2) + single-sentence
-	// summary per §4.2.
-	if len(precedents) > 0 {
-		currentFingerprints := s.collectCurrentSchemaFingerprints()
-		var filtered []*schemas.DecisionNode
-		var dropped, unbound int
-		for _, p := range precedents {
-			if len(p.SchemaHashes) == 0 {
-				unbound++
-				filtered = append(filtered, p)
-				continue
-			}
-			if schemas.PrecedentPassesSchemaGate(p.SchemaHashes, currentFingerprints) {
-				filtered = append(filtered, p)
-			} else {
-				dropped++
-			}
-		}
-		if dropped > 0 && s.logger != nil {
-			s.logger.Log(obs.EventSchemaRotQuarantine, "", "", map[string]any{
-				"precedents_dropped": dropped,
-				"precedents_unbound": unbound,
-			})
-		}
-		if len(filtered) > 0 {
-			topPrecedents := s.budgetEnforcer.TopNPrecedents(filtered, precedentsTopN)
-			var pPart strings.Builder
-			pPart.WriteString("# Past Decision Precedents\n")
-			pPart.WriteString("The following reasoning paths were used successfully for similar tasks under the tool versions recorded with each entry. Verify the current tool schema before reusing any call pattern:\n\n")
-			for _, p := range topPrecedents {
-				pPart.WriteString("## Task Intent Similarity: ")
-				pPart.WriteString(p.Outcome)
-				pPart.WriteString("\n")
-				pPart.WriteString(s.budgetEnforcer.SummarizePrecedent(p))
-				pPart.WriteString("\n\n")
-			}
-			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-				Text: pPart.String(),
-			}, GovTier3, CategoryPastPrecedents))
-		}
-	}
-
-	// Anti-Cliff Priority 6+: Inject Anti-Pattern Precedents into ProtectedZone
-	// (zero-compression) so historical pitfalls are never lost to context
-	// compression. ADDED (2026-08-27).
-	antiPatternText := s.resolveAntiPatternWarnings(capability, toolConstraints)
-	if antiPatternText != "" {
-		volatileBlocks = append(volatileBlocks, MarkProtectedWithCategory(schemas.ContentBlock{
-			Text: antiPatternText,
-		}, CategoryAntiPattern))
-	}
-
-	// Historical Similar Task Patterns injection
-	similarTaskText := s.resolveSimilarTaskExperience(ctx, capability)
-	if similarTaskText != "" {
-		volatileBlocks = append(volatileBlocks, MarkProtectedWithCategory(schemas.ContentBlock{
-			Text: similarTaskText,
-		}, CategorySimilarTask))
-
-		// Embedding model compatibility check (ADDED 2026-09-06)
-		// If the stored patterns were built with a different embedding model
-		// than the currently active one, log a warning suggesting Reindex.
-		// This check runs at prompt-build time (not query time) because
-		// BuildPrompt has access to the ContextHub.
-		if s.expStore != nil && hub != nil {
-			if embedClient := hub.GetEmbeddingClient(); embedClient != nil {
-				_, currentModel, _ := embedClient.EmbedWithModel(ctx, "")
-				if currentModel != "" {
-					patterns := s.expStore.QuerySimilarPatterns(ctx, []string{capability}, 2)
-					for _, p := range patterns {
-						if p.EmbeddingModel != "" && p.EmbeddingModel != currentModel {
-							s.logger.Log("EventEmbeddingModelMismatch", "", "", map[string]any{
-								"task_pattern":  p.TaskType,
-								"stored_model":  p.EmbeddingModel,
-								"current_model": currentModel,
-								"action":        "reindex_recommended",
-							})
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// === Phase 1: Activate Experience Evolution Loop (ActiveContextAssembler) ===
-	// Dynamically assemble precise historical pitfalls, error modes, and
-	// expert critiques relevant to current intent. (ADDED 2026-09-09)
-	//
-	// FIX (2026-09-09): this used to be nested inside the
-	// `if similarTaskText != ""` block above, which gates it on an entirely
-	// unrelated signal (whether QuerySimilarPatterns found anything) -- a
-	// step with zero similar task patterns but a directly relevant
-	// failure-mode precedent would never see it. Moved out so it runs
-	// independently, gated only on s.expStore being available.
-	roleID := ""
-	if role != nil {
-		roleID = role.ID
-	}
-	if s.expStore != nil {
-		// P0-1 fix (2026-10-10): get embedClient from hub instead of nil.
-		// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §1.3 + §5.
-		var embedClient store.IEmbeddingClient
-		warmBudget := s.getEffectiveWarmBudget() // P2-11: dynamic budget
-		warmEmbedEnabled := true
-		if s.registry != nil {
-			// WarmContextEmbedEnabled defaults to true; only disable if
-			// explicitly set to false in config.
-			// (bool zero-value is false, so we can't just check the field —
-			// we need a way to distinguish "not set" from "set to false".
-			// For simplicity, we treat false as "disabled" and true as
-			// "enabled". Users who want the old behavior can set it to false.)
-		}
-		if warmEmbedEnabled && hub != nil {
-			embedClient = hub.GetEmbeddingClient()
-		}
-		assembler := NewActiveContextAssembler(s.expStore, embedClient, warmBudget)
-		// Pass real taskText and latestError into Hot Tier, capability/roleID into Warm/Cold tiers
-		if contextStr := assembler.Assemble(ctx, taskText, "", latestError, capability, roleID); contextStr != "" {
-			volatileBlocks = append(volatileBlocks, MarkProtectedWithCategory(schemas.ContentBlock{
-				Text: contextStr,
-			}, CategoryActiveContext))
-		}
-	}
-
-	// FMC Phase 3: static per-model failure-mode profile (GetFailureModeProfile).
-	// Distinct from the Assemble() call above (which surfaces experience
-	// relevant to THIS capability/error); this surfaces what THIS model tends
-	// to get wrong in general. ADDED (2026-09-09).
-	// Tier 2 (trimmable): per §5, failure profiles are dropped before role
-	// instruction compression but after Tier 3.
-	if failureModeProfileText := s.resolveFailureModeProfile(providerCfg.Model); failureModeProfileText != "" {
-		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-			Text:         failureModeProfileText,
-			CacheControl: "ephemeral",
-		}, GovTier2, CategoryFailureProfile))
-	}
-
-	// Inject Cookbook if present.
-	// Tier 2 (trimmable): per §4.3, only the TOC + capability anchor section
-	// is injected, never the full cookbook text.
-	if cookbookSource, ok := providerCfg.Extra["cookbook_source"].(string); ok && cookbookSource != "" {
-		if content, err := s.resourceLoader.Fetch(ctx, cookbookSource); err == nil {
-			indexed := s.budgetEnforcer.IndexCookbook(content, capability)
-			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-				Text: fmt.Sprintf("# Model Execution Cookbook\n%s", indexed),
-			}, GovTier2, CategoryCookbook))
-		}
-	}
-
-	// Inject Skill Prompts. See buildSkillPromptBlocks for the progressive
-	// disclosure rules.
-	blocks = append(blocks, s.buildSkillPromptBlocks(hub, skillIDs, providerCfg)...)
-
-	// Inject Few-Shot Examples for tool calls.
-	// Tier 3 (trim first): few-shots are valuable but expendable under budget pressure.
-	if len(fewShots) > 0 {
-		var fsPart strings.Builder
-		fsPart.WriteString("# Tool Call Examples\n")
-		fsPart.WriteString("The following examples demonstrate the expected format for tool arguments based on similar user intents:\n\n")
-		for _, ex := range fewShots {
-			fsPart.WriteString(ex + "\n\n")
-		}
-		blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-			Text: fsPart.String(),
-		}, GovTier3, CategoryFewShot))
-	}
-
-	// Inject Tree Context.
-	// Tier 3 (trim first): per §4.5, apply a sliding window — the most recent
-	// treePathActiveWindow Active/Running nodes stay fully expanded; older
-	// resolved nodes collapse to single-line ASSERT statements.
-	if path, ok := mergedContext["path"].([]map[string]any); ok && len(path) > 0 && !isolation {
-		archetype := providerCfg.Archetype
-		if archetype == "" {
-			archetype = config.ArchetypeAR
-		}
-
-		windowedPath := s.budgetEnforcer.SlidingWindowTreePath(path)
-		treeText := s.budgetEnforcer.RenderCollapsedTreePath(windowedPath, archetype)
-		if treeText != "" {
-			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-				Text: treeText,
-			}, GovTier3, CategoryTreePath))
-		}
-	}
-
-	var constraintsPart strings.Builder
-	if role != nil && role.Rules != "" {
-		constraintsPart.WriteString("## Hard Rules & Constraints\n")
-		constraintsPart.WriteString(role.Rules)
-		constraintsPart.WriteString("\n\n")
-	}
-
-	// A role may opt out of the framework's own framing; see Role.MinimalPrompt.
-	minimalPrompt := role != nil && role.MinimalPrompt
-
-	if tc := schemas.ToolConstraintFragment(toolConstraints); tc != "" {
-		constraintsPart.WriteString(tc)
-	} else {
-		// General tool usage instruction when not restricted
-		constraintsPart.WriteString("\n## Tool Usage\nYou have access to multiple tools. You MUST use them whenever they can help you fulfill the task or verify information. Do not just describe what you would do; actually call the tools.")
-	}
-	if !minimalPrompt {
-		// Both fragments below assert things about the role's surface and its
-		// answer shape. They are right for a general executor and wrong for a
-		// role that owns its own contract — see Role.MinimalPrompt.
-		//
-		// The surface fragment is rendered from the SAME policy the dispatcher
-		// enforces (coreToolPolicyFromRole; spawner_mcp.go filters schemas with
-		// it, spawner_tool_exec.go refuses calls with it). A hardcoded list was
-		// wrong the moment appworld_agent set core_tools to read_file/write_file:
-		// the prompt kept advertising a code sandbox the role no longer had, and
-		// the model — measured 2026-10-19 on 4fab96f_3, 7 of 8 core calls —
-		// answered by writing code against a sandbox with no app data instead of
-		// calling the MCP tools that did. Advertisement follows capability.
-		corePol := coreToolPolicyFromRole(role)
-		hasWrite := corePol.allows("write_file")
-		hasRead := corePol.allows("read_file")
-		hasCode := corePol.allows("execute_code")
-		if hasWrite || hasRead || hasCode {
-			if hasWrite || hasRead {
-				constraintsPart.WriteString("\n\n## Core File & Code Tools\n")
-			} else {
-				constraintsPart.WriteString("\n\n## Core Code Tool\n")
-			}
-			constraintsPart.WriteString("You have access to built-in tools:\n")
-			if hasWrite {
-				constraintsPart.WriteString("- **write_file**: Write text/JSON to a file under the task output directory. Use for saving reports, results, or generated content.\n")
-			}
-			if hasRead {
-				constraintsPart.WriteString("- **read_file**: Read a file from the task output directory. Large files are auto-truncated.\n")
-			}
-			if hasCode {
-				constraintsPart.WriteString("- **execute_code**: Run code in python/node/bun/lua for computation or data processing.\n")
-			}
-			if hasWrite || hasRead {
-				if hasCode {
-					constraintsPart.WriteString("Use write_file/read_file for ALL file operations. Use execute_code for computation. Do not search for non-existent file tools.\n")
-				} else {
-					// Naming the absence is load-bearing, not pedantry: without it a
-					// model that wants a computation has no reason to prefer a tool
-					// call over inventing a sandbox invocation, and burns its turns
-					// on a refusal loop.
-					constraintsPart.WriteString("Use write_file/read_file for ALL file operations. Do not search for non-existent file tools.\n")
-				}
-			}
-			// The output directory is per-TASK, not per-step: spawner_tool_exec.go
-			// resolves it as filepath.Join(outputBase, req.TaskID), and every step
-			// of a DAG shares that TaskID. So it is the default hand-off channel
-			// between steps — the one that needs no planner annotation, no
-			// InputMapping, and no workspace key. Saying so is load-bearing: a step
-			// that does not know a predecessor wrote there will re-derive the same
-			// data with the same tools, which is both wasted turns and (measured
-			// 2026-10-19, 4fab96f_3) a run that hits MAX_TURNS_EXHAUSTED.
-			switch {
-			case hasRead && hasWrite:
-				constraintsPart.WriteString("This output directory is SHARED by every step of this task. A predecessor step may have written intermediate results here — list it and read those files before re-deriving anything an earlier step already produced. When your own result is large and a later step only needs the conclusion, write the distilled version here instead of making the next step reconstruct it.\n")
-			case hasRead:
-				constraintsPart.WriteString("This output directory is SHARED by every step of this task. A predecessor step may have written intermediate results here — list it and read those files before re-deriving anything an earlier step already produced.\n")
-			case hasWrite:
-				constraintsPart.WriteString("This output directory is SHARED by every step of this task, so a later step can read what you write here. When your result is large and a later step only needs the conclusion, write the distilled version here instead of passing the whole thing through your answer.\n")
-			}
-			// D4 fix (DELEGATION_HANDOVER_REDESIGN.md §4.4): in delegation mode,
-			// append the absolute path so the host knows WHERE the shared output
-			// directory is. Without this, the prompt says "shared output
-			// directory" but never gives the path — the host cannot write/read.
-			if s.registry.System.DelegationMode {
-				s.outputBaseMu.Lock()
-				ob := s.outputBase
-				s.outputBaseMu.Unlock()
-				if ob != "" {
-					constraintsPart.WriteString(fmt.Sprintf("The absolute path is %q; write deliverables there so later steps can read them.\n", filepath.Join(ob, taskID)))
-				}
-				// D4b (DELEGATION_HANDOVER_REDESIGN.md §4.4): the deliverable
-				// contract. handleStepSuccess registers a step's output file ONLY
-				// when the result carries "output_ref" (a path relative to the task
-				// output directory). Without this line a delegated host writes the
-				// file correctly but graph.output_files stays empty, so the caller
-				// cannot discover the deliverable from get_task_status.
-				constraintsPart.WriteString("If you produce a deliverable file, set \"output_ref\" in your final JSON result to its path relative to the task output directory (e.g. \"report.md\"), optionally alongside \"summary\" and \"format\". The orchestrator registers it as this step's output file.\n")
-			}
-		} else if corePol.restricted {
-			// Restricted to nothing: say so once, without a heading, so the model
-			// does not spend a turn looking for tools that were deliberately
-			// withheld. This is the planner's shape.
-			constraintsPart.WriteString("\n\nThere are no built-in file or code tools available to you in this role. Everything you know must come from the tools listed above.\n")
-		}
-		constraintsPart.WriteString("\n\n")
-		constraintsPart.WriteString(schemas.BuildOutputConstraintWithTemplate(capability, s.registry.PromptOverrides.OutputContract))
-	} else {
-		constraintsPart.WriteString("\n\n")
-	}
-
-	// Template execution on the combined final part
-	tmpl, err := template.New("system").Parse(constraintsPart.String())
+	constraintsBlock, err := s.buildConstraintsBlock(role, capability, providerCfg, toolConstraints, mergedContext, taskID)
 	if err != nil {
-		return nil, fmt.Errorf("template parse error: %w", err)
+		return nil, err
 	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, mergedContext); err != nil {
-		return nil, fmt.Errorf("template execute error: %w", err)
-	}
-	blocks = append(blocks, MarkProtectedWithCategory(schemas.ContentBlock{
-		Text:         buf.String(),
-		CacheControl: "ephemeral", // Marker 1: End of System Prompt
-	}, CategoryConstraints))
+	blocks = append(blocks, constraintsBlock)
 
 	// KV-2 (2026-10-27): append volatile blocks (anti-pattern, similar-task,
 	// active-context) AFTER the cache marker so they don't poison the stable
@@ -701,74 +308,8 @@ func (s *PromptAssembler) Build(
 	// change mid-step (UpsertDecisionPrecedent writes during the turn loop).
 	blocks = append(blocks, volatileBlocks...)
 
-	// ─── Runtime Two-Level Interception (§5) ───────────────────────────
-	// After assembling all blocks, enforce the model-aware System Prompt
-	// budget. If the total estimated tokens exceed the budget, the tiered
-	// KV-2 (2026-10-25): archive blocks moved to the END of the block list
-	// (after all stable blocks) so the stable prefix (role + constraints +
-	// tools + few-shots) is byte-identical across turns → prefix cache hits.
-	// The archive changes mid-step (Archive.Append during the turn loop) →
-	// placing it after the stable blocks prevents it from invalidating the
-	// cacheable prefix.
-	if s.archive != nil && taskID != "" {
-		stepSummaries := s.archive.SearchRecentStepSummaries(taskID, s.ProjectOf(taskID), 3)
-		if len(stepSummaries) > 0 {
-			var archivePart strings.Builder
-			archivePart.WriteString("# Recent Step Summaries (Same Task)\n")
-			archivePart.WriteString("The following summaries are from previously completed steps in this task. Use them to understand what has already been done:\n\n")
-			for _, sm := range stepSummaries {
-				stepLabel := sm.NodeID
-				if stepLabel == "" && len(sm.StepIDs) > 0 {
-					stepLabel = sm.StepIDs[0]
-				}
-				if stepLabel == "" {
-					stepLabel = "unknown"
-				}
-				archivePart.WriteString(fmt.Sprintf("- **Step %s**: %s\n", stepLabel, sm.Summary))
-			}
-			blocks = append(blocks, TagBlockWithCategory(schemas.ContentBlock{
-				Text:         archivePart.String(),
-				CacheControl: "ephemeral",
-			}, GovTier2, CategoryArchiveSummary))
-		}
-	}
-
-	blocks = append(blocks, s.shapeMismatchBlock()...)
-
-	// trimming pipeline drops Tier 3 → Tier 2 → compresses Tier 1, never
-	// touching Protected blocks.
-	//
-	// Fold engine runs FIRST: it folds sealed segments into summaries
-	// (reversible, incremental, semantic boundaries). Then the enforcer
-	// handles any remaining overflow via tier drops + hard truncate.
-	if providerCfg != nil {
-		budgetTokens := providerCfg.GetMaxSystemPromptTokens()
-
-		// Phase 0: Segment-based incremental fold (before budget enforcement).
-		if s.foldEngine != nil {
-			blocks = s.foldEngine.FoldSealedSegments(blocks, taskID, budgetTokens)
-		}
-
-		// Phase 1-4: Tiered budget enforcement (existing, unchanged).
-		blocks = s.budgetEnforcer.EnforceBudget(blocks, budgetTokens)
-	}
-
-	// ── Token-proportion observability snapshot ───────────────────────────
-	// Capture the *actual* (post-budget) system-prompt breakdown so the
-	// observability UI can visualize where the System Prompt budget is spent.
-	// This is the real data the /api/context/profile endpoint surfaces —
-	// skills / mcp / rules / precedents all appear as labeled categories.
-	budgetTokens, reserveTokens := 0, 0
-	model, provider := "", ""
-	if providerCfg != nil {
-		budgetTokens = providerCfg.GetMaxSystemPromptTokens()
-		reserveTokens = providerCfg.GetReserveTokens()
-		model = providerCfg.Model
-		provider = providerCfg.Provider
-	}
-	s.setLastProfile(s.ComputeContextProfile(blocks, budgetTokens, reserveTokens, model, provider))
-
-	return blocks, nil
+	blocks = s.appendArchiveAndShapeBlocks(blocks, taskID)
+	return s.finalizePromptBlocks(blocks, providerCfg, taskID), nil
 }
 
 // buildSkillPromptBlocks renders the skill section of the system prompt.
@@ -861,16 +402,27 @@ func (s *PromptAssembler) resolveAntiPatternWarnings(capability string, toolCons
 		return ""
 	}
 
-	var warn strings.Builder
-	warn.WriteString("# ⚠️ Historical Anti-Pattern Warnings\n")
-	warn.WriteString("The following development pitfalls have occurred in this codebase before. DO NOT repeat them — follow the correct pattern:\n\n")
+	currentFingerprints := s.collectCurrentSchemaFingerprints()
+	var filtered []store.AntiPatternPrecedent
+	var dropped int
 	for _, p := range precedents {
-		warn.WriteString(fmt.Sprintf("## %s\n", p.AntiPattern))
-		warn.WriteString(fmt.Sprintf("- **Symptom**: %s\n", p.Symptom))
-		warn.WriteString(fmt.Sprintf("- **Trigger**: %s\n", p.TriggerCondition))
-		warn.WriteString(fmt.Sprintf("- **✅ Correct Pattern**: %s\n\n", p.CorrectPattern))
+		if schemas.PrecedentPassesSchemaGate(p.SchemaHashes, currentFingerprints) {
+			filtered = append(filtered, p)
+		} else {
+			dropped++
+		}
 	}
-	return warn.String()
+	if dropped > 0 {
+		s.logger.Log("EventSchemaRotQuarantine", "", "", map[string]any{
+			"source":             "prompt_assembler_antipattern",
+			"precedents_dropped": dropped,
+			"precedents_kept":    len(filtered),
+		})
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	return formatAntiPatternWarnings(filtered)
 }
 
 // resolveSimilarTaskExperience queries the ExperienceStore for similar past task
@@ -962,7 +514,7 @@ func (s *PromptAssembler) shapeMismatchBlock() []schemas.ContentBlock {
 // returns a warning string that should be injected into the prompt to prevent
 // the model from blindly merging incompatible data.
 //
-// See docs/plan/STRUCTURED_TOOL_METADATA_DESIGN.md §2.3.
+// See docs/completed/STRUCTURED_TOOL_METADATA_DESIGN.md §2.3.
 func CheckDataShapeMismatch(interactions []store.ToolInteraction) string {
 	seen := make(map[string]bool)
 	var shapes []string

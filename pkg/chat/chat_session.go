@@ -23,6 +23,16 @@ const (
 	maxChatMessages     = 5000  // audit P-MED-9: cap on in-memory messages; persisted to disk/SQLite so eviction is safe
 )
 
+// AwaitingReplyInfo records that a user message is awaiting an assistant
+// reply. Set on turn start, cleared on turn completion. Persisted to the
+// chat_pending_replies table so the startup scan can detect turns
+// interrupted by a crash. See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md.
+type AwaitingReplyInfo struct {
+	MessageID string    `json:"message_id"`
+	Content   string    `json:"content"`
+	StartedAt time.Time `json:"started_at"`
+}
+
 // ChatSession holds a chat thread's messages as a tree (map by ID) and its
 // in-memory event ring buffer (ephemeral, used for SSE Last-Event-ID resume).
 // Messages form a tree via ChatMessage.ParentID; ActiveLeafID points at the
@@ -38,9 +48,14 @@ type ChatSession struct {
 	// Live Co-pilot shared session fields (ADDED 2026-10-28).
 	// OwnerID is the session owner's user ID. For shared sessions, guest
 	// requests are routed through the owner's approval pipeline by overriding
-	// AuthOwnerKey with this value. See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md.
+	// AuthOwnerKey with this value. See docs/completed/2026-10-30/LIVE_COPILOT_SHARED_SESSION_DESIGN.md.
 	OwnerID string `json:"owner_id,omitempty"`
 	Shared  bool   `json:"shared,omitempty"`
+
+	// AwaitingReply is non-nil while a user message is awaiting an assistant
+	// reply. Persisted to chat_pending_replies for crash recovery.
+	// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md.
+	AwaitingReply *AwaitingReplyInfo `json:"awaiting_reply,omitempty"`
 
 	mu         sync.Mutex
 	events     []ChatEvent
@@ -100,6 +115,34 @@ func (s *ChatSession) SetShared(shared bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Shared = shared
+}
+
+// GetAwaitingReply returns the pending reply info, or nil if no turn is
+// outstanding (thread-safe).
+func (s *ChatSession) GetAwaitingReply() *AwaitingReplyInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.AwaitingReply == nil {
+		return nil
+	}
+	cp := *s.AwaitingReply
+	return &cp
+}
+
+// SetAwaitingReply marks that a user message is awaiting an assistant reply
+// (thread-safe). Called on turn start.
+func (s *ChatSession) SetAwaitingReply(info *AwaitingReplyInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.AwaitingReply = info
+}
+
+// ClearAwaitingReply clears the pending reply mark (thread-safe). Called on
+// turn completion.
+func (s *ChatSession) ClearAwaitingReply() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.AwaitingReply = nil
 }
 
 // AddEvent assigns the next sequence number and appends to the ring buffer.
@@ -242,6 +285,17 @@ func (s *ChatSession) AppendMessage(msg ChatMessage, parentID string) {
 	}
 	m := msg
 	s.Messages[m.ID] = &m
+	// Register the client-supplied id for non-user messages too. The web client
+	// creates assistant messages with a deterministic ClientID ("asst_"+
+	// <user message_id>) and quotes that id; without registration here
+	// resolveClientIDLocked cannot map it to the persisted UUID, so every quote
+	// to an assistant message breaks after a history reload (2026-11-22).
+	if m.ClientID != "" {
+		if s.clientIDs == nil {
+			s.clientIDs = make(map[string]string)
+		}
+		s.clientIDs[m.ClientID] = m.ID
+	}
 	s.dirtyMsgs = append(s.dirtyMsgs, m.ID) // audit PERF-6: track new messages for incremental persist
 	if s.RootID == "" {
 		s.RootID = m.ID
@@ -458,6 +512,7 @@ func (s *ChatSession) Clear() {
 	s.RootID = ""
 	s.ActiveLeafID = ""
 	s.ActiveRoleID = ""
+	s.AwaitingReply = nil
 	s.events = nil
 	s.seenMsg = make(map[string]bool)
 	s.clientIDs = make(map[string]string)
@@ -504,39 +559,103 @@ func (st *ChatSessionStore) dbCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, 30*time.Second)
 }
 
-func (st *ChatSessionStore) GetOrCreate(id string) *ChatSession {
+// ListPendingReplies returns all sessions with an outstanding pending reply
+// mark from the DB backend. Returns nil if no backend is configured.
+// Used by the startup scan for crash recovery.
+func (st *ChatSessionStore) ListPendingReplies(ctx context.Context) ([]store.PendingReplyRow, error) {
 	st.mu.Lock()
-	defer st.mu.Unlock()
+	backend := st.backend
+	st.mu.Unlock()
+	if backend == nil {
+		return nil, nil
+	}
+	return backend.ListPendingReplies(ctx)
+}
+
+// ClearPendingReply removes the pending reply mark for a session from the
+// DB backend. No-op if no backend is configured.
+func (st *ChatSessionStore) ClearPendingReply(ctx context.Context, sessionID string) error {
+	st.mu.Lock()
+	backend := st.backend
+	st.mu.Unlock()
+	if backend == nil {
+		return nil
+	}
+	return backend.ClearPendingReply(ctx, sessionID)
+}
+
+func (st *ChatSessionStore) getOrCreateLocked(id, ownerID string) (*ChatSession, bool) {
 	now := time.Now()
 	if s, ok := st.sessions[id]; ok {
 		s.lastAccess = now
-		return s
+		return s, false
 	}
 	s := &ChatSession{
 		ID:         id,
+		OwnerID:    ownerID,
 		Messages:   make(map[string]*ChatMessage),
 		CreatedAt:  now,
 		seenMsg:    make(map[string]bool),
 		lastAccess: now,
 	}
-	st.loadLocked(s)
+	found := st.loadLocked(s)
 	st.sessions[id] = s
+	st.evictLocked()
+	return s, !found
+}
 
-	// Evict least-recently-accessed session if cache exceeds max size.
-	// Sessions are persisted to disk/SQLite, so eviction just drops the
-	// in-memory copy — the session can be reloaded on next access.
-	if len(st.sessions) > maxCachedSessions {
-		var oldestID string
-		var oldestTime time.Time
-		for sid, ss := range st.sessions {
-			if oldestID == "" || ss.lastAccess.Before(oldestTime) {
-				oldestID = sid
-				oldestTime = ss.lastAccess
-			}
-		}
-		delete(st.sessions, oldestID)
+func (st *ChatSessionStore) evictLocked() {
+	if len(st.sessions) <= maxCachedSessions {
+		return
 	}
+	var oldestID string
+	var oldestTime time.Time
+	for sid, ss := range st.sessions {
+		if oldestID == "" || ss.lastAccess.Before(oldestTime) {
+			oldestID = sid
+			oldestTime = ss.lastAccess
+		}
+	}
+	delete(st.sessions, oldestID)
+}
+
+// GetOrCreate is for internal/test/background callers that do not represent an
+// authenticated resource request. Request paths use GetOrCreateOwned instead.
+func (st *ChatSessionStore) GetOrCreate(id string) *ChatSession {
+	st.mu.Lock()
+	s, _ := st.getOrCreateLocked(id, "")
+	st.mu.Unlock()
 	return s
+}
+
+// GetOrCreateOwned atomically loads/creates a session and authorizes an existing
+// one. authorize runs under the store lock, closing the load/check race. A new
+// owner is never applied over persisted metadata.
+// See docs/completed/2026-11-27/OWNER_ISOLATION_SCHEDULE_SESSION_INBOX.md.
+func (st *ChatSessionStore) GetOrCreateOwned(id, ownerID string, ownerRequired bool, authorize func(*ChatSession) error) (*ChatSession, error) {
+	st.mu.Lock()
+	s, created := st.getOrCreateLocked(id, ownerID)
+	if created && ownerRequired && ownerID == "" {
+		delete(st.sessions, id)
+		st.mu.Unlock()
+		return nil, fmt.Errorf("owner identity is required")
+	}
+	if authorize != nil {
+		if err := authorize(s); err != nil {
+			if created {
+				delete(st.sessions, id)
+			}
+			st.mu.Unlock()
+			return nil, err
+		}
+	}
+	st.mu.Unlock()
+	if created {
+		if err := st.Persist(s); err != nil {
+			log.Printf("WARN: chat_session: initial Persist failed for %s: %v", id, err)
+		}
+	}
+	return s, nil
 }
 
 func (st *ChatSessionStore) Get(id string) *ChatSession {
@@ -549,23 +668,43 @@ func (st *ChatSessionStore) Get(id string) *ChatSession {
 	return s
 }
 
+// Load returns an existing cached or persisted session without creating a
+// placeholder. Read endpoints use this so an unknown ID remains a 404.
+func (st *ChatSessionStore) Load(id string) *ChatSession {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s := st.sessions[id]; s != nil {
+		s.lastAccess = time.Now()
+		return s
+	}
+	s := &ChatSession{ID: id, Messages: make(map[string]*ChatMessage), CreatedAt: time.Now()}
+	if !st.loadLocked(s) {
+		return nil
+	}
+	s.seenMsg = make(map[string]bool)
+	s.lastAccess = time.Now()
+	st.sessions[id] = s
+	st.evictLocked()
+	return s
+}
+
 // ListSessions returns recent sessions from the backend (DB). If the DB
 // returns no sessions, falls back to listing session JSON files from the
 // directory. This handles the case where SaveSession silently fails (e.g.
 // lifecycle context cancelled) but JSON files were still written.
-func (st *ChatSessionStore) ListSessions(ctx context.Context, limit, offset int) ([]store.ChatSessionRow, error) {
+func (st *ChatSessionStore) ListSessions(ctx context.Context, scope store.SessionScope, limit, offset int) ([]store.ChatSessionRow, error) {
 	st.mu.Lock()
 	backend := st.backend
 	dir := st.dir
 	st.mu.Unlock()
 	if backend != nil {
-		rows, err := backend.ListSessions(ctx, limit, offset)
+		rows, err := backend.ListSessions(ctx, scope, limit, offset)
 		if err == nil && len(rows) > 0 {
 			return rows, nil
 		}
-		// DB returned empty or error — fall through to file-based fallback
+		// DB returned empty or error — fall through using the SAME scope.
 	}
-	// File-based fallback: list *.json files in dir, sorted by mod time desc.
+	// File-based fallback: read ownership metadata and filter before pagination.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, nil // dir doesn't exist or unreadable — not an error for caller
@@ -580,10 +719,20 @@ func (st *ChatSessionStore) ListSessions(ctx context.Context, limit, offset int)
 			continue
 		}
 		id := strings.TrimSuffix(entry.Name(), ".json")
-		rows = append(rows, store.ChatSessionRow{
-			ID:        id,
-			CreatedAt: info.ModTime(),
-		})
+		row := store.ChatSessionRow{ID: id, CreatedAt: info.ModTime()}
+		if raw, err := os.ReadFile(filepath.Join(dir, entry.Name())); err == nil {
+			var data chatSessionData
+			if json.Unmarshal(raw, &data) == nil {
+				row.OwnerID = data.OwnerID
+				row.Shared = data.Shared
+				row.RootID = data.RootID
+				row.ActiveLeafID = data.ActiveLeafID
+			}
+		}
+		if !scope.All && row.OwnerID != scope.Owner {
+			continue
+		}
+		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].CreatedAt.After(rows[j].CreatedAt)
@@ -602,10 +751,13 @@ func (st *ChatSessionStore) ListSessions(ctx context.Context, limit, offset int)
 
 // chatSessionData is the on-disk format for tree-based sessions.
 type chatSessionData struct {
-	Messages     map[string]*ChatMessage `json:"messages"`
-	RootID       string                  `json:"root_id,omitempty"`
-	ActiveLeafID string                  `json:"active_leaf_id,omitempty"`
-	ActiveRoleID string                  `json:"active_role_id,omitempty"` // regression for audit LOGIC-5: was missing — role lost on restart
+	Messages      map[string]*ChatMessage `json:"messages"`
+	RootID        string                  `json:"root_id,omitempty"`
+	ActiveLeafID  string                  `json:"active_leaf_id,omitempty"`
+	ActiveRoleID  string                  `json:"active_role_id,omitempty"` // regression for audit LOGIC-5: was missing — role lost on restart
+	OwnerID       string                  `json:"owner_id,omitempty"`
+	Shared        bool                    `json:"shared,omitempty"`
+	AwaitingReply *AwaitingReplyInfo      `json:"awaiting_reply,omitempty"` // crash recovery: non-nil = turn interrupted
 }
 
 // Persist writes the session's tree to <dir>/<id>.json and/or SQLite backend.
@@ -622,18 +774,23 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 	// The JSON file still gets the full snapshot (one write, not N).
 	dirtyIDs := s.dirtyMsgs
 	s.dirtyMsgs = nil
+	// Snapshot AwaitingReply under lock for both JSON and DB persistence.
+	awaiting := s.AwaitingReply
 	data := chatSessionData{
-		Messages:     msgCopy,
-		RootID:       s.RootID,
-		ActiveLeafID: s.ActiveLeafID,
-		ActiveRoleID: s.ActiveRoleID, // regression for audit LOGIC-5: persist active role
+		Messages:      msgCopy,
+		RootID:        s.RootID,
+		ActiveLeafID:  s.ActiveLeafID,
+		ActiveRoleID:  s.ActiveRoleID, // regression for audit LOGIC-5: persist active role
+		OwnerID:       s.OwnerID,
+		Shared:        s.Shared,
+		AwaitingReply: awaiting,
 	}
 	s.mu.Unlock()
 
 	// A20 DB collapse: save to SQLite backend when available
 	if st.backend != nil {
 		ctx, cancel := st.dbCtx()
-		if err := st.backend.SaveSession(ctx, s.ID, s.RootID, s.ActiveLeafID, s.CreatedAt); err != nil {
+		if err := st.backend.SaveSession(ctx, s.ID, data.RootID, data.ActiveLeafID, data.OwnerID, data.Shared, s.CreatedAt); err != nil {
 			log.Printf("WARN: chat_session: SaveSession failed for %s: %v (file fallback will cover listing)", s.ID, err)
 		}
 		// audit PERF-6: was iterating ALL messages (O(T×M) over a conversation).
@@ -656,6 +813,22 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 				}
 			}
 		}
+		// Sync pending reply mark to DB for crash recovery.
+		// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.4–3.5.
+		if awaiting != nil {
+			if err := st.backend.SavePendingReply(ctx, store.PendingReplyRow{
+				SessionID: s.ID,
+				MessageID: awaiting.MessageID,
+				Content:   awaiting.Content,
+				StartedAt: awaiting.StartedAt,
+			}); err != nil {
+				log.Printf("WARN: chat_session: SavePendingReply failed for %s: %v", s.ID, err)
+			}
+		} else {
+			if err := st.backend.ClearPendingReply(ctx, s.ID); err != nil {
+				log.Printf("WARN: chat_session: ClearPendingReply failed for %s: %v", s.ID, err)
+			}
+		}
 		cancel()
 	}
 
@@ -675,37 +848,42 @@ func (st *ChatSessionStore) Persist(s *ChatSession) error {
 	return os.WriteFile(filepath.Join(st.dir, s.ID+".json"), raw, 0644)
 }
 
-func (st *ChatSessionStore) loadLocked(s *ChatSession) {
-	// A20 DB collapse: try SQLite backend first
+func (st *ChatSessionStore) loadLocked(s *ChatSession) bool {
+	// A20 DB collapse: try SQLite backend first.
+	dbLoaded := false
 	if st.backend != nil {
 		ctx, cancel := st.dbCtx()
-		defer cancel()
-		rootID, leafID, msgs, err := st.backend.LoadSession(ctx, s.ID)
+		rootID, leafID, ownerID, shared, msgs, err := st.backend.LoadSession(ctx, s.ID)
 		cancel()
-		if err == nil && len(msgs) > 0 {
-			s.Messages = make(map[string]*ChatMessage)
-			for id, row := range msgs {
-				s.Messages[id] = &ChatMessage{
-					ID:         row.ID,
-					ParentID:   row.ParentID,
-					ClientID:   row.ClientID,
-					ReplyTo:    row.ReplyTo,
-					ForkedFrom: row.ForkedFrom,
-					Role:       row.Role,
-					Content:    row.Content,
-					CreatedAt:  row.CreatedAt,
-				}
-			}
+		if err == nil {
 			s.RootID = rootID
 			s.ActiveLeafID = leafID
-			s.rebuildClientIDsLocked()
-			return
+			s.OwnerID = ownerID
+			s.Shared = shared
+			dbLoaded = true
+			if len(msgs) > 0 {
+				s.Messages = make(map[string]*ChatMessage, len(msgs))
+				for id, row := range msgs {
+					s.Messages[id] = &ChatMessage{
+						ID:         row.ID,
+						ParentID:   row.ParentID,
+						ClientID:   row.ClientID,
+						ReplyTo:    row.ReplyTo,
+						ForkedFrom: row.ForkedFrom,
+						Role:       row.Role,
+						Content:    row.Content,
+						CreatedAt:  row.CreatedAt,
+					}
+				}
+				s.rebuildClientIDsLocked()
+				return true
+			}
 		}
 	}
 
 	data, err := os.ReadFile(filepath.Join(st.dir, s.ID+".json"))
 	if err != nil {
-		return
+		return dbLoaded
 	}
 	// Try tree-based format first.
 	var tsd chatSessionData
@@ -714,13 +892,18 @@ func (st *ChatSessionStore) loadLocked(s *ChatSession) {
 		s.RootID = tsd.RootID
 		s.ActiveLeafID = tsd.ActiveLeafID
 		s.ActiveRoleID = tsd.ActiveRoleID // regression for audit LOGIC-5: restore active role
+		if !dbLoaded {
+			s.OwnerID = tsd.OwnerID
+			s.Shared = tsd.Shared
+		}
+		s.AwaitingReply = tsd.AwaitingReply
 		s.rebuildClientIDsLocked()
-		return
+		return true
 	}
 	// Fallback: old flat array format — convert to tree with sequential IDs.
 	var oldMsgs []ChatMessage
 	if json.Unmarshal(data, &oldMsgs) != nil {
-		return
+		return dbLoaded
 	}
 	s.Messages = make(map[string]*ChatMessage)
 	var prevID string
@@ -741,6 +924,7 @@ func (st *ChatSessionStore) loadLocked(s *ChatSession) {
 	}
 	s.ActiveLeafID = prevID
 	s.rebuildClientIDsLocked()
+	return true
 }
 
 // rebuildClientIDsLocked recomputes the client-id → stored-id map from the

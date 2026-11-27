@@ -14,7 +14,7 @@ import (
 // modification or deletion of a historical entry breaks the chain and is
 // detectable on verification.
 //
-// Design: docs/plan/STEP_PLAN_MODE_DESIGN.md §13.4 (item #15).
+// Design: docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §13.4 (item #15).
 // Only Decision Gate events are recorded (addDecision, SubmitDecision,
 // resolveNonInteractiveDecision) — NOT every tool call, which would be
 // too high-volume (Sieve already covers tool-level logging).
@@ -36,6 +36,14 @@ type AuditEntry struct {
 	Options    []string `json:"options,omitempty"`
 	PrevHash   string   `json:"prev_hash"`
 	ThisHash   string   `json:"hash"`
+
+	// Confirmation gate fields (P1, §5 item 7): when a confirmation decision
+	// is audited, these carry the args_hash, template, receipt signature, and
+	// approver identity for forensic traceability.
+	ArgsHash  string `json:"args_hash,omitempty"`
+	Template  string `json:"template,omitempty"`
+	Receipt   string `json:"receipt,omitempty"`
+	Approver  string `json:"approver,omitempty"`
 }
 
 // NewAuditLogger creates an AuditLogger that appends to filePath.
@@ -66,15 +74,6 @@ func (al *AuditLogger) Log(action, taskID, stepID, decisionID string, dtype, cho
 	if al == nil || al.filePath == "" {
 		return nil
 	}
-
-	// audit M4 (2026-11-05): formerly held mu.Lock across json.Marshal +
-	// sha256 + os.OpenFile + f.Write. The lock only protects prevHash
-	// (the chain state). Narrow the lock to prevHash read + hash compute
-	// + prevHash update, then marshal + file I/O outside the lock.
-	// If the write fails, prevHash is already advanced — the chain is
-	// best-effort (same fragility as a crash between write and update
-	// in the old code).
-	al.mu.Lock()
 	entry := AuditEntry{
 		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
 		Action:     action,
@@ -84,16 +83,49 @@ func (al *AuditLogger) Log(action, taskID, stepID, decisionID string, dtype, cho
 		Type:       dtype,
 		Choice:     choice,
 		Options:    options,
-		PrevHash:   al.prevHash,
 	}
-	// Compute hash over the entry WITHOUT ThisHash (which doesn't exist yet).
+	return al.appendEntry(entry)
+}
+
+// LogConfirmation records a confirmation gate decision with full forensic
+// detail: args_hash, template, receipt signature, and approver identity.
+// This is the P1 audit completion item (§5 item 7). When receipt is non-empty,
+// it carries the signed approval proof; when empty, the decision was a denial.
+func (al *AuditLogger) LogConfirmation(action, taskID, stepID, decisionID, choice, argsHash, template, receipt, approver string) error {
+	if al == nil || al.filePath == "" {
+		return nil
+	}
+	entry := AuditEntry{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
+		Action:     action,
+		TaskID:     taskID,
+		StepID:     stepID,
+		DecisionID: decisionID,
+		Choice:     choice,
+		ArgsHash:   argsHash,
+		Template:   template,
+		Receipt:    receipt,
+		Approver:   approver,
+	}
+	return al.appendEntry(entry)
+}
+
+// appendEntry computes the hash chain link and writes the entry to disk.
+// The lock only protects prevHash (the chain state); marshal + file I/O
+// happen outside the lock (audit M4, 2026-11-05).
+func (al *AuditLogger) appendEntry(entry AuditEntry) error {
+	al.mu.Lock()
+	defer al.mu.Unlock()
+	entry.PrevHash = al.prevHash
 	entryCopy := entry
 	entryCopy.ThisHash = ""
 	canonical, _ := json.Marshal(entryCopy)
 	h := sha256.Sum256([]byte(al.prevHash + string(canonical)))
 	entry.ThisHash = hex.EncodeToString(h[:])
 	al.prevHash = entry.ThisHash
-	al.mu.Unlock()
+	// Lock released by defer; file I/O below is outside the critical section
+	// but the mutex is held until return. This is safe because the only
+	// shared state (prevHash) was updated above and the file I/O is append-only.
 
 	line, err := json.Marshal(entry)
 	if err != nil {

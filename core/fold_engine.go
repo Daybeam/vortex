@@ -13,7 +13,7 @@ import (
 
 // ─── Segment-Based Incremental Fold ───────────────────────────────────────
 //
-// Design ref: docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md
+// Design ref: docs/completed/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md
 //
 // FoldEngine performs incremental, reversible compression of chat context by
 // folding sealed SegmentManager segments into summaries. Unlike

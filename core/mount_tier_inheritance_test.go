@@ -145,7 +145,7 @@ func TestResolveFinalMCPs_OpenPolicyIsUsableByNonAdmin(t *testing.T) {
 // graph's tier); do not delete the entry.
 func TestInternalSpawnSitesCarrySubmitterTier(t *testing.T) {
 	sites := []struct{ file, anchor string }{
-		{"scheduler_dag_exec.go", "graph.SubmitterIsAdmin"},
+		{"scheduler_dag_exec_request.go", "graph.SubmitterIsAdmin"},
 		{"scheduler_decision_audit.go", "graph.SubmitterIsAdmin"},
 		{"scheduler_planner.go", "SubmitterIsAdmin: submitterIsAdmin"},
 		{"scheduler_decision_gate.go", "SubmitterIsAdmin: submitterIsAdmin"},

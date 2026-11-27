@@ -135,7 +135,7 @@ func registerAdminTools(s *server.MCPServer, app *App) {
 	})
 
 	// Time Travel & Fork (ADDED 2026-09-14): fork a task from a historical step.
-	// See docs/architecture/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
+	// See docs/completed/2026-09-14/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
 	app.register(s, mcp.NewTool("orchestrator_fork_task",
 		mcp.WithDescription("[Admin] Fork a new task from a historical step checkpoint. The new task inherits completed steps up to the target step and resets all downstream steps to pending."),
 		mcp.WithString("source_task_id", mcp.Required()),
@@ -169,7 +169,7 @@ func registerAdminTools(s *server.MCPServer, app *App) {
 
 func HandleAdminDeployFile(ctx context.Context, app *App, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Security gate (ADDED 2026-09-14): arbitrary file write is a known Open Core
-	// risk (see docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §1.4 problem B).
+	// risk (see docs/completed/2026-09-14/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §1.4 problem B).
 	// Disabled by default; must explicitly opt in via env var.
 	if os.Getenv("VORTEX_ALLOW_DEPLOY_WRITE") != "1" {
 		return errResult("admin deploy write is disabled by default for security. Set VORTEX_ALLOW_DEPLOY_WRITE=1 to enable.")

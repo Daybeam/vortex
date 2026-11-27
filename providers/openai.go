@@ -103,7 +103,7 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]interfaces.ModelInfo
 // this field there would only add an unnecessary variable to the qwen3 run.
 //
 // Migrated from sync.OnceValue to atomic.Bool for hot-reload support.
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
+// See docs/completed/2026-10-17/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
 var disableThinkingFlag atomic.Bool
 var debugEnabledFlag atomic.Bool
 

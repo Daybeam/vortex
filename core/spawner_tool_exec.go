@@ -22,7 +22,7 @@ import (
 // dedupAttachments appends incoming attachments to existing, skipping any whose
 // Path is already present. Screenshots from the same tool often overwrite the
 // same file path across turns; re-sending the identical base64 blob wastes
-// tokens. See docs/plan/VLM_IMAGE_CONTEXT_OPTIMIZATION_DESIGN.md §1a.
+// tokens. See docs/completed/2026-10-26/VLM_IMAGE_CONTEXT_OPTIMIZATION_DESIGN.md §1a.
 func dedupAttachments(existing, incoming []schemas.Attachment) []schemas.Attachment {
 	for _, a := range incoming {
 		dup := false
@@ -350,7 +350,7 @@ func (s *Spawner) processToolCalls(
 
 		// SharedContext tools (ADDED 2026-10-27): shared_context_write/read
 		// are handled directly, like core tools, but require a SharedContext
-		// instance from the SpawnRequest. See docs/plan/TYPED_SHARED_CONTEXT_DESIGN.md.
+		// instance from the SpawnRequest. See docs/completed/2026-10-30/TYPED_SHARED_CONTEXT_DESIGN.md.
 		if SharedContextToolNames[call.Name] && req.SharedContext != nil {
 			res, status := handleSharedContextTool(call, req.SharedContext, req.TaskID, req.StepID)
 			interaction := store.ToolInteraction{
@@ -618,10 +618,17 @@ func (s *Spawner) processToolCalls(
 					return nil, err
 				}
 
-				return cli.SendRequest(toolCtx, "tools/call", map[string]any{
-					"name":      call.Name,
-					"arguments": call.Arguments,
-				})
+			return cli.SendRequest(toolCtx, "tools/call", map[string]any{
+				"name":      call.Name,
+				"arguments": call.Arguments,
+				"_meta": map[string]any{
+					"io.orchestrator/host-approval": map[string]any{
+						"version":    1,
+						"guarantees": "blocking-human-approval-before-side-effect",
+						"receipt":    "signed-nonce-bound-to-args-hash",
+					},
+				},
+			})
 			}
 
 			finalRes, execErr = doCall()
@@ -657,45 +664,39 @@ func (s *Spawner) processToolCalls(
 					s.logSERFFailureClass(req.TaskID, req.StepID, call.Name, serf)
 					interaction.Result = recoveryMsg
 					env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
-					state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
-				} else {
-					state.toolFailCount[call.Name] = 0
-					interaction.Result = finalRes
-					interaction.Meta = ExtractMeta(finalRes) // Phase 2: extract structured metadata
-					if att, ok := finalRes.(schemas.SubagentOutput); ok {
-						state.turnAttachments = dedupAttachments(state.turnAttachments, att.Attachments)
+				state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
+			} else {
+				state.toolFailCount[call.Name] = 0
+				interaction.Result = finalRes
+				interaction.Meta = ExtractMeta(finalRes)
+				if att, ok := finalRes.(schemas.SubagentOutput); ok {
+					state.turnAttachments = dedupAttachments(state.turnAttachments, att.Attachments)
+				}
+				status := "ok"
+				if m, ok := finalRes.(map[string]any); ok {
+					if s, ok := m["status"].(string); ok {
+						status = s
 					}
-					status := "ok"
-					if m, ok := finalRes.(map[string]any); ok {
-						if s, ok := m["status"].(string); ok {
-							status = s
-						}
-					}
-					env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
-					md := env.ToMarkdown(call.Name)
+				}
+				env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
+				md := env.ToMarkdown(call.Name)
 
-					// Apply Sieve Pruning to reduce token noise for large tool outputs
-					if len(md) > s.processor.GetMaxBodyChars() {
-						md = s.sieve.PruneOutput(md, req.Task)
-					}
-					// #2-universal (eval §23): cache the successful read result
-					// for replay on identical future calls within this server.
-					// Cache the clean md before any repetition warning is prepended.
-					if s.domainReadCache != nil && sieve.IsReadTool(call.Name) && !sieve.IsPollerTool(call.Name) {
-						s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
-					}
-					// Egress redaction (I5) + L1 injection marking (input_normalization.go).
-					// Output bounding: adaptive truncation for oversized results.
-					md = redactAndMarkUntrusted(md, req.OwnerID)
-					if len(md) > s.processor.GetMaxBodyChars() {
-						md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
-					}
-					noteToolResult(state, callKey, md)
-					md = s.steerRepeatedResult(req.TaskID, req.StepID, call.Name, md)
-					state.toolResults = append(state.toolResults, md)
-					if isStickyResult(call.Name) {
-						state.stickyResults = append(state.stickyResults, md)
-					}
+				if len(md) > s.processor.GetMaxBodyChars() {
+					md = s.sieve.PruneOutput(md, req.Task)
+				}
+				if s.domainReadCache != nil && sieve.IsReadTool(call.Name) && !sieve.IsPollerTool(call.Name) {
+					s.domainReadCache.Put(mcpID, call.Name, call.Arguments, md)
+				}
+				md = redactAndMarkUntrusted(md, req.OwnerID)
+				if len(md) > s.processor.GetMaxBodyChars() {
+					md = string(skeleton.AdaptiveOutputResult([]byte(md), call.Name, env.Source))
+				}
+				noteToolResult(state, callKey, md)
+				md = s.steerRepeatedResult(req.TaskID, req.StepID, call.Name, md)
+				state.toolResults = append(state.toolResults, md)
+				if isStickyResult(call.Name) {
+					state.stickyResults = append(state.stickyResults, md)
+				}
 				}
 			}
 		} else if mcpDef.URL != "" {
@@ -720,23 +721,21 @@ func (s *Spawner) processToolCalls(
 					s.logSERFFailureClass(req.TaskID, req.StepID, call.Name, serf)
 					interaction.Result = recoveryMsg
 					env := s.processor.Wrap(call.Name, recoveryMsg, "error", "mcp:"+mcpDef.ID, reason)
-					state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
-				} else {
-					state.toolFailCount[call.Name] = 0
-					interaction.Result = finalRes
-					status := "ok"
-					if m, ok := finalRes.(map[string]any); ok {
-						if s, ok := m["status"].(string); ok {
-							status = s
-						}
+				state.toolResults = append(state.toolResults, env.ToMarkdown(call.Name))
+			} else {
+				state.toolFailCount[call.Name] = 0
+				interaction.Result = finalRes
+				status := "ok"
+				if m, ok := finalRes.(map[string]any); ok {
+					if s, ok := m["status"].(string); ok {
+						status = s
 					}
-					env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
-					md := env.ToMarkdown(call.Name)
+				}
+				env := s.processor.Wrap(call.Name, finalRes, status, "mcp:"+mcpDef.ID, reason)
+				md := env.ToMarkdown(call.Name)
 
-					// Apply Sieve Pruning to reduce token noise for large tool outputs,
-					// mirroring the local (command-based) MCP branch above.
-					if len(md) > s.processor.GetMaxBodyChars() {
-						md = s.sieve.PruneOutput(md, req.Task)
+				if len(md) > s.processor.GetMaxBodyChars() {
+					md = s.sieve.PruneOutput(md, req.Task)
 					}
 					// #2-universal (eval §23): cache the successful read result.
 					// Cache the clean md before any repetition warning is prepended.

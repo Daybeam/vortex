@@ -469,6 +469,44 @@ func TestSOPManager_ValidateDAG_SaveSOPRejectsUnknownDep(t *testing.T) {
 	}
 }
 
+// TestSOPManager_ValidateDAG_FocusStepPattern verifies the "focus step" DAG
+// pattern: a single intermediate step that depends on one predecessor and is
+// depended on by multiple successors. SOPs use this pattern to inject shared
+// context into parallel branches before they diverge.
+func TestSOPManager_ValidateDAG_FocusStepPattern(t *testing.T) {
+	steps := map[string]schemas.SOPStep{
+		"scope":    {ID: "scope"},
+		"focus":    {ID: "focus", DependsOn: []string{"scope"}, Task: "analyze", ExitCriteria: "done"},
+		"branch_a": {ID: "branch_a", DependsOn: []string{"focus"}, Task: "## guidance\nwork a"},
+		"branch_b": {ID: "branch_b", DependsOn: []string{"focus"}, Task: "## guidance\nwork b"},
+		"branch_c": {ID: "branch_c", DependsOn: []string{"focus"}, Task: "## guidance\nwork c"},
+	}
+	if err := validateSOPDAG(steps); err != nil {
+		t.Fatalf("focus-step DAG should pass: %v", err)
+	}
+	if len(steps["focus"].DependsOn) != 1 {
+		t.Errorf("focus step should have exactly one dependency, got %v", steps["focus"].DependsOn)
+	}
+	for _, branch := range []string{"branch_a", "branch_b", "branch_c"} {
+		found := false
+		for _, dep := range steps[branch].DependsOn {
+			if dep == "focus" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("branch %q must depend on focus", branch)
+		}
+	}
+	if steps["focus"].ExitCriteria == "" {
+		t.Error("focus step must declare exit criteria")
+	}
+	if steps["focus"].Task == "" {
+		t.Error("focus step task must not be empty")
+	}
+}
+
 // TestSOP_UnmarshalJSON_LegacyTriggers verifies backward compatibility: a SOP
 // with a single trigger object (not array) is converted to []SOPTrigger.
 func TestSOP_UnmarshalJSON_LegacyTriggers(t *testing.T) {

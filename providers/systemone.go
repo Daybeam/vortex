@@ -26,7 +26,7 @@ import (
 //
 // This provider implements the /v1/systemone wire protocol — the de facto
 // standard shared by Jev (TypeSafe), Laya (Convai), stuntd, laya-serve, and
-// Cloudflare Workers AI (typesafe/jev). See docs/systemone-provider-design.md
+// Cloudflare Workers AI (typesafe/jev). See docs/completed/2026-10-11/systemone-provider-design.md
 // §0.4 for the protocol reconciliation and §0.4.4 for the wire format spec.
 
 // SystemOneProvider connects to any /v1/systemone-compatible backend via HTTP.
@@ -131,6 +131,138 @@ func (p *SystemOneProvider) Complete(ctx context.Context, req CompleteRequest) (
 	// covered without touching each builder. Original keys are preserved for
 	// backends that still speak the legacy schema; new keys win when both
 	// are present (verified against laya 0.3.21).
+	questions = normalizeSystemOneQuestions(questions)
+
+	// State: prefer User string, fall back to System string.
+	state := req.User
+	if state == "" {
+		state = req.System
+	}
+
+	body := systemOneRequest{
+		State:     state,
+		Model:     p.cfg.Model,
+		Questions: questions,
+	}
+
+	// Envelope wrapping (§0.4.2: Cloudflare; gemini = Decisions API).
+	var payload []byte
+	var err error
+	switch p.envelope {
+	case "cloudflare":
+		envelope := cloudflareRequest{Model: p.cfg.Model, Input: body}
+		payload, err = json.Marshal(envelope)
+	case "gemini":
+		// Decisions API body: {model, input, questions} — State maps to
+		// "input", questions pass through after normalization.
+		geminiReq := struct {
+			Model     string         `json:"model"`
+			Input     string         `json:"input"`
+			Questions map[string]any `json:"questions"`
+		}{Model: p.cfg.Model, Input: state, Questions: questions}
+		payload, err = json.Marshal(geminiReq)
+	default:
+		payload, err = json.Marshal(body)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("systemone provider %q: marshal request: %w", p.name, err)
+	}
+
+	endpoint := ""
+	if p.envelope == "gemini" {
+		// The "gemini" envelope targets the Google Gemini Decisions API
+		// (POST /v1beta/decisions, model gemini-decision-1), whose wire
+		// contract is question-type-compatible with /v1/systemone
+		// (choice/score/noul answers with confidence + probabilities;
+		// verified 2026-11-18). Its request body {model, input, questions}
+		// differs only in field names from systemOneRequest{State, Model,
+		// Questions}, and answers decode into systemOneResponse unchanged.
+		endpoint = strings.TrimRight(p.cfg.BaseURL, "/") + "/v1beta/decisions"
+	} else {
+		endpoint = strings.TrimRight(p.cfg.BaseURL, "/")
+		if u, perr := url.Parse(endpoint); perr == nil && (u.Path == "" || u.Path == "/") {
+			endpoint += "/v1/systemone"
+		}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("systemone provider %q: build request: %w", p.name, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	// Bearer auth (§0.4.4: from cfg.APIKey; empty = no header for local
+	// self-hosted). The gemini envelope uses Google's x-goog-api-key header
+	// instead (same key, different header).
+	if p.envelope == "gemini" && p.cfg.APIKey != "" {
+		httpReq.Header.Set("x-goog-api-key", p.cfg.APIKey)
+	} else if p.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("systemone provider %q: http call: %w", p.name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, safelimits.MaxErrorBody)) // audit H1: cap error body
+		// Gemini Decisions API returns errors as {"error":{"code":"safety","message":...}}
+		// with a string enum code — surface the message for downstream graceful
+		// degradation instead of a raw JSON blob.
+		if p.envelope == "gemini" {
+			var gerr struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(raw, &gerr) == nil && gerr.Error.Message != "" {
+				return nil, fmt.Errorf("systemone provider %q: gemini decisions error %s: %s", p.name, gerr.Error.Code, gerr.Error.Message)
+			}
+		}
+		return nil, fmt.Errorf("systemone provider %q: backend returned HTTP %d: %s", p.name, resp.StatusCode, string(raw))
+	}
+
+	var result systemOneResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("systemone provider %q: decode response: %w", p.name, err)
+	}
+
+	// Map answers to ToolCalls. Each ToolCall.Name = question id,
+	// ToolCall.Arguments carries the typed answer fields for downstream routing.
+	// score_threshold filters low-confidence answers (abstention).
+	toolCalls := systemOneAnswersToToolCalls(result.Answers, p.scoreThreshold)
+
+	return &ProviderResponse{
+		Text:       "", // System One produces no free text
+		ToolCalls:  toolCalls,
+		StopReason: "scored",
+	}, nil
+}
+
+// StreamComplete delegates to Complete — System One is non-autoregressive
+// and has no streaming semantics. The onChunk callback is never invoked.
+func (p *SystemOneProvider) StreamComplete(ctx context.Context, req CompleteRequest, onChunk func(text string) error) (*ProviderResponse, error) {
+	return p.Complete(ctx, req)
+}
+
+// Embed is not supported by System One models.
+func (p *SystemOneProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	return nil, fmt.Errorf("systemone provider %q: embed not supported", p.name)
+}
+
+// CountTokens estimates tokens using the shared heuristic (len/4).
+func (p *SystemOneProvider) CountTokens(ctx context.Context, text string) (int, error) {
+	return estimateTokens(text), nil
+}
+
+// normalizeSystemOneQuestions translates the legacy "question"/"options" keys
+// to the "instructions"/"criteria" keys that laya-serve ≥0.3 expects, while
+// preserving the original keys for backends that still speak the legacy schema.
+// New keys win when both are present.
+func normalizeSystemOneQuestions(questions map[string]any) map[string]any {
 	normalized := make(map[string]any, len(questions))
 	for qID, raw := range questions {
 		q, isMap := raw.(map[string]any)
@@ -154,74 +286,15 @@ func (p *SystemOneProvider) Complete(ctx context.Context, req CompleteRequest) (
 		}
 		normalized[qID] = nq
 	}
-	questions = normalized
+	return normalized
+}
 
-	// State: prefer User string, fall back to System string.
-	state := req.User
-	if state == "" {
-		state = req.System
-	}
-
-	body := systemOneRequest{
-		State:     state,
-		Model:     p.cfg.Model,
-		Questions: questions,
-	}
-
-	// Cloudflare envelope wrapping (§0.4.2: only Cloudflare needs this).
-	var payload []byte
-	var err error
-	if p.envelope == "cloudflare" {
-		envelope := cloudflareRequest{Model: p.cfg.Model, Input: body}
-		payload, err = json.Marshal(envelope)
-	} else {
-		payload, err = json.Marshal(body)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("systemone provider %q: marshal request: %w", p.name, err)
-	}
-
-	// Endpoint resolution: base_url may be the bare host (as shown in the
-	// SystemOneConfig example, e.g. "http://127.0.0.1:8000") or a full
-	// /v1/systemone URL. Append the canonical path only when no path is set.
-	endpoint := strings.TrimRight(p.cfg.BaseURL, "/")
-	if u, perr := url.Parse(endpoint); perr == nil && (u.Path == "" || u.Path == "/") {
-		endpoint += "/v1/systemone"
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("systemone provider %q: build request: %w", p.name, err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	// Bearer auth (§0.4.4: from cfg.APIKey; empty = no header for local self-hosted).
-	if p.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
-	}
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("systemone provider %q: http call: %w", p.name, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, safelimits.MaxErrorBody)) // audit H1: cap error body
-		return nil, fmt.Errorf("systemone provider %q: backend returned HTTP %d: %s", p.name, resp.StatusCode, string(raw))
-	}
-
-	var result systemOneResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("systemone provider %q: decode response: %w", p.name, err)
-	}
-
-	// Map answers to ToolCalls. Each ToolCall.Name = question id,
-	// ToolCall.Arguments carries the typed answer fields for downstream routing.
-	// score_threshold filters low-confidence answers (abstention).
-	toolCalls := make([]ToolCall, 0, len(result.Answers))
-	for qID, ans := range result.Answers {
-		if p.scoreThreshold > 0 && ans.Confidence < p.scoreThreshold {
+// systemOneAnswersToToolCalls maps System One answers to ToolCalls, filtering
+// out low-confidence answers when scoreThreshold > 0.
+func systemOneAnswersToToolCalls(answers map[string]systemOneAnswer, scoreThreshold float64) []ToolCall {
+	toolCalls := make([]ToolCall, 0, len(answers))
+	for qID, ans := range answers {
+		if scoreThreshold > 0 && ans.Confidence < scoreThreshold {
 			continue
 		}
 		args := map[string]any{
@@ -250,26 +323,5 @@ func (p *SystemOneProvider) Complete(ctx context.Context, req CompleteRequest) (
 			Arguments: args,
 		})
 	}
-
-	return &ProviderResponse{
-		Text:       "", // System One produces no free text
-		ToolCalls:  toolCalls,
-		StopReason: "scored",
-	}, nil
-}
-
-// StreamComplete delegates to Complete — System One is non-autoregressive
-// and has no streaming semantics. The onChunk callback is never invoked.
-func (p *SystemOneProvider) StreamComplete(ctx context.Context, req CompleteRequest, onChunk func(text string) error) (*ProviderResponse, error) {
-	return p.Complete(ctx, req)
-}
-
-// Embed is not supported by System One models.
-func (p *SystemOneProvider) Embed(ctx context.Context, text string) ([]float32, error) {
-	return nil, fmt.Errorf("systemone provider %q: embed not supported", p.name)
-}
-
-// CountTokens estimates tokens using the shared heuristic (len/4).
-func (p *SystemOneProvider) CountTokens(ctx context.Context, text string) (int, error) {
-	return estimateTokens(text), nil
+	return toolCalls
 }

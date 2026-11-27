@@ -1,7 +1,6 @@
 package sieve
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 
@@ -10,7 +9,7 @@ import (
 	"github.com/daybeam/vortex/providers"
 )
 
-// Sieve handles result validation, repetition detection, and schema enforcement.
+// Sieve handles repetition detection, output pruning, and optional model review.
 type Sieve struct {
 	RepetitionThreshold     float64                      // Similarity threshold to trigger repetition warning (e.g., 0.85)
 	ToolRepetitionThreshold int                          // Number of identical tool calls allowed before interception
@@ -34,17 +33,17 @@ type Sieve struct {
 	// Sieve's Noul/Score safety check (M5). Nil-safe: set via
 	// SetSystemOneProvider. When non-nil and EnableSieve is true,
 	// InspectWithSystemOne asks the model a "noul" question to judge
-	// output safety. See docs/systemone-provider-design.md §6.2 + §8 M5.
+	// output safety. See docs/completed/2026-10-11/systemone-provider-design.md §6.2 + §8 M5.
 	systemOneProvider *providers.SystemOneProvider
 	systemOneCfg      config.SystemOneConfig
 
 	// plans (ADDED 2026-10-10): step plan text per taskID for plan-drift
-	// detection. See docs/plan/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
+	// detection. See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
 	plans map[string]string
 
 	// Adaptive threshold (#13, ADDED 2026-10-10): tracks intercept stats
 	// per task to auto-tune ToolRepetitionThreshold.
-	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §13.2.
+	// See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §13.2.
 	interceptStats        map[string]*interceptStat // taskID → stats
 	consecutiveCleanTasks int                       // tasks with 0 intercepts since last threshold change
 
@@ -184,23 +183,15 @@ func (s *Sieve) VerifyFidelity(original, compressed string) (bool, string) {
 	return true, ""
 }
 
-// Inspect checks if the result contains repetitions or violates structural requirements.
-// Returns (isValid, reason)
-func (s *Sieve) Inspect(text string, requiredSchema string) (bool, string) {
+// Inspect checks for empty output and repetition loops. Structured exit
+// criteria are verified by the scheduler after output parsing (O26/O28).
+func (s *Sieve) Inspect(text string) (bool, string) {
 	if text == "" {
 		return false, "empty output"
 	}
 
-	// 1. Repetition Detection
 	if s.detectRepetition(text) {
 		return false, "repetition detected: output entered a logic loop"
-	}
-
-	// 2. Schema Validation
-	if requiredSchema != "" {
-		if !s.validateSchema(text, requiredSchema) {
-			return false, fmt.Sprintf("schema violation: output does not match required format [%s]", requiredSchema)
-		}
 	}
 
 	return true, ""
@@ -345,11 +336,6 @@ func (s *Sieve) calculateSimilarity(a, b string) float64 {
 
 	union := len(tokensA) + len(tokensB) - intersection
 	return float64(intersection) / float64(union)
-}
-
-func (s *Sieve) validateSchema(text string, schema string) bool {
-	// ... (rest of the code)
-	return true
 }
 
 // InspectToolCalls checks for repeated identical tool calls to prevent infinite loops.

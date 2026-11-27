@@ -30,9 +30,9 @@ func resumeAction() Action {
 	}
 }
 
-func resumePausedSchedule(_ context.Context, app *App, args map[string]any) (any, error) {
+func resumePausedSchedule(ctx context.Context, app *App, args map[string]any) (any, error) {
 	id := strArg(args, "schedule_id")
-	sch := app.SStore.Get(id)
+	sch := GetVisibleSchedule(ctx, app, id)
 	if sch == nil {
 		return nil, fmt.Errorf("not found")
 	}
@@ -53,7 +53,9 @@ func resumePausedSchedule(_ context.Context, app *App, args map[string]any) (any
 	updated := *sch
 	updated.Status = schemas.ScheduleActive
 	updated.NextRun = next
-	app.SStore.Set(&updated)
+	if err := app.SStore.Set(&updated); err != nil {
+		return nil, err
+	}
 
 	var prevRun any
 	if !prev.IsZero() {

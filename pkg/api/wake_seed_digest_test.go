@@ -216,14 +216,18 @@ func TestBuildArtifactDigest_InvalidUTF8IsReplaced(t *testing.T) {
 	}
 }
 
-func TestWakeSeedDigestMode_DefaultsOff(t *testing.T) {
+func TestWakeSeedDigestMode_DefaultsOn(t *testing.T) {
 	t.Setenv("VORTEX_WAKE_SEED_DIGEST", "")
-	if wakeSeedDigestMode() {
-		t.Fatal("digest must be off unless explicitly enabled")
+	if !wakeSeedDigestMode() {
+		t.Fatal("digest must be on by default (Fisher p=1.1e-05, harness-bench 041)")
 	}
 	t.Setenv("VORTEX_WAKE_SEED_DIGEST", "on")
 	if !wakeSeedDigestMode() {
 		t.Fatal("VORTEX_WAKE_SEED_DIGEST=on must enable the digest")
+	}
+	t.Setenv("VORTEX_WAKE_SEED_DIGEST", "off")
+	if wakeSeedDigestMode() {
+		t.Fatal("VORTEX_WAKE_SEED_DIGEST=off must disable the digest")
 	}
 }
 
@@ -246,7 +250,7 @@ func TestFollowUpTrigger_CarriesTheArtifactDigest(t *testing.T) {
 	if !strings.Contains(digest, "total_hourly_cost_usd: 0.552") {
 		t.Fatalf("digest did not render the headline scalar:\n%s", digest)
 	}
-	if !h.startFollowUpTurnWithDigest("s_digest", "task-abc", outcome.summary(), digest) {
+	if !h.startFollowUpTurnWithDigest("s_digest", "task-abc", outcome.summary(), digest, "") {
 		t.Fatal("follow-up turn was not started for an idle session")
 	}
 	h.wg.Wait()
@@ -297,7 +301,7 @@ func TestWakeGateOff_SendsTheSamePromptAsBeforeTheDigest(t *testing.T) {
 
 	h2, s2, p2 := newFollowUpHandler(t, "noted")
 	s2.GetOrCreate("s_gate")
-	if !h2.startFollowUpTurnWithDigest("s_gate", "task-abc", outcome.summary(), gateOff) {
+	if !h2.startFollowUpTurnWithDigest("s_gate", "task-abc", outcome.summary(), gateOff, "") {
 		t.Fatal("gate-off follow-up did not start")
 	}
 	h2.wg.Wait()

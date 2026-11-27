@@ -31,11 +31,10 @@ func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
 					"IMPORTANT: The 'code' parameter is SOURCE CODE, not shell commands. " +
 					"Do NOT pass 'git fetch', 'ls -F', or other shell commands — they will fail with SyntaxError. " +
 					"Use python/node code only.\n\n" +
-					"PREFER execute_code over multiple read_file calls when:\n" +
-					"- Counting functions/lines/patterns across many files\n" +
-					"- Extracting structured data from logs/JSON/CSV\n" +
-					"- Comparing or aggregating file contents\n" +
-					"One script replaces N read_file calls and saves Nx context."
+				"Good use cases:\n" +
+				"- Counting functions/lines/patterns across many files\n" +
+				"- Extracting structured data from logs/JSON/CSV\n" +
+				"- Comparing or aggregating file contents"
 			}
 		}
 	}
@@ -44,15 +43,15 @@ func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
 		Description: "Delegate a complex, multi-step task to the orchestrator (role-based subagent execution). " +
 			"USE THIS when the request spans several files/sources/sub-questions, needs several independent " +
 			"tool rounds, needs a specialized role, or is long enough that the user would rather get a task id " +
-			"now and follow up. Prefer execute_code for anything one script can finish. " +
+			"now and follow up. " +
 			"Returns immediately with a task id and the task's current status; the work continues in the " +
 			"background, and this session is resumed automatically when it finishes so the result can be " +
 			"delivered then. Use orchestrator_task_status only when the answer cannot wait for that. " +
 			"READINESS GATE (mandatory): Before calling this tool, verify the task is fully specified — " +
 			"all required parameters present, no algorithmic ambiguity, no path/identifier contradictions, " +
-			"and the expected outcome is concrete. If ANY of these is unclear, ask the user clarifying " +
-			"questions FIRST instead of delegating an ambiguous task. Delegating a vague prompt pollutes " +
-			"the downstream weak-model executor and wastes retry budget.",
+			"and the expected outcome is concrete. If anything is unclear, try to fill in the minimum " +
+			"missing information yourself first; only if you genuinely cannot, ask the user one focused " +
+			"question. Delegating a vague prompt pollutes the downstream weak-model executor and wastes retry budget.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -60,14 +59,15 @@ func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
 					"type": "string",
 					"description": "Fully-specified task description to delegate. MUST include: (1) the concrete objective, " +
 						"(2) any required inputs/paths/identifiers, (3) the expected output format or success criteria. " +
-						"Do NOT delegate prompts containing placeholders like <TBD>, unspecified file paths, or unresolved " +
-						"parameter choices — clarify with the user first.",
+					"Do NOT delegate prompts containing placeholders like <TBD>, unspecified file paths, or unresolved " +
+					"parameter choices — fill in the missing information yourself, or ask the user if you cannot.",
 				},
 				"readiness_self_check": map[string]any{
 					"type": "boolean",
 					"description": "Set to true to confirm you have verified: no missing parameters, no algorithmic ambiguity, " +
-						"no path contradictions. Omit or set false only if you have already asked the user and received " +
-						"clarification. This flag is the gateway's audit signal — delegating without it true is a protocol violation.",
+					"no path contradictions. Omit or set false only if you have filled in the missing information yourself " +
+					"or asked the user and received clarification. This flag is the gateway's audit signal — delegating " +
+					"without it true is a protocol violation.",
 				},
 			},
 			"required": []string{"prompt"},
@@ -112,6 +112,9 @@ func (h *ChatHarness) ToolDefinitions() []schemas.ToolDefinition {
 			},
 		},
 	})
+	if h.ScheduleExec != nil {
+		tools = append(tools, scheduleToolDefs()...)
+	}
 	// hard arm of the post-delegation lockout (see post_deleg_lockout.go):
 	// once a task has been delegated, the work tools leave the table entirely,
 	// so the model cannot keep doing the task it just handed over. Applied

@@ -28,7 +28,7 @@ func makeCycleID(triggerStepID string, dependsOn []string) string {
 // backtrack until 40617ac0f was corrected. Callers holding a graph pass
 // projectOfGraph(graph).
 //
-// See docs/plan/DELTA_BACKTRACK_DESIGN.md §change 3.
+// See docs/completed/2026-10-17/DELTA_BACKTRACK_DESIGN.md §change 3.
 func (s *DirectedEngine) buildPreviousSummary(dep *schemas.Step, taskID, projectID string) string {
 	// Source 1: ResultRef — direct output reference via archive search
 	if dep.ResultRef != "" && s.Archive != nil {
@@ -63,7 +63,7 @@ func (s *DirectedEngine) buildPreviousSummary(dep *schemas.Step, taskID, project
 	return "(no previous output available — first execution)"
 }
 
-// tryBacktrack implements the Cycle Breaker (docs/architecture/CYCLE_BREAKER_DESIGN.md).
+// tryBacktrack implements the Cycle Breaker (docs/completed/2026-09-16/CYCLE_BREAKER_DESIGN.md).
 // It is invoked from handleOutput when a downstream step reports MissingContext.
 //
 // Returns true if the cycle breaker handled the situation (caller should return
@@ -76,7 +76,7 @@ func (s *DirectedEngine) buildPreviousSummary(dep *schemas.Step, taskID, project
 //     step's ResultRef/archive, inject it as PreviousOutputSummary + structured
 //     feedback, set the DeltaBacktrack metadata flag, reset upstream to Pending.
 //     The DAG walker re-executes upstream with memory of what it already produced,
-//     so it supplements rather than re-runs. See docs/plan/DELTA_BACKTRACK_DESIGN.md.
+//     so it supplements rather than re-runs. See docs/completed/2026-10-17/DELTA_BACKTRACK_DESIGN.md.
 //   - At the fuse limit: suspend all involved steps (StepSuspended), block the
 //     graph, and create a human decision with accept_degraded/abort/provide_context.
 func (s *DirectedEngine) tryBacktrack(graph *schemas.TaskGraph, step *schemas.Step, output *schemas.SubagentOutput) bool {

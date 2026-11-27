@@ -285,7 +285,7 @@ func (s *Spawner) prepareSpawn(ctx context.Context, req *SpawnRequest) (prep *sp
 	// this step with memory of its previous output, inject the summary as a
 	// distinct, clearly-marked block. The model supplements missing fields
 	// rather than re-running from scratch, avoiding repeated side effects.
-	// See docs/plan/DELTA_BACKTRACK_DESIGN.md §change 3.
+	// See docs/completed/2026-10-17/DELTA_BACKTRACK_DESIGN.md §change 3.
 	if req.PreviousOutputSummary != "" {
 		userText = fmt.Sprintf(
 			"%s\n\n%s\nYou already produced the following content in the previous round:\n%s\n\n"+

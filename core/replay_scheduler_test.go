@@ -33,9 +33,15 @@ func TestScanFailedTasks_FindsFailedTasks(t *testing.T) {
 	defer cleanup()
 	db := s.DB
 
-	_, _ = db.Exec(`INSERT INTO tasks (task_id, status) VALUES ('failed_1', 'failed')`)
-	_, _ = db.Exec(`INSERT INTO tasks (task_id, status) VALUES ('ok_1', 'completed')`)
-	_, _ = db.Exec(`INSERT INTO tasks (task_id, status) VALUES ('aborted_1', 'aborted')`)
+	if _, err := db.Exec(`INSERT INTO tasks (task_id, status) VALUES ('failed_1', 'failed')`); err != nil {
+		t.Fatalf("setup insert failed_1: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tasks (task_id, status) VALUES ('ok_1', 'completed')`); err != nil {
+		t.Fatalf("setup insert ok_1: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tasks (task_id, status) VALUES ('aborted_1', 'aborted')`); err != nil {
+		t.Fatalf("setup insert aborted_1: %v", err)
+	}
 
 	rs := NewReplayScheduler(nil, nil, nil, db, nil)
 	ids, err := rs.ScanFailedTasks(context.Background(), time.Now().AddDate(0, 0, -7))
@@ -149,7 +155,9 @@ func TestRunReplayCycle_EndToEnd(t *testing.T) {
 	defer cleanup()
 	db := s.DB
 
-	_, _ = db.Exec(`INSERT INTO tasks (task_id, status) VALUES ('replay_task_1', 'failed')`)
+	if _, err := db.Exec(`INSERT INTO tasks (task_id, status) VALUES ('replay_task_1', 'failed')`); err != nil {
+		t.Fatalf("setup insert replay_task_1: %v", err)
+	}
 
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "global_trajectory.jsonl")

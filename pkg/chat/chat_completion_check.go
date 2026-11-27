@@ -40,8 +40,15 @@ const completionCheckEnv = "VORTEX_COMPLETION_CHECKS"
 // SQL fails the very check the task declares
 // (`helper_included_lines -> no such column: r.line_refund_total`). Nothing on
 // disk could say whether the check had run at all.
+func (h *ChatHarness) workspaceArtifactDefects() []string {
+	if len(h.declaredContracts) > 0 {
+		return core.WorkspaceArtifactContractDefects(h.SessionRoot, h.declaredContracts)
+	}
+	return core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields)
+}
+
 func (h *ChatHarness) artifactDefects(ctx context.Context, taskID string, emit func(ChatEvent) error) []string {
-	defects := core.WorkspaceArtifactDefects(h.SessionRoot, h.declaredFields)
+	defects := h.workspaceArtifactDefects()
 	defects = append(defects, h.completionCheckDefects(ctx, taskID, emit)...)
 	// Paths the workspace grew that the contract never allowed. Inert unless the
 	// contract is modify-only -- newPathDefects self-gates (RESULT §28.7).

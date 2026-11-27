@@ -81,6 +81,9 @@ type SpawnRequest struct {
 	// step actually get more room instead of re-hitting the same cap.
 	// ADDED (2026-09-07).
 	TurnsBudgetBonus int
+	// MaxTurnsCap is the parent chat's remaining sub-agent ceiling. Zero means
+	// uncapped; the spawner applies it after IRT and resume bonuses.
+	MaxTurnsCap int
 	// MaxOutputTokens overrides the per-spawn response token cap. 0 keeps the
 	// engine default (4096).
 	//
@@ -107,7 +110,6 @@ type SpawnRequest struct {
 	// SessionRoot is the session-level authorized workspace root directory.
 	// When non-empty, the spawner's SafePathValidator uses it as a Level 2
 	// trust root, allowing file operations outside the task output directory.
-	// See docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2.
 	SessionRoot string
 
 	// OwnerID is the task owner's identity (from TaskGraph.OwnerID), used
@@ -159,7 +161,7 @@ type SpawnRequest struct {
 	// EnableStepPlan (ADDED 2026-10-10): forces a Planner Phase before
 	// execution. The planner generates a markdown plan; the plan is
 	// injected into AdditionalPromptContext for the executor.
-	// See docs/plan/STEP_PLAN_MODE_DESIGN.md.
+	// See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md.
 	EnableStepPlan bool
 
 	// PreviousOutputSummary (ADDED 2026-10-17): summary of the step's
@@ -167,14 +169,14 @@ type SpawnRequest struct {
 	// breaker. When non-empty, the prompt assembler instructs the model to
 	// supplement missing fields rather than re-run from scratch, avoiding
 	// repeated side effects from irreversible operations.
-	// See docs/plan/DELTA_BACKTRACK_DESIGN.md §change 3.
+	// See docs/completed/2026-10-17/DELTA_BACKTRACK_DESIGN.md §change 3.
 	PreviousOutputSummary string
 
 	// SharedContext (ADDED 2026-10-27): per-task append-only knowledge board
 	// for real-time cross-agent knowledge sharing. When non-nil, the spawner
 	// registers shared_context_write and shared_context_read tools so
 	// concurrent agents can exchange typed entries (FAIL, FACT, OBSERVED,
-	// CLAIM, PATCH_SUMMARY). See docs/plan/TYPED_SHARED_CONTEXT_DESIGN.md.
+	// CLAIM, PATCH_SUMMARY). See docs/completed/2026-10-30/TYPED_SHARED_CONTEXT_DESIGN.md.
 	SharedContext *store.SharedContext
 
 	// ExecutionProtocol (ADDED 2026-10-27): selects the execution backend.

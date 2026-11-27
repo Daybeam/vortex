@@ -78,38 +78,76 @@ func (s *DirectedEngine) startStaleTaskMonitor() {
 // Rows this process does not hold are swept afterwards by sweepStaleTaskRows.
 func (s *DirectedEngine) failStaleTasks(timeout time.Duration) {
 	now := time.Now()
-	var toFail []string
-	var toPersist []*schemas.TaskGraph
 
-	s.Mu.Lock()
+	// Phase 1: Snapshot graph data under RLock (read-only), then compute
+	// hashes outside the lock. This avoids holding the engine's primary
+	// mutex during SHA-256 computation + sorting (audit FIX 2026-11-22:
+	// was Lock for the entire iteration + hash computation).
+	type graphSnapshot struct {
+		taskID string
+		hash   string
+		graph  *schemas.TaskGraph
+	}
+	var snapshots []graphSnapshot
+	var existingStates map[string]*staleTaskState
+
+	s.Mu.RLock()
 	for taskID, graph := range s.graphs {
 		if graph == nil || graph.Status != schemas.GraphRunning {
 			continue
 		}
+		snapshots = append(snapshots, graphSnapshot{
+			taskID: taskID,
+			hash:   taskProgressHash(graph),
+			graph:  graph,
+		})
+	}
+	// Copy existing stale states to avoid reading the map outside the lock.
+	existingStates = make(map[string]*staleTaskState, len(s.staleTaskSnapshots))
+	for k, v := range s.staleTaskSnapshots {
+		existingStates[k] = v
+	}
+	s.Mu.RUnlock()
 
-		currentHash := taskProgressHash(graph)
-		prev, exists := s.staleTaskSnapshots[taskID]
+	// Phase 2: Compare hashes and decide which tasks to fail — no lock held.
+	var toFail []string
+	var toPersist []*schemas.TaskGraph
+	var toUpdateStates []graphSnapshot // graphs that need their stale state updated
 
-		if exists && prev.progressHash == currentHash {
+	for _, snap := range snapshots {
+		prev, exists := existingStates[snap.taskID]
+		if exists && prev.progressHash == snap.hash {
 			// No progress since last check.
 			if now.Sub(prev.lastProgress) >= timeout {
-				graph.Status = schemas.GraphFailed
-				if cancel, ok := s.cancelFuncs[taskID]; ok {
-					cancel()
-				}
-				toFail = append(toFail, taskID)
-				toPersist = append(toPersist, graph)
-				delete(s.staleTaskSnapshots, taskID)
+				toFail = append(toFail, snap.taskID)
+				toPersist = append(toPersist, snap.graph)
 			}
 		} else {
 			// Progress made or first check — update snapshot.
-			s.staleTaskSnapshots[taskID] = &staleTaskState{
-				progressHash: currentHash,
+			toUpdateStates = append(toUpdateStates, snap)
+		}
+	}
+
+	// Phase 3: Apply state changes under Lock — brief critical sections only.
+	if len(toFail) > 0 || len(toUpdateStates) > 0 {
+		s.Mu.Lock()
+		for _, taskID := range toFail {
+			if graph := s.graphs[taskID]; graph != nil {
+				graph.Status = schemas.GraphFailed
+			}
+			if cancel, ok := s.cancelFuncs[taskID]; ok {
+				cancel()
+			}
+			delete(s.staleTaskSnapshots, taskID)
+		}
+		for _, snap := range toUpdateStates {
+			s.staleTaskSnapshots[snap.taskID] = &staleTaskState{
+				progressHash: snap.hash,
 				lastProgress: now,
 			}
 		}
+		s.Mu.Unlock()
 	}
-	s.Mu.Unlock()
 
 	// Persist and log outside the lock.
 	for _, graph := range toPersist {

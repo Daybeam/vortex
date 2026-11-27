@@ -4,12 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/daybeam/vortex/config"
 )
+
+// skipIfNoPython skips the test if neither python nor python3 is in PATH.
+// Audit FIX 2026-11-22: replaced runtime.GOOS=="windows" skips with Python
+// availability check so tests run on all platforms where Python is installed.
+func skipIfNoPython(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("python"); err == nil {
+		return
+	}
+	if _, err := exec.LookPath("python3"); err == nil {
+		return
+	}
+	t.Skip("python not found in PATH")
+}
 
 func TestExternalScriptProvider_Embed_NotSupported(t *testing.T) {
 	p := &ExternalScriptProvider{
@@ -25,26 +39,19 @@ func TestExternalScriptProvider_Embed_NotSupported(t *testing.T) {
 }
 
 func TestExternalScriptProvider_Complete_ExecutesScript(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("external script execution test skipped on Windows (shell script)")
-	}
+	skipIfNoPython(t)
 
 	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "echo.sh")
-	script := `#!/bin/sh
-cat > /dev/null
-echo '{"text":"hello from script","stop_reason":"end_turn","prompt_tokens":5,"completion_tokens":10}'
+	scriptPath := filepath.Join(dir, "echo.py")
+	script := `import sys
+sys.stdin.read()
+print('{"text":"hello from script","stop_reason":"end_turn","prompt_tokens":5,"completion_tokens":10}')
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
 		t.Fatalf("failed to write script: %v", err)
 	}
 
-	runtimes := config.ExternalRuntimes{
-		Runtimes: map[string][]string{
-			".sh": {"sh"},
-		},
-	}
-	p, err := NewExternalScriptProvider(&config.ProviderConfig{}, scriptPath, runtimes)
+	p, err := NewExternalScriptProvider(&config.ProviderConfig{}, scriptPath, config.ExternalRuntimes{})
 	if err != nil {
 		t.Fatalf("NewExternalScriptProvider failed: %v", err)
 	}
@@ -70,26 +77,19 @@ echo '{"text":"hello from script","stop_reason":"end_turn","prompt_tokens":5,"co
 }
 
 func TestExternalScriptProvider_StreamComplete_DelegatesToComplete(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("external script execution test skipped on Windows (shell script)")
-	}
+	skipIfNoPython(t)
 
 	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "echo.sh")
-	script := `#!/bin/sh
-cat > /dev/null
-echo '{"text":"streamed response","stop_reason":"end_turn","prompt_tokens":3,"completion_tokens":7}'
+	scriptPath := filepath.Join(dir, "echo.py")
+	script := `import sys
+sys.stdin.read()
+print('{"text":"streamed response","stop_reason":"end_turn","prompt_tokens":3,"completion_tokens":7}')
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
 		t.Fatalf("failed to write script: %v", err)
 	}
 
-	runtimes := config.ExternalRuntimes{
-		Runtimes: map[string][]string{
-			".sh": {"sh"},
-		},
-	}
-	p, err := NewExternalScriptProvider(&config.ProviderConfig{}, scriptPath, runtimes)
+	p, err := NewExternalScriptProvider(&config.ProviderConfig{}, scriptPath, config.ExternalRuntimes{})
 	if err != nil {
 		t.Fatalf("NewExternalScriptProvider failed: %v", err)
 	}
@@ -113,27 +113,20 @@ echo '{"text":"streamed response","stop_reason":"end_turn","prompt_tokens":3,"co
 }
 
 func TestExternalScriptProvider_Complete_ScriptError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("external script execution test skipped on Windows (shell script)")
-	}
+	skipIfNoPython(t)
 
 	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "fail.sh")
-	script := `#!/bin/sh
-cat > /dev/null
-echo 'not valid json' >&2
-exit 1
+	scriptPath := filepath.Join(dir, "fail.py")
+	script := `import sys
+sys.stdin.read()
+sys.stderr.write('not valid json\n')
+sys.exit(1)
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
 		t.Fatalf("failed to write script: %v", err)
 	}
 
-	runtimes := config.ExternalRuntimes{
-		Runtimes: map[string][]string{
-			".sh": {"sh"},
-		},
-	}
-	p, err := NewExternalScriptProvider(&config.ProviderConfig{}, scriptPath, runtimes)
+	p, err := NewExternalScriptProvider(&config.ProviderConfig{}, scriptPath, config.ExternalRuntimes{})
 	if err != nil {
 		t.Fatalf("NewExternalScriptProvider failed: %v", err)
 	}
@@ -147,26 +140,19 @@ exit 1
 }
 
 func TestExternalScriptProvider_Complete_InvalidJSON(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("external script execution test skipped on Windows (shell script)")
-	}
+	skipIfNoPython(t)
 
 	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "badjson.sh")
-	script := `#!/bin/sh
-cat > /dev/null
-echo 'this is not json'
+	scriptPath := filepath.Join(dir, "badjson.py")
+	script := `import sys
+sys.stdin.read()
+print('this is not json')
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
 		t.Fatalf("failed to write script: %v", err)
 	}
 
-	runtimes := config.ExternalRuntimes{
-		Runtimes: map[string][]string{
-			".sh": {"sh"},
-		},
-	}
-	p, err := NewExternalScriptProvider(&config.ProviderConfig{}, scriptPath, runtimes)
+	p, err := NewExternalScriptProvider(&config.ProviderConfig{}, scriptPath, config.ExternalRuntimes{})
 	if err != nil {
 		t.Fatalf("NewExternalScriptProvider failed: %v", err)
 	}
@@ -206,31 +192,27 @@ func TestExternalScriptProvider_Reload_NoOp(t *testing.T) {
 }
 
 func TestExternalScriptProvider_BridgeInputFormat(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("external script execution test skipped on Windows (shell script)")
-	}
+	skipIfNoPython(t)
 
 	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "verify_input.sh")
-	script := `#!/bin/sh
-input=$(cat)
-echo "$input" > /tmp/bridge_input_test.json
-echo '{"text":"ok","stop_reason":"end_turn","prompt_tokens":1,"completion_tokens":1}'
+	scriptPath := filepath.Join(dir, "verify_input.py")
+	outputFile := filepath.Join(dir, "bridge_input_test.json")
+	// Embed the output file path directly in the script for cross-platform compatibility.
+	script := `import sys
+input = sys.stdin.read()
+with open(r'` + outputFile + `', 'w') as f:
+    f.write(input)
+print('{"text":"ok","stop_reason":"end_turn","prompt_tokens":1,"completion_tokens":1}')
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
 		t.Fatalf("failed to write script: %v", err)
 	}
 
-	runtimes := config.ExternalRuntimes{
-		Runtimes: map[string][]string{
-			".sh": {"sh"},
-		},
-	}
 	p, err := NewExternalScriptProvider(&config.ProviderConfig{
 		BaseURL: "http://example.com",
 		Model:   "test-model",
 		Extra:   map[string]any{"key": "value"},
-	}, scriptPath, runtimes)
+	}, scriptPath, config.ExternalRuntimes{})
 	if err != nil {
 		t.Fatalf("NewExternalScriptProvider failed: %v", err)
 	}
@@ -242,11 +224,10 @@ echo '{"text":"ok","stop_reason":"end_turn","prompt_tokens":1,"completion_tokens
 		t.Fatalf("Complete failed: %v", err)
 	}
 
-	savedInput, err := os.ReadFile("/tmp/bridge_input_test.json")
+	savedInput, err := os.ReadFile(outputFile)
 	if err != nil {
 		t.Fatalf("failed to read saved input: %v", err)
 	}
-	defer os.Remove("/tmp/bridge_input_test.json")
 
 	var bridgeInput map[string]any
 	if err := json.Unmarshal(savedInput, &bridgeInput); err != nil {

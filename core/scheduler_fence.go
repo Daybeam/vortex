@@ -240,7 +240,10 @@ func (s *DirectedEngine) holdsFence(taskID string) bool {
 	if !present {
 		return true // deleted out from under us: nothing here says another engine took over
 	}
-	mine := cur.(graphFence)
+	mine, ok := cur.(graphFence)
+	if !ok {
+		return true // unexpected type in fences map — treat as no claim
+	}
 	return onDisk.Owner == mine.Owner && onDisk.Seq == mine.Seq
 }
 
@@ -254,8 +257,9 @@ func (s *DirectedEngine) recordFenceLoss(taskID string) {
 	}
 	held := ""
 	if v, ok := s.fences.Load(taskID); ok {
-		mine := v.(graphFence)
-		held = fmt.Sprintf("%s#%d", mine.Owner, mine.Seq)
+		if mine, ok := v.(graphFence); ok {
+			held = fmt.Sprintf("%s#%d", mine.Owner, mine.Seq)
+		}
 	}
 	onDisk, present := readGraphFence(s.fencePath(taskID))
 	winner := ""

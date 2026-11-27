@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -16,15 +17,19 @@ import (
 )
 
 type ScheduleManager struct {
-	Mu            sync.RWMutex
-	scheduler     OrchestrationEngine
-	expStore      store.IExperienceStore
-	scheduleStore *store.ScheduleStore
-	logger        *obs.Logger
-	stopChan      chan struct{}
-	stopOnce      sync.Once
-	lastLoaded    time.Time
-	wg            sync.WaitGroup // audit M8: track all goroutines
+	Mu               sync.RWMutex
+	scheduler        OrchestrationEngine
+	expStore         store.IExperienceStore
+	scheduleStore    *store.ScheduleStore
+	logger           *obs.Logger
+	stopChan         chan struct{}
+	stopOnce         sync.Once
+	lastLoaded       time.Time
+	wg               sync.WaitGroup // audit M8: track all goroutines
+	httpClient       *http.Client   // injectable for tests; defaults to http.DefaultClient
+	sessionDeliverer SessionDeliverer
+	deliveryOutbox   store.IChatOutbox
+	lifecycleCtx     context.Context // audit FIX 2026-11-24: derive monitor ctx from engine lifecycle
 }
 
 func NewScheduleManager(
@@ -39,11 +44,38 @@ func NewScheduleManager(
 		scheduleStore: ss,
 		logger:        logger,
 		stopChan:      make(chan struct{}),
+		httpClient:    http.DefaultClient,
 	}
 }
 
+func (sm *ScheduleManager) SetSessionDeliverer(d SessionDeliverer) {
+	sm.sessionDeliverer = d
+}
+
+// SetLifecycleCtx wires the engine's lifecycle context so monitor goroutines
+// derive from it instead of context.Background(). When set, the cancel-propagator
+// goroutine is eliminated (one fewer goroutine per scheduled task), and monitor
+// goroutines exit promptly when the engine shuts down — even if Stop() hasn't
+// been called yet. Nil-safe: when unset, the legacy context.Background() +
+// cancel-propagator pattern is used (backward compatible).
+func (sm *ScheduleManager) SetLifecycleCtx(ctx context.Context) {
+	sm.lifecycleCtx = ctx
+}
+
 func (sm *ScheduleManager) Start() {
+	// audit FIX (2026-11-21): clean up stale lock files from a previous
+	// process crash. Without this, a crashed process can block scheduled
+	// tasks from running until the 24-hour cleanup window expires.
 	sm.cleanupLocks()
+
+	if sm.deliveryOutbox != nil {
+		sm.wg.Add(1)
+		go func() {
+			defer sm.wg.Done()
+			sm.deliveryLoop()
+		}()
+	}
+
 	sm.wg.Add(1)
 	go func() {
 		defer sm.wg.Done()
@@ -205,6 +237,15 @@ func (sm *ScheduleManager) RunNow(id string) (string, error) {
 	return sm.submitAndTrack(s, "schedule_manual_trigger")
 }
 
+// RunNowForOwner authorizes a manual run before loading the schedule.
+func (sm *ScheduleManager) RunNowForOwner(id, ownerID string, includeAll bool) (string, error) {
+	s := sm.scheduleStore.GetVisible(id, ownerID, includeAll)
+	if s == nil {
+		return "", fmt.Errorf("schedule not found: %s", id)
+	}
+	return sm.submitAndTrack(s, "schedule_manual_trigger")
+}
+
 // submitAndTrack submits a schedule's task to the orchestration engine, updates
 // the schedule's run ledger (LastRun/RunCount/NextRun/MaxRuns), and spins up
 // the completion monitor. It returns the submitted task ID (empty string on
@@ -217,14 +258,25 @@ func (sm *ScheduleManager) submitAndTrack(s *schemas.Schedule, event string) (st
 		"schedule_name": s.Name,
 	})
 
-	// Submit to scheduler. Cron schedules are admin-gated (created via the admin
-	// config subsystem), so their runs carry the admin tier — otherwise dynamic
-	// MCP mounts in scheduled tasks would be fail-closed to non-admin (HIGH-sev
-	// regression from the submitter-tier propagation fix, 2026-10-21).
+	// The persisted creator tier is authoritative. Ownerless legacy schedules
+	// retain the old admin behavior; an ordinary owner's schedule must never
+	// gain admin privileges merely because the scanner runs it.
 	for i := range s.TaskInputs {
-		s.TaskInputs[i].SubmitterIsAdmin = true
+		s.TaskInputs[i].SubmitterIsAdmin = s.OwnerID == "" || s.SubmitterIsAdmin
+		if s.Deliver.Mode != "" {
+			delivery := scheduleDeliveryFor(s)
+			s.TaskInputs[i].Delivery = &delivery
+		}
 	}
-	taskID, err := sm.scheduler.Submit(s.TaskInputs)
+	var taskID string
+	var err error
+	if owned, ok := sm.scheduler.(interface {
+		SubmitOwned([]schemas.StepInput, string) (string, error)
+	}); ok && s.OwnerID != "" {
+		taskID, err = owned.SubmitOwned(s.TaskInputs, s.OwnerID)
+	} else {
+		taskID, err = sm.scheduler.Submit(s.TaskInputs)
+	}
 
 	sm.Mu.Lock()
 	defer sm.Mu.Unlock()
@@ -243,31 +295,52 @@ func (sm *ScheduleManager) submitAndTrack(s *schemas.Schedule, event string) (st
 		// Monitor for actual completion — tie lifetime to stopChan so
 		// shutdown cancels pending monitors (audit finding H1).
 		// audit M8: track goroutines with wg so Stop() waits for them.
-		ctx, cancel := context.WithCancel(context.Background())
-		sm.wg.Add(2)
-		go func() {
-			defer sm.wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("PANIC in ScheduleManager cancel-propagator: %v\n%s", r, debug.Stack())
+		// audit FIX 2026-11-24: when lifecycleCtx is set, derive from it
+		// directly — the cancel-propagator goroutine is unnecessary because
+		// lifecycleCtx cancellation propagates to the derived context. This
+		// eliminates one goroutine per scheduled task and ensures prompt
+		// exit on engine shutdown even before Stop() is called.
+		if sm.lifecycleCtx != nil {
+			ctx, cancel := context.WithCancel(sm.lifecycleCtx)
+			sm.wg.Add(1)
+			go func() {
+				defer sm.wg.Done()
+				defer cancel()
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("PANIC in ScheduleManager.monitorTask: %v\n%s", r, debug.Stack())
+					}
+				}()
+				sm.monitorTask(ctx, taskID, s.ID)
+			}()
+		} else {
+			// Legacy path: context.Background() + cancel-propagator (backward compatible)
+			ctx, cancel := context.WithCancel(context.Background())
+			sm.wg.Add(2)
+			go func() {
+				defer sm.wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("PANIC in ScheduleManager cancel-propagator: %v\n%s", r, debug.Stack())
+					}
+				}()
+				select {
+				case <-sm.stopChan:
+					cancel()
+				case <-ctx.Done():
 				}
 			}()
-			select {
-			case <-sm.stopChan:
-				cancel()
-			case <-ctx.Done():
-			}
-		}()
-		go func() {
-			defer sm.wg.Done()
-			defer cancel() // audit R-1: unblock the cancel-propagator goroutine when monitor exits
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("PANIC in ScheduleManager.monitorTask: %v\n%s", r, debug.Stack())
-				}
+			go func() {
+				defer sm.wg.Done()
+				defer cancel() // audit R-1: unblock the cancel-propagator goroutine when monitor exits
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("PANIC in ScheduleManager.monitorTask: %v\n%s", r, debug.Stack())
+					}
+				}()
+				sm.monitorTask(ctx, taskID, s.ID)
 			}()
-			sm.monitorTask(ctx, taskID, s.ID)
-		}()
+		}
 	}
 
 	// Calculate next run
@@ -278,7 +351,9 @@ func (sm *ScheduleManager) submitAndTrack(s *schemas.Schedule, event string) (st
 		s.Status = schemas.ScheduleCompleted
 	}
 
-	sm.scheduleStore.Set(s)
+	if err := sm.scheduleStore.Set(s); err != nil {
+		sm.logger.Log("schedule_persistence_failed", "", "", map[string]any{"schedule_id": s.ID, "error": err.Error()})
+	}
 
 	if err != nil {
 		return "", err
@@ -322,6 +397,20 @@ func (sm *ScheduleManager) monitorTask(ctx context.Context, taskID string, sched
 			continue
 		}
 		if graphStatus == schemas.GraphCompleted || graphStatus == schemas.GraphFailed {
+			if sched := sm.scheduleStore.Get(scheduleID); sched != nil {
+				result["task_id"] = taskID
+				var deliveryErr error
+				if sm.deliveryOutbox != nil && sched.Deliver.Mode != "" {
+					deliveryErr = sm.QueueCompletedDelivery(scheduleDeliveryFor(sched), taskID, result)
+				} else {
+					deliveryErr = sm.deliverResult(ctx, sched, result)
+				}
+				if deliveryErr != nil {
+					sm.logger.Log("schedule_delivery_failed", "", "", map[string]any{
+						"schedule_id": sched.ID, "task_id": taskID, "error": deliveryErr.Error(),
+					})
+				}
+			}
 			sm.afterRun(scheduleID, graphStatus == schemas.GraphCompleted)
 			return
 		}
@@ -358,7 +447,9 @@ func (sm *ScheduleManager) afterRun(scheduleID string, success bool) {
 	} else {
 		s.ConsecutiveFailures = 0
 	}
-	sm.scheduleStore.Set(s)
+	if err := sm.scheduleStore.Set(s); err != nil {
+		sm.logger.Log("schedule_persistence_failed", "", "", map[string]any{"schedule_id": s.ID, "error": err.Error()})
+	}
 }
 
 func (sm *ScheduleManager) applyAdaptiveRecovery(s *schemas.Schedule) {

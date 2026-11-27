@@ -202,6 +202,71 @@ func TestReflectOnTask_CapturesTraceJITSource(t *testing.T) {
 // wiring: a spawner must install the registry-backed liveness probe so
 // spawn-path retrieval never advertises a tool that expired or was never
 // registered in this process.
+// N3 regression: zero preserves reflection's 24h/72h built-ins; a positive
+// default_jit_ttl is a seconds-based override for both paths.
+func TestReflectionJITTTL_ZeroAndPositiveSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configured int
+		want       time.Duration
+	}{
+		{name: "zero uses built-ins", want: 0},
+		{name: "positive overrides both", configured: 7, want: 7 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, expert := range []bool{false, true} {
+				name := "crystallize"
+				want := 24 * time.Hour
+				if expert {
+					name = "merge"
+					want = 72 * time.Hour
+				}
+				if tc.configured > 0 {
+					want = tc.want
+				}
+				t.Run(name, func(t *testing.T) {
+					tmp := t.TempDir()
+					reg, _ := newMockJITRegistry(t, "```lua\n-- ttl body\n```")
+					reg.System.DefaultJITTTL = tc.configured
+					logger := mustNewLogger(t, t.TempDir(), nil)
+					jitMgr := jit.NewJITManager(reg, tmp)
+					t.Cleanup(jitMgr.Close)
+					es := mustNewExperienceStore(t, tmp, nil, nil, nil, nil)
+					re := NewReflectionEngine(es, nil, reg, jitMgr, logger)
+					if expert {
+						for _, id := range []string{"jit_v1", "jit_v2"} {
+							if err := es.AddGeneratedSkill(context.Background(), &store.GeneratedSkill{
+								ID: id, Capability: "ttl", SuccessRate: 1, IsVerified: true,
+								UsageCount: 5, SourceText: "-- variant",
+							}); err != nil {
+								t.Fatal(err)
+							}
+						}
+						re.ScanForHybridMerge(context.Background())
+					} else {
+						re.CrystallizeStepToSkill(context.Background(), store.StepRecord{
+							StepID: "s1", RoleID: "r1", Capability: "ttl", Status: "OK",
+							Task: "ttl task", Trace: []store.ToolInteraction{{ToolName: "shell"}},
+						})
+					}
+					var id string
+					for candidate := range reg.DynamicMCPs {
+						id = candidate
+					}
+					mcp := reg.GetMCP(id)
+					if mcp == nil {
+						t.Fatal("reflection did not register a JIT tool")
+					}
+					remaining := time.Until(mcp.ExpiresAt)
+					if remaining < want-time.Minute || remaining > want+time.Minute {
+						t.Fatalf("TTL = %s, want %s", remaining.Round(time.Second), want)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestNewSpawner_FiltersExpiredJITToolsFromRetrieval(t *testing.T) {
 	tmp := t.TempDir()
 	reg, _ := newMockJITRegistry(t, "-- unused")

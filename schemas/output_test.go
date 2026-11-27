@@ -80,6 +80,36 @@ func TestParseOutput_MapResultStillWorks(t *testing.T) {
 	}
 }
 
+// Regression for O55: capability_required is a control signal even when the
+// host has no result payload. Treating it as hollow dropped required_capabilities
+// and let fulfillment continue down the success path. A conflicting status must
+// not let the same signal bypass the normal spawn or fulfill failure paths.
+func TestParseOutput_CapabilityRequiredWithoutResultIsNotHollow(t *testing.T) {
+	raw := `{"status":"capability_required","confidence":0.3,"result":{},"required_capabilities":["browser"]}`
+	out := ParseOutput(raw, "text")
+	if out.Status != StatusCapabilityRequired {
+		t.Fatalf("status = %q, want capability_required", out.Status)
+	}
+	if len(out.RequiredCapabilities) != 1 || out.RequiredCapabilities[0] != "browser" {
+		t.Fatalf("required_capabilities = %v, want [browser]", out.RequiredCapabilities)
+	}
+	if out.Confidence != 0.3 {
+		t.Errorf("confidence = %v, want 0.3", out.Confidence)
+	}
+
+	for _, status := range []SubagentStatus{StatusOK, StatusPartial, StatusFailed} {
+		conflicting := ParseOutput(`{"status":"`+string(status)+`","confidence":0.9,"result":{},"required_capabilities":["browser"]}`, "text")
+		if conflicting.Status != StatusCapabilityRequired {
+			t.Errorf("status %q with required_capabilities parsed as %q, want capability_required", status, conflicting.Status)
+		}
+	}
+
+	ordinary := ParseOutput(`{"status":"ok","confidence":0.9,"result":{}}`, "text")
+	if ordinary.Status != StatusPartial {
+		t.Fatalf("ordinary empty result status = %q, want partial", ordinary.Status)
+	}
+}
+
 // TestParseOutput_NumericResult verifies numeric result values are wrapped.
 func TestParseOutput_NumericResult(t *testing.T) {
 	raw := `{"status":"ok","confidence":0.9,"result":42}`

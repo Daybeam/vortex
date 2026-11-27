@@ -15,7 +15,7 @@ import (
 
 // StagingFileMeta records a tracked file's identity within a StagedWorkspace
 // snapshot: its path (relative to the task's workspace directory), content
-// hash, and size. See docs/STAGED_WORKSPACE_DESIGN.md §6.1.
+// hash, and size. See docs/completed/2026-09-05/STAGED_WORKSPACE_DESIGN.md §6.1.
 type StagingFileMeta struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
@@ -25,7 +25,7 @@ type StagingFileMeta struct {
 // StagingJournalEntry is one append-only record of a step's effect on the
 // task workspace: what changed between the pre-step and post-step snapshot,
 // and whether the step's result was accepted or rolled back. See
-// docs/STAGED_WORKSPACE_DESIGN.md §6.1.
+// docs/completed/2026-09-05/STAGED_WORKSPACE_DESIGN.md §6.1.
 type StagingJournalEntry struct {
 	StepID         string            `json:"step_id"`
 	TaskID         string            `json:"task_id"`
@@ -43,7 +43,7 @@ type StagingJournalEntry struct {
 
 // SnapshotIndex is the full set of tracked file states at one point in
 // time (e.g. immediately before or after a step executes). See
-// docs/STAGED_WORKSPACE_DESIGN.md §6.2.
+// docs/completed/2026-09-05/STAGED_WORKSPACE_DESIGN.md §6.2.
 type SnapshotIndex struct {
 	ID      string                     `json:"id"`
 	Files   map[string]StagingFileMeta `json:"files"`
@@ -51,7 +51,7 @@ type SnapshotIndex struct {
 }
 
 // StagedWorkspace implements the minimal-viable version of the design in
-// docs/STAGED_WORKSPACE_DESIGN.md: step-boundary content-addressable
+// docs/completed/2026-09-05/STAGED_WORKSPACE_DESIGN.md: step-boundary content-addressable
 // snapshotting, append-only journaling, and rollback-on-failure for one
 // task's workspace directory.
 //

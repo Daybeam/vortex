@@ -6,7 +6,7 @@ import "github.com/daybeam/vortex/core/obs"
 // scheduler's key state-transition points. It reuses the existing EventType
 // constants from logger.go and AgentEvent from event_log.go — no new types.
 //
-// See docs/architecture/EVENT_DRIVEN_CALLBACK_DESIGN.md.
+// See docs/completed/2026-09-16/EVENT_DRIVEN_CALLBACK_DESIGN.md.
 
 // publishEvent is a thin helper that publishes a structured AgentEvent to the
 // global EventBus. Called at key scheduler state transitions so consumers

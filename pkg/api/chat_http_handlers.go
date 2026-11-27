@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/daybeam/vortex/pkg/chat"
 	"github.com/daybeam/vortex/store"
+	"github.com/daybeam/vortex/tools"
 )
 
 // mbStoreForHarness returns the MemoryBankStore when MemoryBankEnabled is
@@ -47,6 +48,21 @@ func (h *ChatHandler) ArtifactsHandler(w http.ResponseWriter, r *http.Request) {
 		base = "outputs"
 	}
 	sessionID := r.URL.Query().Get("session_id")
+	if sessionID != "" && !validIDComponent(sessionID) {
+		http.Error(w, "invalid session_id", http.StatusBadRequest)
+		return
+	}
+	strictSessionScope := tools.OwnerIsolationEnabled(h.App) && !tools.ResourceScopeIsUnrestricted(r.Context(), h.App)
+	if strictSessionScope && sessionID == "" {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if sessionID != "" && tools.OwnerIsolationEnabled(h.App) {
+		if _, allowed := h.loadAuthorizedSession(r.Context(), sessionID, ""); !allowed {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+	}
 
 	type artifactEntry struct {
 		Name     string `json:"name"`
@@ -80,9 +96,13 @@ func (h *ChatHandler) ArtifactsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	scanDir(base)
-	if sessionID != "" {
+	if strictSessionScope {
 		scanDir(filepath.Join(base, "chat", sessionID))
+	} else {
+		scanDir(base)
+		if sessionID != "" {
+			scanDir(filepath.Join(base, "chat", sessionID))
+		}
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
@@ -107,17 +127,44 @@ func (h *ChatHandler) ArtifactHandler(w http.ResponseWriter, r *http.Request) {
 		base = "outputs"
 	}
 	sessionID := r.URL.Query().Get("session_id")
+	if sessionID != "" && !validIDComponent(sessionID) {
+		http.Error(w, "invalid session_id", http.StatusBadRequest)
+		return
+	}
+	strictSessionScope := tools.OwnerIsolationEnabled(h.App) && !tools.ResourceScopeIsUnrestricted(r.Context(), h.App)
+	if strictSessionScope && sessionID == "" {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if sessionID != "" && tools.OwnerIsolationEnabled(h.App) {
+		if _, allowed := h.loadAuthorizedSession(r.Context(), sessionID, ""); !allowed {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+	}
 
-	candidate := filepath.Join(base, filepath.Clean(name))
-	if _, err := os.Stat(candidate); err != nil && sessionID != "" {
-		candidate = filepath.Join(base, "chat", sessionID, filepath.Clean(name))
+	cleanName := filepath.Clean(name)
+	readBase := base
+	if strictSessionScope {
+		readBase = filepath.Join(base, "chat", sessionID)
+	}
+	candidate := filepath.Join(readBase, cleanName)
+	if !strictSessionScope {
+		if _, err := os.Stat(candidate); err != nil && sessionID != "" {
+			candidate = filepath.Join(base, "chat", sessionID, cleanName)
+		}
 	}
 
 	// audit SEC-1: the `name` check above does not cover `session_id`, which is
 	// joined directly into the path when the first candidate misses. Guard the
 	// final resolved path so neither input can escape `base` (same pattern as
 	// handlers_upload_serve.go).
-	if !strings.HasPrefix(candidate, filepath.Clean(base)+string(filepath.Separator)) {
+	if strictSessionScope {
+		if !artifactPathWithinRoot(readBase, candidate) {
+			http.Error(w, "file not found", http.StatusNotFound)
+			return
+		}
+	} else if !strings.HasPrefix(candidate, filepath.Clean(base)+string(filepath.Separator)) {
 		http.Error(w, "invalid path", http.StatusBadRequest)
 		return
 	}
@@ -129,6 +176,22 @@ func (h *ChatHandler) ArtifactHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write(data)
+}
+
+func artifactPathWithinRoot(root, candidate string) bool {
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedCandidate)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // HistoryHandler handles GET /api/chat/history?session_id=... — returns the
@@ -157,7 +220,11 @@ func (h *ChatHandler) HistoryHandler(w http.ResponseWriter, r *http.Request) {
 	if before != "" && limit == 0 {
 		limit = 50
 	}
-	session := h.Store.GetOrCreate(sessionID)
+	session, allowed := h.loadAuthorizedSession(r.Context(), sessionID, "")
+	if !allowed {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 	var msgs []chat.ChatMessage
 	var hasMore bool
 	var oldestID string
@@ -207,7 +274,11 @@ func (h *ChatHandler) MetaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ids := strings.Split(idsParam, ",")
-	session := h.Store.GetOrCreate(sessionID)
+	session, allowed := h.loadAuthorizedSession(r.Context(), sessionID, "")
+	if !allowed {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 	meta := session.GetMessagesMeta(ids)
 	if meta == nil {
 		meta = []chat.MessageMeta{}
@@ -244,7 +315,11 @@ func (h *ChatHandler) AnchorHandler(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	session := h.Store.GetOrCreate(sessionID)
+	session, allowed := h.loadAuthorizedSession(r.Context(), sessionID, "")
+	if !allowed {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 	msgs, hasMoreOlder, hasMoreNewer, oldestID, err := session.SnapshotMessagesAnchor(targetID, limit)
 	if err != nil {
 		writeJSON(w, map[string]any{
@@ -263,12 +338,12 @@ func (h *ChatHandler) AnchorHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{
-		"session_id":      sessionID,
-		"messages":        msgs,
-		"branch_points":   branchPoints,
-		"has_more_older":  hasMoreOlder,
-		"has_more_newer":  hasMoreNewer,
-		"oldest_id":       oldestID,
+		"session_id":     sessionID,
+		"messages":       msgs,
+		"branch_points":  branchPoints,
+		"has_more_older": hasMoreOlder,
+		"has_more_newer": hasMoreNewer,
+		"oldest_id":      oldestID,
 	})
 }
 
@@ -292,7 +367,12 @@ func (h *ChatHandler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 			offset = n
 		}
 	}
-	sessions, err := h.Store.ListSessions(r.Context(), limit, offset)
+	scope := h.sessionScope(r.Context())
+	if !scope.All && scope.Owner == "" {
+		writeJSON(w, map[string]any{"sessions": []store.ChatSessionRow{}, "has_more": false})
+		return
+	}
+	sessions, err := h.Store.ListSessions(r.Context(), scope, limit, offset)
 	if err != nil {
 		writeJSON(w, map[string]any{"sessions": []any{}, "error": err.Error()})
 		return
@@ -322,6 +402,31 @@ func (h *ChatHandler) UploadHandler(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.FormValue("session_id")
 	if sessionID == "" {
 		sessionID = uuid.New().String()
+	} else if !validIDComponent(sessionID) {
+		http.Error(w, "invalid session_id", http.StatusBadRequest)
+		return
+	}
+	if tools.OwnerIsolationEnabled(h.App) {
+		if h.Store == nil {
+			http.Error(w, "session store not available", http.StatusServiceUnavailable)
+			return
+		}
+		owner := tools.CallerOwnerID(r.Context())
+		ownerRequired := tools.EffectiveTier(r.Context(), h.App) != tools.TierAdmin
+		_, err := h.Store.GetOrCreateOwned(sessionID, owner, ownerRequired, func(existing *chat.ChatSession) error {
+			if !h.canAccessSession(r.Context(), existing, "") {
+				return fmt.Errorf("session not found")
+			}
+			return nil
+		})
+		if err != nil {
+			if ownerRequired && owner == "" {
+				http.Error(w, "owner identity is required", http.StatusForbidden)
+			} else {
+				http.Error(w, "session not found", http.StatusNotFound)
+			}
+			return
+		}
 	}
 
 	// Resolve the uploads directory: outputs/chat_sessions/{session_id}/uploads/
@@ -362,19 +467,18 @@ func (h *ChatHandler) UploadHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to open uploaded file: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		defer src.Close()
 
 		// Write to the destination path
 		dstPath := filepath.Join(uploadDir, safeName)
 		dst, err := os.Create(dstPath)
 		if err != nil {
-			src.Close()
 			http.Error(w, "failed to create file: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		defer dst.Close()
 
 		written, err := io.Copy(dst, src)
-		src.Close()
-		dst.Close()
 		if err != nil {
 			http.Error(w, "failed to write file: "+err.Error(), http.StatusInternalServerError)
 			return

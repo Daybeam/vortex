@@ -50,8 +50,8 @@ func TestCheckpointChecklist(t *testing.T) {
 			minCount: 1,
 		},
 		{
-			name:     "SelectSkill called in scheduler_decision_failure.go",
-			file:     "scheduler_decision_failure.go",
+			name:     "SelectSkill called in fulfill_capability.go",
+			file:     "fulfill_capability.go",
 			pattern:  "s.expStore.SelectSkill(",
 			minCount: 1,
 		},

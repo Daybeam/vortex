@@ -12,7 +12,7 @@ import (
 
 // RetentionConfig is the store-level compaction configuration, decoupled from
 // the config package's RetentionSettings to avoid a circular import.
-// See docs/architecture/STORAGE_COMPACTION_DESIGN.md.
+// See docs/completed/2026-09-17/STORAGE_COMPACTION_DESIGN.md.
 type RetentionConfig struct {
 	TaskHistoryDays        int
 	StagingTTLHours        int

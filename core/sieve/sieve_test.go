@@ -1,6 +1,8 @@
 package sieve
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/store"
@@ -19,7 +21,7 @@ func TestSieve_BlocksWhenRepetitionExceedsThreshold(t *testing.T) {
 	s.RepetitionThreshold = 0.9
 
 	text := "line 1\nline 2\nline 1\nline 2"
-	valid, reason := s.Inspect(text, "")
+	valid, reason := s.Inspect(text)
 	if valid {
 		t.Errorf("Expected invalid due to repetition, got valid")
 	}
@@ -35,7 +37,7 @@ func TestSieve_BlocksWhenRepetitionExceedsThreshold(t *testing.T) {
 // of the same tool (max 2/6 = 33% < 50% density). The eval observed
 // get_reservation_details called 35× across turns without interception.
 // Fix: total-occurrence check at threshold*2 (sieve.go InspectToolCalls).
-// Bug: eval-kit/docs/24-doc-map-and-remaining-work.md #2.
+// Bug: docs/completed/TOOL_LOOP_GUARDRAILS_PLAN.md §0.1.
 func TestSieve_InspectToolCalls_SparseInterleavedRepetition(t *testing.T) {
 	s := NewSieve(10)
 	s.ToolRepetitionThreshold = 3 // total threshold = 3*2 = 6
@@ -100,7 +102,7 @@ func TestSieve_InspectToolCalls_AllowsLegitimateRetry(t *testing.T) {
 // When a read tool is called with the same args, the Sieve should return
 // the cached result instead of signaling InfiniteLoopDetected. A write tool
 // should clear the cache so the next read executes fresh (write-then-read-back).
-// Bug: eval-kit/docs/24-doc-map-and-remaining-work.md #2 — force-terminate
+// Bug: docs/completed/TOOL_LOOP_GUARDRAILS_PLAN.md §0.2 — force-terminate
 // caused 4B model to produce empty turns / transfer-to-human (pass rate 1/5→0/5).
 func TestSieve_CacheReplay_ReturnsCachedResultForRepeatRead(t *testing.T) {
 	s := NewSieve(10)
@@ -239,7 +241,7 @@ func TestSieve_NonPollerStillDetected(t *testing.T) {
 //	result-level check catches it by comparing result content hashes.
 //
 // Inspired by: OpenHands StuckDetector content-based event equality.
-// See: docs/HARNESS_LOOP_GUARD_RESEARCH.md §7.
+// See: docs/survey/HARNESS_LOOP_GUARD_RESEARCH.md §7.
 func TestSieve_CheckResultRepetition_SameResultDifferentCalls(t *testing.T) {
 	s := NewSieve(10)
 	s.ToolRepetitionThreshold = 3
@@ -396,6 +398,27 @@ func TestSieve_InspectToolCalls_NonCyclicNotBlocked(t *testing.T) {
 		ok, _ := s.InspectToolCalls(taskID, "", interactions)
 		if !ok {
 			t.Errorf("non-cyclic call %s should not be blocked", tool)
+		}
+	}
+}
+
+// O26 regression: Guardian's requiredSchema branch called an always-true stub,
+// so it looked like JSON enforcement without enforcing anything. Removing the
+// branch is behavior-equivalent; parsed JSON remains owned by verifyExitCriteria.
+// See docs/completed/2026-11-27/UNWIRED_DECISION_BATCH.md §O26.
+func TestSieve_Inspect_HasNoInertSchemaGate(t *testing.T) {
+	s := NewSieve(10)
+	if ok, reason := s.Inspect("ordinary prose is not a Guardian schema failure"); !ok {
+		t.Fatalf("Guardian must only apply its real checks, got %q", reason)
+	}
+
+	source, err := os.ReadFile("sieve.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, deadGate := range []string{"requiredSchema", "validateSchema", "schema violation:"} {
+		if strings.Contains(string(source), deadGate) {
+			t.Errorf("inert Guardian schema gate %q was reintroduced", deadGate)
 		}
 	}
 }

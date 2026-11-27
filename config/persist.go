@@ -34,7 +34,7 @@ func (r *Registry) StartWatcher(ctx context.Context) {
 		}
 
 		// Also watch .env for hot-reload.
-		// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 5.
+		// See docs/completed/2026-10-17/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 5.
 		envPath := filepath.Join(filepath.Dir(r.configPath), ".env")
 		var envLastMod time.Time
 		if envInfo, envErr := os.Stat(envPath); envErr == nil {

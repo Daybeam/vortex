@@ -25,7 +25,7 @@ import (
 //  3. Legacy (true + no manifest.lock): load external files without
 //     verification (backward-compatible default).
 //
-// See docs/plan/IMMUTABLE_ASSET_PIPELINE_DESIGN.md.
+// See docs/completed/2026-10-21/IMMUTABLE_ASSET_PIPELINE_DESIGN.md.
 
 var (
 	assetGateOnce sync.Once

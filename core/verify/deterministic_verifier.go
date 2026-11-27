@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,7 +31,7 @@ var deterministicVerifiers = map[string]DeterministicVerifier{
 }
 
 // FileExistsVerifier checks that a file exists and is non-empty.
-// Params: { "path": "<relative or absolute path>" }
+// Params: { "path": "<path relative to the task directory>" }
 type FileExistsVerifier struct{}
 
 func (v *FileExistsVerifier) Verify(ctx context.Context, workdir string, criteria map[string]any) (bool, string, error) {
@@ -38,9 +39,9 @@ func (v *FileExistsVerifier) Verify(ctx context.Context, workdir string, criteri
 	if path == "" {
 		return false, "missing 'path' parameter", nil
 	}
-	absPath := path
-	if !filepath.IsAbs(absPath) && workdir != "" {
-		absPath = filepath.Join(workdir, path)
+	absPath, err := resolveCheckPath(workdir, path)
+	if err != nil {
+		return false, err.Error(), nil
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -87,6 +88,11 @@ func (v *CommandPassVerifier) Verify(ctx context.Context, workdir string, criter
 		return false, fmt.Sprintf("command rejected: path separators not allowed in executable (audit NEW-1); use a bare command name"), nil
 	}
 	exe := fields[0] // guaranteed bare name — no path prefix possible
+	for _, arg := range fields[1:] {
+		if filepath.IsAbs(arg) || filepath.VolumeName(arg) != "" || hasParentPathSegment(arg) {
+			return false, "command rejected: argument escapes task directory (O58)", nil
+		}
+	}
 	allowed := map[string]bool{
 		"test": true, "echo": true, "cat": true, "ls": true, "grep": true,
 		"git": true, "go": true, "python3": true, "python": true, "node": true,
@@ -118,11 +124,61 @@ func (v *CommandPassVerifier) Verify(ctx context.Context, workdir string, criter
 			}
 		}
 	}
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		return false, fmt.Sprintf("command failed: %s\noutput: %s", err, string(output)), nil
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, fmt.Sprintf("command failed (exit %d): %s", exitErr.ExitCode(), exe), nil
+		}
+		return false, fmt.Sprintf("command failed (start error): %s", exe), nil
 	}
 	return true, "", nil
+}
+
+func hasParentPathSegment(arg string) bool {
+	normalized := strings.ReplaceAll(arg, `\`, "/")
+	for _, segment := range strings.Split(normalized, "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// O58: resolve both the root and candidate through symlinks before any read or
+// walk. Absolute paths and traversal are rejected even when the target exists.
+func resolveCheckPath(workdir, p string) (string, error) {
+	if p == "" {
+		return "", fmt.Errorf("missing path parameter")
+	}
+	if filepath.IsAbs(p) || filepath.VolumeName(p) != "" {
+		return "", fmt.Errorf("absolute path rejected (must be relative to task dir): %s", p)
+	}
+	if workdir == "" {
+		var err error
+		workdir, err = filepath.Abs(".")
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve task dir: %w", err)
+		}
+	}
+	root, err := filepath.EvalSymlinks(workdir)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve task dir: %w", err)
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve task dir: %w", err)
+	}
+	candidate := filepath.Join(root, p)
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve task-relative path %s: %w", p, err)
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes task dir: %s", p)
+	}
+	return resolved, nil
 }
 
 // RunDeterministicChecks executes all structured deterministic checks for a step.
@@ -152,7 +208,7 @@ func RunDeterministicChecks(ctx context.Context, workdir string, checks []schema
 // marked as done (- [x]). This is a soft check — it passes if there are no
 // checkboxes at all (the plan used a numbered list instead).
 //
-// Params: { "path": "<relative or absolute path to plan .md file>" }
+// Params: { "path": "<path relative to the task directory to plan .md file>" }
 // Passes if: file exists AND (no checkboxes found OR all checkboxes are [x]).
 // Fails if: file not found OR any checkbox is still unchecked (- [ ]).
 //
@@ -164,9 +220,9 @@ func (v *PlanCheckboxVerifier) Verify(ctx context.Context, workdir string, crite
 	if path == "" {
 		return false, "missing 'path' parameter", nil
 	}
-	absPath := path
-	if !filepath.IsAbs(absPath) && workdir != "" {
-		absPath = filepath.Join(workdir, path)
+	absPath, err := resolveCheckPath(workdir, path)
+	if err != nil {
+		return false, err.Error(), nil
 	}
 	data, err := os.ReadFile(absPath)
 	if err != nil {
@@ -208,11 +264,15 @@ func (v *CodeEntityVerifier) Verify(ctx context.Context, workdir string, criteri
 		return false, "missing or empty 'entities' parameter", nil
 	}
 	searchDir, _ := criteria["search_dir"].(string)
-	if searchDir == "" {
-		searchDir = workdir
+	if searchDir == "" && workdir == "" {
+		return false, "no search directory (neither search_dir nor workdir set)", nil
 	}
 	if searchDir == "" {
-		return false, "no search directory (neither search_dir nor workdir set)", nil
+		searchDir = "."
+	}
+	searchDir, err := resolveCheckPath(workdir, searchDir)
+	if err != nil {
+		return false, err.Error(), nil
 	}
 
 	var missing []string

@@ -136,6 +136,81 @@ func TestAppendUserMessage_ResolvesClientIDsAcrossReload(t *testing.T) {
 	}
 }
 
+// Regression test for the 2026-11-22 "quote an assistant message breaks after
+// reload" bug. The web client derives an assistant message's id as
+// "asst_"+<the user message_id that produced it> and quotes that id. Before
+// the fix AppendMessage (assistant/tool) never registered ClientID, so
+// resolveClientIDLocked left "asst_msg_1" verbatim as reply_to; after a reload
+// the assistant message had a backend UUID and the quote dangled. The fix
+// registers ClientID in AppendMessage, so the quote resolves to the stored id.
+func TestAppendMessage_AssistantClientIDResolvesReplyToAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "chat.db")
+	db, err := store.InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	defer db.Close()
+	backend := store.NewSQLiteChatBackend(db)
+
+	st := NewChatSessionStore(dir, backend)
+	s := st.GetOrCreate("sess-quote")
+
+	// 1. User message with client id msg_1.
+	if !s.AppendUserMessage("msg_1", "question", "", "") {
+		t.Fatal("append user rejected")
+	}
+	// 2. Assistant reply created with the deterministic client id the web
+	// client uses (asst_<user message_id>).
+	s.AppendMessage(ChatMessage{Role: "assistant", Content: "answer", ClientID: "asst_msg_1"}, "")
+	asstStoredID := s.ActiveLeafID
+	if asstStoredID == "" || asstStoredID == "asst_msg_1" {
+		t.Fatalf("assistant stored id should be a backend id, got %q", asstStoredID)
+	}
+
+	// 3. Next user quotes that assistant message by its client id.
+	if !s.AppendUserMessage("msg_2", "follow-up", "", "asst_msg_1") {
+		t.Fatal("append follow-up rejected")
+	}
+	followUpStoredID := s.ActiveLeafID
+	assertResolved := func(t *testing.T, s *ChatSession, context string) {
+		t.Helper()
+		fol := s.Messages[followUpStoredID]
+		if fol == nil {
+			t.Fatalf("%s: follow-up message missing", context)
+		}
+		if fol.ReplyTo != asstStoredID {
+			t.Errorf("%s: reply_to = %q, want assistant stored id %q (client-id resolution failed)",
+				context, fol.ReplyTo, asstStoredID)
+		}
+	}
+	assertResolved(t, s, "live")
+
+	// 4. Persist and reload; the client-id map must survive.
+	if err := st.Persist(s); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	st2 := NewChatSessionStore(dir, backend)
+	s2 := st2.GetOrCreate("sess-quote")
+	assertResolved(t, s2, "reloaded")
+}
+
+// A zero-value ChatSession is a valid construction used by several callers
+// (including slash-command handling). AppendMessage must initialize clientIDs
+// before registering a non-user ClientID, otherwise those paths panic with
+// "assignment to entry in nil map" (2026-11-22).
+func TestAppendMessage_ZeroValueSessionInitializesClientIDs(t *testing.T) {
+	s := &ChatSession{}
+	s.AppendMessage(ChatMessage{Role: "assistant", Content: "answer", ClientID: "asst_zero"}, "")
+
+	if s.clientIDs == nil {
+		t.Fatal("clientIDs should be initialized by AppendMessage")
+	}
+	if got := s.resolveClientIDLocked("asst_zero"); got != s.ActiveLeafID {
+		t.Errorf("resolveClientIDLocked(asst_zero) = %q, want %q", got, s.ActiveLeafID)
+	}
+}
+
 // Unknown client ids must pass through unchanged (cross-branch quotes and
 // stale ids degrade gracefully instead of being dropped).
 func TestResolveClientID_UnknownPassesThrough(t *testing.T) {

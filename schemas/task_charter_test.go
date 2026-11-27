@@ -10,7 +10,7 @@ import (
 // TestTaskCharter_PromptFormat verifies that CharterPrompt formats the charter
 // correctly for system prompt injection.
 //
-// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.
+// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P1.
 func TestTaskCharter_PromptFormat(t *testing.T) {
 	// Nil charter → empty string (backward compatible)
 	var nilCharter *TaskCharter

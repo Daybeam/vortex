@@ -78,7 +78,7 @@ func (s *Spawner) runPlannerPhase(ctx context.Context, req *SpawnRequest) (strin
 	// P1-6 (2026-10-10): Path C — inject upstream step summaries from Archive.
 	// Gives the planner visibility into what previous steps in the same task
 	// have already produced, enabling better step-level planning.
-	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.3.
+	// See docs/completed/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.3.
 	if s.archive != nil && req.TaskID != "" {
 		upstreamSummaries := s.archive.SearchRecentStepSummaries(req.TaskID, s.ProjectOf(req.TaskID), 3)
 		if len(upstreamSummaries) > 0 {

@@ -12,8 +12,7 @@ import (
 // Level 3: task-level output directory (outputs/{taskID}/)
 //
 // When SessionRoot and AllowedRoots are empty, behavior is identical to
-// the legacy safeJoin (backward compatible). See
-// docs/architecture/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2.
+// the legacy safeJoin (backward compatible).
 type SafePathValidator struct {
 	TaskDir      string
 	SessionRoot  string

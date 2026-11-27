@@ -8,7 +8,7 @@ import (
 )
 
 // jit_preflight.go — JIT pre-flight gate.
-// Implements §2.2 and §3.2 of docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md.
+// Implements §2.2 and §3.2 of docs/completed/2026-09-15/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md.
 //
 // Every JIT entry point (JITManager.RegisterTool, JITSession.Eval, and the
 // tools/subsystems.go jit.create / jit.eval actions) MUST call PreflightCheck

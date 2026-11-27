@@ -64,7 +64,7 @@ func (h *ChatHandler) humanApprovalDecisionDenied(taskID, decisionID string) boo
 // toggle state, and flip it. Admin-gated (adminCommands). The write path reuses
 // the web UI's whole-definition replace (/api/config/update-mcp → CommitOps
 // /mcps/{id}), so every unrelated field survives.
-// See docs/plan/MCP_TOOL_TOGGLE_DESIGN.md.
+// See docs/completed/2026-10-22/MCP_TOOL_TOGGLE_DESIGN.md.
 func (h *ChatHandler) cmdMCP(arg string) (bool, string) {
 	if h.App == nil || h.App.Registry == nil {
 		return true, "Error: registry not available."
@@ -222,17 +222,16 @@ func (h *ChatHandler) cmdApprove(arg string) (bool, string) {
 }
 
 func (h *ChatHandler) handleSlashCommand(content string, session *chat.ChatSession, sessionID string, userTier string) (handled bool, response string) {
+	return h.handleSlashCommandForOwner(content, session, sessionID, userTier, session.GetOwnerID())
+}
+
+func (h *ChatHandler) handleSlashCommandForOwner(content string, session *chat.ChatSession, sessionID, userTier, callerOwner string) (handled bool, response string) {
 	if !strings.HasPrefix(content, "/") {
 		return false, ""
 	}
 
-	parts := strings.SplitN(content, " ", 2)
-	cmd := parts[0]
-	arg := ""
-	if len(parts) > 1 {
-		arg = strings.TrimSpace(parts[1])
-	}
-
+	cmd, arg, _ := strings.Cut(content, " ")
+	arg = strings.TrimSpace(arg)
 	// ── Admin Command Gate ──────────────────────────────────────────
 	// Commands like /cancel, /decision, /approve, /config require admin
 	// tier. Non-admin users (guest, authorized) get a rejection message.
@@ -261,7 +260,7 @@ func (h *ChatHandler) handleSlashCommand(content string, session *chat.ChatSessi
 		if h.Harness.Delegate == nil {
 			return true, "Error: delegate is not configured in this session."
 		}
-		taskID, err := h.Harness.Delegate(arg)
+		taskID, err := h.Harness.Delegate(arg, h.Harness.SubAgentBudgetCap())
 		if err != nil {
 			return true, fmt.Sprintf("Delegate failed: %v", err)
 		}
@@ -487,18 +486,7 @@ func (h *ChatHandler) handleSlashCommand(content string, session *chat.ChatSessi
 		return true, fmt.Sprintf("Registered skills (%d):\n%s", len(lines), strings.Join(lines, "\n"))
 
 	case "/schedule":
-		if h.App == nil || h.App.SStore == nil {
-			return true, "Error: schedule store not available."
-		}
-		schedules := h.App.SStore.List()
-		if len(schedules) == 0 {
-			return true, "No scheduled tasks."
-		}
-		var lines []string
-		for _, s := range schedules {
-			lines = append(lines, fmt.Sprintf("  %s — %s [%s] %s", s.ID, s.Name, s.Type, s.Status))
-		}
-		return true, fmt.Sprintf("Scheduled tasks (%d):\n%s", len(schedules), strings.Join(lines, "\n"))
+		return true, h.listSchedulesForCaller(callerOwner, userTier)
 
 	case "/discover":
 		if h.App == nil || h.App.Navigator == nil || h.App.Registry == nil {
@@ -679,7 +667,7 @@ func slashHelpText(userTier string) string {
 
 // DeleteTaskArtifacts removes the entire outputs/<taskID>/ directory tree.
 // Rejects if taskID contains path separators or traversal sequences (safety).
-// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md §Storage Layer Changes.
+// See docs/completed/2026-10-21/SESSION_MEMORY_DELETION_DESIGN.md §Storage Layer Changes.
 func DeleteTaskArtifacts(root, taskID string) error {
 	if taskID == "" || strings.ContainsAny(taskID, "/\\") || strings.Contains(taskID, "..") {
 		return fmt.Errorf("invalid taskID: %q", taskID)
@@ -702,7 +690,7 @@ func forgetChallengeKey(sessionID, scope, args string) string {
 //	/forget user confirm           — delete MemoryBank user-scoped entries
 //	/forget memory <query> confirm — search-and-delete MemoryBank entries
 //
-// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md.
+// See docs/completed/2026-10-21/SESSION_MEMORY_DELETION_DESIGN.md.
 func (h *ChatHandler) handleForget(arg, sessionID string) (bool, string) {
 	const forgetWindow = 60 // seconds — 2× /clear because irreversible
 
@@ -933,7 +921,7 @@ func (h *ChatHandler) handleRoleCommand(arg string, session *chat.ChatSession) (
 //	/live end    — stop sharing the current session (admin only)
 //	/live status — show shared session info
 //
-// See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md §2.3.
+// See docs/completed/2026-10-30/LIVE_COPILOT_SHARED_SESSION_DESIGN.md §2.3.
 func (h *ChatHandler) cmdLive(content string, session *chat.ChatSession, sessionID string, userTier string, callerID string) (bool, string) {
 	parts := strings.SplitN(content, " ", 3)
 	subcmd := ""

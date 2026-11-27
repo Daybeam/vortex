@@ -199,6 +199,15 @@ func (s *DirectedEngine) applyDecisionChoiceLocked(
 			if s.registry != nil && s.registry.System.MaxToolTurns > 0 {
 				chunk = s.registry.System.MaxToolTurns
 			}
+			// Resume-at-cap guard: if bonus is already at chunk*4, adding
+			// more clamps back to cap (net zero) — re-queueing with the
+			// same budget is a state-less spin. Refuse and keep the step
+			// blocked so a non-resume decision must be picked.
+			if step.TurnsBudgetBonus >= chunk*4 {
+				step.Status = schemas.StepBlocked
+				step.LastError = "resume_at_cap: turn budget bonus is at chunk*4 cap; resume would be a no-op — pick escalate_model, refine_and_retry, or abort"
+				break
+			}
 			step.TurnsBudgetBonus += chunk
 			// audit H3: cap the accumulated bonus so a stuck step that is
 			// repeatedly resumed cannot grow its turn budget without bound

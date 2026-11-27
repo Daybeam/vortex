@@ -9,7 +9,7 @@ import (
 // TestSubstitutionLedger_RecordAndRetrieve verifies that RecordSubstitution
 // appends to the ledger and GetSubstitutions returns a safe snapshot.
 //
-// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
+// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P3.
 func TestSubstitutionLedger_RecordAndRetrieve(t *testing.T) {
 	g := &TaskGraph{TaskID: "test_task"}
 

@@ -109,7 +109,7 @@ func TestExecTool_TaskStatusReportsEveryTerminalStatus(t *testing.T) {
 func TestDelegateReceipt_ReportsAlreadyTerminalTask(t *testing.T) {
 	var seen []string
 	h := &ChatHarness{
-		Delegate: func(prompt string) (string, error) { return "task-fast", nil },
+		Delegate: func(prompt string, _ int) (string, error) { return "task-fast", nil },
 		DelegateStatus: func(taskID string, wait time.Duration) (map[string]any, bool) {
 			return map[string]any{"status": string(schemas.GraphCompleted)}, true
 		},

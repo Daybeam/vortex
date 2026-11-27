@@ -437,6 +437,7 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 				Model:    sc.Model,
 				BaseURL:  sc.BaseURL,
 				APIKey:   sc.APIKey,
+				Extra:    map[string]any{"envelope": sc.Envelope},
 			})
 			scheduler.SetSystemOneProvider(sysOneP, sc)
 			log.Printf("[systemone] enabled (endpoint=%s, model=%s, gate=%v, router=%v, classify=%v, sieve=%v)",
@@ -486,6 +487,8 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 
 	// ── Schedule Manager ──────────────────────────────────────────────────
 	sm := core.NewScheduleManager(scheduler, es, ss, logger)
+	wireScheduleDelivery(sm, s.DB)
+	sm.SetLifecycleCtx(rootCtx)
 	sm.Start()
 	defer sm.Stop()
 

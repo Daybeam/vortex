@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/core"
@@ -36,7 +37,7 @@ func TestExecutionHintForCapabilities(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			hint := executionHintForCapabilities(tt.caps)
+			hint := executionHintForCapabilities(TierAdmin, tt.caps)
 			if tt.wantNil {
 				if hint != nil {
 					t.Fatalf("expected nil hint, got mode=%q", hint.Mode)
@@ -100,5 +101,34 @@ func TestEnrichDelegationViews_EmptyCapsFallsBackToTier(t *testing.T) {
 	}
 	if views[0].ExecutionHint.Mode != "local_fs" {
 		t.Errorf("mode = %q, want %q (tier fallback for unrecognized caps)", views[0].ExecutionHint.Mode, "local_fs")
+	}
+}
+
+// Regression for O60: the broker hint named a nonexistent tool and was offered
+// to non-admin hosts even though proxy.call is admin-only.
+func TestEnrichDelegationViews_BrokerRequiresAdminAndRealTool(t *testing.T) {
+	adminViews := []core.DelegationView{{StepID: "s1", DecisionID: "d1"}}
+	enrichDelegationViews(adminViews, TierAdmin, []string{"broker"})
+	adminHint := adminViews[0].ExecutionHint
+	if adminHint == nil || adminHint.Mode != "broker" {
+		t.Fatalf("admin broker hint = %#v, want broker mode", adminHint)
+	}
+	for _, want := range []string{"orchestrator_invoke", `subsystem="proxy"`, `action="call"`, "admin tier only"} {
+		if !strings.Contains(adminHint.Note, want) {
+			t.Errorf("admin broker note %q does not contain %q", adminHint.Note, want)
+		}
+	}
+	if strings.Contains(adminHint.Note, "orchestrator_call_tool") {
+		t.Errorf("admin broker note still names nonexistent tool: %q", adminHint.Note)
+	}
+
+	publicViews := []core.DelegationView{{StepID: "s1", DecisionID: "d1"}}
+	enrichDelegationViews(publicViews, TierPublic, []string{"broker"})
+	publicHint := publicViews[0].ExecutionHint
+	if publicHint == nil || publicHint.Mode != "none" {
+		t.Fatalf("public broker hint = %#v, want tier fallback to none", publicHint)
+	}
+	if strings.Contains(publicHint.Note, "broker") || strings.Contains(publicHint.Note, "orchestrator_invoke") {
+		t.Errorf("public host received an unusable broker path: %q", publicHint.Note)
 	}
 }

@@ -121,7 +121,7 @@ func delegationTierError(tier string) error {
 // When capabilities is non-empty, executionHintForCapabilities selects the mode.
 // When nil/empty, falls back to tier-based logic (backward compat).
 func enrichDelegationViews(views []core.DelegationView, tier string, capabilities []string) {
-	hint := executionHintForCapabilities(capabilities)
+	hint := executionHintForCapabilities(tier, capabilities)
 	if hint == nil {
 		hint = executionHintForTier(tier)
 	}
@@ -136,8 +136,9 @@ func enrichDelegationViews(views []core.DelegationView, tier string, capabilitie
 //
 // Priority: acp > subagent_dispatch > local_fs > broker.
 // ACP takes priority because it forwards to a sandboxed endpoint without
-// leaking the full prompt to the host process.
-func executionHintForCapabilities(caps []string) *core.ExecutionHint {
+// leaking the full prompt to the host process. Broker is admin-only because
+// proxy.call is not in the public-tier allowlist.
+func executionHintForCapabilities(tier string, caps []string) *core.ExecutionHint {
 	has := func(c string) bool {
 		for _, x := range caps {
 			if x == c {
@@ -153,8 +154,8 @@ func executionHintForCapabilities(caps []string) *core.ExecutionHint {
 		return &core.ExecutionHint{Mode: "subagent", Fallback: "local_fs", Note: "Dispatch to a subagent with the envelope prompt; fallback to orchestrator_run_command if unavailable"}
 	case has("local_fs"):
 		return &core.ExecutionHint{Mode: "local_fs", Note: "Use orchestrator_run_command with cwd = workspace.task_output_dir"}
-	case has("broker"):
-		return &core.ExecutionHint{Mode: "broker", Note: "Call orchestrator_call_tool for each tool in tool_definitions"}
+	case tier == TierAdmin && has("broker"):
+		return &core.ExecutionHint{Mode: "broker", Note: `Call orchestrator_invoke(subsystem="proxy", action="call", tool=<name>, arguments=<args>) for each tool in tool_definitions (admin tier only)`}
 	default:
 		return nil
 	}
@@ -208,8 +209,8 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithString("workspace_root", mcp.Description("Absolute path to workspace root. IGNORED for public tier (auto-bound to session sandbox). Only honored for local (no API key) and admin tier callers.")),
 		mcp.WithNumber("timeout", mcp.Description("Per-task timeout in seconds. Overrides the global default. 0 = use system default.")),
 		mcp.WithNumber("token_budget", mcp.Description("Per-task token budget cap. Overrides the global default. 0 = use system default.")),
-		mcp.WithAny("charter", mcp.Description("Optional Task Charter: {\"intent\": \"why\", \"non_goals\": [\"what not to do\"], \"constraints\": [\"what must hold\"]}. See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.")),
-		mcp.WithAny("host_capabilities", mcp.Description("Host execution capabilities. Array of strings. Recognized values: \"subagent_dispatch\" (host can spawn subagents), \"local_fs\" (host has filesystem access via orchestrator_run_command), \"acp\" (host can forward to ACP endpoint), \"broker\" (host can call orchestrator_call_tool). When provided, the delegation envelope's execution_hint.mode is selected based on these capabilities instead of the caller's tier.")),
+		mcp.WithAny("charter", mcp.Description("Optional Task Charter: {\"intent\": \"why\", \"non_goals\": [\"what not to do\"], \"constraints\": [\"what must hold\"]}. See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P1.")),
+		mcp.WithAny("host_capabilities", mcp.Description("Host execution capabilities. Array of strings. Recognized values: \"subagent_dispatch\" (host can spawn subagents), \"local_fs\" (host has filesystem access via orchestrator_run_command), \"acp\" (host can forward to ACP endpoint), \"broker\" (admin-only: host can call tools through orchestrator_invoke with subsystem=\"proxy\", action=\"call\"). When provided, the delegation envelope's execution_hint.mode is selected based on these capabilities instead of the caller's tier; non-admin hosts never receive the broker path.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, _ := req.Params.Arguments.(map[string]any)
 
@@ -715,14 +716,14 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 			if DenyIfNotOwner(ctx, app, taskScope) {
 				return errResult("not found")
 			}
-		if app.Scheduler == nil {
-			return errResult("scheduler not available — cannot resolve task scope")
-		}
-		if !app.Scheduler.TaskKnown(taskScope) {
-			return errResult("task_scope does not match any known task — cross-task search is not allowed")
-		}
+			if app.Scheduler == nil {
+				return errResult("scheduler not available — cannot resolve task scope")
+			}
+			if !app.Scheduler.TaskKnown(taskScope) {
+				return errResult("task_scope does not match any known task — cross-task search is not allowed")
+			}
 
-		items := app.Archive.Search(query, app.EmbedClient, 24, taskScope, app.Scheduler.ProjectOf(taskScope), taskScope)
+			items := app.Archive.Search(query, app.EmbedClient, 24, taskScope, app.Scheduler.ProjectOf(taskScope), taskScope)
 			if mode == "rrf" || len(items) == 0 {
 				if len(items) > k {
 					items = items[:k]

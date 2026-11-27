@@ -6,7 +6,7 @@ import (
 )
 
 // Chat branching auto-detection (Mode 3, 2026-10-24).
-// See docs/plan/CHAT_BRANCHING_AND_QUOTE_DESIGN.md §5-6.
+// See docs/completed/2026-10-26/CHAT_BRANCHING_AND_QUOTE_DESIGN.md §5-6.
 //
 // Lightweight: keyword-overlap similarity (local, free) + rough token-cost
 // heuristic. Prefers quote (KV-cache-friendly) over fork (cache-breaking).

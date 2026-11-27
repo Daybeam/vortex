@@ -51,7 +51,7 @@ func (m *SkillMounter) Activate(skill *config.Skill) string {
 		sb.WriteString("\nUse relative paths in read_file / terminal to access them.\n")
 	}
 
-	// agentskills.io standard fields (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md G2/G3):
+	// agentskills.io standard fields (docs/completed/2026-10-26/AGENTIC_SKILL_EXPLORATION_DESIGN.md G2/G3):
 	// compatibility is surfaced as a warning the agent verifies itself (no
 	// blocking check); allowed-tools is advisory only — actual tool filtering
 	// remains the role-binding allowlist's job.

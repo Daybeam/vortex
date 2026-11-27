@@ -26,10 +26,9 @@ import (
 // proves the mechanism and keeps it provable without a provider, because the
 // regex branch short-circuits before any model call.
 //
-// This is a pinning test, not an endorsement. If O52 gets wired (re-run
-// verifyExitCriteria after a fulfill and route a miss back through the normal
-// failure path), flip the second assertion block to expect StepPending +
-// "Exit criteria not met" and rename this test accordingly.
+// O53 keeps this boundary: the delegate may execute in another environment,
+// so engine-side gates must not run on fulfill. Payload-local mismatches are
+// warnings only (fulfill_payload_warning_test.go), never retries or rejection.
 
 func TestFulfillStep_ExitCriteriaGateNeverRuns(t *testing.T) {
 	engine := newDelegationTestEngine(t)

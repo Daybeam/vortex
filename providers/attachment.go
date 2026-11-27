@@ -21,7 +21,7 @@ const (
 // If decoding or resizing fails, the original data is returned unchanged
 // (graceful degradation — never blocks the provider call).
 //
-// See docs/plan/VLM_IMAGE_CONTEXT_OPTIMIZATION_DESIGN.md §Phase 2.
+// See docs/completed/2026-10-26/VLM_IMAGE_CONTEXT_OPTIMIZATION_DESIGN.md §Phase 2.
 func readAttachmentData(path, mimeType string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

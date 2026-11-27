@@ -2,10 +2,7 @@ package core
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
-
-	"github.com/daybeam/vortex/schemas"
 )
 
 // ─── Effect Boundary Defense: A1 Idempotency ─────────────────────────────
@@ -46,61 +43,6 @@ func (c *TurnIdempotencyContext) CheckAndMark(key string) bool {
 	}
 	c.executed[key] = true
 	return false // first execution — proceed
-}
-
-// ─── Effect Boundary Defense: A5 Dry-Run Pre-Check ──────────────────────
-//
-// Design ref: docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.4
-//
-// For tools with RiskLevel=high, attempt a dry_run before real execution.
-// If the tool supports dry_run (has it in InputSchema), execute with
-// dry_run=true and return the preview result. If not supported, log a
-// warning — the tool proceeds normally but the risk is flagged.
-
-// supportsDryRun checks if a tool's InputSchema includes a dry_run parameter.
-func supportsDryRun(toolDef *schemas.ToolDefinition) bool {
-	if toolDef == nil || toolDef.InputSchema == nil {
-		return false
-	}
-	props, ok := toolDef.InputSchema["properties"].(map[string]any)
-	if !ok {
-		return false
-	}
-	_, hasDryRun := props["dry_run"]
-	return hasDryRun
-}
-
-// isHighRiskTool checks if a tool has RiskLevel=high.
-func isHighRiskTool(toolDef *schemas.ToolDefinition) bool {
-	if toolDef == nil {
-		return false
-	}
-	return toolDef.RiskLevel == "high"
-}
-
-// findCoreToolDef looks up a core tool's definition by name.
-func findCoreToolDef(name string) *schemas.ToolDefinition {
-	for _, def := range CoreToolDefinitions() {
-		if def.Name == name {
-			return &def
-		}
-	}
-	return nil
-}
-
-// addDryRunArg returns a copy of args with dry_run=true added.
-func addDryRunArg(args map[string]any) map[string]any {
-	copy := make(map[string]any, len(args)+1)
-	for k, v := range args {
-		copy[k] = v
-	}
-	copy["dry_run"] = true
-	return copy
-}
-
-// dryRunResult formats a dry-run result message for the model.
-func dryRunResult(toolName string, result string) string {
-	return fmt.Sprintf("[DRY-RUN PREVIEW] %s\n%s\n\nNote: This was a dry-run. The operation was NOT actually executed. Call again without dry_run to execute.", toolName, result)
 }
 
 // marshalArgsForLog safely marshals tool arguments for logging.

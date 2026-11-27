@@ -75,7 +75,7 @@ func (s *DirectedEngine) finalizeSmartRoutedAfterDecision(
 // The payload is a JSON TaskCharter. On approval, the charter Version is
 // incremented and the graph's Charter is replaced. This makes "silently
 // switching direction" into an auditable, versioned event.
-// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P2.
+// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P2.
 // MUST be called with s.Mu held.
 func (s *DirectedEngine) applyGoalChangeLocked(graph *schemas.TaskGraph, taskID, payload string) error {
 	var newCharter schemas.TaskCharter

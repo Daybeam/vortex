@@ -27,7 +27,7 @@ type MutationVariant struct {
 }
 
 // ReplayMutationRecord tracks the lifecycle of a mutation attempt.
-// See docs/architecture/OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md.
+// See docs/completed/2026-09-19/OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md.
 type ReplayMutationRecord struct {
 	ID              string    `json:"id"`
 	SourceTaskID    string    `json:"source_task_id"`
@@ -639,7 +639,7 @@ func (rs *replayScheduler) writeBack(ctx context.Context, candidateID string, v 
 		log.Printf("WARN: replay_scheduler: failed to add JIT candidate: %v", err)
 	}
 
-	// L5 fix (docs/RSI_AUTONOMY_LEVELS_ASSESSMENT.md): also write to TaskPatterns
+	// L5 fix (docs/completed/2026-09-29/RSI_AUTONOMY_LEVELS_ASSESSMENT.md): also write to TaskPatterns
 	// so QueryJITCandidates -> QuerySimilarPatterns can find the pattern.
 	// AddJITCandidate writes to JITCandidates map which is never read by the
 	// retrieval path. UpsertTaskPatternFromReplay writes to TaskPatterns with

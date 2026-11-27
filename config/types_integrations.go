@@ -89,7 +89,7 @@ type Config struct {
 	WALCheckpoint string `json:"wal_checkpoint,omitempty"`
 
 	// StepPlan (ADDED 2026-10-10): configures automatic step-plan mode.
-	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §9.
+	// See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §9.
 	StepPlan StepPlanConfig `json:"step_plan,omitempty"`
 }
 

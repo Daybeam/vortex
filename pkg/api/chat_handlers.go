@@ -2,8 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"github.com/daybeam/vortex/core/sieve"
 	"log"
 	"net/http"
 	"os"
@@ -27,7 +27,7 @@ import (
 // mbStoreForHarness returns the MemoryBankStore when MemoryBankEnabled is
 // true, nil otherwise. This gates ChatHarness injection + ReflectionEngine
 // extraction via a single config toggle.
-// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 1.
+// See docs/completed/2026-10-17/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 1.
 func mbStoreForHarness(app *tools.App) *store.MemoryBankStore {
 	if app.MemoryBankStore == nil {
 		return nil
@@ -82,7 +82,7 @@ type ChatHandler struct {
 	// forgetConfirmations tracks pending /forget confirmations.
 	// Key: sessionID + "|" + scope + "|" + args. Value: int64 (unix deadline).
 	// 60s window (2× /clear) because /forget is irreversible cross-session.
-	// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md.
+	// See docs/completed/2026-10-21/SESSION_MEMORY_DELETION_DESIGN.md.
 	forgetConfirmations sync.Map // "session|scope|args" → int64 (unix deadline)
 
 	// progressLast throttles round-level progress events per task.
@@ -128,6 +128,13 @@ type ChatHandler struct {
 	// result that turn already delivered is dropped instead of answered twice.
 	// Cleared when the session's next turn claims the slot.
 	consumedTasks sync.Map // "sessionID|taskID" → struct{}
+	// readFiles records "sessionID|basename" for every file the running turn read
+	// successfully (chat.ChatHarness.OnFileRead). consumedTasks says "a terminal
+	// state was shown"; this says "content was actually read", which is the fact
+	// the wake rule needs — measured over 283 archived firings, the marker alone
+	// was wrong in 137–169 of them (pkg/api/chat_wake.go wakeDropDecision).
+	// Cleared when the session's next turn claims the slot, same as consumedTasks.
+	readFiles sync.Map // "sessionID|basename" → struct{}
 	// delegatedTasks records "sessionID|taskID" for every task a turn in this
 	// session handed off. The poll lever needs the whole SET, not the latest id
 	// (a turn can delegate twice), and the wake turn needs it too — but the
@@ -179,7 +186,7 @@ func (h *ChatHandler) SetProcessInfoDisabled(sessionID string, disabled bool) {
 // chat gateway: the front desk model (medium, fast) classifies complexity and
 // either answers directly, asks clarifying questions, or escalates to the
 // planner (strong model) via delegate_to_orchestrator.
-// See docs/CHAT_GATEWAY_TIERS_DESIGN.md §3.
+// See docs/completed/2026-10-11/CHAT_GATEWAY_TIERS_DESIGN.md §3.
 const defaultChatFrontDeskRole = "chat_front_desk"
 
 // Shutdown waits for all in-flight chat goroutines and channel goroutines to
@@ -284,137 +291,6 @@ func (h *ChatHandler) persistSession(session *chat.ChatSession) {
 	}
 }
 
-func NewChatHandler(app *tools.App) *ChatHandler {
-	var chatBackend store.IChatBackend
-	var outbox store.IChatOutbox
-	if app.DB != nil {
-		chatBackend = store.NewSQLiteChatBackend(app.DB)
-		// Same DB, different job: sessions are history, the outbox is a queue.
-		// Without a DB there is no queue, and transports keep delivering
-		// inline (see TelegramChannel.deliversOutOfBand).
-		outbox = store.NewSQLiteChatOutbox(app.DB)
-	}
-	// Use absolute path for session store when RootDir is set.
-	// Without this, NewChatSessionStore("") defaults to "outputs/chat" (relative
-	// to CWD), which changes between runs — the desktop binary in build/bin/ would
-	// store sessions in build/bin/outputs/chat/ and lose them on recompile.
-	sessionDir := ""
-	if app.RootDir != "" {
-		sessionDir = filepath.Join(app.RootDir, "outputs", "chat")
-	}
-	chatStore := chat.NewChatSessionStore(sessionDir, chatBackend)
-
-	chatMemWindowSize := 10
-	if app.Registry != nil && app.Registry.System.ChatMemoryWindowSize > 0 {
-		chatMemWindowSize = app.Registry.System.ChatMemoryWindowSize
-	}
-	chatMem := chat.NewRollingWindowMemory(chatMemWindowSize)
-	if app.Registry != nil && app.Registry.System.ChatMemoryMaxTokens > 0 {
-		chatMem.MaxTokens = app.Registry.System.ChatMemoryMaxTokens
-	}
-
-	// Wire turn/token budgets from config (harness-bench report §4.1).
-	// chat_max_turns is the chat-specific knob; max_tool_turns (shared with the
-	// DAG path) stays as its fallback so the wiring added 2026-10-28 keeps
-	// working. Default is chat.DefaultMaxTurns, raised 6 → 50 on 2026-11-04.
-	chatMaxTurns := chat.DefaultMaxTurns
-	if app.Registry != nil {
-		if t := app.Registry.System.MaxToolTurns; t > 0 {
-			chatMaxTurns = t
-		}
-		if t := app.Registry.System.ChatMaxTurns; t > 0 {
-			chatMaxTurns = t
-		}
-	}
-	chatMaxOutputTokens := 2048
-	if app.Registry != nil && app.Registry.System.ChatMaxOutputTokens > 0 {
-		chatMaxOutputTokens = app.Registry.System.ChatMaxOutputTokens
-	}
-	// SessionRoot from env var (harness-bench report §4.2). When set, core
-	// tools resolve relative paths against the workspace root. Empty = legacy.
-	chatSessionRoot := os.Getenv("HARNESSBENCH_WORKSPACE")
-
-	harness := &chat.ChatHarness{
-		Archive:           app.Archive,
-		MemoryBank:        mbStoreForHarness(app),
-		Embed:             app.EmbedClient,
-		OutputBase:        "outputs",
-		MaxTurns:          chatMaxTurns,
-		MaxOutputTokens:   chatMaxOutputTokens,
-		SessionRoot:       chatSessionRoot,
-		Sieve:             sieve.NewSieve(100),
-		Memory:            chatMem,
-		ReadinessGateSoft: app.Registry.System.ReadinessGateSoft,
-		SkillQuickPath: func(query string) *chat.QuickPathMatch {
-			if app.ExpStore == nil || query == "" {
-				return nil
-			}
-			ids := app.ExpStore.QueryRelevantSkills(context.Background(), query, 1)
-			if len(ids) == 0 {
-				return nil
-			}
-			gs, ok := app.ExpStore.GetGeneratedSkill(ids[0])
-			if !ok || !gs.IsVerified {
-				return nil
-			}
-			return &chat.QuickPathMatch{
-				SkillID:   gs.ID,
-				ToolName:  gs.ID,
-				Signature: gs.Signature,
-			}
-		},
-		// Delegate is assigned below, after the handler exists, so that it can
-		// go through the single submission path (submitChatTask).
-		// DelegateStatus closes the loop Delegate opens: without it the model
-		// gets a task id it can never read back, while execute_code returns its
-		// output in the same turn — which is why delegation measured 0/104.
-		DelegateStatus: func(taskID string, wait time.Duration) (map[string]any, bool) {
-			if app.Scheduler == nil {
-				return nil, false
-			}
-			if wait > 0 {
-				ctx, cancel := context.WithTimeout(context.Background(), wait+2*time.Second)
-				defer cancel()
-				return app.Scheduler.WaitTask(ctx, taskID, wait, "full")
-			}
-			return app.Scheduler.GetStatus(taskID, "full")
-		},
-	}
-
-	// Resolve the configured default provider.
-	if pc := app.Registry.ResolveProviderConfig(&config.Role{}); pc != nil {
-		if p, err := providers.Get(pc, app.Registry.ExternalRuntimes); err == nil {
-			harness.Provider = p
-			harness.Model = pc.Model
-			harness.MaxContextWindow = pc.MaxContextWindow
-		}
-	}
-
-	handler := &ChatHandler{
-		App:            app,
-		Harness:        harness,
-		Store:          chatStore,
-		Outbox:         outbox,
-		hookRunner:     core.NewHookRunner(app.Registry.System.Hooks, app.Registry.ExternalRuntimes, app.Logger),
-		delegWatchStop: make(chan struct{}),
-	}
-
-	// Construction-time fallback Delegate (no request ctx): derive the tier
-	// from the app itself (EffectiveTier falls back to app.Tier), so a
-	// local/admin app isn't fail-closed on dynamic mounts. The request-scoped
-	// copy (hCopy.Delegate) uses the real ctx tier.
-	// audit L1: use context.Background() only for the construction-time
-	// fallback — the request-scoped delegate in handleChat uses r.Context().
-	handler.Harness.Delegate = func(prompt string) (string, error) {
-		isAdmin := tools.EffectiveTier(context.Background(), app) == tools.TierAdmin
-		return handler.submitChatTask(
-			[]schemas.StepInput{{ID: "s1", Task: prompt, SubmitterIsAdmin: isAdmin}}, "")
-	}
-
-	handler.WireTaskCompletionCallbacks()
-	return handler
-}
-
 // submitChatTask is the only way a chat-initiated orchestrator task is
 // submitted from this package.
 //
@@ -460,7 +336,7 @@ func chatSubmitterIsAdmin(ctx context.Context, app *tools.App, reqTier string) b
 
 // autoDetectBranchMode (Mode 3, 2026-10-24): if the user didn't explicitly
 // choose fork (parent_id) or quote (reply_to), auto-detect the best mode.
-// See docs/plan/CHAT_BRANCHING_AND_QUOTE_DESIGN.md §5-6.
+// See docs/completed/2026-10-26/CHAT_BRANCHING_AND_QUOTE_DESIGN.md §5-6.
 func (h *ChatHandler) autoDetectBranchMode(req *ChatRequest, session *chat.ChatSession) {
 	if req.ParentID != "" || req.ReplyTo != "" {
 		return // explicit mode chosen — respect it
@@ -482,19 +358,26 @@ func (h *ChatHandler) handleSlashCommandGate(req ChatRequest, session *chat.Chat
 	// Live Co-pilot /live commands need CallerID (for OwnerID), which
 	// handleSlashCommand doesn't receive. Handle /live here before falling
 	// through to the general slash command handler.
-	// See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md §2.3.
+	// See docs/completed/2026-10-30/LIVE_COPILOT_SHARED_SESSION_DESIGN.md §2.3.
 	if strings.HasPrefix(req.Content, "/live") {
-		if handled, response := h.cmdLive(req.Content, session, sessionID, req.UserTier, req.CallerID); handled {
+		liveOwner := session.GetOwnerID()
+		if liveOwner == "" {
+			liveOwner = req.OwnerID // authorized local/admin claim of an ownerless session
+		}
+		if liveOwner == "" {
+			liveOwner = req.CallerID // internal/test callers without stable auth context
+		}
+		if handled, response := h.cmdLive(req.Content, session, sessionID, req.UserTier, liveOwner); handled {
 			session.AddEvent(chat.ChatEvent{Type: "slash_command", Data: response})
-			session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: response}, "")
+			session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: response, ClientID: "asst_" + req.MessageID}, "")
 			h.persistSession(session)
 			session.AddEvent(chat.ChatEvent{Type: "done"})
 			return ChatResponse{SessionID: sessionID, MessageID: req.MessageID, SlashCommand: true}, true
 		}
 	}
-	if handled, response := h.handleSlashCommand(req.Content, session, sessionID, req.UserTier); handled {
+	if handled, response := h.handleSlashCommandForOwner(req.Content, session, sessionID, req.UserTier, req.OwnerID); handled {
 		session.AddEvent(chat.ChatEvent{Type: "slash_command", Data: response})
-		session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: response}, "")
+		session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: response, ClientID: "asst_" + req.MessageID}, "")
 		h.persistSession(session)
 		session.AddEvent(chat.ChatEvent{Type: "done"})
 		return ChatResponse{SessionID: sessionID, MessageID: req.MessageID, SlashCommand: true}, true
@@ -512,8 +395,12 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	if sessionID == "" {
 		sessionID = uuid.New().String()
 	}
-
-	session := h.Store.GetOrCreate(sessionID)
+	req.OwnerID = chatRequestOwner(ctx, req)
+	session, turnCtx, err := h.prepareChatSession(ctx, sessionID, req.OwnerID, req.UserTier, chatIsAdmin)
+	if err != nil {
+		return ChatResponse{Error: "session not found", StatusCode: http.StatusNotFound}
+	}
+	ctx = turnCtx
 
 	// Remember the submitter's authority for follow-up turns: a delegated task
 	// that finishes after this turn ended is resumed by startFollowUpTurn,
@@ -522,16 +409,6 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	// loses the ability to delegate from the follow-up.
 	h.lastSubmitterAdmin.Store(sessionID, chatIsAdmin)
 
-	// Live Co-pilot: override AuthOwnerKey for guest users on shared sessions.
-	// This routes their requests through the session owner's approval pipeline
-	// (human_approval_required → checkApprovalAuthority → mount_policy).
-	// See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md §2.2.
-	if session.IsShared() && req.UserTier == TierGuest {
-		if ownerID := session.GetOwnerID(); ownerID != "" {
-			ctx = context.WithValue(ctx, tools.AuthOwnerKey, ownerID)
-		}
-	}
-
 	if resp, ok := h.handleSlashCommandGate(req, session, sessionID); ok {
 		return resp
 	}
@@ -539,6 +416,13 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	if !session.AppendUserMessage(req.MessageID, req.Content, req.ParentID, req.ReplyTo) {
 		return ChatResponse{SessionID: sessionID, MessageID: req.MessageID, AlreadyProcessed: true}
 	}
+	// Mark this turn as awaiting a reply for crash recovery.
+	// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.4.
+	session.SetAwaitingReply(&chat.AwaitingReplyInfo{
+		MessageID: req.MessageID,
+		Content:   req.Content,
+		StartedAt: time.Now(),
+	})
 	h.persistSession(session)
 
 	// ── Direct Task Submission Gate ───────────────────────────────────
@@ -571,23 +455,7 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 		if perr != nil {
 			return ChatResponse{Error: fmt.Sprintf("model_override failed: %v", perr), StatusCode: http.StatusInternalServerError}
 		}
-		harness = &chat.ChatHarness{
-			Provider:          p,
-			Model:             req.ModelOverride,
-			Archive:           h.Harness.Archive,
-			MemoryBank:        h.Harness.MemoryBank,
-			Embed:             h.Harness.Embed,
-			OutputBase:        h.Harness.OutputBase,
-			Delegate:          h.Harness.Delegate,
-			DelegateStatus:    h.Harness.DelegateStatus,
-			MaxTurns:          h.Harness.MaxTurns,
-			MaxOutputTokens:   h.Harness.MaxOutputTokens,
-			SessionRoot:       h.Harness.SessionRoot,
-			Sieve:             h.Harness.Sieve,
-			Memory:            h.Harness.Memory,
-			ReadinessGateSoft: h.Harness.ReadinessGateSoft,
-			MaxContextWindow:  clone.MaxContextWindow,
-		}
+		harness = harnessForResolvedProvider(h.Harness, p, req.ModelOverride, nil, clone.MaxContextWindow)
 	}
 
 	// Role selection: when role_id is provided, resolve the role from the
@@ -601,7 +469,7 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	// Three-tier gateway: default to front desk role when no role is specified
 	// and no model override is requested. The front desk model (medium, fast)
 	// classifies complexity and escalates to the planner (strong model) via
-	// delegate_to_orchestrator. See docs/CHAT_GATEWAY_TIERS_DESIGN.md §3.
+	// delegate_to_orchestrator. See docs/completed/2026-10-11/CHAT_GATEWAY_TIERS_DESIGN.md §3.
 	if (effectiveRoleID == "" || effectiveRoleID == "default") && req.ModelOverride == "" && h.App.Registry != nil {
 		h.App.Registry.Mu.RLock()
 		_, frontDeskExists := h.App.Registry.Roles[defaultChatFrontDeskRole]
@@ -623,24 +491,7 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 			pc := h.App.Registry.ResolveProviderConfig(role)
 			if pc != nil {
 				if p, err := providers.Get(pc, h.App.Registry.ExternalRuntimes); err == nil {
-					harness = &chat.ChatHarness{
-						Provider:          p,
-						Model:             pc.Model,
-						Role:              role,
-						Archive:           h.Harness.Archive,
-						MemoryBank:        h.Harness.MemoryBank,
-						Embed:             h.Harness.Embed,
-						OutputBase:        h.Harness.OutputBase,
-						Delegate:          h.Harness.Delegate,
-						DelegateStatus:    h.Harness.DelegateStatus,
-						MaxTurns:          h.Harness.MaxTurns,
-						MaxOutputTokens:   h.Harness.MaxOutputTokens,
-						SessionRoot:       h.Harness.SessionRoot,
-						Sieve:             h.Harness.Sieve,
-						Memory:            h.Harness.Memory,
-						ReadinessGateSoft: h.Harness.ReadinessGateSoft,
-						MaxContextWindow:  pc.MaxContextWindow,
-					}
+					harness = harnessForResolvedProvider(h.Harness, p, pc.Model, role, pc.MaxContextWindow)
 					if req.RoleID != "" {
 						session.SetActiveRoleID(req.RoleID)
 					}
@@ -751,9 +602,15 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 						session.AddEvent(chat.ChatEvent{Type: "error", Data: err.Error()})
 						return
 					}
+					// `task_id`, not `submit_id`: the value is `task_<hex>`
+					// (schemas.NewTaskID), i.e. the same identifier the stream
+					// already publishes as `meta.task_id` on progress and
+					// task_callback. The whole point of stamping it here is to
+					// let a consumer join this delegation to that task, and a
+					// join needs one spelling, not two.
 					result := fmt.Sprintf("Hook-routed to orchestrator task %s (role=%s, reason=%s)", submitID, redirectRole, redirectReason)
-					session.AddEvent(chat.ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": "delegate_to_orchestrator"}})
-					session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: result}, "")
+					session.AddEvent(chat.ChatEvent{Type: "tool_result", Data: result, Meta: map[string]any{"tool": "delegate_to_orchestrator", "task_id": submitID}})
+					session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: result, ClientID: "asst_" + req.MessageID}, "")
 					h.persistSession(session)
 					session.AddEvent(chat.ChatEvent{Type: "done"})
 				}()
@@ -786,9 +643,9 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	// before Run: the completion callback can fire while the turn is still
 	// executing, and a wake turn that starts first would otherwise read nothing.
 	h.noteSessionHarness(sessionID, harness)
-	hCopy.Delegate = func(prompt string) (string, error) {
+	hCopy.Delegate = func(prompt string, maxTurnsCap int) (string, error) {
 		id, err := h.submitChatTask(
-			[]schemas.StepInput{{ID: "s1", Task: prompt, SubmitterIsAdmin: chatIsAdmin}},
+			[]schemas.StepInput{{ID: "s1", Task: prompt, SubmitterIsAdmin: chatIsAdmin, MaxTurnsCap: maxTurnsCap}},
 			sessionID)
 		// The ledger, not the harness, is what a later wake turn reads: this
 		// harness is discarded when the turn ends. Recorded only on success —
@@ -798,17 +655,45 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 		}
 		return id, err
 	}
-	// Record which finished tasks this turn actually read. A follow-up wake
-	// queued while this turn was in flight is then suppressed instead of
-	// answered a second time — see chat_wake.go deliverPendingWake.
+	// Record that this turn was shown a finished task's terminal state, and what
+	// it actually read. A follow-up wake queued while this turn was in flight is
+	// then suppressed only if the evidence says the result already reached the
+	// model — see chat_wake.go deliverPendingWake and wakeDropDecision.
 	hCopy.OnTerminalTaskSeen = func(taskID string) {
 		h.noteTaskConsumed(sessionID, taskID)
+	}
+	hCopy.OnFileRead = func(basename string) {
+		h.noteFileRead(sessionID, basename)
 	}
 	// HelpProvider is per-request: it closes over the user's tier so the
 	// chat model gets tier-filtered system manual info without execTool
 	// needing to know about tiers.
 	hCopy.HelpProvider = func(topic string) string {
 		return core.BuildSystemManual(h.App.Registry, topic, req.UserTier)
+	}
+	// ScheduleExec uses the caller's stable owner, not the session owner that
+	// prepareChatSession may substitute for shared-session approval routing.
+	scheduleOwnerID := req.OwnerID
+	hCopy.ScheduleExec = func(action string, args map[string]any) (string, error) {
+		tier := tools.TierPublic
+		if req.UserTier == tools.TierAdmin {
+			tier = tools.TierAdmin
+		}
+		// Lifecycle-aware context: derive from app.LifecycleCtx so the
+		// schedule callback is cancelled on shutdown (audit C-1).
+		// Falls back to Background when LifecycleCtx is not wired.
+		baseCtx := h.App.LifecycleCtx
+		if baseCtx == nil {
+			baseCtx = context.Background()
+		}
+		ctx := context.WithValue(baseCtx, tools.AuthTierKey, tier)
+		ctx = context.WithValue(ctx, tools.AuthOwnerKey, scheduleOwnerID)
+		result, err := tools.InvokeSubsystem(ctx, h.App, "schedule", action, args)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(result)
+		return string(data), nil
 	}
 	// Resolve VLM attachments: convert relative paths (e.g. "uploads/seg.png")
 	// to absolute paths under the session workspace root.
@@ -856,6 +741,7 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 		// Consumed markers describe "the turn that just ended". This turn is a
 		// new one, so any leftover marker must not suppress its wakes.
 		h.clearConsumedTasks(sessionID)
+		h.clearReadFiles(sessionID)
 		final, err := harness.Run(runCtx, taskID, history, func(ev chat.ChatEvent) error {
 			if harness.Role != nil {
 				if ev.Meta == nil {
@@ -897,7 +783,34 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 				}
 			}
 
-			session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: final}, "")
+			session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: final, ClientID: "asst_" + req.MessageID}, "")
+
+			// Enqueue chat_reply to outbox for durable delivery (fault recovery).
+			// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.3.
+			if h.Outbox != nil && final != "" {
+				// audit FIX (2026-11-21): was context.Background() with no
+				// timeout — a slow SQLite write could block the chat turn
+				// indefinitely. 5s bounds the durability write.
+				enqCtx, enqCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer enqCancel()
+				if added, err := h.Outbox.Enqueue(enqCtx, store.OutboxItem{
+					SessionID: sessionID,
+					Kind:      kindChatReply,
+					DedupeKey: "chat_reply:" + sessionID + ":" + req.MessageID,
+					Text:      final,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "[chat] WARN: failed to enqueue chat_reply for %s: %v\n", sessionID, err)
+				} else if added {
+					h.logOutbox(eventNotificationQueued, map[string]any{
+						"kind": kindChatReply, "dedupe_key": "chat_reply:" + sessionID + ":" + req.MessageID,
+						"session_id": sessionID,
+					})
+				}
+			}
+
+			// Clear the pending reply mark — the turn is complete.
+			// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.5.
+			session.ClearAwaitingReply()
 			h.persistSession(session)
 
 			// ── Semantic Recall: index this turn in ContextArchive ───
@@ -982,5 +895,3 @@ func (h *ChatHandler) finishTurn(session *chat.ChatSession, terminalSent bool, p
 	// sees the session as idle and can start a follow-up turn.
 	h.deliverPendingWake(session.ID)
 }
-
-

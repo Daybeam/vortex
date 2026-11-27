@@ -32,6 +32,8 @@ import (
 const (
 	kindTaskCallback   = "task_callback"
 	kindDecisionNeeded = "decision_needed"
+	kindChatReply      = "chat_reply"       // turn completion reply (fault recovery)
+	kindChatInterrupt  = "chat_interrupted" // turn interrupted by crash (fault recovery)
 )
 
 // Structured-log sink for this pipeline. Naming the queue its own file keeps
@@ -193,7 +195,24 @@ func (h *ChatHandler) notifyTaskTerminal(ev obs.AgentEvent) error {
 	// turns the result into an answer. Without this segment a delegated task
 	// whose turn died at its budget wrote its result into the session tree and
 	// nobody ever read it.
-	h.startFollowUpTurnWithDigest(ref.sessionID, taskID, summary, wakeArtifactDigest(outcome))
+	// The fallback is built here, next to the digest, because `outcome` is the
+	// only thing that knows where the artifacts are. It is used only if the turn
+	// fails to answer (wake_fallback.go), so a successful wake never sees it.
+	h.startFollowUpTurnWithSeed(
+		ref.sessionID, taskID, summary,
+		wakeSeed{
+			digest:   wakeArtifactDigest(outcome),
+			fallback: wakeFallbackReport(outcome),
+			// The task's own completion contract. It costs one slice header to
+			// carry and is the only thing that can tell a wake turn what the
+			// deliverable was supposed to be (FINDINGS §6.3d).
+			declared: outcome.Declared,
+			// Headline figures for content-suppression checking (C-lite).
+			// Computed at enqueue time because delivery happens later, in
+			// another goroutine, and the task outcome is gone by then.
+			figures: headlineFigures(outcome.WorkspaceRoot, outcome.Declared, defaultMinSigDigits),
+		},
+	)
 
 	// Stop tracking this task: the throttle entry is only needed while the task
 	// is alive, and the map would otherwise grow for the process lifetime (one

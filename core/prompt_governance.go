@@ -12,7 +12,7 @@ import (
 
 // ─── Prompt Governance & Model-Aware Dynamic Budget ──────────────────────
 //
-// Design ref: docs/architecture/PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md
+// Design ref: docs/completed/2026-09-15/PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md
 //
 // PromptBudgetEnforcer is the runtime two-level interception layer for the
 // System Prompt. It is a pure observer+transformer: given a slice of
@@ -131,7 +131,7 @@ func (e *PromptBudgetEnforcer) EstimateBlocksTokens(blocks []schemas.ContentBloc
 // Without decoding dimensions, we approximate from file size:
 // ~750 bytes of raw image data ≈ 1 token (conservative, matches OpenAI
 // gpt-4o behavior for typical PNG/JPEG screenshots). Returns 0 if files
-// are inaccessible. See docs/plan/VLM_IMAGE_CONTEXT_OPTIMIZATION_DESIGN.md.
+// are inaccessible. See docs/completed/2026-10-26/VLM_IMAGE_CONTEXT_OPTIMIZATION_DESIGN.md.
 func (e *PromptBudgetEnforcer) EstimateImageTokens(attachments []schemas.Attachment) int {
 	total := 0
 	for _, att := range attachments {

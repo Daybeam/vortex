@@ -111,6 +111,15 @@ func (s *DirectedEngine) addDecision(
 	if s.registry != nil {
 		ctx["available_models"] = s.registry.GetHealthyModelsSummary()
 	}
+	// Resume-at-cap: annotate the decision context so interactive operators
+	// and auto-resolvers can see that resume_more_turns would be a no-op.
+	if dtype == schemas.DecisionMaxTurnsExhausted {
+		chunk := 50
+		if s.registry != nil && s.registry.System.MaxToolTurns > 0 {
+			chunk = s.registry.System.MaxToolTurns
+		}
+		ctx["bonus_at_cap"] = step.TurnsBudgetBonus >= chunk*4
+	}
 	// [CORE: DAG Surgery Option Injection] (2026-09-07)
 	// When the decision type is upstream_insufficient or step_failed with
 	// context_deficit, add "rewrite_dag" as a valid option for the external
@@ -213,14 +222,17 @@ func (s *DirectedEngine) addDecision(
 	// available). WaitTask's fast path checks len(PendingDecisions) > 0.
 	s.broadcastDone(graph.TaskID)
 
+	s.publishDecisionEvent(graph, step, dec, dtype, ctx, options)
+
+	s.maybeAutoResolveNonInteractive(graph, step, dec, dtype, ctx, options)
+}
+
+func (s *DirectedEngine) publishDecisionEvent(graph *schemas.TaskGraph, step *schemas.Step, dec *schemas.Decision, dtype schemas.DecisionType, ctx map[string]any, options []string) {
 	s.logger.Log(obs.EventDecisionRequired, graph.TaskID, step.ID, map[string]any{
 		"decision_id": dec.ID,
 		"type":        dtype,
 		"options":     options,
 	})
-	// D7 fix (DELEGATION_HANDOVER_REDESIGN.md §4.7): include prompt (truncated
-	// to 8KB) and workspace in the event payload so webhook receivers know
-	// WHAT to execute, not just THAT a decision exists.
 	eventPayload := map[string]any{
 		"decision_id": dec.ID,
 		"type":        string(dtype),
@@ -228,8 +240,6 @@ func (s *DirectedEngine) addDecision(
 	}
 	if prompt, ok := ctx["prompt"]; ok {
 		if promptMap, ok := prompt.(map[string]any); ok {
-			// D7 §10.2: truncate field values before marshaling, not marshaled
-			// bytes, to avoid severing UTF-8 or cutting mid-JSON.
 			eventPayload["prompt"] = truncatePromptForEvent(promptMap, 8192)
 			if ws, ok := promptMap["workspace"]; ok {
 				eventPayload["workspace"] = ws
@@ -237,11 +247,6 @@ func (s *DirectedEngine) addDecision(
 		}
 	}
 	s.publishEvent(graph.TaskID, step.ID, obs.EventDecisionRequired, eventPayload)
-
-	// E5 fix (2026-10-02): NonInteractive auto-resolution. The full strategy
-	// and risk-tier rationale lives on maybeAutoResolveNonInteractive, which
-	// this call defers to.
-	s.maybeAutoResolveNonInteractive(graph, step, dec, dtype, ctx, options)
 }
 
 // maybeAutoResolveNonInteractive implements E5: in unattended mode (CI / batch
@@ -302,6 +307,25 @@ func (s *DirectedEngine) maybeAutoResolveNonInteractive(graph *schemas.TaskGraph
 	s.recentDecisions[graph.TaskID][step.ID] = time.Now()
 	s.recentDecisionsMu.Unlock()
 	taskID, decID := graph.TaskID, dec.ID
+	// Resume-at-cap guard: when TurnsBudgetBonus is already at the chunk*4
+	// cap, resume_more_turns is a no-op (add+clamp = net zero). Filter it
+	// from the options so the auto-resolver picks a productive alternative
+	// (escalate_model / refine_and_retry / abort) instead of looping forever.
+	if dtype == schemas.DecisionMaxTurnsExhausted {
+		chunk := 50
+		if s.registry != nil && s.registry.System.MaxToolTurns > 0 {
+			chunk = s.registry.System.MaxToolTurns
+		}
+		if step.TurnsBudgetBonus >= chunk*4 {
+			filtered := make([]string, 0, len(options))
+			for _, o := range options {
+				if o != "resume_more_turns" {
+					filtered = append(filtered, o)
+				}
+			}
+			options = filtered
+		}
+	}
 	// Captured OUTSIDE the goroutine: the decider must run as the tier of the
 	// task that owns the decision. Reading graph.SubmitterIsAdmin inside the
 	// closure would let a later mutation change it mid-flight, and the whole
@@ -687,7 +711,7 @@ func defaultNonInteractiveChoice(dtype schemas.DecisionType, options []string) (
 		schemas.DecisionBudgetExhausted:
 		preferences = []string{"skip", "retry", "refine_and_retry", "abort"}
 	case schemas.DecisionMaxTurnsExhausted:
-		preferences = []string{"resume_more_turns"}
+		preferences = []string{"resume_more_turns", "refine_and_retry", "skip", "abort"}
 	case schemas.DecisionAutonomousAbortRequested:
 		preferences = []string{"continue"}
 	case schemas.DecisionHumanApprovalRequired:
@@ -893,63 +917,6 @@ Note: the problem step will be marked deprecated and replaced by the steps you e
 		return ""
 	}
 	return string(payload)
-}
-
-// parsePlannerOutput validates raw planner text into StepInputs using the
-// same contract the submission path uses, so the two entry points cannot
-// drift apart.
-func (s *DirectedEngine) parsePlannerOutput(raw, targetRole string, submitterIsAdmin bool) ([]schemas.StepInput, error) {
-	_, catalog := s.plannerToolCatalog(targetRole, submitterIsAdmin)
-	opt := s.plannerParseOptions(targetRole, catalog)
-	return schemas.ParsePlanDAG(raw, opt)
-}
-
-// plannerResultText extracts the model's text from a SpawnResult regardless
-// of which of the several shapes the subagent returned.
-//
-// Why the "steps" case exists (2026-10-18): a planner that answers with the
-// bare contract object {"steps": [...]} — exactly what planJSONContract asks
-// for — is parsed by schemas.ParseOutput into Result["steps"], not
-// Result["text"], because the object has no "result"/"confidence" fields to
-// populate SubagentOutput. The old fallback then printed the Go map with
-// fmt.Sprintf("%v") ("map[steps:[map[allowed_tools:[...]]]]"), which is not
-// JSON, so ParsePlanDAG rejected a perfectly valid plan with "could not
-// recover valid JSON". Observed with google/gemini-3-flash-preview on
-// 4fab96f_3 / the 2+2 probe. Re-serialising with encoding/json keeps the
-// structure intact and lets extractJSONObject do its job.
-func plannerResultText(res *SpawnResult) string {
-	if res == nil {
-		return ""
-	}
-	if s, ok := res.Output.Result["text"].(string); ok && strings.TrimSpace(s) != "" {
-		return s
-	}
-	if s, ok := res.Output.Result["reply"].(string); ok && strings.TrimSpace(s) != "" {
-		return s
-	}
-	for _, k := range []string{"result", "output", "content", "answer"} {
-		if s, ok := res.Output.Result[k].(string); ok && strings.TrimSpace(s) != "" {
-			return s
-		}
-	}
-	// A structured plan that skipped the subagent output wrapper. Marshal it
-	// back to JSON rather than to Go-syntax `map[...]`.
-	if v, ok := res.Output.Result["steps"]; ok {
-		if b, err := json.Marshal(map[string]any{"steps": v}); err == nil {
-			return string(b)
-		}
-	}
-	// Last resort: the whole result. Marshal as JSON first (still parseable
-	// when it contains the plan); only then fall back to Go-syntax printing,
-	// which ParsePlanDAG will reject — correctly, since it is not JSON.
-	if len(res.Output.Result) > 0 {
-		if b, err := json.Marshal(res.Output.Result); err == nil && json.Valid(b) {
-			if s := string(b); strings.TrimSpace(s) != "{}" && strings.TrimSpace(s) != "null" {
-				return truncateForLog(s, 20000)
-			}
-		}
-	}
-	return truncateForLog(fmt.Sprintf("%v", res.Output.Result), 20000)
 }
 
 // truncatePromptForEvent truncates a prompt map's string values so the

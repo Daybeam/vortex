@@ -37,6 +37,9 @@ func (s *DirectedEngine) retryWait(role *config.Role, attempt int) int {
 		}
 	}
 	defaults := []int{5, 30, 120}
+	if len(defaults) == 0 {
+		return 30 // fallback if defaults ever becomes empty
+	}
 	if attempt >= len(defaults) {
 		return defaults[len(defaults)-1]
 	}
@@ -233,7 +236,7 @@ func (s *DirectedEngine) archiveStep(graph *schemas.TaskGraph, step *schemas.Ste
 }
 
 // ─── Intent-Shift Branching (B11, WIRED 2026-10-25) ──────────────────────
-// See docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md.
+// See docs/completed/2026-10-26/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md.
 
 // defaultIntentShiftThreshold is the cosine-similarity floor below which a
 // step counts as an intent shift from the current context node. Same order

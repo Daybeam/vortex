@@ -18,7 +18,6 @@ import (
 //
 // See: docs/architecture/architecture-mcp-gaps.md §3 (documented contract:
 // "cache populated once during spawner initialization, reused across steps").
-// See: eval-kit/docs/53-appworld-transport-fix-20261018.md §8 (root cause).
 
 // TestEnsureMCPDiscovery_SkipsAlreadyDiscovered verifies that ensureMCPDiscovery
 // is idempotent: MCPs with FullToolDefinitions already populated are skipped

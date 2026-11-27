@@ -10,20 +10,38 @@ import (
 )
 
 type mockProvider struct {
-	name string
+	name          string
+	completeCalls int
+	embedCalls    int
 }
 
 func (m *mockProvider) Complete(ctx context.Context, req schemas.CompleteRequest) (*schemas.ProviderResponse, error) {
-	return nil, nil
+	m.completeCalls++
+	return &schemas.ProviderResponse{
+		Text:             "mock response",
+		StopReason:       "stop",
+		PromptTokens:     10,
+		CompletionTokens: 5,
+	}, nil
 }
 func (m *mockProvider) StreamComplete(ctx context.Context, req schemas.CompleteRequest, onChunk func(text string) error) (*schemas.ProviderResponse, error) {
-	return nil, nil
+	m.completeCalls++
+	if onChunk != nil {
+		_ = onChunk("mock chunk")
+	}
+	return &schemas.ProviderResponse{
+		Text:             "mock stream response",
+		StopReason:       "stop",
+		PromptTokens:     10,
+		CompletionTokens: 5,
+	}, nil
 }
 func (m *mockProvider) Embed(ctx context.Context, text string) ([]float32, error) {
-	return nil, nil
+	m.embedCalls++
+	return []float32{0.1, 0.2, 0.3}, nil
 }
 func (m *mockProvider) CountTokens(ctx context.Context, text string) (int, error) {
-	return 0, nil
+	return len(text) / 4, nil // rough approximation
 }
 func (m *mockProvider) Name() string { return m.name }
 

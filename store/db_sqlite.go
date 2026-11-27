@@ -24,8 +24,21 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		}
 	}
 
-	// Open connection with WAL mode and normal synchronous flags for high concurrency
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath)
+	// Journal mode: WAL is the default for concurrency, but it is UNSAFE on a
+	// cross-VM filesystem (Docker Desktop / OrbStack / Podman host bind mounts
+	// exposed as virtiofs or 9p). SQLite WAL's -shm file must be coherent shared
+	// memory for every opener; across the VM boundary it is not, and the failure
+	// is SILENT (zero-filled pages) — so WAL must be refused BEFORE the pragma,
+	// not reacted to after corruption. On such mounts fall back to journal_mode=DELETE
+	// (single-writer, rollback journal, no shared memory). Port of hermes_state_wal.py.
+	journalMode := "WAL"
+	if onCrossVMFilesystem(dbPath) {
+		journalMode = "DELETE"
+	}
+
+	// Open connection. DELETE mode trades concurrency for crash-consistency on
+	// cross-VM mounts; WAL supports concurrent readers and a single writer.
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(%s)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath, journalMode)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite db: %w", err)
@@ -68,9 +81,31 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	_, _ = db.Exec(`ALTER TABLE chat_messages ADD COLUMN forked_from TEXT`)
 	_, _ = db.Exec(`ALTER TABLE chat_messages ADD COLUMN client_id TEXT`)
 
+	// Migration (2026-11-26): durable session ownership. Existing rows remain
+	// ownerless; see docs/completed/2026-11-27/OWNER_ISOLATION_SCHEDULE_SESSION_INBOX.md.
+	_, _ = db.Exec(`ALTER TABLE chat_sessions ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE chat_sessions ADD COLUMN shared INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_chat_sessions_owner_created ON chat_sessions(owner_id, created_at DESC)`)
+
+	// Migration (2026-11-26): inbox ownership is indexed separately from the
+	// delivery payload so list filtering happens before LIMIT. Backfill only the
+	// explicit JSON owner; ownerless legacy rows are never guessed or claimed.
+	_, _ = db.Exec(`ALTER TABLE chat_outbox ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_chat_outbox_owner_pending ON chat_outbox(kind, status, owner_id, id)`)
+	_, _ = db.Exec(`UPDATE chat_outbox SET owner_id = CASE WHEN json_valid(text) THEN json_extract(text, '$.delivery.owner_id') ELSE '' END
+		WHERE kind = 'schedule_inbox' AND owner_id = '' AND json_valid(text) AND json_extract(text, '$.delivery.owner_id') IS NOT NULL`)
+
 	// Migration (2026-11-01): add project_id to tasks for project space support.
 	_, _ = db.Exec(`ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT 'default'`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)`)
+
+	// Migration (2026-11-22): add schema_hashes_json to anti_patterns for
+	// schema fingerprint binding (§C Expiry anti-corruption).
+	_, _ = db.Exec(`ALTER TABLE anti_patterns ADD COLUMN schema_hashes_json TEXT`)
+
+	// Migration (2026-11-25): preserve the complete schedule contract and runtime
+	// ledger; the legacy columns cannot represent delivery targets or run quotas.
+	_, _ = db.Exec(`ALTER TABLE schedules ADD COLUMN schedule_json TEXT`)
 
 	bootmetrics.Mark("db")
 	return db, nil
@@ -244,7 +279,8 @@ func runMigrations(db *sql.DB) error {
 		last_run DATETIME,
 		next_run DATETIME,
 		is_enabled BOOLEAN DEFAULT TRUE,
-		created_at DATETIME
+		created_at DATETIME,
+		schedule_json TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS memory_bank (
@@ -270,6 +306,7 @@ func runMigrations(db *sql.DB) error {
 		source_text TEXT,
 		embedding BLOB,
 		embedding_model TEXT,
+		schema_hashes_json TEXT,
 		last_seen DATETIME,
 		created_at DATETIME
 	);
@@ -286,7 +323,7 @@ func runMigrations(db *sql.DB) error {
 
 	-- P4 Tool Co-occurrence Table (ADDED 2026-09-13)
 	-- Tracks consecutive tool/capability pairs within the same task for
-	-- Compound Skill auto-crystallization. See docs/COMPOUND_SKILLS_DESIGN.md
+	-- Compound Skill auto-crystallization. See docs/completed/2026-09-13/COMPOUND_SKILLS_DESIGN.md
 	CREATE TABLE IF NOT EXISTS tool_cooccurrence (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		tool_a TEXT NOT NULL,
@@ -341,6 +378,8 @@ func runMigrations(db *sql.DB) error {
 		id             TEXT PRIMARY KEY,
 		root_id        TEXT,
 		active_leaf_id TEXT,
+		owner_id       TEXT NOT NULL DEFAULT '',
+		shared         INTEGER NOT NULL DEFAULT 0,
 		created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -369,6 +408,7 @@ func runMigrations(db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS chat_outbox (
 		id               INTEGER PRIMARY KEY AUTOINCREMENT,
 		session_id       TEXT NOT NULL DEFAULT '',
+		owner_id         TEXT NOT NULL DEFAULT '',
 		kind             TEXT NOT NULL,
 		dedupe_key       TEXT NOT NULL UNIQUE,
 		text             TEXT NOT NULL,
@@ -382,6 +422,19 @@ func runMigrations(db *sql.DB) error {
 		last_error       TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_chat_outbox_claimable ON chat_outbox(status, claim_expires_at, id);
+	CREATE INDEX IF NOT EXISTS idx_chat_outbox_owner_pending ON chat_outbox(kind, status, owner_id, id);
+
+	-- Chat Pending Replies (ADDED 2026-11-19 for chat reply fault recovery)
+	-- Tracks user messages that are awaiting an assistant reply. On crash/restart,
+	-- the startup scan finds rows here and either clears them (if the reply was
+	-- already delivered via the outbox) or enqueues a chat_interrupted notice.
+	-- See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md
+	CREATE TABLE IF NOT EXISTS chat_pending_replies (
+		session_id  TEXT PRIMARY KEY,
+		message_id  TEXT NOT NULL,
+		content     TEXT NOT NULL,
+		started_at  DATETIME NOT NULL
+	);
 
 	-- P7 Promotion Audit Log (ADDED 2026-09-15 for A31 DB collapse)
 	CREATE TABLE IF NOT EXISTS promotion_audit (
@@ -395,7 +448,7 @@ func runMigrations(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_promo_audit_candidate ON promotion_audit(candidate_id);
 
 	-- P8 Replay Mutation Records (ADDED 2026-09-18 for offline replay self-optimization)
-	-- See docs/architecture/OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md
+	-- See docs/completed/2026-09-19/OFFLINE_REPLAY_SELF_OPTIMIZATION_DESIGN.md
 	CREATE TABLE IF NOT EXISTS replay_mutation_records (
 		id               TEXT PRIMARY KEY,
 		source_task_id   TEXT NOT NULL,
@@ -411,7 +464,7 @@ func runMigrations(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_replay_mut_candidate ON replay_mutation_records(candidate_id);
 
 	-- P9 Model Capability Profiles (ADDED 2026-09-19 for intelligent routing)
-	-- See docs/architecture/MODEL_CAPABILITY_AND_INTELLIGENT_ROUTING_ROADMAP.md
+	-- See docs/completed/2026-09-19/MODEL_CAPABILITY_AND_INTELLIGENT_ROUTING_ROADMAP.md
 	CREATE TABLE IF NOT EXISTS model_capability_profiles (
 		model_id       TEXT NOT NULL,
 		capability     TEXT NOT NULL,
@@ -426,7 +479,7 @@ func runMigrations(db *sql.DB) error {
 	);
 
 	-- P10 Baseline Version Pinning (ADDED 2026-10-03)
-	-- See docs/BASELINE_VERSION_PINNING_DESIGN.md
+	-- See docs/completed/2026-10-06/BASELINE_VERSION_PINNING_DESIGN.md
 	-- SOP version archive: immutable per-version snapshots for runtime pinning.
 	CREATE TABLE IF NOT EXISTS sop_versions (
 		id                TEXT NOT NULL,

@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
 
 // antipattern_injection.go — Module 2 of the Two-Tier Clarification &
-// Readiness Design (docs/architecture/TWO_TIER_CLARIFICATION_AND_READINESS_DESIGN.md).
+// Readiness Design (docs/completed/2026-09-15/TWO_TIER_CLARIFICATION_AND_READINESS_DESIGN.md).
 //
 // When the Auto-Refine loop rejects a step via verifyExitCriteria, the
 // downstream weak model has just failed once. Rather than only feeding it
@@ -32,14 +33,34 @@ const maxAntiPatternInjection = 3
 // The query intent combines the step's task text and the auditor's
 // rejection reason, so we match on both the domain (task) and the
 // specific failure mode (reason).
+// collectCurrentSchemaFingerprints reads the current schema fingerprints
+// from the registry's MCPs. Used to gate anti-pattern injection: precedents
+// recorded under different tool schemas are quarantined, not injected.
+func (s *DirectedEngine) collectCurrentSchemaFingerprints() map[string]string {
+	if s.registry == nil {
+		return nil
+	}
+	s.registry.Mu.RLock()
+	defer s.registry.Mu.RUnlock()
+	out := make(map[string]string, len(s.registry.MCPs)+len(s.registry.DynamicMCPs))
+	for id, mcp := range s.registry.MCPs {
+		if mcp.SchemaFingerprint != "" {
+			out[id] = mcp.SchemaFingerprint
+		}
+	}
+	for id, mcp := range s.registry.DynamicMCPs {
+		if mcp.SchemaFingerprint != "" {
+			out[id] = mcp.SchemaFingerprint
+		}
+	}
+	return out
+}
+
 func (s *DirectedEngine) buildAntiPatternGuidance(stepTask, rejectionReason string) string {
 	if s.expStore == nil {
 		return ""
 	}
 
-	// Build a combined intent: the task describes the domain, the rejection
-	// reason describes the acute failure. Matching on both maximizes recall
-	// of relevant precedents without over-fetching.
 	intent := strings.TrimSpace(stepTask)
 	if rejectionReason != "" {
 		intent += " " + strings.TrimSpace(rejectionReason)
@@ -52,6 +73,28 @@ func (s *DirectedEngine) buildAntiPatternGuidance(stepTask, rejectionReason stri
 	if len(precedents) == 0 {
 		return ""
 	}
+
+	currentFingerprints := s.collectCurrentSchemaFingerprints()
+	var filtered []store.AntiPatternPrecedent
+	var dropped int
+	for _, p := range precedents {
+		if schemas.PrecedentPassesSchemaGate(p.SchemaHashes, currentFingerprints) {
+			filtered = append(filtered, p)
+		} else {
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		s.logger.Log("EventSchemaRotQuarantine", "", "", map[string]any{
+			"source":             "antipattern_injection",
+			"precedents_dropped": dropped,
+			"precedents_kept":    len(filtered),
+		})
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	precedents = filtered
 
 	var b strings.Builder
 	b.WriteString(MarkerPrevFailureAntiPattern + "\n")

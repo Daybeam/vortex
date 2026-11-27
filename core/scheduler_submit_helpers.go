@@ -128,7 +128,7 @@ func (s *DirectedEngine) tryFastPath(ctx context.Context, inp schemas.StepInput,
 // pinBaseline records the SOP/Role version at task creation time so resume
 // uses the pinned version instead of the live registry. Nil-safe: skips
 // when BaselineStore is nil or no SOP/Role is referenced.
-// See docs/BASELINE_VERSION_PINNING_DESIGN.md Step 4.
+// See docs/completed/2026-10-06/BASELINE_VERSION_PINNING_DESIGN.md Step 4.
 func (s *DirectedEngine) pinBaseline(taskID string, inputs []schemas.StepInput) {
 	if s.BaselineStore == nil || len(inputs) == 0 {
 		return

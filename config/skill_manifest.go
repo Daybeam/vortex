@@ -14,7 +14,7 @@ import (
 // drift: if a skill's Implementations change between loads, the hash changes
 // and a warning is logged.
 //
-// Design: docs/plan/RESIDUAL_ISSUES_FIX.md §3.
+// Design: docs/completed/2026-10-21/RESIDUAL_ISSUES_FIX.md §3.
 type SkillHashManifest map[string]string
 
 // manifestFileName is the manifest file written to the skills directory.

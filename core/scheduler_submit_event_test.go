@@ -17,7 +17,7 @@ import (
 	"github.com/daybeam/vortex/store"
 )
 
-// Regression test for docs/TASK_WEBHOOK_CALLBACK_DESIGN.md §3:
+// Regression test for docs/completed/2026-10-06/TASK_WEBHOOK_CALLBACK_DESIGN.md §3:
 // Single-step fast-path tasks must publish terminal EventBus events.
 //
 // Bug: The goBackground closure in scheduler_submit.go set graph.Status
@@ -26,7 +26,7 @@ import (
 // or failure — the most common task type. The fix adds publishEvent calls
 // after broadcastDone, mirroring what finalize() does for multi-step tasks.
 //
-// Link: docs/TASK_WEBHOOK_CALLBACK_DESIGN.md §3 Option 1
+// Link: docs/completed/2026-10-06/TASK_WEBHOOK_CALLBACK_DESIGN.md §3 Option 1
 // Fix: core/scheduler_submit.go — publishEvent after broadcastDone in goBackground.
 
 func TestSubmit_SingleStepPublishesTerminalEvent(t *testing.T) {

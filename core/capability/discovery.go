@@ -12,7 +12,7 @@ import (
 
 // discovery.go — Two-Layer Scoped Discovery backend.
 //
-// Implements docs/plan/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md §4.
+// Implements docs/completed/2026-10-30/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md §4.
 // This is the reusable backend called by the MCP `discover` tool,
 // the planner, and (in Phase 2) the spawner's lazy discovery path.
 //

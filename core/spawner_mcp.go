@@ -654,3 +654,20 @@ func executeEmbeddedMCP(ctx context.Context, mcpDef *config.MCPDef, toolName str
 		"result": res.Result,
 	}, nil
 }
+
+func (s *Spawner) collectCurrentSchemaFingerprints() map[string]string {
+	s.registry.Mu.RLock()
+	defer s.registry.Mu.RUnlock()
+	out := make(map[string]string, len(s.registry.MCPs)+len(s.registry.DynamicMCPs))
+	for id, mcp := range s.registry.MCPs {
+		if mcp.SchemaFingerprint != "" {
+			out[id] = mcp.SchemaFingerprint
+		}
+	}
+	for id, mcp := range s.registry.DynamicMCPs {
+		if mcp.SchemaFingerprint != "" {
+			out[id] = mcp.SchemaFingerprint
+		}
+	}
+	return out
+}

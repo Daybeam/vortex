@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/daybeam/vortex/pkg/chat"
 	"github.com/daybeam/vortex/schemas"
@@ -97,7 +98,45 @@ const (
 // lost (harness-bench p24 lost exactly this way — one line in the log and no
 // answer). See enqueueWake and deliverPendingWake.
 func (h *ChatHandler) startFollowUpTurn(sessionID, taskID, summary string) bool {
-	return h.startFollowUpTurnWithDigest(sessionID, taskID, summary, "")
+	return h.startFollowUpTurnWithSeed(sessionID, taskID, summary, wakeSeed{})
+}
+
+// wakeSeed is everything a wake turn inherits from the finished task besides
+// its summary. Grouped rather than passed as three more parameters because the
+// chain already takes five, and because two adjacent strings of the same type
+// is how a call site transposes digest and fallback without failing to build.
+//
+// Each field is optional and independent: the digest changes what the model
+// sees, the fallback what the user gets when the model never runs, the
+// declaration what the turn can observe about its own deliverable. They are
+// gated by three separate switches for that reason — measuring them together
+// makes each one's effect unattributable.
+type wakeSeed struct {
+	digest   string
+	fallback string
+	// declared is the finished task's completion contract (taskOutcome.Declared).
+	// It is carried on the wake instead of being re-parsed from the trigger: the
+	// trigger names no artifacts, and the task outcome is the only thing that
+	// knows them (FINDINGS §6.3d).
+	declared []string
+	// figures is the canonical headline-figure token list, computed at enqueue
+	// time from the declared artifacts. Carried for the same reason as fallback
+	// and declared: delivery happens later, in another goroutine, and by then
+	// the task outcome that knows the artifact contents is gone.
+	figures []string
+	// contracts keeps field types and optionality intact through the same deferred hop.
+	contracts []schemas.ArtifactContract
+}
+
+func normalizeWakeSeed(seed wakeSeed) wakeSeed {
+	if len(seed.contracts) == 0 && len(seed.declared) > 0 {
+		seed.contracts = make([]schemas.ArtifactContract, 0, len(seed.declared))
+		for _, path := range seed.declared {
+			seed.contracts = append(seed.contracts, schemas.ArtifactContract{Path: path})
+		}
+	}
+	seed.contracts = schemas.CloneArtifactContracts(seed.contracts)
+	return seed
 }
 
 // startFollowUpTurnWithDigest is the form that also carries the artifact digest.
@@ -107,7 +146,19 @@ func (h *ChatHandler) startFollowUpTurn(sessionID, taskID, summary string) bool 
 // call sites — including the whole follow-up test file — have nothing to add. The
 // gate is inside wakeArtifactDigest, so passing "" and not calling it are the same
 // behaviour.
-func (h *ChatHandler) startFollowUpTurnWithDigest(sessionID, taskID, summary, digest string) bool {
+//
+// fallback is what the session gets if this turn cannot answer at all — see
+// wake_fallback.go. It is built by the caller because the caller is the one
+// holding the task outcome, and it is only ever appended on the failure path, so
+// a run whose wake turn succeeds is byte-for-byte unchanged.
+func (h *ChatHandler) startFollowUpTurnWithDigest(sessionID, taskID, summary, digest, fallback string) bool {
+	return h.startFollowUpTurnWithSeed(sessionID, taskID, summary,
+		wakeSeed{digest: digest, fallback: fallback})
+}
+
+// startFollowUpTurnWithSeed is the form that carries all three channels.
+func (h *ChatHandler) startFollowUpTurnWithSeed(sessionID, taskID, summary string, seed wakeSeed) bool {
+	seed = normalizeWakeSeed(seed)
 	reason := "task_done"
 	text := fmt.Sprintf(followUpTriggerFmt, taskID)
 	// The trigger says "read the artifacts it produced" without naming them, so
@@ -122,14 +173,18 @@ func (h *ChatHandler) startFollowUpTurnWithDigest(sessionID, taskID, summary, di
 	// The digest is the content half of the same problem (D21, 2026-11-17): a file
 	// list tells the model what exists, not what it says, and a wake turn that is
 	// handed only names answered with invented figures in 10/10 runs on 041.
-	if digest != "" {
-		text += digest
+	if seed.digest != "" {
+		text += seed.digest
 	}
-	switch h.startFollowUpTurnWithTrigger(sessionID, taskID, reason, text) {
+	switch h.startFollowUpTurnWithTriggerSeed(sessionID, taskID, reason, text, seed) {
 	case followUpStarted:
 		return true
 	case followUpBusy:
-		h.enqueueWake(sessionID, pendingWakeEntry{taskID: taskID, reason: reason, text: text})
+		h.enqueueWake(sessionID, pendingWakeEntry{
+			taskID: taskID, reason: reason, text: text, digest: seed.digest,
+			fallback: seed.fallback, declared: seed.declared,
+			figures: seed.figures, contracts: seed.contracts,
+		})
 		return false
 	default:
 		return false
@@ -142,7 +197,46 @@ func (h *ChatHandler) startFollowUpTurnWithDigest(sessionID, taskID, summary, di
 // reason exists because a session can now be woken for more than one cause —
 // a finished task, a task blocked on a decision — and the same task must be
 // allowed one wake per cause without the terminal path swallowing the other.
-func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, trigger string) followUpOutcome {
+func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, trigger, fallback string) followUpOutcome {
+	return h.startFollowUpTurnWithTriggerSeed(sessionID, taskID, reason, trigger,
+		wakeSeed{fallback: fallback})
+}
+
+// prepareWakeHarness clones the session's harness for a wake turn and seeds it
+// with the wake contract, delegated tasks, and the delegate/terminal-task-seen
+// callbacks. Extracted from startFollowUpTurnWithTriggerSeed for size ratchet
+// compliance.
+func (h *ChatHandler) prepareWakeHarness(sessionID string, seed wakeSeed) *chat.ChatHarness {
+	hCopy := cloneHarnessForRequest(h.harnessForWake(sessionID))
+	if mode := wakeContractMode(); mode != chat.WakeContractOff {
+		hCopy.SeedWakeContract(seed.contracts, mode)
+	}
+	hCopy.SeedDelegatedTasks(h.delegatedTasksFor(sessionID))
+	isAdmin, _ := h.lastSubmitterAdmin.Load(sessionID)
+	admin, _ := isAdmin.(bool)
+	hCopy.Delegate = func(prompt string, maxTurnsCap int) (string, error) {
+		id, err := h.submitChatTask(
+			[]schemas.StepInput{{ID: "s1", Task: prompt, SubmitterIsAdmin: admin, MaxTurnsCap: maxTurnsCap}},
+			sessionID)
+		if err == nil {
+			h.noteDelegatedTask(sessionID, id)
+		}
+		return id, err
+	}
+	hCopy.OnTerminalTaskSeen = func(taskID string) {
+		h.noteTaskConsumed(sessionID, taskID)
+	}
+	hCopy.OnFileRead = func(basename string) {
+		h.noteFileRead(sessionID, basename)
+	}
+	return hCopy
+}
+
+func (h *ChatHandler) startFollowUpTurnWithTriggerSeed(sessionID, taskID, reason, trigger string, seed wakeSeed) followUpOutcome {
+	seed = normalizeWakeSeed(seed)
+	// The failure path below is the only reader; aliased once so the delivery
+	// code keeps reading as it did before the other two channels existed.
+	fallback := seed.fallback
 	if h == nil || h.Harness == nil || sessionID == "" || taskID == "" {
 		return followUpSuppressed
 	}
@@ -163,11 +257,16 @@ func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, tr
 		return followUpSuppressed
 	}
 
+	// Cron-prefixed reasons (scheduled task delivery) bypass the session-level
+	// follow-up depth cap: per-job quota is enforced by Schedule.MaxRuns, not
+	// maxFollowUpDepth. Without this, a schedule running every 10 minutes would
+	// exhaust the session's depth cap (3) in 30 minutes and become un-wakeable.
 	depth := 0
 	if v, ok := h.followUpDepth.Load(sessionID); ok {
 		depth, _ = v.(int)
 	}
-	if depth >= maxFollowUpDepth {
+	isCronWake := strings.HasPrefix(reason, "cron:")
+	if !isCronWake && depth >= maxFollowUpDepth {
 		fmt.Fprintf(os.Stderr, "[chat-followup] session=%s task=%s skipped: follow-up depth %d reached the cap (%d)\n",
 			sessionID, taskID, depth, maxFollowUpDepth)
 		return followUpSuppressed
@@ -183,9 +282,12 @@ func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, tr
 		return followUpBusy
 	}
 	h.followUpSeen.Store(seenKey, struct{}{})
-	h.followUpDepth.Store(sessionID, depth+1)
+	if !isCronWake {
+		h.followUpDepth.Store(sessionID, depth+1)
+	}
 	// New turn: markers left by the previous one must not suppress its wakes.
 	h.clearConsumedTasks(sessionID)
+	h.clearReadFiles(sessionID)
 
 	// Announce the turn before it starts. Two consumers depend on it: an SSE
 	// client that reconnected after `done` (it can then keep reading instead of
@@ -202,9 +304,24 @@ func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, tr
 
 	go func() {
 		terminalSent := false
+		// Held back while a fallback is armed, forwarded if nothing replaces it.
+		var heldError *chat.ChatEvent
 		defer h.wg.Done()
+		// The closure is load-bearing: arguments to a deferred call are evaluated
+		// when the defer is REGISTERED, so `defer h.finishTurn(session,
+		// terminalSent, recover())` would pass false and nil — a synthetic
+		// "ended without a terminal event" error on every turn, and no panic
+		// recovery at all.
 		defer func() {
 			h.finishTurn(session, terminalSent, recover())
+		}()
+		// Runs before finishTurn (defers are LIFO) so a held error still reaches
+		// the reader when no report took its place.
+		defer func() {
+			if heldError != nil && !terminalSent {
+				session.AddEvent(*heldError)
+				terminalSent = true
+			}
 		}()
 		defer cancel()
 		defer h.cancelFuncs.Delete(sessionID)
@@ -215,29 +332,7 @@ func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, tr
 		// resume on the default identity and the default model — measured in
 		// 8/8 runs of both arms before harnessForWake existed. See
 		// chat_session_harness.go.
-		hCopy := cloneHarnessForRequest(h.harnessForWake(sessionID))
-		// A wake turn is a fresh harness: without this it cannot see the tasks
-		// earlier turns handed off, so the poll lever neither counts nor locks
-		// the checks that happen here — and this is where they happen.
-		hCopy.SeedDelegatedTasks(h.delegatedTasksFor(sessionID))
-		isAdmin, _ := h.lastSubmitterAdmin.Load(sessionID)
-		admin, _ := isAdmin.(bool)
-		hCopy.Delegate = func(prompt string) (string, error) {
-			id, err := h.submitChatTask(
-				[]schemas.StepInput{{ID: "s1", Task: prompt, SubmitterIsAdmin: admin}},
-				sessionID)
-			// A wake turn can hand off again (measured up to 6 in one run), and
-			// that id must join the same ledger the next wake is seeded from.
-			if err == nil {
-				h.noteDelegatedTask(sessionID, id)
-			}
-			return id, err
-		}
-		// A follow-up that delegates again is itself a turn that can consume a
-		// result; without this it would re-deliver a wake queued behind it.
-		hCopy.OnTerminalTaskSeen = func(taskID string) {
-			h.noteTaskConsumed(sessionID, taskID)
-		}
+		hCopy := h.prepareWakeHarness(sessionID, seed)
 
 		// A distinct task id: the Sieve result cache and the artifact directory
 		// are keyed by it, and reusing the original turn's id would make the
@@ -255,6 +350,18 @@ func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, tr
 		// recovers, logs the stack, and emits a terminal event, so the SSE
 		// stream closes instead of hanging until the client's own deadline.
 		final, err := hCopy.Run(runCtx, turnTaskID, history, func(ev chat.ChatEvent) error {
+			if ev.Type == "error" && fallback != "" {
+				// A terminal event ends the SSE stream and the reader stops at the
+				// first one, so forwarding this error would leave the report in the
+				// session tree and nowhere the waiting user can see it. Measured on
+				// v93 (s93fb-on-r4): the 1886-character report appeared once in
+				// chat/<session>.json and zero times in events.sse, while the stream
+				// ended on `error`. Holding it here is what makes the fallback a
+				// delivery instead of a database write.
+				held := ev
+				heldError = &held
+				return nil
+			}
 			if ev.Type == "done" || ev.Type == "error" {
 				terminalSent = true
 			}
@@ -263,12 +370,20 @@ func (h *ChatHandler) startFollowUpTurnWithTrigger(sessionID, taskID, reason, tr
 		})
 		if err != nil && !chat.IsPartialRun(err) {
 			fmt.Fprintf(os.Stderr, "[chat-followup] session=%s task=%s turn failed: %v\n", sessionID, taskID, err)
+			// Silence here is how 48 of 117 delegating runs in the archive
+			// delivered nothing while averaging 0.680 with 15 perfect scores
+			// (wake_fallback.go, FINDINGS 2026-11-17 §1.9.1).
+			h.deliverWakeFallback(session, fallback, wakeFallbackReasonBudget, &terminalSent)
 			return
 		}
 		if final != "" {
 			session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: final}, "")
 			h.persistSession(session)
+			return
 		}
+		// A turn that ran and produced no text is the same loss as one that never
+		// ran: the artifacts are there, the user has nothing to read.
+		h.deliverWakeFallback(session, fallback, wakeFallbackReasonNoText, &terminalSent)
 	}()
 	return followUpStarted
 }

@@ -104,41 +104,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 			}
 		}
 	} else {
-		// A5 (Effect Boundary Defense): dry-run pre-check for high-risk tools.
-		// If the tool has RiskLevel=high and supports dry_run, execute with
-		// dry_run=true to preview the operation without committing it.
-		// If high-risk but no dry_run support, log a warning.
-		// See docs/completed/EFFECT_BOUNDARY_DEFENSE_DESIGN.md §3.4.
-		toolDef := findCoreToolDef(call.Name)
-		if isHighRiskTool(toolDef) {
-			if supportsDryRun(toolDef) {
-				// Execute with dry_run=true — preview without committing.
-				dryArgs := addDryRunArg(call.Arguments)
-				dryResult, dryErr := HandleCoreTool(ctx, call.Name, dryArgs, s.outputBase, taskID, validator)
-				if dryErr == nil {
-					result = dryRunResult(call.Name, dryResult)
-					s.logger.Log("EventA5DryRunPreview", taskID, stepID, map[string]any{
-						"tool":  call.Name,
-						"args":  toolArgsLogString(call.Name, call.Arguments),
-						"phase": "dry_run_preview",
-					})
-				} else {
-					// dry_run failed — the real operation would likely fail too.
-					result = fmt.Sprintf("[DRY-RUN FAILED] %s: %v\nOperation aborted to prevent likely failure.", call.Name, dryErr)
-					herr = dryErr
-				}
-			} else {
-				// High-risk tool without dry_run support — log warning, proceed.
-				s.logger.Log("EventA5HighRiskNoDryRun", taskID, stepID, map[string]any{
-					"tool":  call.Name,
-					"args":  toolArgsLogString(call.Name, call.Arguments),
-					"phase": "high_risk_no_dry_run",
-				})
-				result, herr = HandleCoreTool(ctx, call.Name, call.Arguments, s.outputBase, taskID, validator)
-			}
-		} else {
-			result, herr = HandleCoreTool(ctx, call.Name, call.Arguments, s.outputBase, taskID, validator)
-		}
+		result, herr = HandleCoreTool(ctx, call.Name, call.Arguments, s.outputBase, taskID, validator)
 	}
 
 	res := result
@@ -155,7 +121,7 @@ func (s *Spawner) handleCoreToolCall(ctx context.Context, call schemas.ToolCall,
 	// inside executeCode() via AdaptiveOutputResult (8KB threshold). Double
 	// truncation at 2000 bytes would destroy useful script output that the
 	// model intentionally chose to produce instead of multiple read_file calls.
-	// See docs/plan/MODEL_DRIVEN_ARCHIVE_RETRIEVAL_DESIGN.md §3.3.0.
+	// See docs/completed/2026-10-17/MODEL_DRIVEN_ARCHIVE_RETRIEVAL_DESIGN.md §3.3.0.
 	if call.Name != "execute_code" && len(res) > 2000 {
 		res = string(skeleton.AdaptiveOutputResult([]byte(res), call.Name, "orchestrator"))
 	}

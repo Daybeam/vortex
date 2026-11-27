@@ -101,7 +101,7 @@ func (b *SQLiteMemoryBankBackend) SearchItems(ctx context.Context, category stri
 
 // DeleteByCategory removes all items in the given category.
 // Returns the count of rows deleted.
-// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md §Storage Layer Changes.
+// See docs/completed/2026-10-21/SESSION_MEMORY_DELETION_DESIGN.md §Storage Layer Changes.
 func (b *SQLiteMemoryBankBackend) DeleteByCategory(ctx context.Context, category string) (int64, error) {
 	res, err := b.db.ExecContext(ctx, `DELETE FROM memory_bank WHERE category = ?`, category)
 	if err != nil {

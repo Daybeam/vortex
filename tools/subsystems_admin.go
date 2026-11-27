@@ -299,12 +299,12 @@ func registerAdminSubsystem(app *App) {
 }
 
 // registerListPendingSkills adds the list_pending_skills action (Trial Skill
-// Instant-Use, docs/plan/TRIAL_SKILL_INSTANT_USE_DESIGN.md §4.1). Extracted
+// Instant-Use, docs/completed/2026-10-24/TRIAL_SKILL_INSTANT_USE_DESIGN.md §4.1). Extracted
 // from registerAdminSubsystem to keep it within the size ratchet.
 func (s *Subsystem) registerListPendingSkills() {
 	s.Actions["list_pending_skills"] = Action{
 		Name:        "list_pending_skills",
-		Description: "List pending (unverified) external skills in the staging area. Returns full skill objects with a Trial flag — submit any of them via session_skills to use immediately without promotion. See docs/plan/TRIAL_SKILL_INSTANT_USE_DESIGN.md.",
+		Description: "List pending (unverified) external skills in the staging area. Returns full skill objects with a Trial flag — submit any of them via session_skills to use immediately without promotion. See docs/completed/2026-10-24/TRIAL_SKILL_INSTANT_USE_DESIGN.md.",
 		Parameters: map[string]any{
 			"query": "string (optional) - substring filter on skill name or description",
 		},

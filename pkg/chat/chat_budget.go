@@ -69,15 +69,20 @@ func IsPartialRun(err error) bool {
 	return errors.As(err, &budget)
 }
 
-// emitRunError presents a run-ending error to the transcript. It exists so the
-// one error that must not read like a broken request — a provider refusing
-// further calls because the allowance is gone — is labelled at the single place
-// the transcript is written, instead of every reader re-deriving it from text.
+// emitTimeoutError checks whether a streamTurn error is a turn-budget or
+// provider timeout and, if so, emits a labelled error event with the provider
+// name and rate-limit details. Returns true if the caller should return (the
+// error was a timeout); false if the caller should fall through to emitRunError.
 //
-// Before D3 this path emitted `bad request: {...}` for an exhausted budget,
-// which is what made three runs (223 twice, 030 off r3) look like a broken
-// mechanism rather than a spent budget. The meta flag is the machine-readable
-// half: Data stays human text.
+// Two paths indicate a timeout:
+//  (a) runCtx expired → ctx.Err() != nil. The request's context is ctx, so
+//      client.Do returns context.DeadlineExceeded.
+//  (b) http.Client.Timeout fired before runCtx → ctx.Err() == nil but the
+//      error wraps context.DeadlineExceeded. This happens when the provider's
+//      HTTP timeout (120s/300s) is shorter than the turn budget.
+// Both are infrastructure timeouts, not model failures — the meta flag
+// turn_budget_exhausted=true prevents downstream scoring from mislabelling
+// them as model_error.
 func emitTimeoutError(emit func(ChatEvent) error, err error, ctx context.Context, providerName string) bool {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		var rlErr *providers.RateLimitError
@@ -116,6 +121,15 @@ func emitTimeoutError(emit func(ChatEvent) error, err error, ctx context.Context
 	return false
 }
 
+// emitRunError presents a run-ending error to the transcript. It exists so the
+// one error that must not read like a broken request — a provider refusing
+// further calls because the allowance is gone — is labelled at the single place
+// the transcript is written, instead of every reader re-deriving it from text.
+//
+// Before D3 this path emitted `bad request: {...}` for an exhausted budget,
+// which is what made three runs (223 twice, 030 off r3) look like a broken
+// mechanism rather than a spent budget. The meta flag is the machine-readable
+// half: Data stays human text.
 func emitRunError(emit func(ChatEvent) error, err error, providerName string) {
 	var budget *providers.BudgetExhaustedError
 	if errors.As(err, &budget) {

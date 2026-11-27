@@ -30,7 +30,7 @@ var mcpEnvCache sync.Map
 // InvalidateMCPEnvCache clears all cached MCP env var values. Called on
 // config hot-reload so cachedGetenv re-reads os.Getenv, picking up .env
 // changes. Registered as a reload callback in main.go.
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 4.
+// See docs/completed/2026-10-17/ENV_MIGRATION_HOT_RELOAD_DESIGN.md §change 4.
 func InvalidateMCPEnvCache() {
 	mcpEnvCache.Range(func(key, _ any) bool {
 		mcpEnvCache.Delete(key)
@@ -58,14 +58,19 @@ func (m *MCPConnectionManager) invalidateSessionCacheEntry(mcpID, ownerID string
 
 func cachedGetenv(key string) string {
 	if v, ok := mcpEnvCache.Load(key); ok {
-		return v.(string)
+		if s, ok := v.(string); ok {
+			return s
+		}
 	}
 	// audit L6: LoadOrStore makes the check-then-act atomic. os.Getenv is
 	// deterministic so both racing callers compute the same value; this just
 	// replaces the non-atomic Load-then-Store idiom. Cache stays effective
 	// (os.Getenv runs only on the miss path).
 	v, _ := mcpEnvCache.LoadOrStore(key, os.Getenv(key))
-	return v.(string)
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return os.Getenv(key) // fallback if cache holds unexpected type
 }
 
 // MCPConnectionManager isolates all stdio subprocess handling and JSON-RPC
@@ -134,6 +139,10 @@ func (m *MCPConnectionManager) EvictClient(mcpID string) {
 		cli.Close()
 		delete(m.processCache, mcpID)
 	}
+	// Audit FIX 2026-11-22: clean up per-ID locks to prevent unbounded
+	// sync.Map growth as MCPs are added and removed over time.
+	m.handshakeLocks.Delete(mcpID)
+	m.discoveryLocks.Delete(mcpID)
 }
 
 // CloseAll closes every cached MCP subprocess client. Call on shutdown to
@@ -142,12 +151,28 @@ func (m *MCPConnectionManager) CloseAll() {
 	if m == nil {
 		return
 	}
+	// Audit FIX 2026-11-22: snapshot clients under lock, close outside lock
+	// to avoid blocking all m.mu-dependent operations during potentially
+	// slow Close() calls (e.g. network shutdown).
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	clients := make([]*client.MCPClient, 0, len(m.processCache))
 	for id, cli := range m.processCache {
-		cli.Close()
+		clients = append(clients, cli)
 		delete(m.processCache, id)
 	}
+	m.mu.Unlock()
+	for _, cli := range clients {
+		cli.Close()
+	}
+	// Audit FIX 2026-11-22: clean up per-ID locks on shutdown.
+	m.handshakeLocks.Range(func(k, _ any) bool {
+		m.handshakeLocks.Delete(k)
+		return true
+	})
+	m.discoveryLocks.Range(func(k, _ any) bool {
+		m.discoveryLocks.Delete(k)
+		return true
+	})
 }
 
 // mcpSpawnFailureTTL defines how long to keep an MCP in the failure ledger
@@ -267,6 +292,12 @@ func (m *MCPConnectionManager) ensureRemoteMCPSession(ctx context.Context, mcp *
 }
 
 func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mcp *config.MCPDef, ownerID string) string {
+	// Audit FIX 2026-11-22: bound the handshake to 10s so an unresponsive
+	// remote MCP cannot block the caller indefinitely. The parent ctx may
+	// have no deadline (e.g. background discovery), so we add one here.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	resolvedURL, err := resolveMCPURL(mcp)
 	if err != nil {
 		return ""
@@ -290,6 +321,22 @@ func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mc
 			"protocolVersion": "2025-03-26",
 			"capabilities":    map[string]any{},
 			"clientInfo":      map[string]any{"name": "orchestrator-mcp-go", "version": "1.0.0"},
+			"_meta": map[string]any{
+				"io.modelcontextprotocol/clientCapabilities": map[string]any{
+					"elicitation": map[string]any{
+						"form": map[string]any{},
+						"url":  map[string]any{},
+					},
+					"extensions": map[string]any{
+						"io.modelcontextprotocol/tasks": map[string]any{},
+					},
+				},
+				"io.orchestrator/host-approval": map[string]any{
+					"version":    1,
+					"guarantees": "blocking-human-approval-before-side-effect",
+					"receipt":    "signed-nonce-bound-to-args-hash",
+				},
+			},
 		},
 	})
 
@@ -330,10 +377,10 @@ func (m *MCPConnectionManager) performRemoteMCPHandshake(ctx context.Context, mc
 		notifReq.Header.Set("Mcp-Session-Id", sid)
 		applyAuth(notifReq)
 		if notifResp, nerr := httpClient.Do(notifReq); nerr == nil {
+			defer notifResp.Body.Close()
 			if _, err := io.Copy(io.Discard, notifResp.Body); err != nil {
 				log.Printf("WARN: mcp_manager: failed to drain notification response body: %v", err)
 			}
-			notifResp.Body.Close()
 		}
 	}
 
@@ -441,6 +488,7 @@ func (m *MCPConnectionManager) discoverRemoteMCPTools(ctx context.Context, mcp *
 		if is, ok := t["inputSchema"].(map[string]any); ok {
 			def.InputSchema = SanitizeMCPToolSchema(is)
 		}
+		def.Annotations = parseToolAnnotations(t)
 		out = append(out, def)
 	}
 
@@ -488,6 +536,13 @@ func (m *MCPConnectionManager) callRemoteMCPTool(ctx context.Context, mcp *confi
 		"params": map[string]any{
 			"name":      toolName,
 			"arguments": arguments,
+			"_meta": map[string]any{
+				"io.orchestrator/host-approval": map[string]any{
+					"version":    1,
+					"guarantees": "blocking-human-approval-before-side-effect",
+					"receipt":    "signed-nonce-bound-to-args-hash",
+				},
+			},
 		},
 	})
 
@@ -642,12 +697,19 @@ func (m *MCPConnectionManager) ensureMCPClient(ctx context.Context, mcp *config.
 			newCli.Close()
 			cli = existing
 		} else {
-			// P-H9: evict stale entry if cache is full
+			// P-H9: evict stale entry if cache is full.
+			// audit FIX: prefer evicting dead connections to avoid closing a
+			// live connection that another goroutine may still be using.
+			// If no dead connections exist, add the new entry anyway —
+			// exceeding the soft limit is safe; dead entries will be
+			// evicted on future accesses.
 			if len(m.processCache) >= maxMCPCacheSize {
 				for k, v := range m.processCache {
-					v.Close()
-					delete(m.processCache, k)
-					break
+					if v.IsDead() {
+						v.Close()
+						delete(m.processCache, k)
+						break
+					}
 				}
 			}
 			m.processCache[mcp.ID] = newCli

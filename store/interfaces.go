@@ -44,7 +44,7 @@ type StaleTaskSweeper interface {
 
 // BaselineStore pins and retrieves SOP/Role versions at task creation time.
 // Nil-safe: consumers must nil-check before use (mirrors TaskRegistry pattern).
-// See docs/BASELINE_VERSION_PINNING_DESIGN.md
+// See docs/completed/2026-10-06/BASELINE_VERSION_PINNING_DESIGN.md
 type BaselineStore interface {
 	PinBaseline(ctx context.Context, taskID, sopID, sopVer, roleID, roleVer string) error
 	GetBaseline(ctx context.Context, taskID string) (*TaskBaseline, error)
@@ -137,7 +137,7 @@ type IExperienceStore interface {
 	SelectSkill(ctx context.Context, availableSkills []string, capability, roleID, modelID string, epsilon float64) string
 	AddGeneratedSkill(ctx context.Context, skill *GeneratedSkill) error
 	QueryRoleAdvice(ctx context.Context, roleID string) map[string]any
-	// Experience Graph Memory (docs/architecture/EXPERIENCE_GRAPH_DESIGN.md)
+	// Experience Graph Memory (docs/completed/2026-09-04/architecture/EXPERIENCE_GRAPH_DESIGN.md)
 	RetrieveRelevantExperience(ctx context.Context, query []float32, capability, errorSignal, domain string, tokenBudget int) []*ExperienceNode
 	QuerySimilarPatterns(ctx context.Context, capabilities []string, limit int) []TaskPattern
 	QueryRelevantSkills(ctx context.Context, taskType string, limit int) []string
@@ -217,12 +217,38 @@ type IAntiPatternBackend interface {
 	LoadAll(ctx context.Context) ([]AntiPatternPrecedent, error)
 }
 
+// PendingReplyRow is the DB representation of a chat turn awaiting a reply.
+// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md.
+type PendingReplyRow struct {
+	SessionID string
+	MessageID string
+	Content   string
+	StartedAt time.Time
+}
+
+// SessionScope limits durable session listing before pagination. All is reserved
+// for admins and local compatibility mode; an exact owner never falls back to
+// ownerless rows.
+type SessionScope struct {
+	All   bool
+	Owner string
+}
+
 // IChatBackend defines persistence for chat sessions and messages (A20 DB collapse).
 type IChatBackend interface {
-	SaveSession(ctx context.Context, sessionID, rootID, activeLeafID string, createdAt time.Time) error
+	SaveSession(ctx context.Context, sessionID, rootID, activeLeafID, ownerID string, shared bool, createdAt time.Time) error
 	SaveMessage(ctx context.Context, msg *ChatMessageRow) error
-	LoadSession(ctx context.Context, sessionID string) (rootID, activeLeafID string, messages map[string]*ChatMessageRow, err error)
-	ListSessions(ctx context.Context, limit, offset int) ([]ChatSessionRow, error)
+	LoadSession(ctx context.Context, sessionID string) (rootID, activeLeafID, ownerID string, shared bool, messages map[string]*ChatMessageRow, err error)
+	ListSessions(ctx context.Context, scope SessionScope, limit, offset int) ([]ChatSessionRow, error)
+
+	// SavePendingReply records that a user message is awaiting an assistant
+	// reply. Upsert on session_id: a new turn replaces any stale pending mark.
+	SavePendingReply(ctx context.Context, row PendingReplyRow) error
+	// ClearPendingReply removes the pending mark for a session (turn completed).
+	ClearPendingReply(ctx context.Context, sessionID string) error
+	// ListPendingReplies returns all sessions with an outstanding pending mark.
+	// Used by the startup scan to detect turns interrupted by a crash.
+	ListPendingReplies(ctx context.Context) ([]PendingReplyRow, error)
 }
 
 // ChatMessageRow is the DB representation of a chat message.
@@ -246,6 +272,8 @@ type ChatSessionRow struct {
 	ID           string    `json:"id"`
 	RootID       string    `json:"root_id,omitempty"`
 	ActiveLeafID string    `json:"active_leaf_id,omitempty"`
+	OwnerID      string    `json:"owner_id,omitempty"`
+	Shared       bool      `json:"shared,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
@@ -254,6 +282,7 @@ type ChatSessionRow struct {
 type OutboxItem struct {
 	ID        int64
 	SessionID string
+	OwnerID   string
 	Kind      string
 	DedupeKey string
 	Text      string
@@ -299,6 +328,10 @@ type IChatOutbox interface {
 	// duration and returns them.
 	ClaimPending(ctx context.Context, holder string, limit int, lease time.Duration) ([]OutboxItem, error)
 
+	// ClaimPendingKinds is ClaimPending restricted to the listed row kinds.
+	// Independent pumps must not consume one another's delivery work.
+	ClaimPendingKinds(ctx context.Context, holder string, limit int, lease time.Duration, kinds []string) ([]OutboxItem, error)
+
 	// MarkDelivered closes a row still held by holder, reporting false when the
 	// claim was already lost.
 	MarkDelivered(ctx context.Context, id int64, holder string) (bool, error)
@@ -310,4 +343,9 @@ type IChatOutbox interface {
 	// Purge deletes rows that reached a terminal state before the bound and
 	// reports how many went.
 	Purge(ctx context.Context, before time.Time) (int, error)
+
+	// RowExists reports whether a row with the given dedupe_key exists in
+	// the outbox, regardless of status. Used by the startup scan to
+	// determine whether a chat reply was enqueued before a crash.
+	RowExists(ctx context.Context, dedupeKey string) (bool, error)
 }

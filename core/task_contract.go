@@ -400,7 +400,13 @@ func ParseDeclaredArtifactFields(text string) map[string][]string {
 // section.
 func normalizeDeclaredName(name string) string {
 	rel := strings.TrimSpace(name)
-	for _, prefix := range []string{"$WORKSPACE/", "/workspace/", "workspace/", "/"} {
+	// Strip workspace prefixes but NOT a bare "/": on Linux an absolute path
+	// like /tmp/.../report.json would be truncated to tmp/.../report.json,
+	// causing wakeContractPath to miss the filepath.IsAbs branch and add a
+	// spurious second contract. The "/workspace/" prefix is already handled
+	// above, and a bare "/x" on Linux is a root-level path that should stay
+	// absolute so wakeContractPath can reject it via filepath.Rel.
+	for _, prefix := range []string{"$WORKSPACE/", "/workspace/", "workspace/"} {
 		if strings.HasPrefix(rel, prefix) {
 			rel = strings.TrimPrefix(rel, prefix)
 		}
@@ -456,6 +462,28 @@ func WorkspaceArtifactDefects(root string, fields map[string][]string) []string 
 			continue // absence has its own message
 		}
 		contract := schemas.ArtifactContract{Path: path, RequiredFields: fields[name]}
+		for _, problem := range InspectArtifact(contract) {
+			defects = append(defects, describeArtifactProblem(name, problem))
+		}
+	}
+	return defects
+}
+
+// WorkspaceArtifactContractDefects keeps required/optional/type constraints intact across a wake handoff.
+func WorkspaceArtifactContractDefects(root string, contracts []schemas.ArtifactContract) []string {
+	ordered := schemas.CloneArtifactContracts(contracts)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Path < ordered[j].Path })
+	var defects []string
+	for _, contract := range ordered {
+		name := contract.Path
+		path, ok := resolveArtifactPath(root, name)
+		if !ok {
+			continue
+		}
+		if info, err := os.Stat(path); err != nil || info.IsDir() {
+			continue
+		}
+		contract.Path = path
 		for _, problem := range InspectArtifact(contract) {
 			defects = append(defects, describeArtifactProblem(name, problem))
 		}

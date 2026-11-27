@@ -3,6 +3,8 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/daybeam/vortex/core/obs"
@@ -141,6 +143,8 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 		s.Mu.Unlock()
 	}
 
+	s.registerContractOutput(graph, step, taskID)
+
 	resultJSON, _ := json.Marshal(output.Result)
 	assetFile, err := s.assets.Handle(graph.TaskID, step.ID, resultJSON, "json", "working")
 	if err == nil && assetFile != nil {
@@ -150,4 +154,49 @@ func (s *DirectedEngine) handleStepSuccess(graph *schemas.TaskGraph, step *schem
 		step.ResultRef = assetFile.Path
 		s.Mu.Unlock()
 	}
+}
+
+func (s *DirectedEngine) registerContractOutput(graph *schemas.TaskGraph, step *schemas.Step, taskID string) {
+	contractPath := step.OutputContract.Path
+	if contractPath == "" {
+		return
+	}
+	fullPath := contractPath
+	if !filepath.IsAbs(fullPath) {
+		if graph.WorkspaceRoot == "" {
+			s.logger.Log(obs.EventContractFileMissing, taskID, step.ID, map[string]any{
+				"contract_path": contractPath,
+				"reason":        "no_workspace_root",
+			})
+			return
+		}
+		fullPath = filepath.Join(graph.WorkspaceRoot, contractPath)
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		s.logger.Log(obs.EventContractFileMissing, taskID, step.ID, map[string]any{
+			"contract_path":  contractPath,
+			"workspace_root": graph.WorkspaceRoot,
+			"reason":         "stat_failed",
+			"error":          err.Error(),
+		})
+		return
+	}
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	for _, existing := range graph.OutputFiles {
+		if existing.StepID == step.ID && existing.Path == contractPath {
+			return
+		}
+	}
+	graph.OutputFiles = append(graph.OutputFiles, schemas.OutputFile{
+		StepID:    step.ID,
+		Path:      contractPath,
+		Format:    step.OutputContract.Format,
+		Summary:   "Registered from output_contract",
+		SizeBytes: int(info.Size()),
+		IsPrimary: true,
+		Deliver:   step.Deliver,
+		CreatedAt: info.ModTime(),
+	})
 }

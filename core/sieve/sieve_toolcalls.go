@@ -167,7 +167,7 @@ func detectCycle(history []string, minRepeats int) bool {
 // the model output contains universal quantifiers (all/every/complete/etc., incl. CJK "all"/"every"),
 // the Sieve blocks the output and forces the model to narrow its conclusion.
 //
-// See docs/plan/STRUCTURED_TOOL_METADATA_DESIGN.md §2.2.
+// See docs/completed/STRUCTURED_TOOL_METADATA_DESIGN.md §2.2.
 func (s *Sieve) InspectTruncationArtifact(lastMeta *store.ToolMetadata, modelOutput string) (bool, string) {
 	if lastMeta == nil || !lastMeta.Truncated {
 		return true, ""

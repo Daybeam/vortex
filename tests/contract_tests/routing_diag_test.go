@@ -13,7 +13,7 @@ import (
 	"github.com/daybeam/vortex/core"
 )
 
-// Routing diagnostic system ("lightweight PluginEval"), see docs/ROUTING_DIAG.md for the
+// Routing diagnostic system ("lightweight PluginEval"), see docs/architecture/ROUTING_DIAG.md for the
 // full design writeup. This file is Layer 2 (execution collector) + Layer 3
 // (report + gate) combined into one; Layer 1 (gold test cases) lives as JSON
 // under ../routing_cases/.
@@ -65,6 +65,18 @@ type toolRouterCase struct {
 	Task        string             `json:"task"`
 	Bindings    []mcpFixture       `json:"bindings"`
 	Assertions  []routingAssertion `json:"assertions"`
+	// BM25Docs optionally supplies the search corpus (tool name -> document
+	// text). Without it the router runs with no sparse channel at all, so the
+	// hybrid fusion path never executes and the legacy string-only branch
+	// decides everything -- any regression that lives in fusion (rank
+	// aggregation, tie handling, channel weighting) is invisible. Cases that
+	// exist to lock fusion behaviour must declare this.
+	BM25Docs map[string]string `json:"bm25_docs,omitempty"`
+	// MaxTokenBudget optionally caps the exposed schema budget for the case.
+	// Needed to make "the top-ranked tool must survive a tight budget"
+	// assertable; without a cap every tiny fixture fits and inclusion is
+	// trivially satisfied regardless of ranking quality.
+	MaxTokenBudget int `json:"max_token_budget,omitempty"`
 }
 
 type mcpFixture struct {
@@ -101,7 +113,7 @@ func loadToolRouterCases(t *testing.T) []toolRouterCase {
 	path := filepath.Join("..", "routing_cases", "tool_router_cases.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Skipf("routing diagnostic: case file %s not available: %v", path, err)
+		t.Fatalf("routing diagnostic: cannot read case file %s: %v", path, err)
 	}
 	var f toolRouterCaseFile
 	if err := json.Unmarshal(data, &f); err != nil {
@@ -118,7 +130,7 @@ func loadSkillRouterCases(t *testing.T) []skillRouterCase {
 	path := filepath.Join("..", "routing_cases", "skill_router_cases.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Skipf("routing diagnostic: case file %s not available: %v", path, err)
+		t.Fatalf("routing diagnostic: cannot read case file %s: %v", path, err)
 	}
 	var f skillRouterCaseFile
 	if err := json.Unmarshal(data, &f); err != nil {
@@ -184,10 +196,14 @@ func TestRoutingDiagnostic_ToolRouter(t *testing.T) {
 		t.Run(c.ID, func(t *testing.T) {
 			reg := buildFixtureRegistry(c.Bindings)
 			router := core.NewToolRouter(reg, nil)
+			if len(c.BM25Docs) > 0 {
+				router.BM25Corpus = core.NewBM25Corpus(1.2, 0.75, c.BM25Docs)
+			}
 			routed := router.Route(context.Background(), core.RouteRequest{
-			Task:     c.Task,
-			Bindings: toMCPBindings(c.Bindings),
-		})
+				Task:           c.Task,
+				Bindings:       toMCPBindings(c.Bindings),
+				MaxTokenBudget: c.MaxTokenBudget,
+			})
 
 			routedByMCP := make(map[string][]string, len(routed))
 			for _, b := range routed {
