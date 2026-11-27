@@ -186,6 +186,7 @@ type IExperienceStore interface {
 	Reindex(ctx context.Context, provider pkg_interfaces.Provider, modelID string) error
 	GetRoleProfilesSnapshot() map[string]*RoleProfile
 	GetTaskPatternsSnapshot() map[string]TaskPattern
+	GetFamilyStatsSnapshot() map[string]*FamilyStats
 	GetTelemetrySnapshot(detailed bool) map[string]any
 	GetCompoundCandidates(ctx context.Context, minCount int, minSuccessRate float64) ([]*CooccurrenceEntry, error)
 	GetCooccurrencePartners(ctx context.Context, toolA string, minCount int) ([]*CooccurrenceEntry, error)

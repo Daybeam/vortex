@@ -135,6 +135,10 @@ type ExperienceStore struct {
 	// upsertTaskPattern and jit_candidate_ops, replacing O(N) full scans
 	// (audit M-6). Not JSON-serialized — rebuilt on load.
 	sequenceKeyIndex map[string]string
+	// familyKeyStats holds coarse-grained statistics aggregated by FamilyKey,
+	// stable under temperature-driven variance. Spec: docs/completed/2026-11-27/MEMORY_TWO_TIER_KEY.md §3
+	// Not JSON-serialized — rebuilt on load from TaskPatterns.
+	familyKeyStats map[string]*FamilyStats
 	RoleProfiles     map[string]*RoleProfile
 	DecisionOutcomes []*DecisionOutcome
 	SkillAffinities  map[string]*SkillAffinity
@@ -270,6 +274,7 @@ func NewExperienceStore(dir string, ts ITaskStore, sys *config.SystemSettings, e
 		System:               sys,
 		TaskPatterns:         make(map[string]TaskPattern),
 		sequenceKeyIndex:     make(map[string]string),
+		familyKeyStats:       make(map[string]*FamilyStats),
 		RoleProfiles:         make(map[string]*RoleProfile),
 		SkillAffinities:      make(map[string]*SkillAffinity),
 		skillAffinityBySkill: make(map[string][]string),
@@ -370,7 +375,51 @@ func (es *ExperienceStore) load() {
 	es.rebuildNodeIndexLocked()
 	// audit M-5/M-6: rebuild secondary indices for O(1) lookup
 	es.rebuildSequenceKeyIndexLocked()
+	es.rebuildFamilyKeyStatsLocked()
 	es.rebuildSkillAffinityBySkillLocked()
+}
+
+// rebuildFamilyKeyStatsLocked reconstructs familyKeyStats from loaded
+// TaskPatterns, also backfilling FamilyKey for legacy patterns that
+// predate the two-tier key system (P0-5 migration). Caller MUST hold es.Mu.
+// Spec: docs/completed/2026-11-27/MEMORY_TWO_TIER_KEY.md §3.1, §3.4
+func (es *ExperienceStore) rebuildFamilyKeyStatsLocked() {
+	es.familyKeyStats = make(map[string]*FamilyStats)
+	for id, p := range es.TaskPatterns {
+		// P0-6: seed patterns live in a separate namespace — they must not
+		// contribute to familyKeyStats, which is read by policy_signals for
+		// real-task statistics. Seeds are loaded via loadSeeds and are
+		// intended to be replaced by real data once it arrives.
+		if p.IsSeed {
+			continue
+		}
+		famKey := p.FamilyKey
+		if famKey == "" {
+			famKey = familyKeyFromStepSequence(p.StepSequence)
+			if famKey != "" {
+				p.FamilyKey = famKey
+				es.TaskPatterns[id] = p
+			}
+		}
+		if famKey == "" {
+			continue
+		}
+		fs := es.familyKeyStats[famKey]
+		if fs == nil {
+			fs = &FamilyStats{}
+			es.familyKeyStats[famKey] = fs
+		}
+		fs.SampleCount += p.SampleCount
+		fs.VerifiedSampleCount += p.VerifiedSampleCount
+		if fs.SampleCount > 0 {
+			n := float64(fs.SampleCount)
+			fs.AvgConfidence = (fs.AvgConfidence*float64(fs.SampleCount-p.SampleCount) + p.AvgConfidence*float64(p.SampleCount)) / n
+			fs.AvgTurnsUsed = (fs.AvgTurnsUsed*float64(fs.SampleCount-p.SampleCount) + p.AvgTurnsUsed*float64(p.SampleCount)) / n
+		}
+		if p.LastSeen.After(fs.LastSeen) {
+			fs.LastSeen = p.LastSeen
+		}
+	}
 }
 
 // rebuildSequenceKeyIndexLocked reconstructs the SequenceKey→patternID index
@@ -909,6 +958,17 @@ func (es *ExperienceStore) GetTaskPatternsSnapshot() map[string]TaskPattern {
 	snapshot := make(map[string]TaskPattern, len(es.TaskPatterns))
 	for id, tp := range es.TaskPatterns {
 		snapshot[id] = tp
+	}
+	return snapshot
+}
+
+func (es *ExperienceStore) GetFamilyStatsSnapshot() map[string]*FamilyStats {
+	es.Mu.RLock()
+	defer es.Mu.RUnlock()
+
+	snapshot := make(map[string]*FamilyStats, len(es.familyKeyStats))
+	for k, v := range es.familyKeyStats {
+		snapshot[k] = v
 	}
 	return snapshot
 }

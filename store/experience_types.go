@@ -21,12 +21,14 @@ type TaskPattern struct {
 	// existing pattern" so SampleCount can actually accumulate across
 	// repeated occurrences instead of every call creating a fresh pattern
 	// with SampleCount permanently pinned at 1. ADDED (2026-07-28).
-	SequenceKey   string    `json:"sequence_key,omitempty"`
-	SampleCount   int       `json:"sample_count"`
-	AvgConfidence float64   `json:"avg_confidence"`
-	AvgTurnsUsed  float64   `json:"avg_turns_used,omitempty"`
-	LastSeen      time.Time `json:"last_seen"`
-	IsSeed        bool      `json:"is_seed"`
+	SequenceKey         string    `json:"sequence_key,omitempty"`
+	FamilyKey           string    `json:"family_key,omitempty"`
+	SampleCount         int       `json:"sample_count"`
+	AvgConfidence       float64   `json:"avg_confidence"`
+	AvgTurnsUsed        float64   `json:"avg_turns_used,omitempty"`
+	LastSeen            time.Time `json:"last_seen"`
+	IsSeed              bool      `json:"is_seed"`
+	VerifiedSampleCount int       `json:"verified_sample_count,omitempty"`
 
 	// Perception 2.0 (Vector Resilience)
 	SourceText     string    `json:"source_text,omitempty"`
@@ -170,6 +172,27 @@ func (c *CooccurrenceEntry) SuccessRate() float64 {
 		return 0
 	}
 	return float64(c.SuccessCount) / float64(c.CoCount)
+}
+
+// FamilyStats holds coarse-grained statistics aggregated by FamilyKey.
+// SampleCount, AvgConfidence, and AvgTurnsUsed accumulate across all
+// SequenceKey variants within the same family, so temperature-driven
+// tool-order/step-decomposition variance does not fragment the count.
+// Spec: docs/completed/2026-11-27/MEMORY_TWO_TIER_KEY.md §3
+type FamilyStats struct {
+	SampleCount         int       `json:"sample_count"`
+	AvgConfidence       float64   `json:"avg_confidence"`
+	AvgTurnsUsed        float64   `json:"avg_turns_used,omitempty"`
+	LastSeen            time.Time `json:"last_seen"`
+	Capabilities        []string  `json:"capabilities,omitempty"`
+	VerifiedSampleCount int       `json:"verified_sample_count,omitempty"`
+	// ConsecutiveFailures tracks how many times in a row tasks in this
+	// family have failed with attributable causes. When >= 3, the family
+	// is temporarily excluded from the policy decision surface (沉降出
+	// 决策面). A single success resets it to 0. Memory-only: not
+	// persisted, resets to 0 on process restart.
+	// Spec: docs/completed/2026-11-27/MEMORY_TWO_TIER_KEY.md §5 (P2 auto-eviction)
+	ConsecutiveFailures int `json:"-"`
 }
 
 // FileExperienceBackend implements IExperienceBackend using local files.

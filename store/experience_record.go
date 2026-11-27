@@ -22,7 +22,7 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 	defer es.Mu.Unlock()
 
 	taskType := deriveTaskType(records)
-	es.upsertTaskPattern(taskID, taskType, records, overallConf)
+	es.upsertTaskPattern(taskID, taskType, records, overallConf, success, attributableFailure)
 
 	for _, rec := range records {
 		es.updateRoleProfile(&rec)
@@ -166,7 +166,7 @@ func (es *ExperienceStore) UpdateRouteWeight(ctx context.Context, roleID, modelI
 	return nil
 }
 
-func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []StepRecord, overallConf float64) {
+func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []StepRecord, overallConf float64, success bool, attributableFailure bool) {
 	if len(records) == 0 {
 		return
 	}
@@ -217,6 +217,60 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 	// stepSequenceKey now requires the tool-call sequence as well; see its
 	// doc comment.
 	key := stepSequenceKey(records)
+	famKey := familyKey(records)
+
+	// P1: determine if this run has execution evidence. A run is verified
+	// when every non-skipped step has Verified=true (trace recorded,
+	// deterministic checks passed, etc.). Unverified runs get a stricter
+	// read-side threshold in policy_signals (≥5 samples vs ≥3).
+	// Spec: docs/completed/2026-11-27/MEMORY_TWO_TIER_KEY.md §5
+	verifiedThisRun := true
+	for _, r := range records {
+		if r.Status != "skipped" && !r.Verified {
+			verifiedThisRun = false
+			break
+		}
+	}
+
+	// Coarse-layer aggregation: update familyKeyStats regardless of
+	// SequenceKey match. This is the layer read by policy_signals and
+	// affinity consumers, stable under temperature-driven variance.
+	// Spec: docs/completed/2026-11-27/MEMORY_TWO_TIER_KEY.md §3.1
+	if famKey != "" {
+		if es.familyKeyStats == nil {
+			es.familyKeyStats = make(map[string]*FamilyStats)
+		}
+		famCaps := make([]string, 0, len(records))
+		for _, r := range records {
+			famCaps = append(famCaps, r.Capability)
+		}
+		fs := es.familyKeyStats[famKey]
+		if fs == nil {
+			fs = &FamilyStats{SampleCount: 1, AvgConfidence: overallConf, AvgTurnsUsed: avgTurns, LastSeen: time.Now(), Capabilities: famCaps}
+			if verifiedThisRun {
+				fs.VerifiedSampleCount = 1
+			}
+			if !success && attributableFailure {
+				fs.ConsecutiveFailures = 1
+			}
+			es.familyKeyStats[famKey] = fs
+		} else {
+			fs.SampleCount++
+			n := float64(fs.SampleCount)
+			fs.AvgConfidence = ((n-1)*fs.AvgConfidence + overallConf) / n
+			fs.AvgTurnsUsed = ((n-1)*fs.AvgTurnsUsed + avgTurns) / n
+			fs.LastSeen = time.Now()
+			if verifiedThisRun {
+				fs.VerifiedSampleCount++
+			}
+			if !success && attributableFailure {
+				fs.ConsecutiveFailures++
+			} else if success {
+				fs.ConsecutiveFailures = 0
+			}
+		}
+	}
+
 	if key != "" {
 		// audit M-6: use sequenceKeyIndex for O(1) lookup instead of O(N) scan.
 		// Rebuild if nil (test setups that bypass NewExperienceStore).
@@ -230,6 +284,9 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 			n := float64(existing.SampleCount)
 			existing.AvgConfidence = ((n-1)*existing.AvgConfidence + overallConf) / n
 			existing.AvgTurnsUsed = ((n-1)*existing.AvgTurnsUsed + avgTurns) / n
+			if verifiedThisRun {
+				existing.VerifiedSampleCount++
+			}
 			if fullSource != "" && existing.SourceText == "" {
 				existing.SourceText = fullSource
 				// audit P-5: SourceText changed → invalidate BM25 token cache.
@@ -270,12 +327,13 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 		es.bm25TermDocFreqsCache = nil
 		es.bm25AvgdlCache = 0
 	}
-	es.TaskPatterns[patternID] = TaskPattern{
+	newPattern := TaskPattern{
 		ID:             patternID,
 		TaskID:         taskID,
 		TaskType:       taskType,
 		StepSequence:   steps,
 		SequenceKey:    key,
+		FamilyKey:      famKey,
 		SampleCount:    1,
 		LastSeen:       time.Now(),
 		MatchScore:     0.0,
@@ -285,6 +343,10 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 		Embedding:      records[0].Embedding,      // Capture from first step
 		EmbeddingModel: records[0].EmbeddingModel, // Capture from first step
 	}
+	if verifiedThisRun {
+		newPattern.VerifiedSampleCount = 1
+	}
+	es.TaskPatterns[patternID] = newPattern
 	// audit M-6: maintain sequenceKeyIndex
 	if key != "" {
 		es.sequenceKeyIndex[key] = patternID
@@ -322,6 +384,67 @@ func (es *ExperienceStore) upsertTaskPattern(taskID, taskType string, records []
 // stricter than the BM25 text matching QuerySimilarPatterns uses for
 // retrieval: QueryJITCandidates cares about "is this the literal same fixed
 // tool composition", not "is this a similar-sounding task".
+// familyKey builds a coarse-grained signature for statistical aggregation,
+// designed to be stable under temperature-driven variance (tool order,
+// step decomposition, skills injection jitter).
+//
+// The signature is: sorted capability multiset + sorted role set.
+// Tool sequences, step order, and skills are deliberately excluded —
+// they belong to the fine-grained SequenceKey (JIT candidate judgment).
+//
+// Spec: docs/completed/2026-11-27/MEMORY_TWO_TIER_KEY.md §3.1
+func familyKey(records []StepRecord) string {
+	if len(records) == 0 {
+		return ""
+	}
+	caps := make([]string, 0, len(records))
+	roles := make(map[string]bool)
+	for _, r := range records {
+		caps = append(caps, r.Capability)
+		if r.RoleID != "" {
+			roles[r.RoleID] = true
+		}
+	}
+	sort.Strings(caps)
+	roleList := make([]string, 0, len(roles))
+	for r := range roles {
+		roleList = append(roleList, r)
+	}
+	sort.Strings(roleList)
+	return "cap:" + strings.Join(caps, ",") + "|role:" + strings.Join(roleList, ",")
+}
+
+// familyKeyFromStepSequence computes a FamilyKey from a persisted
+// TaskPattern.StepSequence ([]map[string]any), used for backfilling
+// legacy patterns that predate the two-tier key system.
+func familyKeyFromStepSequence(steps []map[string]any) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	caps := make([]string, 0, len(steps))
+	roles := make(map[string]bool)
+	for _, s := range steps {
+		cap, _ := s["capability"].(string)
+		if cap != "" {
+			caps = append(caps, cap)
+		}
+		role, _ := s["role_id"].(string)
+		if role != "" {
+			roles[role] = true
+		}
+	}
+	if len(caps) == 0 {
+		return ""
+	}
+	sort.Strings(caps)
+	roleList := make([]string, 0, len(roles))
+	for r := range roles {
+		roleList = append(roleList, r)
+	}
+	sort.Strings(roleList)
+	return "cap:" + strings.Join(caps, ",") + "|role:" + strings.Join(roleList, ",")
+}
+
 func stepSequenceKey(records []StepRecord) string {
 	if len(records) == 0 {
 		return ""

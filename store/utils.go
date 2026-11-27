@@ -36,6 +36,13 @@ type StepRecord struct {
 	// Metabolic cost (ADDED 2026-09-13) — see docs/completed/2026-09-13/METABOLIC_PRUNING_DESIGN.md
 	TokenUsed int     `json:"token_used,omitempty"`
 	LatencyMs float64 `json:"latency_ms,omitempty"`
+
+	// P1 Evidence (ADDED 2026-11-27) — see docs/completed/2026-11-27/MEMORY_TWO_TIER_KEY.md §5
+	// Verified=true means the step's success is backed by execution evidence
+	// (trace recorded, deterministic checks passed, artifact validated, etc.).
+	// Unverified entries get a stricter read-side threshold (≥5 samples).
+	Verified bool   `json:"verified,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
 }
 
 func deriveTaskType(records []StepRecord) string {

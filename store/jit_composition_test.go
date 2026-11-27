@@ -46,12 +46,12 @@ func sampleRecords(task string) []StepRecord {
 func TestUpsertTaskPattern_RepeatedSequenceAccumulatesSampleCount(t *testing.T) {
 	es := newTestExperienceStore()
 
-	es.upsertTaskPattern("task_1", "code_and_verify", sampleRecords("build a widget"), 0.8)
+	es.upsertTaskPattern("task_1", "code_and_verify", sampleRecords("build a widget"), 0.8, true, false)
 	if len(es.TaskPatterns) != 1 {
 		t.Fatalf("expected 1 pattern after first call, got %d", len(es.TaskPatterns))
 	}
 
-	es.upsertTaskPattern("task_2", "code_and_verify", sampleRecords("build a different widget"), 1.0)
+	es.upsertTaskPattern("task_2", "code_and_verify", sampleRecords("build a different widget"), 1.0, true, false)
 	if len(es.TaskPatterns) != 1 {
 		t.Fatalf("expected the second call (same step sequence) to merge into the existing pattern, got %d distinct patterns", len(es.TaskPatterns))
 	}
@@ -76,11 +76,11 @@ func TestUpsertTaskPattern_RepeatedSequenceAccumulatesSampleCount(t *testing.T) 
 func TestUpsertTaskPattern_DifferentSequenceStaysSeparate(t *testing.T) {
 	es := newTestExperienceStore()
 
-	es.upsertTaskPattern("task_1", "code_and_verify", sampleRecords("build a widget"), 0.8)
+	es.upsertTaskPattern("task_1", "code_and_verify", sampleRecords("build a widget"), 0.8, true, false)
 	differentRecords := []StepRecord{
 		{RoleID: "market_researcher", Capability: "research", Skills: []string{"exa"}, Task: "research the market"},
 	}
-	es.upsertTaskPattern("task_2", "research_task", differentRecords, 0.9)
+	es.upsertTaskPattern("task_2", "research_task", differentRecords, 0.9, true, false)
 
 	if len(es.TaskPatterns) != 2 {
 		t.Fatalf("expected 2 distinct patterns for genuinely different step sequences, got %d", len(es.TaskPatterns))
@@ -96,7 +96,7 @@ func TestQueryJITCandidates_RequiresBothSamplesAndConfidence(t *testing.T) {
 
 	// Repeat 5 times with high confidence -- should qualify.
 	for i := 0; i < 5; i++ {
-		es.upsertTaskPattern("t", "deploy_pipeline", sampleRecords("run the deploy pipeline"), 0.9)
+		es.upsertTaskPattern("t", "deploy_pipeline", sampleRecords("run the deploy pipeline"), 0.9, true, false)
 	}
 	// A different, low-confidence pattern, repeated just as often -- should NOT qualify.
 	lowConfRecords := []StepRecord{
@@ -106,7 +106,7 @@ func TestQueryJITCandidates_RequiresBothSamplesAndConfidence(t *testing.T) {
 		},
 	}
 	for i := 0; i < 5; i++ {
-		es.upsertTaskPattern("t", "flaky_pipeline", lowConfRecords, 0.3)
+		es.upsertTaskPattern("t", "flaky_pipeline", lowConfRecords, 0.3, true, false)
 	}
 
 	got := es.QueryJITCandidates(context.Background(), "run the deploy pipeline", 5, 0.7, 5)
@@ -124,7 +124,7 @@ func TestQueryJITCandidates_RequiresBothSamplesAndConfidence(t *testing.T) {
 // for a one-off task.
 func TestQueryJITCandidates_BelowSampleThresholdExcluded(t *testing.T) {
 	es := newTestExperienceStore()
-	es.upsertTaskPattern("t", "one_off_task", sampleRecords("do this exactly once"), 1.0)
+	es.upsertTaskPattern("t", "one_off_task", sampleRecords("do this exactly once"), 1.0, true, false)
 
 	got := es.QueryJITCandidates(context.Background(), "do this exactly once", 5, 0.5, 5)
 	if len(got) != 0 {

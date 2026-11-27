@@ -124,7 +124,7 @@ func TestUpsertTaskPattern_ManyTasksSameRolesDoNotCollapse(t *testing.T) {
 				Task:       fmt.Sprintf("distinct task %d", i),
 				Trace:      []ToolInteraction{{ToolName: fmt.Sprintf("app%d__do_thing", i)}},
 			}},
-			0.9,
+			0.9, true, false,
 		)
 	}
 
@@ -151,7 +151,7 @@ func TestUpsertTaskPattern_ManyTasksSameRolesDoNotCollapse(t *testing.T) {
 				Capability: "day-to-day app task execution",
 				Trace:      []ToolInteraction{{ToolName: "app0__do_thing"}},
 			}},
-			0.9,
+			0.9, true, false,
 		)
 	}
 	var repeated *TaskPattern
