@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +208,70 @@ func TestWakeMain_ThrottlesBurst(t *testing.T) {
 		t.Error("a second wake within the interval must be throttled")
 	}
 	h.wg.Wait()
+}
+
+func TestWakeMain_LogsStructuredRejectReasons(t *testing.T) {
+	h, store, _ := newFollowUpHandler(t, "ok")
+	store.GetOrCreate("s_reject")
+	if !h.wakeMain("s_reject", "task-dedupe", "decision", "first", "same") {
+		t.Fatal("first wake must start")
+	}
+	h.wg.Wait()
+
+	readStderr, writeStderr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	prevStderr := os.Stderr
+	os.Stderr = writeStderr
+	defer func() { os.Stderr = prevStderr }()
+
+	h.wakeMain("", "task-invalid", "decision", "invalid", "")
+	if h.wakeMain("s_reject", "task-dedupe", "decision", "duplicate", "same") {
+		t.Fatal("duplicate wake must be rejected")
+	}
+	if h.wakeMain("s_reject", "task-dedupe", "decision", "too soon", "different") {
+		t.Fatal("wake inside the minimum interval must be rejected")
+	}
+	st := h.wakeStateFor("task-cap")
+	st.mu.Lock()
+	st.total = wakeMaxPerTask
+	st.mu.Unlock()
+	if h.wakeMain("s_reject", "task-cap", "decision", "capped", "cap") {
+		t.Fatal("wake at the task cap must be rejected")
+	}
+	q := &wakeQueue{}
+	for i := 0; i < maxPendingWakes; i++ {
+		q.push(pendingWakeEntry{taskID: fmt.Sprintf("fill-%d", i), text: "queued"})
+	}
+	h.pendingWake.Store("s_reject", q)
+	if h.enqueueWake("s_reject", pendingWakeEntry{taskID: "task-overflow", text: "overflow"}) {
+		t.Fatal("full wake queue must reject the entry")
+	}
+
+	if err := writeStderr.Close(); err != nil {
+		t.Fatalf("close stderr pipe: %v", err)
+	}
+	output, err := io.ReadAll(readStderr)
+	if err != nil {
+		t.Fatalf("read stderr pipe: %v", err)
+	}
+	if err := readStderr.Close(); err != nil {
+		t.Fatalf("close stderr reader: %v", err)
+	}
+	h.wg.Wait()
+	logs := string(output)
+	for _, want := range []string{
+		"event=reject reject_reason=invalid",
+		"event=reject reject_reason=dedupe",
+		"event=reject reject_reason=min_interval",
+		"event=reject reject_reason=task_cap",
+		"event=reject reject_reason=queue_full",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("wake reject log missing %q.\nlogs: %s", want, logs)
+		}
+	}
 }
 
 // TestDeliverPendingWake_TaskResultIgnoresDecisionBudget pins a distinction the

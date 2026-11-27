@@ -194,21 +194,27 @@ func (q *wakeQueue) snapshot() []pendingWakeEntry {
 // queued (or was already queued) — false only when the queue refused it.
 func (h *ChatHandler) enqueueWake(sessionID string, e pendingWakeEntry) bool {
 	if h == nil || sessionID == "" || e.taskID == "" || e.text == "" {
+		logWakeReject(sessionID, e.taskID, "invalid")
 		return false
 	}
 	e.contracts = schemas.CloneArtifactContracts(e.contracts)
 	v, _ := h.pendingWake.LoadOrStore(sessionID, &wakeQueue{})
 	q, ok := v.(*wakeQueue)
 	if !ok {
+		logWakeReject(sessionID, e.taskID, "invalid_queue")
 		return false
 	}
 	duplicate, queued := q.push(e)
 	if duplicate || queued {
 		return true
 	}
-	fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s queue full (%d); wake dropped\n",
+	fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s event=reject reject_reason=queue_full queue full (%d); wake dropped\n",
 		sessionID, e.taskID, maxPendingWakes)
 	return false
+}
+
+func logWakeReject(sessionID, taskID, reason string) {
+	fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s event=reject reject_reason=%s\n", sessionID, taskID, reason)
 }
 
 // noteTaskConsumed records that the running turn was shown this task's terminal
@@ -318,14 +324,17 @@ func (h *ChatHandler) clearConsumedTasks(sessionID string) {
 // Returns true when a turn was started or the wake was queued for delivery.
 func (h *ChatHandler) wakeMain(sessionID, taskID, reason, text, dedupeKey string) bool {
 	if h == nil || h.Harness == nil || sessionID == "" || taskID == "" || text == "" {
+		logWakeReject(sessionID, taskID, "invalid")
 		return false
 	}
 	if dedupeKey != "" {
 		if _, dup := h.wakeSeen.LoadOrStore(sessionID+"|"+taskID+"|"+dedupeKey, struct{}{}); dup {
+			logWakeReject(sessionID, taskID, "dedupe")
 			return false
 		}
 	}
-	if !h.reserveWake(taskID) {
+	if ok, rejectReason := h.reserveWake(taskID); !ok {
+		logWakeReject(sessionID, taskID, rejectReason)
 		return false
 	}
 	switch h.startFollowUpTurnWithTrigger(sessionID, taskID, "wake:"+reason, text, "") {
@@ -347,6 +356,7 @@ func (h *ChatHandler) wakeMain(sessionID, taskID, reason, text, dedupeKey string
 		// A dead cause (duplicate / depth cap): queueing it would retry a wake
 		// that can never start, but the budget it reserved is not spent.
 		h.releaseWake(taskID)
+		logWakeReject(sessionID, taskID, "followup_suppressed")
 		return false
 	}
 }
@@ -365,19 +375,19 @@ func (h *ChatHandler) wakeStateFor(taskID string) *wakeState {
 	return st
 }
 
-func (h *ChatHandler) reserveWake(taskID string) bool {
+func (h *ChatHandler) reserveWake(taskID string) (bool, string) {
 	st := h.wakeStateFor(taskID)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.total >= wakeMaxPerTask {
-		return false
+		return false, "task_cap"
 	}
 	if !st.last.IsZero() && time.Since(st.last) < wakeMinInterval {
-		return false
+		return false, "min_interval"
 	}
 	st.last = time.Now()
 	st.total++
-	return true
+	return true, ""
 }
 
 func (h *ChatHandler) releaseWake(taskID string) {
@@ -526,7 +536,7 @@ func (h *ChatHandler) deliverPendingWake(sessionID string) {
 					// census of this rule grep for "wake dropped".
 					label = "wake dropped"
 				}
-				fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s %s: %s\n",
+				fmt.Fprintf(os.Stderr, "[chat-wake] session=%s task=%s event=reject reject_reason=content_suppressed %s: %s\n",
 					sessionID, entry.taskID, label, why)
 				continue
 			}
@@ -538,8 +548,11 @@ func (h *ChatHandler) deliverPendingWake(sessionID string) {
 					"answer carries 0/%d headline figures; delivering wake\n", sessionID, entry.taskID, len(entry.figures))
 			}
 		}
-		if entry.budgeted && !h.reserveWake(entry.taskID) {
-			continue // budget spent — the event is still in the session queue
+		if entry.budgeted {
+			if ok, rejectReason := h.reserveWake(entry.taskID); !ok {
+				logWakeReject(sessionID, entry.taskID, rejectReason)
+				continue // budget spent — the event is still in the session queue
+			}
 		}
 		switch h.startFollowUpTurnWithTriggerSeed(sessionID, entry.taskID, entry.reason, entry.text,
 			wakeSeed{digest: entry.digest, fallback: entry.fallback, declared: entry.declared, figures: entry.figures, contracts: entry.contracts}) {
@@ -558,6 +571,7 @@ func (h *ChatHandler) deliverPendingWake(sessionID string) {
 			if entry.budgeted {
 				h.releaseWake(entry.taskID)
 			}
+			logWakeReject(sessionID, entry.taskID, "followup_suppressed")
 		}
 	}
 }

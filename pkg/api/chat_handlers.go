@@ -162,6 +162,11 @@ type ChatHandler struct {
 	// lastSubmitterAdmin lets a follow-up turn delegate with the same
 	// authority as the turn that spawned it, instead of guessing.
 	lastSubmitterAdmin sync.Map // sessionID → bool
+
+	// profileIndexer asynchronously extracts user preferences from chat
+	// messages. Nil when MemoryBank is disabled or no store is configured.
+	// Spec: docs/completed/2026-11-27/USER_PROFILE_INCREMENTAL_INDEXER.md
+	profileIndexer *chat.UserProfileIndexer
 }
 
 // IsProcessInfoDisabled returns true if process info is hidden for the session.
@@ -193,6 +198,10 @@ const defaultChatFrontDeskRole = "chat_front_desk"
 // complete. Call before server close to prevent orphaned LLM provider calls
 // (audit C4) and channel goroutine leaks (audit R3).
 func (h *ChatHandler) Shutdown() {
+	// Stop the profile indexer before waiting for chat goroutines.
+	if h.profileIndexer != nil {
+		h.profileIndexer.Stop()
+	}
 	// Stop the delegation watchdog before waiting: it holds a wg slot, so
 	// closing after Wait would deadlock for the life of the process. Closed
 	// through a Once because Shutdown is reachable from more than one path.
@@ -415,6 +424,14 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	h.autoDetectBranchMode(&req, session)
 	if !session.AppendUserMessage(req.MessageID, req.Content, req.ParentID, req.ReplyTo) {
 		return ChatResponse{SessionID: sessionID, MessageID: req.MessageID, AlreadyProcessed: true}
+	}
+	// Feed the user message to the async profile indexer for preference
+	// extraction. Spec: docs/completed/2026-11-27/USER_PROFILE_INCREMENTAL_INDEXER.md §2
+	if h.profileIndexer != nil {
+		h.profileIndexer.OnUserMessage(chat.ChatMessage{
+			Role:    "user",
+			Content: req.Content,
+		})
 	}
 	// Mark this turn as awaiting a reply for crash recovery.
 	// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.4.

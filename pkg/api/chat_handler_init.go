@@ -37,6 +37,9 @@ func NewChatHandler(app *tools.App) *ChatHandler {
 	if app.Registry != nil && app.Registry.System.ChatMemoryMaxTokens > 0 {
 		chatMem.MaxTokens = app.Registry.System.ChatMemoryMaxTokens
 	}
+	// Wire MemoryBank for settled-preference reads (replaces synchronous
+	// FactCache extraction). Spec: docs/completed/2026-11-27/USER_PROFILE_INCREMENTAL_INDEXER.md §5.2
+	chatMem.MemoryBank = mbStoreForHarness(app)
 
 	chatMaxTurns := chat.DefaultMaxTurns
 	if app.Registry != nil {
@@ -128,6 +131,15 @@ func NewChatHandler(app *tools.App) *ChatHandler {
 		delegWatchStop: make(chan struct{}),
 	}
 
+	// Wire UserProfileIndexer for async preference extraction.
+	// Spec: docs/completed/2026-11-27/USER_PROFILE_INCREMENTAL_INDEXER.md §2
+	if mbStore := mbStoreForHarness(app); mbStore != nil {
+		threshold := app.Registry.System.UserProfileIndexerThreshold
+		interval := parseUserProfileIndexerInterval(app.Registry.System.UserProfileIndexerInterval)
+		handler.profileIndexer = chat.NewUserProfileIndexer(mbStore, threshold, interval)
+		go handler.profileIndexer.Start(app.LifecycleCtx)
+	}
+
 	handler.Harness.Delegate = func(prompt string, maxTurnsCap int) (string, error) {
 		isAdmin := tools.EffectiveTier(context.Background(), app) == tools.TierAdmin
 		return handler.submitChatTask(
@@ -136,4 +148,17 @@ func NewChatHandler(app *tools.App) *ChatHandler {
 
 	handler.WireTaskCompletionCallbacks()
 	return handler
+}
+
+// parseUserProfileIndexerInterval parses the config string (e.g. "1h", "30m")
+// into a time.Duration. Empty or invalid → default 1h.
+func parseUserProfileIndexerInterval(s string) time.Duration {
+	if s == "" {
+		return chat.DefaultUserProfileIndexerInterval
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return chat.DefaultUserProfileIndexerInterval
+	}
+	return d
 }

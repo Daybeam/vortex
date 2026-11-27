@@ -648,17 +648,7 @@ func (h *APIHandler) PromoteSOPHandler(w http.ResponseWriter, r *http.Request) {
 			if step == nil {
 				continue
 			}
-			steps[id] = schemas.SOPStep{
-				ID:                  step.ID,
-				Role:                step.RoleID,
-				Task:                step.Task,
-				Skills:              step.AdditionalSkills,
-				MCPs:                step.AdditionalMCPs,
-				Provider:            step.ProviderOverride,
-				DependsOn:           step.DependsOn,
-				ExitCriteria:        step.ExitCriteria,
-				DeterministicChecks: step.DeterministicChecks,
-			}
+			steps[id] = schemas.SOPStepFromStep(step)
 		}
 	})
 	if !found {
