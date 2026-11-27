@@ -40,14 +40,11 @@ import (
 )
 
 func resolveStartupPaths(configFlag string) (root, configPath, outputBase, tmpBase, logDir, expDir, schedulePath string) {
-	root = runenv.ResolveDataRoot(func() string {
-		exe, _ := os.Executable()
-		r := filepath.Dir(exe)
-		if _, err := os.Stat(filepath.Join(r, "config.json")); err != nil {
-			r, _ = os.Getwd()
-		}
-		return r
-	})
+	var err error
+	root, err = runenv.ResolveDataRoot()
+	if err != nil {
+		log.Fatalf("无法解析数据根：%v；请设置 VORTEX_ROOT 环境变量", err)
+	}
 
 	configPath = filepath.Join(root, "config.json")
 	if configFlag != "" {
