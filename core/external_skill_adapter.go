@@ -30,7 +30,7 @@ type ExternalSkillMeta struct {
 	Provides    []string
 	Capability  string // explicit frontmatter `capability:` field
 
-	// agentskills.io standard fields (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md)
+	// agentskills.io standard fields (docs/completed/2026-10-26/AGENTIC_SKILL_EXPLORATION_DESIGN.md)
 	Compatibility string            // environment requirements; surfaced as a warning at activation
 	AllowedTools  []string          // space-separated pre-approved tool list; advisory only
 	License       string            // license name; audit/drift only
@@ -108,7 +108,7 @@ func (a *ExternalSkillAdapter) walkImport(rootPath string, strict bool) (int, er
 		// This makes them invisible to capability.CapabilityIndex.Rebuild and all retrievers
 		// (which only read Skills), so they are not discoverable or injectable
 		// until explicitly promoted via the promote_skill action.
-		// See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-4.
+		// See docs/completed/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-4.
 		if a.Registry.PendingSkills == nil {
 			a.Registry.PendingSkills = make(map[string]*config.Skill)
 		}
@@ -258,7 +258,7 @@ func parseExternalSkillFile(path string) (*ExternalSkillMeta, error) {
 }
 
 // validateStandardSkillMeta enforces the agentskills.io constraints for skills
-// imported from standard discovery paths (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md G5):
+// imported from standard discovery paths (docs/completed/2026-10-26/AGENTIC_SKILL_EXPLORATION_DESIGN.md G5):
 // name must match the parent directory, be ≤64 chars of [a-z0-9-] with sane
 // hyphen placement, and description must be non-empty and ≤1024 chars.
 func validateStandardSkillMeta(meta *ExternalSkillMeta, skillPath string) error {
@@ -331,7 +331,7 @@ func ImportStandardDiscoveryPaths(reg *config.Registry, projectDir, userDir stri
 // This replaces the previous hardcoded "external_discipline" which caused all
 // external skills to share a single tag, making SemanticRetriever return every
 // external skill on any query matching "external" or "discipline" (noise,
-// not signal). See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-1.
+// not signal). See docs/completed/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-1.
 func deriveCapability(meta *ExternalSkillMeta) string {
 	// 1. Explicit frontmatter capability
 	if meta.Capability != "" {

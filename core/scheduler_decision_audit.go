@@ -315,7 +315,13 @@ func (s *DirectedEngine) verifyExitCriteria(ctx context.Context, graph *schemas.
 	// the step is immediately rejected without spending any LLM tokens.
 	// See core/verify/deterministic_verifier.go + docs/TIERED_SHORT_CIRCUIT_AUDIT.md
 	if len(step.DeterministicChecks) > 0 {
-		passed, msg, failTypeStr := verify.RunDeterministicChecks(ctx, s.outputBase, step.DeterministicChecks)
+		for _, check := range step.DeterministicChecks {
+			if check.Type == "command_pass" && !graph.SubmitterIsAdmin {
+				return false, "deterministic command_pass checks require an admin submitter (O58)", schemas.FailurePermission
+			}
+		}
+		workdir := s.taskRelativePath(graph.TaskID, ".")
+		passed, msg, failTypeStr := verify.RunDeterministicChecks(ctx, workdir, step.DeterministicChecks)
 		if !passed {
 			failType := schemas.FailureLogicError
 			if failTypeStr == "schema_violation" {

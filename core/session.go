@@ -10,8 +10,7 @@ import (
 
 // SessionContext binds a session ID to an authorized workspace root directory.
 // All tasks within the same session inherit this binding, so the user/adapter
-// only authorizes once. See
-// docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2 ②.
+// only authorizes once.
 type SessionContext struct {
 	SessionID string
 	Workspace string

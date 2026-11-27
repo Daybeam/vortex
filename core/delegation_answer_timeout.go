@@ -36,9 +36,11 @@ const defaultDelegationAnswerTimeout = 30 * time.Minute
 // both answer the same question: which parked decision has been waiting too
 // long?
 type StaleDecision struct {
-	DecisionID     string `json:"decision_id"`
-	StepID         string `json:"step_id"`
-	WaitingSeconds int    `json:"waiting_seconds"`
+	DecisionID     string               `json:"decision_id"`
+	StepID         string               `json:"step_id"`
+	Type           schemas.DecisionType `json:"type,omitempty"`
+	TimeoutSeconds int                  `json:"timeout_seconds,omitempty"`
+	WaitingSeconds int                  `json:"waiting_seconds"`
 }
 
 // delegationAnswerTimeout reads system.delegation_answer_timeout_seconds with

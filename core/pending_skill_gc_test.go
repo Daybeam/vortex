@@ -13,7 +13,7 @@ import (
 // StagedAt + TTL has expired is removed from both disk and PendingSkills.
 //
 // Regression test for TODO-5: Staging TTL GC.
-// See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-5.
+// See docs/completed/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-5.
 func TestPendingSkillGC_ExpiredSkillRemoved(t *testing.T) {
 	// Create a temp skill directory to simulate on-disk skill
 	skillDir := t.TempDir()

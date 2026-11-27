@@ -39,14 +39,6 @@ func (re *ReflectionEngine) SetMemoryBankStore(mb *store.MemoryBankStore) {
 	re.mbStore = mb
 }
 
-// Wait blocks until all in-flight inner goroutines (hybrid merge,
-// crystallization) finish. Called by DirectedEngine.Stop() after
-// bgWg.Wait() so the process doesn't exit while reflection work
-// is still in progress.
-func (re *ReflectionEngine) Wait() {
-	re.wg.Wait()
-}
-
 func NewReflectionEngine(
 	es store.IExperienceStore,
 	ts store.ITaskStore,
@@ -74,13 +66,16 @@ func NewReflectionEngine(
 // shutdown instead of running for up to 5 minutes on a dead engine (audit C2).
 func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *schemas.TaskGraph) {
 	if re == nil || graph == nil || len(graph.Steps) == 0 {
+		taskID := ""
+		if graph != nil {
+			taskID = graph.TaskID
+		}
+		re.logObservation("reflection_skipped", taskID, "empty_graph")
 		return
 	}
-	// Nil-guard: reflection fundamentally needs a task store and a registry
-	// (step-record batch fetch + role lookup). Without this, an engine
-	// constructed without them panics in the background goroutine that calls
-	// this — surfaced by NonInteractive tests where tasks now finalize.
-	if re.taskStore == nil || re.registry == nil {
+	// Nil-guard: reflection fundamentally needs these stores and a registry.
+	if re.taskStore == nil || re.expStore == nil || re.registry == nil {
+		re.logObservation("reflection_skipped", graph.TaskID, "dependencies_unavailable")
 		return
 	}
 
@@ -116,7 +111,11 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 			okStepIDs = append(okStepIDs, step.ID)
 		}
 	}
-	stepResultBatch, _ := re.taskStore.GetBatch(ctx, graph.TaskID, okStepIDs)
+	stepResultBatch, batchErr := re.taskStore.GetBatch(ctx, graph.TaskID, okStepIDs)
+	if batchErr != nil {
+		re.logObservation("reflection_batch_failed", graph.TaskID, batchErr.Error())
+		stepResultBatch = nil
+	}
 
 	for _, step := range graph.Steps {
 		if step.Status == schemas.StepPending || step.Status == schemas.StepRunning {
@@ -234,7 +233,7 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 			experienceRecords = append(experienceRecords, rec)
 		}
 	}
-	re.expStore.RecordTaskCompletion(
+	if err := re.expStore.RecordTaskCompletion(
 		ctx,
 		graph.TaskID,
 		experienceRecords,
@@ -242,7 +241,9 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 		decisions,
 		graph.Status == schemas.GraphCompleted,
 		attributableFailure,
-	)
+	); err != nil {
+		re.logObservation("reflection_record_failed", graph.TaskID, err.Error())
+	}
 
 	// Prune old/poor skills
 	pruned := re.expStore.PruneSkills()
@@ -364,11 +365,11 @@ func (re *ReflectionEngine) maybePromoteSkill(ctx context.Context, skillID strin
 				re.expStore.UpdateGeneratedSkillVerified(skillID, true)
 				re.expStore.PersistAll(ctx)
 				re.logger.Log("EventSkillPromoted", "", "", map[string]any{
-					"skill_id":    skillID,
-					"capability":  gs.Capability,
-					"usage_count": gs.UsageCount,
+					"skill_id":     skillID,
+					"capability":   gs.Capability,
+					"usage_count":  gs.UsageCount,
 					"success_rate": gs.SuccessRate,
-					"message":     "Skill promoted to permanent after meeting threshold (UsageCount>=3, SuccessRate>0.8)",
+					"message":      "Skill promoted to permanent after meeting threshold (UsageCount>=3, SuccessRate>0.8)",
 				})
 			}
 		}
@@ -481,11 +482,20 @@ Also produce a JSON signature describing the script's purpose and its parameters
 	}
 	signature := extractCodeBlock(resp.Text, "json")
 
-	// Register as a temporary JIT tool with a long TTL (24h)
-	id, err := re.jit.RegisterTool(code, "lua", 24*time.Hour, true)
+	id, err := re.jit.RegisterTool(code, "lua", re.jitTTLFor(false), true)
 	if err == nil {
 		re.registerAsSkill(ctx, id, rec.Capability, rec.Task, rec.LastError, code, signature)
 	}
+}
+
+func (re *ReflectionEngine) jitTTLFor(expert bool) time.Duration {
+	if re.registry != nil && re.registry.System.DefaultJITTTL > 0 {
+		return time.Duration(re.registry.System.DefaultJITTTL) * time.Second
+	}
+	if expert {
+		return 72 * time.Hour
+	}
+	return 24 * time.Hour
 }
 
 func (re *ReflectionEngine) registerAsSkill(ctx context.Context, id, capability, originalTask, failureSignal, sourceCode, signature string) {
@@ -637,8 +647,8 @@ Unify them into a single script that is:
 3. Parameterized: Uses variables for values that might change.
 
 Output exactly two fenced code blocks and nothing else:
-1. A `+"```"+`lua block with the unified Lua script.
-2. A `+"```"+`json block with a semantic signature describing the merged script:
+1. A ` + "```" + `lua block with the unified Lua script.
+2. A ` + "```" + `json block with a semantic signature describing the merged script:
    {"name": "<short name>", "description": "<what it does>", "params": [{"name": "...", "type": "string|number|boolean", "desc": "..."}]}`
 
 	user := fmt.Sprintf("Capability: %s\n\nVariants to merge:\n\n%s", capability, strings.Join(sourceList, "\n\n------------------\n\n"))
@@ -673,8 +683,7 @@ Output exactly two fenced code blocks and nothing else:
 	}
 	signature := extractCodeBlock(resp.Text, "json")
 
-	// Register the unified tool
-	id, err := re.jit.RegisterTool(code, "lua", 72*time.Hour, true) // Longer TTL for expert skills
+	id, err := re.jit.RegisterTool(code, "lua", re.jitTTLFor(true), true)
 	if err == nil {
 		// Register as a NEW verified root skill
 		re.registerAsSkill(ctx, id, capability, "Unified Expert Skill via Hybrid Merge", "", code, signature)
@@ -813,7 +822,7 @@ func (re *ReflectionEngine) FormatOrchestrationBrief(ctx context.Context, capabi
 // If toolA is followed by multiple different tools (with significant frequency),
 // the sequence is outcome-dependent and should NOT be crystallized into a
 // black-box compound skill — the agent needs to adapt based on intermediate results.
-// See docs/architecture/OUTCOME_DEPENDENT_CRYSTALLIZATION_DESIGN.md
+// See docs/completed/2026-09-15/OUTCOME_DEPENDENT_CRYSTALLIZATION_DESIGN.md
 func (re *ReflectionEngine) isOutcomeDependent(ctx context.Context, toolA string) bool {
 	partners, err := re.expStore.GetCooccurrencePartners(ctx, toolA, 3)
 	if err != nil {
@@ -827,7 +836,7 @@ func (re *ReflectionEngine) isOutcomeDependent(ctx context.Context, toolA string
 // tool pairs and auto-crystallizes them into compound skills. A compound skill
 // is a JSON file in workspace/skills/ that describes a proven tool sequence.
 // Threshold: co_count >= 5 AND success_rate >= 0.85.
-// ADDED (2026-09-13) — see docs/COMPOUND_SKILLS_DESIGN.md
+// ADDED (2026-09-13) — see docs/completed/2026-09-13/COMPOUND_SKILLS_DESIGN.md
 // GUARDED (2026-09-15) — outcome-dependent pairs are skipped per OUTCOME_DEPENDENT_CRYSTALLIZATION_DESIGN.md
 func (re *ReflectionEngine) ScanAndPromoteCompoundSkills(ctx context.Context) {
 	candidates, err := re.expStore.GetCompoundCandidates(ctx, 5, 0.85)

@@ -16,7 +16,6 @@ import (
 // When workspaceRoot is empty or inputDir is empty for all steps, this is
 // a no-op (backward compatible).
 //
-// See docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2 ③.
 func (s *DirectedEngine) seedTaskInputs(graph *schemas.TaskGraph, outputBase string) error {
 	if graph.WorkspaceRoot == "" {
 		return nil

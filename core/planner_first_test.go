@@ -12,7 +12,7 @@
 // (impact=HIGH), so planning must never turn a working submission into a
 // failing one.
 //
-// See eval-kit docs/52-planner-wiring-design.md §S6.
+// See docs/architecture/ARCHITECTURE_FLOWS.md §4.
 
 package core
 

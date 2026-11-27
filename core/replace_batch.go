@@ -34,7 +34,7 @@ type BatchReplaceResult struct {
 // stages them in temp files, then commits via atomic rename. On any failure,
 // all changes are rolled back and temp files are cleaned up.
 //
-// Design: docs/architecture/REPLACE_BATCH_DESIGN.md
+// Design: docs/completed/2026-09-17/REPLACE_BATCH_DESIGN.md
 func ExecuteBatchReplace(req BatchReplaceRequest) (*BatchReplaceResult, error) {
 	if len(req.Replacements) == 0 {
 		return nil, fmt.Errorf("no replacements provided")

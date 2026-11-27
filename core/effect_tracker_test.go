@@ -473,27 +473,6 @@ func TestFlow_Idempotency_Plus_EffectTracking(t *testing.T) {
 	}
 }
 
-// TestFlow_DryRun_NotRecorded verifies that a dry-run preview (A5) does not
-// record an effect, since the operation was not actually executed.
-func TestFlow_DryRun_NotRecorded(t *testing.T) {
-	tracker := NewEffectTracker("/tmp/test")
-
-	// Simulate A5 dry-run: the tool returns a preview, not a real result.
-	// The caller should NOT call RecordEffect for a dry-run.
-	dryRunPreview := dryRunResult("write_file", "would write 100 bytes")
-
-	// Verify the result looks like a dry-run preview.
-	if !strings.Contains(dryRunPreview, "DRY-RUN") {
-		t.Error("dry-run result should contain DRY-RUN marker")
-	}
-
-	// No effect should be recorded for a dry-run.
-	records := tracker.GetRecords()
-	if len(records) != 0 {
-		t.Errorf("expected 0 effect records for dry-run, got %d", len(records))
-	}
-}
-
 // TestFlow_MultipleEffects_ReverseCompensation verifies that when a step
 // produces multiple external effects, compensation happens in reverse order
 // (last effect compensated first).

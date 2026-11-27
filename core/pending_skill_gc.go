@@ -23,7 +23,7 @@ import (
 // TTL source: Registry.System.StagingRetentionHours (default 168h = 7 days).
 // Sweep interval: 1 hour (hardcoded — non-hot path, matches AssetManager).
 //
-// See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-5.
+// See docs/completed/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-5.
 type PendingSkillGC struct {
 	registry *config.Registry
 	stopChan chan struct{}

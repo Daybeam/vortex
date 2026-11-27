@@ -14,7 +14,7 @@ import (
 //
 // These tests verify the end-to-end wiring of the model-aware budget
 // enforcement into PromptAssembler.Build, per
-// docs/architecture/PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md.
+// docs/completed/2026-09-15/PROMPT_GOVERNANCE_AND_BUDGET_DESIGN.md.
 
 // newGovernanceTestSpawner builds a minimal Spawner suitable for governance
 // integration tests. The ExperienceStore is empty (no anti-patterns,

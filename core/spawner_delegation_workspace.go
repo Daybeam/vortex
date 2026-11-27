@@ -1,6 +1,10 @@
 package core
 
-import "path/filepath"
+import (
+	"path/filepath"
+
+	"github.com/daybeam/vortex/schemas"
+)
 
 // spawner_delegation_workspace.go — D4 fix helper
 // (DELEGATION_HANDOVER_REDESIGN.md §4.4).
@@ -11,11 +15,16 @@ import "path/filepath"
 // delegationWorkspaceBlock builds the "workspace" section of the delegation
 // envelope, giving the host the absolute paths it needs to implement
 // write_file/read_file in delegation mode.
-func delegationWorkspaceBlock(outputBase, taskID, sessionRoot string) map[string]any {
-	return map[string]any{
+func delegationWorkspaceBlock(outputBase, taskID, sessionRoot string, step *schemas.Step) map[string]any {
+	block := map[string]any{
 		"task_output_dir":    filepath.Join(outputBase, taskID),
 		"shared_context_dir": filepath.Join(outputBase, taskID, "shared_context"),
 		"session_root":       sessionRoot,
 		"path_semantics":     "relative to task_output_dir",
 	}
+	if step != nil {
+		block["exit_criteria"] = step.ExitCriteria
+		block["deterministic_checks"] = step.DeterministicChecks
+	}
+	return block
 }

@@ -52,7 +52,7 @@ func (idx *CapabilityIndex) Rebuild(reg *config.Registry) {
 			// (the design doc's claim about Chinese 2-char words being dropped was
 			// wrong — "market" is 6 bytes, always passed). The correct fix is len(t) >= 2:
 			// keeps all 2+ byte tokens, drops only single ASCII chars ("a", "I").
-			// See docs/plan/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-2.
+			// See docs/completed/SKILL_MARKETPLACE_INTEGRATION_DESIGN.md TODO-2.
 			if len(t) >= 2 {
 				newTags[t] = true
 			}

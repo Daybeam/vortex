@@ -406,14 +406,30 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 	}
 
 	// Parse the output as a SubagentOutput
+	stepID := step.ID
+	exitCriteria := step.ExitCriteria
 	output := schemas.ParseOutput(outputJSON, step.RoleID)
 	if output.Status == schemas.StatusFailed {
 		s.Mu.Unlock()
 		return fmt.Errorf("failed to parse fulfillment output as valid JSON")
 	}
+	warning := fulfillPayloadMismatch(output, exitCriteria)
+	if warning != "" {
+		output.Warnings = append(output.Warnings, warning)
+	}
+	if output.Status == schemas.StatusCapabilityRequired || len(output.RequiredCapabilities) > 0 {
+		s.Mu.Unlock()
+		if warning != "" {
+			s.logger.Log("fulfill_payload_mismatch", taskID, stepID, map[string]any{
+				"decision_id": decisionID,
+				"criterion":   exitCriteria,
+				"warning":     warning,
+			})
+		}
+		return s.handleFulfillCapabilityRequired(taskID, decisionID, &output)
+	}
 
 	// Snapshot the data needed for DB write (will happen outside lock).
-	stepID := step.ID
 	result := &store.StepResult{
 		Data:           output.Result,
 		Confidence:     output.Confidence,
@@ -423,6 +439,14 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 		CreatedAt:      time.Now(),
 	}
 	s.Mu.Unlock()
+
+	if warning != "" {
+		s.logger.Log("fulfill_payload_mismatch", taskID, stepID, map[string]any{
+			"decision_id": decisionID,
+			"criterion":   exitCriteria,
+			"warning":     warning,
+		})
+	}
 
 	// Phase 2: DB write outside lock — avoids blocking all status reads
 	// during the SQLite write.
@@ -494,6 +518,8 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 			Capability:     output.Capability,
 			MissingContext: output.MissingContext,
 			Attachments:    output.Attachments,
+			Assumptions:    output.Assumptions,
+			Warnings:       output.Warnings,
 			Usage:          output.Usage, // O56: handleStepSuccess reads this for cost + event; do not drop it again.
 		},
 		Ref: fmt.Sprintf("%s:%s", taskID, stepID),

@@ -195,23 +195,7 @@ func (s *DirectedEngine) handleStepFailure(graph *schemas.TaskGraph, step *schem
 
 	options := []string{"skip", "abort", "retry", "refine_and_retry"}
 	if cause == FailureClassCapabilityRequired {
-		ctx := s.lifecycleCtx
-		if s.expStore != nil {
-			for _, cap := range details {
-				recommended := s.expStore.QuerySkillRecommendations(ctx, cap, 0.0)
-				if len(recommended) > 0 {
-					best := s.expStore.SelectSkill(ctx, recommended, cap, step.RoleID, "", 0.1)
-					if best != "" {
-						options = append(options, "retry_with_skill:"+best)
-					}
-				}
-				options = append(options, "retry_with_skill:"+cap)
-			}
-		} else {
-			for _, cap := range details {
-				options = append(options, "retry_with_skill:"+cap)
-			}
-		}
+		options = s.capabilityDecisionOptions(step.RoleID, details)
 	}
 	if cause == FailureClassContextDeficit {
 		options = append(options, "retry_with_context")

@@ -45,7 +45,7 @@ type MemoryItem struct {
 	TTL            *time.Time `json:"ttl,omitempty"` // auto-expiry for staged data
 	Checksum       string     `json:"checksum,omitempty"`
 	// Fact-level graph edges for 1-hop semantic traversal during recall.
-	// See docs/plan/search_adaption_design.md §2.3.
+	// See docs/completed/search_adaption_design.md §2.3.
 	CausalLinks []string `json:"causal_links,omitempty"` // node IDs of causally related items
 	EntityLinks []string `json:"entity_links,omitempty"` // node IDs of entity-co-occurrence items
 	// Self-healing §1: SupersededBy state chain. When a new fact overturns an
@@ -65,7 +65,7 @@ const (
 
 	// defaultRRFMaxPerSource caps each search arm before RRF fusion,
 	// preventing a noisy BM25 arm from flooding the fusion pool.
-	// 0 = no cap. See docs/plan/search_adaption_design.md §2.2.
+	// 0 = no cap. See docs/completed/search_adaption_design.md §2.2.
 	defaultRRFMaxPerSource = 50
 
 	// decayHalfLife is the time for a memory item's ranking weight to decay
@@ -90,7 +90,7 @@ func computeDecayWeight(timestamp, now time.Time) float64 {
 
 // QueryOptions extends Search with optional temporal filtering.
 // Zero values mean "no filter" (backward compatible).
-// See docs/plan/search_adaption_design.md §2.1.
+// See docs/completed/search_adaption_design.md §2.1.
 type QueryOptions struct {
 	CreatedAfter  time.Time // only items with Timestamp >= CreatedAfter
 	CreatedBefore time.Time // only items with Timestamp <= CreatedBefore
@@ -575,7 +575,7 @@ func (a *ContextArchive) PruneExpired(now time.Time) (pruned int, err error) {
 // At least one field must be non-empty. Empty fields are treated as
 // "no filter on this dimension".
 //
-// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md.
+// See docs/completed/2026-10-21/SESSION_MEMORY_DELETION_DESIGN.md.
 type ArchiveScope struct {
 	TaskID string // if non-empty, delete entries with this TaskID
 }
@@ -595,7 +595,7 @@ func (s ArchiveScope) matchesScope(item MemoryItem) bool {
 //
 // ContextArchive is JSONL-based (not SQLite), so deletion is implemented as
 // filter-in-memory + rewrite-file — the same pattern as PruneExpired.
-// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md §Storage Layer Changes.
+// See docs/completed/2026-10-21/SESSION_MEMORY_DELETION_DESIGN.md §Storage Layer Changes.
 func (a *ContextArchive) DeleteByScope(scope ArchiveScope) (deleted int, err error) {
 	if scope.TaskID == "" {
 		return 0, fmt.Errorf("DeleteByScope: at least one scope field must be non-empty")
@@ -777,7 +777,7 @@ func (a *ContextArchive) SearchForestWithOptions(
 
 // ─── ArchiveQuery Methods (P0-3, ADDED 2026-10-10) ────────────────────────
 //
-// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §4.
+// See docs/completed/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §4.
 // Three query methods at different granularities for the four consumption
 // paths (B: Planner Role, C: Step Plan Mode, D: Regular Step Warm layer).
 

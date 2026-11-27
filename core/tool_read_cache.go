@@ -36,7 +36,7 @@ const readCacheMaxEntries = 20000
 //
 // This replaces the earlier chat_harness-only cache, which never fired for the
 // real workload because domain tools execute in the Spawner, not in
-// chat_harness (see docs/25-cache-replay-runtime-miss.md §2).
+// chat_harness.
 type DomainToolReadCache struct {
 	mu      sync.Mutex
 	entries map[string]map[string]*readCacheEntry // mcpID -> (key -> entry)

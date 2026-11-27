@@ -8,7 +8,7 @@ import (
 )
 
 // capability_driver_test.go — tests for the Unified Capability Driver Pattern.
-// See docs/architecture/UNIFIED_CAPABILITY_DISCOVERY_DESIGN.md.
+// See docs/completed/2026-09-15/UNIFIED_CAPABILITY_DISCOVERY_DESIGN.md.
 
 func TestNewCapabilityDriver_RemoteSSE(t *testing.T) {
 	t.Parallel()

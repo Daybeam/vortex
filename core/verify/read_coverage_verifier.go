@@ -18,7 +18,7 @@ import (
 //
 //	required_files: []string — file paths that MUST appear in the trace
 //	trace_file: string       — path to the step's StepResult JSON
-//	                           (relative to workdir or absolute)
+//	                           (relative to the task directory)
 //
 // Passes if every required_file appears in at least one read_file or
 // read_file_lines tool call. Fails with the list of unread files otherwise.
@@ -43,9 +43,9 @@ func (v *ReadCoverageVerifier) Verify(ctx context.Context, workdir string, crite
 	if traceFile == "" {
 		return false, "missing 'trace_file' parameter", nil
 	}
-	absPath := traceFile
-	if !filepath.IsAbs(absPath) && workdir != "" {
-		absPath = filepath.Join(workdir, traceFile)
+	absPath, err := resolveCheckPath(workdir, traceFile)
+	if err != nil {
+		return false, err.Error(), nil
 	}
 
 	data, err := os.ReadFile(absPath)

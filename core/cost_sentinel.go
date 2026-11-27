@@ -8,7 +8,7 @@ import (
 // Fires when CacheReadTokens == 0 for >= threshold consecutive rounds
 // where PromptTokens > minPromptTokens (small prompts are cold by design).
 //
-// Design ref: docs/architecture/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 1.
+// Design ref: docs/completed/2026-09-14/COST_GOVERNANCE_ACTIVE_ALERT_AND_CONTROL.md §2.2 alerter 1.
 // This is a pure observer: it never mutates execution flow. Alerting ≠ blocking.
 type CacheSentinel struct {
 	mu              sync.Mutex

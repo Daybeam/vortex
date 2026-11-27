@@ -64,7 +64,7 @@ const EmbeddedCommandPrefix = "__embedded__:"
 
 // RegisterTool creates a temporary script file and registers it as a dynamic MCP.
 // As of the embedded-runtime + preflight architecture
-// (docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md), this method:
+// (docs/completed/2026-09-15/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md), this method:
 //  1. Runs PreflightCheck first — bad code is rejected before any file I/O.
 //  2. Routes embedded langs (js, lua) to RegisterEmbeddedTool, which registers
 //     an in-process MCP marker instead of requiring a host binary.
@@ -234,7 +234,7 @@ func (m *JITManager) PromotePermanent(id string) error {
 
 // ── Task-Local Closure ─────────────────────────────────────────────────────
 //
-// Implements §2.1 of docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md.
+// Implements §2.1 of docs/completed/2026-09-15/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md.
 // At task submission time, SnapshotJITTools deep-copies any JIT MCP definitions
 // referenced by mcpIDs into a map[json.RawMessage] the task graph carries. If a
 // JIT tool's global TTL expires mid-task, RestoreLocalMCPs re-registers the
@@ -293,6 +293,11 @@ func (m *JITManager) RestoreLocalMCPs(snapshot map[string]json.RawMessage) []str
 		if err := json.Unmarshal(data, &mcp); err != nil {
 			continue
 		}
+		if mcp.SchemaFingerprint != "" {
+			if existing, ok := m.registry.MCPs[id]; ok && existing.SchemaFingerprint != "" && existing.SchemaFingerprint != mcp.SchemaFingerprint {
+				log.Printf("[EventMCPRestoredStale] mcp=%s snapshot_hash=%s registry_hash=%s — restored old schema (intentional for task consistency)", id, mcp.SchemaFingerprint, existing.SchemaFingerprint)
+			}
+		}
 		if len(mcp.Args) > 0 {
 			scriptPath := mcp.Args[len(mcp.Args)-1]
 			if _, err := os.Stat(scriptPath); err != nil {
@@ -300,11 +305,6 @@ func (m *JITManager) RestoreLocalMCPs(snapshot map[string]json.RawMessage) []str
 			}
 		}
 		m.registry.DynamicMCPs[id] = &mcp
-		if mcp.SchemaFingerprint != "" {
-			if existing, ok := m.registry.MCPs[id]; ok && existing.SchemaFingerprint != "" && existing.SchemaFingerprint != mcp.SchemaFingerprint {
-				log.Printf("[EventMCPRestoredStale] mcp=%s snapshot_hash=%s registry_hash=%s — restored old schema (intentional for task consistency)", id, mcp.SchemaFingerprint, existing.SchemaFingerprint)
-			}
-		}
 		restored = append(restored, id)
 	}
 	return restored

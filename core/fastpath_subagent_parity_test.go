@@ -17,7 +17,7 @@ import (
 // The 2026-10-29 fix (5ce167cd0) chose honest terminal reporting over raising
 // a decision: the fast path is loop-less (it never starts run(), so a
 // decision's Broadcast() has no consumer and deadlocks — see
-// docs/plan/FASTPATH_DECISION_DESIGN_ANALYSIS.md §3-§4). Instead, partial
+// docs/completed/2026-11-01/FASTPATH_DECISION_DESIGN_ANALYSIS.md §3-§4). Instead, partial
 // surfaces as StepPartial + GraphFailed + EventTaskFailed, and the caller
 // decides at the call boundary. The canonical regression test is
 // TestSubmit_SingleStepPartialReachesTerminal in scheduler_submit_event_test.go;

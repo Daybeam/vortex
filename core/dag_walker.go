@@ -17,7 +17,7 @@ import (
 // It owns no I/O and no Spawner references — only graph topology queries,
 // dependency-edge analysis, and registry lookups.
 //
-// Extracted from DirectedEngine per docs/completed/GOD_CLASS_REFACTORING_MASTER_PLAN.md
+// Extracted from DirectedEngine per docs/completed/2026-09-12/GOD_CLASS_REFACTORING_MASTER_PLAN.md
 // Phase 2. Holds references to shared state owned by DirectedEngine (the graph
 // map and mutex are shared, not copied).
 type DAGGraphWalker struct {

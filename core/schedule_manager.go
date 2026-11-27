@@ -237,6 +237,15 @@ func (sm *ScheduleManager) RunNow(id string) (string, error) {
 	return sm.submitAndTrack(s, "schedule_manual_trigger")
 }
 
+// RunNowForOwner authorizes a manual run before loading the schedule.
+func (sm *ScheduleManager) RunNowForOwner(id, ownerID string, includeAll bool) (string, error) {
+	s := sm.scheduleStore.GetVisible(id, ownerID, includeAll)
+	if s == nil {
+		return "", fmt.Errorf("schedule not found: %s", id)
+	}
+	return sm.submitAndTrack(s, "schedule_manual_trigger")
+}
+
 // submitAndTrack submits a schedule's task to the orchestration engine, updates
 // the schedule's run ledger (LastRun/RunCount/NextRun/MaxRuns), and spins up
 // the completion monitor. It returns the submitted task ID (empty string on
@@ -249,12 +258,11 @@ func (sm *ScheduleManager) submitAndTrack(s *schemas.Schedule, event string) (st
 		"schedule_name": s.Name,
 	})
 
-	// Submit to scheduler. Cron schedules are admin-gated (created via the admin
-	// config subsystem), so their runs carry the admin tier — otherwise dynamic
-	// MCP mounts in scheduled tasks would be fail-closed to non-admin (HIGH-sev
-	// regression from the submitter-tier propagation fix, 2026-10-21).
+	// The persisted creator tier is authoritative. Ownerless legacy schedules
+	// retain the old admin behavior; an ordinary owner's schedule must never
+	// gain admin privileges merely because the scanner runs it.
 	for i := range s.TaskInputs {
-		s.TaskInputs[i].SubmitterIsAdmin = true
+		s.TaskInputs[i].SubmitterIsAdmin = s.OwnerID == "" || s.SubmitterIsAdmin
 		if s.Deliver.Mode != "" {
 			delivery := scheduleDeliveryFor(s)
 			s.TaskInputs[i].Delivery = &delivery

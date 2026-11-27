@@ -230,7 +230,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 	// Planner-first is opt-in, budgeted and best-effort for one dependency-free
 	// step. Multi-step submissions already carry the caller's DAG design.
-	// See docs/52-planner-wiring-design.md §S6.
+	// See docs/architecture/ARCHITECTURE_FLOWS.md §4.
 	if len(inputs) == 1 && len(inputs[0].DependsOn) == 0 && s.plannerFirstEnabled() {
 		probeTask := inputs[0].Task
 		planTaskID := schemas.NewTaskID()
@@ -382,7 +382,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 		// Task-Local Closure: snapshot JIT tools so TTL expiry mid-task
 		// doesn't cause "tool not found". See
-		// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
+		// docs/completed/2026-09-15/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
 		if s.jit != nil {
 			graph.LocalMCPs = s.jit.SnapshotJITTools(inp.AdditionalMCPs)
 		}
@@ -665,7 +665,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 			s.broadcastDone(taskID) // safe close under Mu with double-close guard
 			// §3 fix: publish terminal event for single-step fast-path tasks.
 			// Without this, webhook/callback subscribers never hear about these
-			// tasks (the common case). See docs/TASK_WEBHOOK_CALLBACK_DESIGN.md §3.
+			// tasks (the common case). See docs/completed/2026-10-06/TASK_WEBHOOK_CALLBACK_DESIGN.md §3.
 			s.Mu.Lock()
 			conf := graph.ComputeConfidence()
 			isFailed := graph.Status == schemas.GraphFailed
@@ -790,7 +790,7 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 
 	// Task-Local Closure: snapshot JIT tools referenced by any step so
 	// TTL expiry mid-task doesn't cause "tool not found". See
-	// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
+	// docs/completed/2026-09-15/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
 	if s.jit != nil {
 		var allMCPs []string
 		for _, inp := range inputs {

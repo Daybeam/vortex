@@ -22,11 +22,11 @@ import (
 // somewhere else, so hand-overs skip the inspection instead of being tolerated by
 // a threshold.
 //
-// This lives outside executeStep because that function is already over its frozen
-// size baseline (scripts/size_baseline.txt) and the exemption is one condition.
-func (s *DirectedEngine) guardStepOutput(ctx context.Context, result *SpawnResult, outputText, requiredSchema string) (bool, string) {
+// This seam keeps delegation hand-over policy separate from ordinary output
+// inspection and from the scheduler's post-parse exit-criteria verification.
+func (s *DirectedEngine) guardStepOutput(ctx context.Context, result *SpawnResult, outputText string) (bool, string) {
 	if result != nil && result.Output.Status == schemas.StatusDelegationRequired {
 		return true, ""
 	}
-	return s.sieve.InspectWithSystemOne(ctx, outputText, requiredSchema)
+	return s.sieve.InspectWithSystemOne(ctx, outputText)
 }

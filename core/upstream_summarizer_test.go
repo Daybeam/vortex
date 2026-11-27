@@ -10,7 +10,7 @@ import (
 )
 
 // ── Tests 1-4: DeterministicFactExtractor extraction rules ──────────────────
-// See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §3.4.
+// See docs/completed/2026-10-30/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §3.4.
 
 // TestDeterministicFactExtractor_SchemaOverview verifies that a JSON object
 // payload produces a key/type/length list (design §2.3 Rule 1).

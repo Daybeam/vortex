@@ -14,7 +14,6 @@ import (
 // retries up to maxEmptyRespRetries (2) times before failing, reducing the
 // effective failure rate from ~40% to ~6.4% (0.4^3).
 //
-// Link: eval-workspace/eval_kit/docs/19-engine-issues-formal.md §10.4
 // Fix: core/spawner.go shouldRetryEmptyResponse + turnLoop retry in doSpawn.
 
 func TestShouldRetryEmptyResponse_RetriesUntilExhausted(t *testing.T) {

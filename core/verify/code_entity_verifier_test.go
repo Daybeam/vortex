@@ -12,9 +12,9 @@ func TestCodeEntityVerifier_ExistingEntities(t *testing.T) {
 	v := &CodeEntityVerifier{}
 	criteria := map[string]any{
 		"entities":   []any{"Spawner", "DirectedEngine", "Sieve"},
-		"search_dir": "..", // core package dir (was "../core" before the core/verify extraction)
+		"search_dir": ".",
 	}
-	passed, msg, err := v.Verify(context.Background(), "", criteria)
+	passed, msg, err := v.Verify(context.Background(), "..", criteria)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -27,9 +27,9 @@ func TestCodeEntityVerifier_MissingEntity(t *testing.T) {
 	v := &CodeEntityVerifier{}
 	criteria := map[string]any{
 		"entities":   []any{"Spawner", "NonExistentFunctionXYZ123"},
-		"search_dir": "..", // core package dir (was "../core" before the core/verify extraction)
+		"search_dir": ".",
 	}
-	passed, msg, err := v.Verify(context.Background(), "", criteria)
+	passed, msg, err := v.Verify(context.Background(), "..", criteria)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}

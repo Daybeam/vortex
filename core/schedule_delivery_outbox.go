@@ -71,6 +71,7 @@ func (sm *ScheduleManager) QueueCompletedDelivery(delivery schemas.ScheduleDeliv
 	defer cancel()
 	_, err = sm.deliveryOutbox.Enqueue(ctx, store.OutboxItem{
 		SessionID: delivery.Target.SessionID,
+		OwnerID:   delivery.OwnerID,
 		Kind:      kind,
 		DedupeKey: fmt.Sprintf("schedule_delivery|%s|%s|%s", delivery.ScheduleID, taskID, kind),
 		Text:      string(encoded),
@@ -100,6 +101,7 @@ func (sm *ScheduleManager) queueFallback(delivery schemas.ScheduleDelivery, task
 	defer cancel()
 	_, err = sm.deliveryOutbox.Enqueue(ctx, store.OutboxItem{
 		SessionID: target.SessionID,
+		OwnerID:   delivery.OwnerID,
 		Kind:      scheduleInboxKind,
 		DedupeKey: fmt.Sprintf("schedule_inbox|%s|%s", delivery.ScheduleID, taskID),
 		Text:      string(encoded),
@@ -120,15 +122,40 @@ type ScheduleInboxEntry struct {
 }
 
 func (sm *ScheduleManager) ListPendingInbox(ctx context.Context, ownerID string, limit int) ([]ScheduleInboxEntry, error) {
-	reader, ok := sm.deliveryOutbox.(interface {
-		ListPendingKinds(context.Context, []string, int) ([]store.OutboxItem, error)
-	})
-	if !ok {
-		return nil, fmt.Errorf("schedule inbox: durable reader is not wired")
+	return sm.listPendingInbox(ctx, ownerID, false, limit)
+}
+
+// ListPendingInboxForScope lets an administrator or local operator read the full
+// inbox; ordinary multi-user callers are restricted before the database LIMIT.
+func (sm *ScheduleManager) ListPendingInboxForScope(ctx context.Context, ownerID string, includeAll bool, limit int) ([]ScheduleInboxEntry, error) {
+	return sm.listPendingInbox(ctx, ownerID, includeAll, limit)
+}
+
+func (sm *ScheduleManager) listPendingInbox(ctx context.Context, ownerID string, includeAll bool, limit int) ([]ScheduleInboxEntry, error) {
+	if !includeAll && ownerID == "" {
+		return []ScheduleInboxEntry{}, nil
 	}
-	items, err := reader.ListPendingKinds(ctx, []string{scheduleInboxKind}, limit)
-	if err != nil {
-		return nil, err
+	var items []store.OutboxItem
+	if reader, ok := sm.deliveryOutbox.(interface {
+		ListPendingKindsScoped(context.Context, []string, string, bool, int) ([]store.OutboxItem, error)
+	}); ok {
+		var err error
+		items, err = reader.ListPendingKindsScoped(ctx, []string{scheduleInboxKind}, ownerID, includeAll, limit)
+		if err != nil {
+			return nil, err
+		}
+	} else if !includeAll {
+		return nil, fmt.Errorf("schedule inbox: owner-scoped durable reader is not wired")
+	} else if reader, ok := sm.deliveryOutbox.(interface {
+		ListPendingKinds(context.Context, []string, int) ([]store.OutboxItem, error)
+	}); ok {
+		var err error
+		items, err = reader.ListPendingKinds(ctx, []string{scheduleInboxKind}, limit)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, fmt.Errorf("schedule inbox: durable reader is not wired")
 	}
 	entries := make([]ScheduleInboxEntry, 0, len(items))
 	for _, item := range items {
@@ -136,7 +163,7 @@ func (sm *ScheduleManager) ListPendingInbox(ctx context.Context, ownerID string,
 		if err := json.Unmarshal([]byte(item.Text), &payload); err != nil {
 			return nil, fmt.Errorf("schedule inbox %d: decode payload: %w", item.ID, err)
 		}
-		if ownerID != "" && payload.Delivery.OwnerID != ownerID {
+		if !includeAll && (item.OwnerID != ownerID || payload.Delivery.OwnerID != ownerID) {
 			continue
 		}
 		entries = append(entries, ScheduleInboxEntry{

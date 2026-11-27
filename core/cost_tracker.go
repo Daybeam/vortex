@@ -15,7 +15,7 @@ import (
 // visibility. Each call logs model, taskID, stepID, input/output tokens,
 // and timestamp. Independent of Step Plan — this is a global ops function.
 //
-// Design: docs/plan/STEP_PLAN_MODE_DESIGN.md §13.7 (item #18, Intrect-io CostTracker).
+// Design: docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §13.7 (item #18, Intrect-io CostTracker).
 type CostTracker struct {
 	db *sql.DB
 }

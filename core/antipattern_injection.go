@@ -9,7 +9,7 @@ import (
 )
 
 // antipattern_injection.go — Module 2 of the Two-Tier Clarification &
-// Readiness Design (docs/architecture/TWO_TIER_CLARIFICATION_AND_READINESS_DESIGN.md).
+// Readiness Design (docs/completed/2026-09-15/TWO_TIER_CLARIFICATION_AND_READINESS_DESIGN.md).
 //
 // When the Auto-Refine loop rejects a step via verifyExitCriteria, the
 // downstream weak model has just failed once. Rather than only feeding it
@@ -24,6 +24,18 @@ import (
 // Three is the sweet spot: enough signal, not enough to dilute the prompt.
 const maxAntiPatternInjection = 3
 
+// buildAntiPatternGuidance queries the experience store for anti-pattern
+// precedents relevant to the failing step and formats them as a protected
+// injection block. Returns "" when the store is unavailable or no
+// precedents match — callers must handle the empty case by falling back
+// to the plain rejection text.
+//
+// The query intent combines the step's task text and the auditor's
+// rejection reason, so we match on both the domain (task) and the
+// specific failure mode (reason).
+// collectCurrentSchemaFingerprints reads the current schema fingerprints
+// from the registry's MCPs. Used to gate anti-pattern injection: precedents
+// recorded under different tool schemas are quarantined, not injected.
 func (s *DirectedEngine) collectCurrentSchemaFingerprints() map[string]string {
 	if s.registry == nil {
 		return nil
@@ -44,23 +56,11 @@ func (s *DirectedEngine) collectCurrentSchemaFingerprints() map[string]string {
 	return out
 }
 
-// buildAntiPatternGuidance queries the experience store for anti-pattern
-// precedents relevant to the failing step and formats them as a protected
-// injection block. Returns "" when the store is unavailable or no
-// precedents match — callers must handle the empty case by falling back
-// to the plain rejection text.
-//
-// The query intent combines the step's task text and the auditor's
-// rejection reason, so we match on both the domain (task) and the
-// specific failure mode (reason).
 func (s *DirectedEngine) buildAntiPatternGuidance(stepTask, rejectionReason string) string {
 	if s.expStore == nil {
 		return ""
 	}
 
-	// Build a combined intent: the task describes the domain, the rejection
-	// reason describes the acute failure. Matching on both maximizes recall
-	// of relevant precedents without over-fetching.
 	intent := strings.TrimSpace(stepTask)
 	if rejectionReason != "" {
 		intent += " " + strings.TrimSpace(rejectionReason)

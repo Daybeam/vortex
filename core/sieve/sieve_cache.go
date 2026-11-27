@@ -62,7 +62,7 @@ func (s *Sieve) ClearResultCache(taskID string) {
 // hash check misses because the args differ.
 //
 // Inspired by OpenHands StuckDetector's content-based event equality.
-// See docs/HARNESS_LOOP_GUARD_RESEARCH.md §7.
+// See docs/survey/HARNESS_LOOP_GUARD_RESEARCH.md §7.
 func (s *Sieve) CheckResultRepetition(taskID, result string) bool {
 	if s == nil {
 		return false

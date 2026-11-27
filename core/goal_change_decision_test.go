@@ -40,7 +40,7 @@ func parseTestTime(s string) (t time.Time) {
 // TestGoalChangeDecision_Type verifies that the goal_change_requested decision
 // type exists and is correctly typed.
 //
-// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P2.
+// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P2.
 func TestGoalChangeDecision_Type(t *testing.T) {
 	if schemas.DecisionGoalChangeRequested != "goal_change_requested" {
 		t.Errorf("DecisionGoalChangeRequested = %q, want %q",

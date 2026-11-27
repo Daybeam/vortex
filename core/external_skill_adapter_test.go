@@ -275,7 +275,7 @@ func TestImportSkillDirectory_LargeSkillFile(t *testing.T) {
 }
 
 // TestImportSkillDirectory_LargeSkill_PromptFragmentCapped verifies the L2
-// body injection cap (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md G1):
+// body injection cap (docs/completed/2026-10-26/AGENTIC_SKILL_EXPLORATION_DESIGN.md G1):
 // SkillMounter.Activate loads the SKILL.md body for a matched skill
 // (agentskills.io progressive disclosure level 2), but a 57KB body must be
 // truncated to skillBodyPromptCap so it cannot overflow the context — the
@@ -637,7 +637,7 @@ func TestPromoteSkill_MovesFromPendingToActive(t *testing.T) {
 	}
 }
 
-// ─── agentskills.io standard adaptation (docs/plan/AGENTIC_SKILL_EXPLORATION_DESIGN.md) ──
+// ─── agentskills.io standard adaptation (docs/completed/2026-10-26/AGENTIC_SKILL_EXPLORATION_DESIGN.md) ──
 
 // TestParseExternalSkillFile_StandardFields verifies G2/G3/G6: compatibility,
 // allowed-tools (space-separated), license, and the nested metadata map are

@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -73,6 +74,32 @@ func TestDelegationEnvelope_IncludesWorkspacePaths(t *testing.T) {
 // TestDelegationPrompt_IncludesAbsolutePath verifies that the system prompt
 // in the delegation envelope contains the absolute path of the shared output
 // directory, so the host knows where to write/read files.
+// TestDelegationEnvelope_DisclosesStepCriteria is the O59 regression: after
+// O58 confines deterministic checks, an external host can see exactly what the
+// delegated step must satisfy instead of being told to guess the criterion.
+func TestDelegationEnvelope_DisclosesStepCriteria(t *testing.T) {
+	engine := newDelegationTestEngine(t)
+	checks := []schemas.DeterministicCheck{{
+		Type: "file_exists", Params: map[string]any{"path": "report.md"},
+	}}
+	taskID, err := engine.Submit([]schemas.StepInput{{
+		ID: "step_1", RoleID: "worker", Task: "Do work",
+		ExitCriteria: "file:report.md", DeterministicChecks: checks,
+	}})
+	if err != nil {
+		t.Fatalf("Submit failed: %v", err)
+	}
+	dec := waitForDelegationDecision(t, engine, taskID)
+	prompt := dec.Context["prompt"].(map[string]any)
+	ws := prompt["workspace"].(map[string]any)
+	if ws["exit_criteria"] != "file:report.md" {
+		t.Fatalf("workspace exit_criteria = %v", ws["exit_criteria"])
+	}
+	if !reflect.DeepEqual(ws["deterministic_checks"], checks) {
+		t.Fatalf("workspace deterministic_checks = %#v, want %#v", ws["deterministic_checks"], checks)
+	}
+}
+
 func TestDelegationPrompt_IncludesAbsolutePath(t *testing.T) {
 	engine := newDelegationTestEngine(t)
 

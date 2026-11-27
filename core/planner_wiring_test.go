@@ -18,7 +18,7 @@ import (
 // `unknown choice "replan"`. Even if it had not errored, the planner's
 // markdown output was never parsed into steps, so the DAG could not change.
 //
-// See eval-kit docs/52-planner-wiring-design.md (checkpoints B2/B3/B4).
+// See docs/architecture/ARCHITECTURE_FLOWS.md §5.
 
 func newPlannerTestEngine(t *testing.T) (*DirectedEngine, *config.Registry) {
 	t.Helper()

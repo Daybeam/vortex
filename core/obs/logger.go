@@ -23,17 +23,24 @@ import (
 type EventType string
 
 const (
-	EventTaskSubmitted     EventType = "task_submitted"
-	EventStepStarted       EventType = "step_started"
-	EventStepCompleted     EventType = "step_completed"
-	EventStepPartial       EventType = "step_partial"
-	EventStepFailed        EventType = "step_failed"
-	EventStepRetrying      EventType = "step_retrying"
-	EventRoleMissing       EventType = "role_missing"
-	EventRateLimited       EventType = "rate_limited"
+	EventTaskSubmitted EventType = "task_submitted"
+	EventStepStarted   EventType = "step_started"
+	EventStepCompleted EventType = "step_completed"
+	EventStepPartial   EventType = "step_partial"
+	EventStepFailed    EventType = "step_failed"
+	EventStepRetrying  EventType = "step_retrying"
+	EventRoleMissing   EventType = "role_missing"
+	EventRateLimited   EventType = "rate_limited"
+	// EventContractFileMissing is emitted when a step declares an
+	// `output_contract.path` that cannot be resolved on disk (or cannot be
+	// resolved at all, because the graph carries no workspace root). It exists
+	// because "registered nothing" and "declared a deliverable that is absent"
+	// are different facts about a run, and `output_files: []` cannot tell them
+	// apart. Emitted as a plain string literal until 2026-11-22, which put the
+	// Go identifier rather than a snake_case event name on the wire.
 	EventContractFileMissing EventType = "contract_file_missing"
-	EventDecisionRequired  EventType = "decision_required"
-	EventDecisionSubmitted EventType = "decision_submitted"
+	EventDecisionRequired    EventType = "decision_required"
+	EventDecisionSubmitted   EventType = "decision_submitted"
 	// EventDecisionAutoResolved is emitted when NonInteractive mode auto-selects
 	// a conservative default for a decision that would otherwise block forever.
 	// ADDED (2026-10-02, E5).
@@ -101,7 +108,7 @@ const (
 	// (semantic) or the model self-reported a "new task" (heuristic).
 	// Detail: mode ("semantic"|"heuristic"), drift_score (-1 when heuristic),
 	// threshold, parent_node, new_node_id. See
-	// docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §3.4 and
+	// docs/completed/2026-10-26/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md §3.4 and
 	// behavior contract B11.
 	EventIntentShiftBranch EventType = "intent_shift_branch"
 	// Command execution events (ADDED 2026-11-12): emitted by background
@@ -139,12 +146,12 @@ type Logger struct {
 	// ticker deadlocks wg.Wait.
 	purgeStop chan struct{}
 	purgeOnce sync.Once
-	System   *config.SystemSettings
+	System    *config.SystemSettings
 	// droppedEvents counts log events dropped because the channel was full
 	// (audit finding H6 — non-blocking send prevents deadlock under backpressure).
 	droppedEvents uint64
 	// SSE subscribers (ADDED 2026-09-14): each subscriber gets a copy of events.
-	// See docs/architecture/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
+	// See docs/completed/2026-09-14/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
 	subMu    sync.RWMutex
 	subChans []chan LogEvent
 	// dirCache tracks directories already created by MkdirAll, avoiding a
@@ -455,6 +462,7 @@ func (l *Logger) compressFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
+	defer gzFile.Close()
 
 	zw := gzip.NewWriter(gzFile)
 	// Check all close errors in the correct order: zw.Close() writes the gzip
@@ -464,14 +472,16 @@ func (l *Logger) compressFile(src, dst string) error {
 	// error here prevents permanent log data loss.
 	// (audit LE-1: unchecked Close errors → data loss, 2026-10-24)
 	if _, err := io.Copy(zw, f); err != nil {
-		gzFile.Close()
 		return err
 	}
 	if err := zw.Close(); err != nil {
-		gzFile.Close()
 		return err
 	}
-	return gzFile.Close()
+	// Close gzFile explicitly and check error; defer will be a no-op if already closed.
+	if err := gzFile.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ReadTaskLogs returns all log lines for a given task (today's log).

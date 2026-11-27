@@ -236,7 +236,7 @@ func (s *DirectedEngine) archiveStep(graph *schemas.TaskGraph, step *schemas.Ste
 }
 
 // ─── Intent-Shift Branching (B11, WIRED 2026-10-25) ──────────────────────
-// See docs/plan/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md.
+// See docs/completed/2026-10-26/CONTEXT_TREE_INTENT_SHIFT_BRANCHING_DESIGN.md.
 
 // defaultIntentShiftThreshold is the cosine-similarity floor below which a
 // step counts as an intent shift from the current context node. Same order

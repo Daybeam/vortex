@@ -26,7 +26,7 @@ var thoughtRe = regexp.MustCompile("(?s)<thought>(.*?)</thought>")
 
 // Feature flags are now read from Registry.System.FeatureFlags (hot-reloadable
 // via StartWatcher). Env var overrides applied in applySystemDefaults.
-// See docs/plan/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
+// See docs/completed/2026-10-17/ENV_MIGRATION_HOT_RELOAD_DESIGN.md.
 
 // ToolCallReasonLLMInitiated is the default reason string for LLM-initiated
 // tool calls. Extracted as a constant so tests can reference the production
@@ -111,12 +111,12 @@ type Spawner struct {
 
 	// archive (ADDED 2026-10-10): ContextArchive for step summary queries.
 	// Nil-safe: set via SetArchive from DirectedEngine.
-	// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §4.
+	// See docs/completed/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §4.
 	archive *ContextArchive
 
 	// foldEngine (ADDED 2026-10-13): Segment-Based Incremental Fold engine.
 	// Nil-safe: set via SetFoldEngine from DirectedEngine.
-	// See docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
+	// See docs/completed/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
 	foldEngine *FoldEngine
 
 	// effectTrackers (ADDED 2026-10-13): per-task EffectTracker for A2/A4
@@ -134,9 +134,19 @@ type Spawner struct {
 	// into a key-facts summary before side-loading in applyRefBasedHandoff.
 	// Nil-safe: when nil or config disabled, existing placeholder behavior is
 	// preserved (zero behavior change).
-	// See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md.
+	// See docs/completed/2026-10-30/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md.
 	upstreamSummarizer       UpstreamSummarizer
 	upstreamSummarizerConfig config.UpstreamSummarizerConfig
+
+	// confirmationGate (ADDED 2026-11-17): checks MCP tool calls against
+	// annotations + confirmation descriptors before execution. When a tool
+	// requires human approval, the step short-circuits with
+	// StatusApprovalRequired + ConfirmationContext, and the scheduler raises
+	// lifecycleCtx (audit FIX): cancelled on shutdown so background embedding
+	// refresh goroutines exit promptly instead of waiting for their timeout.
+	// Set via SetLifecycleCtx; defaults to context.Background() when unset.
+	ctxMu        sync.RWMutex
+	lifecycleCtx context.Context
 }
 
 func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceStore, logger *obs.Logger, loader *ResourceLoader, outputBase string) *Spawner {
@@ -256,12 +266,15 @@ func NewSpawner(reg *config.Registry, ts store.ITaskStore, es store.IExperienceS
 					log.Printf("[spawner] embedding refresh panic: %v\n%s", r, debug.Stack())
 				}
 			}()
-			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6
+			// audit FIX (2026-11-21): was context.Background() — goroutine
+			// could run up to 30s after shutdown begins. Use lifecycle ctx so
+			// it exits promptly when the spawner shuts down.
+			refreshCtx, refreshCancel := context.WithTimeout(spawner.getLifecycleCtx(), 30*time.Second)
 			defer refreshCancel()
 			spawner.toolRouter.RefreshToolEmbeddings(refreshCtx, reg)
 		}()
 		reg.OnReload(func() {
-			reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
+			reloadCtx, reloadCancel := context.WithTimeout(spawner.getLifecycleCtx(), 30*time.Second) // audit L-MED-6: add timeout to avoid blocking watcher indefinitely
 			defer reloadCancel()
 			spawner.toolRouter.RefreshToolEmbeddings(reloadCtx, reg)
 		})
@@ -368,7 +381,7 @@ func (s *Spawner) SetRefBasedHandoffThreshold(bytes int) {
 // SetArchive injects the ContextArchive for Path D (Regular Step Warm layer).
 // Nil-safe: when nil, Archive queries are skipped (zero behavior change).
 // Also propagates to the PromptAssembler if it has been initialized.
-// See docs/plan/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
+// See docs/completed/CONTEXT_ARCHIVE_TOPIC_SEGMENTATION_DESIGN.md §3.4.
 func (s *Spawner) SetArchive(a *ContextArchive) {
 	s.archive = a
 	if s.pa != nil {
@@ -398,7 +411,7 @@ func (s *Spawner) ProjectOf(taskID string) string {
 // SetFoldEngine injects the FoldEngine for segment-based incremental fold.
 // Nil-safe: when nil, fold is skipped (zero behavior change).
 // Also propagates to the PromptAssembler if it has been initialized.
-// See docs/plan/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
+// See docs/completed/SEGMENT_BASED_INCREMENTAL_FOLD_DESIGN.md.
 func (s *Spawner) SetFoldEngine(fe *FoldEngine) {
 	s.foldEngine = fe
 	if s.pa != nil {
@@ -410,7 +423,7 @@ func (s *Spawner) SetFoldEngine(fe *FoldEngine) {
 // semantic compression of upstream context before side-loading.
 // Nil-safe: when summarizer is nil or config.Enabled is false, the existing
 // placeholder summary behavior in applyRefBasedHandoff is preserved.
-// See docs/plan/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §2.5.
+// See docs/completed/2026-10-30/UPSTREAM_CONTEXT_SUMMARIZER_DESIGN.md §2.5.
 func (s *Spawner) SetUpstreamSummarizer(summarizer UpstreamSummarizer, cfg config.UpstreamSummarizerConfig) {
 	s.upstreamSummarizer = summarizer
 	s.upstreamSummarizerConfig = cfg
@@ -418,7 +431,7 @@ func (s *Spawner) SetUpstreamSummarizer(summarizer UpstreamSummarizer, cfg confi
 
 // SetMemoryBankStore wires the MemoryBankStore for UserProfile injection
 // into sub-agent prompts. ADDED 2026-10-17.
-// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
+// See docs/completed/2026-10-17/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 3.
 func (s *Spawner) SetMemoryBankStore(mb *store.MemoryBankStore) {
 	s.memoryBank = mb
 	if s.pa != nil {
@@ -464,6 +477,24 @@ func (s *Spawner) RecordSubagentDuration(d time.Duration) {
 	if s.pa != nil {
 		s.pa.RecordSubagentDuration(d)
 	}
+}
+
+// SetLifecycleCtx sets the context used for cancellable background work
+// (embedding refresh on config reload). Should be called once after
+// NewSpawner, before the server starts accepting requests.
+func (s *Spawner) SetLifecycleCtx(ctx context.Context) {
+	s.ctxMu.Lock()
+	s.lifecycleCtx = ctx
+	s.ctxMu.Unlock()
+}
+
+func (s *Spawner) getLifecycleCtx() context.Context {
+	s.ctxMu.RLock()
+	defer s.ctxMu.RUnlock()
+	if s.lifecycleCtx != nil {
+		return s.lifecycleCtx
+	}
+	return context.Background()
 }
 
 // CloseMCPConnections closes all cached MCP subprocess clients. Call on
@@ -513,7 +544,7 @@ func (s *Spawner) Spawn(ctx context.Context, req *SpawnRequest) (*SpawnResult, e
 	// Step Plan Mode (ADDED 2026-10-10): if enabled, run a Planner Phase
 	// before the interceptor chain. The plan is injected into
 	// AdditionalPromptContext so the executor sees it.
-	// See docs/plan/STEP_PLAN_MODE_DESIGN.md §2.2.
+	// See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §2.2.
 	//
 	// Auto-detection (§9): if EnableStepPlan is not explicitly set, check
 	// StepPlanConfig.EnableProbe and run shouldEnableStepPlan (keyword +

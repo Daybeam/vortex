@@ -11,7 +11,7 @@ import (
 )
 
 // ─── Plug-and-Play Extension Points ─────────────────────────────────────────
-// Design ref: docs/architecture/PLUG_AND_PLAY_EXTENSION_POINTS.md
+// Design ref: docs/completed/2026-09-14/PLUG_AND_PLAY_EXTENSION_POINTS.md
 //
 // Three abstractions that future-proof the core for distributed/cloud evolution.
 // Current implementations are local (filesystem, in-memory, sync.RWMutex).

@@ -400,7 +400,13 @@ func ParseDeclaredArtifactFields(text string) map[string][]string {
 // section.
 func normalizeDeclaredName(name string) string {
 	rel := strings.TrimSpace(name)
-	for _, prefix := range []string{"$WORKSPACE/", "/workspace/", "workspace/", "/"} {
+	// Strip workspace prefixes but NOT a bare "/": on Linux an absolute path
+	// like /tmp/.../report.json would be truncated to tmp/.../report.json,
+	// causing wakeContractPath to miss the filepath.IsAbs branch and add a
+	// spurious second contract. The "/workspace/" prefix is already handled
+	// above, and a bare "/x" on Linux is a root-level path that should stay
+	// absolute so wakeContractPath can reject it via filepath.Rel.
+	for _, prefix := range []string{"$WORKSPACE/", "/workspace/", "workspace/"} {
 		if strings.HasPrefix(rel, prefix) {
 			rel = strings.TrimPrefix(rel, prefix)
 		}

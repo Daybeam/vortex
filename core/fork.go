@@ -16,7 +16,7 @@ import (
 // and all downstream steps are reset to Pending for re-execution.
 // The workspace is physically copied so the forked task has its own files.
 //
-// Design ref: docs/architecture/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
+// Design ref: docs/completed/2026-09-14/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
 func (s *DirectedEngine) ForkTask(sourceTaskID, targetStepID string) (string, error) {
 	s.Mu.RLock()
 	sourceGraph, ok := s.graphs[sourceTaskID]

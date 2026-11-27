@@ -22,9 +22,9 @@ func (s *Sieve) SetSystemOneProvider(p *providers.SystemOneProvider, cfg config.
 // a "noul" question to judge whether the output is safe and correct.
 // Returns (isValid, reason). When System One is not configured or disabled,
 // this is equivalent to Inspect.
-func (s *Sieve) InspectWithSystemOne(ctx context.Context, text, requiredSchema string) (bool, string) {
-	// Step 1: heuristic checks (repetition, schema) — always run.
-	valid, reason := s.Inspect(text, requiredSchema)
+func (s *Sieve) InspectWithSystemOne(ctx context.Context, text string) (bool, string) {
+	// Step 1: heuristic repetition checks — always run.
+	valid, reason := s.Inspect(text)
 	if !valid {
 		return false, reason
 	}
@@ -86,7 +86,7 @@ func (s *Sieve) InspectWithSystemOne(ctx context.Context, text, requiredSchema s
 
 // ─── Plan Drift Detection (#4, ADDED 2026-10-10) ──────────────────────────
 //
-// See docs/plan/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
+// See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §2.3 + §10.3.
 // Advisory (non-blocking): detects when a tool call deviates from the
 // step plan and returns a steer message. The ChatHarness appends this
 // to the last tool result so the model sees it on the next turn.

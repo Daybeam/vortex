@@ -33,7 +33,7 @@ const (
 	// MarkerSystemDegrade prefixes cycle-breaker degrade notice.
 	MarkerSystemDegrade = "[SYSTEM DEGRADE]"
 	// MarkerPreviousOutput wraps the delta-backtrack previous output summary.
-	// ADDED (2026-10-17). See docs/plan/DELTA_BACKTRACK_DESIGN.md.
+	// ADDED (2026-10-17). See docs/completed/2026-10-17/DELTA_BACKTRACK_DESIGN.md.
 	MarkerPreviousOutput = "[PREVIOUS OUTPUT]"
 	// MarkerPrevFailureAntiPattern wraps historical pitfall warnings.
 	MarkerPrevFailureAntiPattern = "[PREVIOUS FAILURE ANTI-PATTERN]"

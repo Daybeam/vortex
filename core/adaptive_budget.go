@@ -68,7 +68,7 @@ func (e *IRTBudgetEstimator) CalculateAdaptiveTurns(taskDesc string, fileCount i
 // - theta > 0 (capable model): exponent shrinks → tighter budget for hard tasks.
 // - theta < 0 (weak model): exponent grows → more turns to compensate.
 //
-// See docs/architecture/MODEL_CAPABILITY_AND_INTELLIGENT_ROUTING_ROADMAP.md §2 Module C.
+// See docs/completed/2026-09-19/MODEL_CAPABILITY_AND_INTELLIGENT_ROUTING_ROADMAP.md §2 Module C.
 func (e *IRTBudgetEstimator) CalculateAdaptiveTurnsWithTheta(taskDesc string, fileCount int, historicalAvg float64, theta float64) int {
 	difficulty := e.EstimateDifficulty(taskDesc, fileCount)
 
