@@ -3,17 +3,19 @@ package chat
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
 
 // Regression (V10 in docs/plan/VERIFIED_ISSUES_2026-11-11.md; spec §8.2 of
-// docs/plan/DELEGATION_INTENT_TRIGGER_ANALYSIS.md): the summary line carried
+// docs/completed/2026-11-24/DELEGATION_INTENT_TRIGGER_ANALYSIS.md): the summary line carried
 // only aggregate counts, so neither "which tools did the model call" nor "how
 // many were on the table" could be answered from a retained log. offered/called
 // was uncomputable, and the trace that could answer it is rotated away (V5).
@@ -137,17 +139,69 @@ func TestChatTurnSummary_CarriesToolHistogramAndOfferedTools(t *testing.T) {
 		"tool_calls=3",
 		"turns=3",
 		"offered_tools=" + strconv.Itoa(wantOffered),
+		"cap_scope=harness_turns requested_cap=5 effective_cap=5 used_turns=3 remaining=2",
+		"eta_task=na eta_seconds=na eta_basis=unknown watchdog_delay_seconds=na",
+		"budget_stop_reason=none",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("summary line missing %q.\nline: %s", want, line)
 		}
 	}
-	// Existing keys must keep their names and order; the new state rides on the
-	// end of the line (same contract as TestChatTurnSummary_CarriesContractObservation).
-	if !strings.HasSuffix(line, "offered_tools="+strconv.Itoa(wantOffered)) {
-		t.Errorf("new fields must be appended, not interleaved.\nline: %s", line)
+	// Existing keys keep their order; budget observations are appended after
+	// offered_tools rather than interleaved into the historical prefix.
+	offeredAt := strings.Index(line, "offered_tools=")
+	budgetAt := strings.Index(line, "requested_cap=")
+	if offeredAt < 0 || budgetAt < offeredAt {
+		t.Errorf("budget fields must be appended after offered_tools.\nline: %s", line)
 	}
 	if wantOffered == 0 {
 		t.Error("offered_tools=0 would make offered/called meaningless")
+	}
+}
+
+// Regression for docs/plan/ENGINE_EVAL_VALIDATION_PLAN-2026-11-27.md Phase A:
+// the summary must distinguish requested/effective caps, retain ETA evidence,
+// and classify provider-budget exhaustion without inventing request counts.
+func TestChatTurnSummary_CarriesBudgetETAWatchdogAndStopReason(t *testing.T) {
+	var logs bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(prevOut)
+
+	status := map[string]any{
+		"status": "running",
+		"steps": map[string]any{
+			"s1": map[string]any{"status": "ok"},
+			"s2": map[string]any{"status": "pending"},
+		},
+	}
+	h := &ChatHarness{DelegateStatus: func(taskID string, wait time.Duration) (map[string]any, bool) {
+		if taskID != "task-eta" || wait != 0 {
+			t.Fatalf("unexpected status lookup task=%q wait=%v", taskID, wait)
+		}
+		return status, true
+	}}
+	h.pd.taskID = "task-eta"
+	stats := newRunStats(0, 0)
+	stats.turns = 2
+	stats.emitSummary(h, "task-budget", &providers.BudgetExhaustedError{Msg: "spent"}, &exploreGuard{}, 0, 0)
+
+	line := logs.String()
+	eta := EstimateETA(status, time.Now())
+	for _, want := range []string{
+		"cap_scope=harness_turns requested_cap=0 effective_cap=" + strconv.Itoa(DefaultMaxTurns),
+		"used_turns=2 remaining=" + strconv.Itoa(DefaultMaxTurns-2),
+		"eta_task=task-eta",
+		fmt.Sprintf("eta_seconds=%.1f", eta.Remaining.Seconds()),
+		"eta_basis=" + string(eta.Basis),
+		fmt.Sprintf("watchdog_delay_seconds=%.1f", eta.WatchdogDelay().Seconds()),
+		"budget_stop_reason=provider_budget",
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("summary line missing %q.\nline: %s", want, line)
+		}
+	}
+	if strings.Contains(line, "provider_requests=") || strings.Contains(line, "reserved_cap=") {
+		t.Errorf("summary fabricated a provider-request ledger or fixed reserve.\nline: %s", line)
 	}
 }

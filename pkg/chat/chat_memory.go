@@ -30,6 +30,7 @@ type RollingWindowMemory struct {
 	WindowSize   int                // recent N turns kept raw (default: 10)
 	SummaryModel providers.Provider // optional LLM for summarization (nil = rule-based)
 	FactCache    *FactCache         // optional fact extraction (nil = skip)
+	MemoryBank   *store.MemoryBankStore // optional: read settled preferences (replaces FactCache in production)
 	MaxTokens    int                // optional token budget (0 = no limit)
 }
 
@@ -44,7 +45,9 @@ func NewRollingWindowMemory(windowSize int) *RollingWindowMemory {
 // Process implements ChatMemoryManager.
 func (m *RollingWindowMemory) Process(ctx context.Context, sessionID string, history []ChatMessage) []ChatMessage {
 	var facts string
-	if m.FactCache != nil {
+	if m.MemoryBank != nil {
+		facts = loadSettledPreferences(m.MemoryBank)
+	} else if m.FactCache != nil {
 		facts = m.FactCache.ExtractAndInject(history)
 	}
 
@@ -242,6 +245,24 @@ func (fc *FactCache) ExtractAndInject(history []ChatMessage) string {
 	}
 
 	return "Durable facts:\n" + strings.Join(facts, "\n")
+}
+
+// loadSettledPreferences reads UserProfile.Preferences from the MemoryBankStore
+// and formats them as a facts string for injection into chat history. This is
+// the async-settled read path — extraction/persistence is handled by
+// UserProfileIndexer. Spec: docs/completed/2026-11-27/USER_PROFILE_INCREMENTAL_INDEXER.md §5.2
+func loadSettledPreferences(mbStore *store.MemoryBankStore) string {
+	if mbStore == nil {
+		return ""
+	}
+	mb, err := mbStore.Load()
+	if err != nil {
+		return ""
+	}
+	if len(mb.UserProfile.Preferences) == 0 {
+		return ""
+	}
+	return "Durable facts:\n" + strings.Join(mb.UserProfile.Preferences, "\n")
 }
 
 func mergeUnique(existing, additions []string) []string {

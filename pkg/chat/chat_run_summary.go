@@ -1,12 +1,14 @@
 package chat
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/daybeam/vortex/providers"
 	"github.com/daybeam/vortex/schemas"
 )
 
@@ -97,9 +99,44 @@ func (s *runStats) emitSummary(h *ChatHarness, taskID string, err error, eg *exp
 	}
 	log.Printf("[chat-turn-summary] task=%s exit=%s turns=%d tool_calls=%d code_exec=%d "+
 		"writes=%d distinct_targets=%d steer_no_text=%d repeated_write=%d contract_declared=%d contract_steer=%d "+
-		"contract_defect_steer=%d fields_declared=%d explore_streak_max=%d explore_steer=%d explore_level=%d post_deleg=%s post_deleg_blocked=%d calls_after_deleg=%d delegated=%d post_deleg_polls=%d post_deleg_poll_blocked=%d elapsed=%.1fs %s tool_histogram=%s offered_tools=%d",
+		"contract_defect_steer=%d fields_declared=%d explore_streak_max=%d explore_steer=%d explore_level=%d post_deleg=%s post_deleg_blocked=%d calls_after_deleg=%d delegated=%d post_deleg_polls=%d post_deleg_poll_blocked=%d fastpath_hit=%v elapsed=%.1fs %s tool_histogram=%s offered_tools=%d %s",
 		taskID, reason, s.turns, s.toolCalls, s.codeExec, eg.writeTotal,
 		len(eg.writeTargets), s.noTextSteers, eg.repeatedWriteSteers, s.contractDeclared, contractSteers,
-		contractDefectSteers, s.fieldsDeclared, eg.streakMax, eg.steers, eg.level, h.pd.arm, h.pd.blocked, h.pd.after, h.pd.delegations, h.pd.polls, h.pd.pollBlocked,
-		time.Since(s.start).Seconds(), h.contractObservation(), s.histogram(), s.offeredTools)
+		contractDefectSteers, s.fieldsDeclared, eg.streakMax, eg.steers, eg.level, h.pd.arm, h.pd.blocked, h.pd.after, h.pd.delegations, h.pd.polls, h.pd.pollBlocked, h.pd.fastpathHit,
+		time.Since(s.start).Seconds(), h.contractObservation(), s.histogram(), s.offeredTools, s.budgetObservation(h, err))
+}
+
+// turns is the harness loop counter, not a provider-request ledger.
+func (s *runStats) budgetObservation(h *ChatHarness, err error) string {
+	effective := h.MaxTurns
+	if effective <= 0 {
+		effective = DefaultMaxTurns
+	}
+	remaining := effective - s.turns
+	if remaining < 0 {
+		remaining = 0
+	}
+	stopReason := "none"
+	var budget *providers.BudgetExhaustedError
+	if errors.As(err, &budget) {
+		stopReason = "provider_budget"
+	}
+	return fmt.Sprintf("cap_scope=harness_turns requested_cap=%d effective_cap=%d used_turns=%d remaining=%d %s budget_stop_reason=%s",
+		h.MaxTurns, effective, s.turns, remaining, delegationETAObservation(h), stopReason)
+}
+
+func delegationETAObservation(h *ChatHarness) string {
+	if h.pd.taskID == "" || h.DelegateStatus == nil {
+		return "eta_task=na eta_seconds=na eta_basis=unknown watchdog_delay_seconds=na"
+	}
+	st, ok := h.DelegateStatus(h.pd.taskID, 0)
+	if !ok || st == nil {
+		return fmt.Sprintf("eta_task=%s eta_seconds=na eta_basis=unknown watchdog_delay_seconds=na", h.pd.taskID)
+	}
+	eta := EstimateETA(st, time.Now())
+	if !eta.Known() {
+		return fmt.Sprintf("eta_task=%s eta_seconds=na eta_basis=%s watchdog_delay_seconds=na", h.pd.taskID, eta.Basis)
+	}
+	return fmt.Sprintf("eta_task=%s eta_seconds=%.1f eta_basis=%s watchdog_delay_seconds=%.1f",
+		h.pd.taskID, eta.Remaining.Seconds(), eta.Basis, eta.WatchdogDelay().Seconds())
 }
