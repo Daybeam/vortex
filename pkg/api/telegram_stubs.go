@@ -27,4 +27,4 @@ func tgCall(token string, client *http.Client, method string, body []byte, out a
 
 func tgRedact(token, s string) string { return s }
 
-func IsAdminCommand(cmd string) bool { return false }
+

@@ -28,8 +28,8 @@ import (
 // Lower these two numbers when the code shrinks. Raising them needs the user's
 // decision on Q6-1 again, not a test edit.
 const (
-	chatHarnessFileCeiling = 908
-	chatHarnessRunCeiling  = 577
+	chatHarnessFileCeiling = 347
+	chatHarnessRunCeiling  = 21
 )
 
 func TestChatHarnessSize_RatchetOnlyTightens(t *testing.T) {

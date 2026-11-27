@@ -1,0 +1,132 @@
+{
+  "cases": [
+    {
+      "id": "must_call_chrome_devtools_screenshot",
+      "type": "must_call",
+      "description": "Baseline sanity: an unrestricted binding with a task that clearly needs a specific tool must surface that tool. This is the simplest possible regression lock for ToolRouter.Route -- if this ever fails, something fundamental broke.",
+      "task": "\u8bf7\u7ed9\u5f53\u524d\u9875\u9762\u622a\u4e00\u5f20\u56fe",
+      "bindings": [
+        {
+          "mcp_id": "chrome-devtools",
+          "available_tools": ["take_screenshot", "navigate_page", "click", "type_text", "list_pages", "list_console_messages", "list_network_requests", "handle_dialog"],
+          "allowed_tools": []
+        }
+      ],
+      "assertions": [
+        {"mcp_id": "chrome-devtools", "must_include": ["take_screenshot"], "severity": "critical"}
+      ]
+    },
+    {
+      "id": "must_call_unrestricted_never_narrowed_below_gold",
+      "type": "must_call",
+      "description": "Regresses F11 (06-27 addendum): an unrestricted binding (allowed_tools empty) whose task text does not happen to contain any English affinity keyword must still get its FULL tool set back, not a guessed read/list/search/status subset. This was the original 'no browser keyword -> take_screenshot silently missing' bug.",
+      "task": "\u8bf7\u786e\u8ba4\u9875\u9762\u72b6\u6001\u662f\u5426\u6b63\u5e38",
+      "bindings": [
+        {
+          "mcp_id": "chrome-devtools",
+          "available_tools": ["take_screenshot", "navigate_page", "click", "type_text", "list_pages", "list_console_messages", "list_network_requests", "handle_dialog"],
+          "allowed_tools": []
+        }
+      ],
+      "assertions": [
+        {"mcp_id": "chrome-devtools", "must_include": ["take_screenshot", "navigate_page", "click", "type_text", "list_pages", "list_console_messages", "list_network_requests", "handle_dialog"], "severity": "critical"}
+      ]
+    },
+    {
+      "id": "substring_trap_gitnexus_vs_git_category",
+      "type": "substring_trap",
+      "description": "Regresses the F11/F15/06-30-addendum-third-regression bug class: the literal substring 'git' inside the MCP name 'gitnexus' must NOT whole-word-match the 'git' affinity category and narrow an UNRELATED binding's tool set. Mirrors the exact repro from the 07-19 addendum SS31.4 (gitnexus mention polluting chrome-devtools down to a single tool).",
+      "task": "\u8bf7\u4f7f\u7528 gitnexus \u67e5\u770b commit log \u5386\u53f2",
+      "bindings": [
+        {
+          "mcp_id": "gitnexus",
+          "available_tools": ["query", "context", "explore", "trace"],
+          "allowed_tools": []
+        },
+        {
+          "mcp_id": "chrome-devtools",
+          "available_tools": ["take_screenshot", "navigate_page", "click", "type_text", "list_pages", "list_console_messages", "list_network_requests", "handle_dialog"],
+          "allowed_tools": []
+        }
+      ],
+      "assertions": [
+        {"mcp_id": "chrome-devtools", "must_include": ["take_screenshot", "navigate_page", "click", "type_text", "list_pages", "list_console_messages", "list_network_requests", "handle_dialog"], "severity": "critical"}
+      ]
+    },
+    {
+      "id": "substring_trap_log_vs_handle_dialog",
+      "type": "substring_trap",
+      "description": "Regresses F15: the 'log' sub-keyword under the 'git' affinity category must NOT token-match 'handle_dialog' (tokens: handle, dialog -- neither equals 'log'). This is the second half of the same historical bug; the first half (whole-word category-trigger match) is covered by substring_trap_gitnexus_vs_git_category above. Uses a RESTRICTED binding with a large tool list so a real relevance filter actually runs (small/unrestricted lists short-circuit to 'keep everything').",
+      "task": "\u8bf7\u67e5\u770b git log \u8bb0\u5f55",
+      "bindings": [
+        {
+          "mcp_id": "chrome-devtools",
+          "available_tools": ["take_screenshot", "navigate_page", "click", "type_text", "list_pages", "list_console_messages", "list_network_requests", "handle_dialog", "a1", "a2", "a3", "a4", "a5"],
+          "allowed_tools": ["take_screenshot", "navigate_page", "click", "type_text", "list_pages", "list_console_messages", "list_network_requests", "handle_dialog", "a1", "a2", "a3", "a4", "a5"]
+        }
+      ],
+      "assertions": [
+        {"mcp_id": "chrome-devtools", "must_not_include": ["handle_dialog"], "severity": "critical", "note": "handle_dialog should NOT be selected via a 'git'->'log' affinity leak into an unrelated MCP's tool list."}
+      ]
+    },
+    {
+      "id": "confusion_negative_growth_not_price",
+      "type": "confusion_negative",
+      "description": "Semantic (not lexical) confusion negative: a restricted binding should surface the tool that actually answers a growth-rate question rather than a plain quote lookup. This is the kind of case that can only be caught by explicit gold data, not by the routing algorithm alone -- kept informational (non-gating) since it depends on affinity-keyword coverage that may legitimately need tuning over time.",
+      "task": "\u4e9a\u9a6c\u900a\u8425\u6536\u589e\u957f\u7387\u662f\u591a\u5c11\uff1f",
+      "bindings": [
+        {
+          "mcp_id": "quotes",
+          "available_tools": ["get_quote", "get_fundamentals"],
+          "allowed_tools": ["get_quote", "get_fundamentals"]
+        }
+      ],
+      "assertions": [
+        {"mcp_id": "quotes", "must_include": ["get_fundamentals"], "severity": "informational"}
+      ]
+    },
+    {
+      "id": "hybrid_rrf_cap_must_not_narrow_unrestricted_below_gold",
+      "type": "must_call",
+      "description": "Regression lock for the 2026-09-01 Unified Hybrid Search (RRF) feature: when the task's string-channel matches MORE than 5 tools for an UNRESTRICTED binding (allowed_tools empty) and no BM25/embedding signal is configured (the actual production configuration -- core/spawner.go's NewToolRouter never wires up BM25Corpus/EmbedClient), the router must not silently cap the result to an arbitrary top-5 subset with non-deterministic tie-breaking. Uses direct tool-name substring matches (isRelevant rule 1) so all 8 available tools match the string channel deterministically, independent of the affinity-keyword map.",
+      "task": "please call take_screenshot navigate_page click type_text list_pages list_console_messages list_network_requests handle_dialog in sequence",
+      "bindings": [
+        {
+          "mcp_id": "chrome-devtools",
+          "available_tools": ["take_screenshot", "navigate_page", "click", "type_text", "list_pages", "list_console_messages", "list_network_requests", "handle_dialog"],
+          "allowed_tools": []
+        }
+      ],
+      "assertions": [
+        {"mcp_id": "chrome-devtools", "must_include": ["take_screenshot", "navigate_page", "click", "type_text", "list_pages", "list_console_messages", "list_network_requests", "handle_dialog"], "severity": "critical", "note": "all 8 tools matched the string channel directly by name; the router must not cap an unrestricted binding to a top-5 subset when no BM25/embedding signal is configured."}
+      ]
+    },
+    {
+      "id": "must_call_flat_family_match_survives_tight_budget",
+      "type": "must_call",
+      "description": "Locks rank-fusion tie handling (regression found 2026-10-19). The task names a service whose tools all share the prefix token 'billing', so the lexical matcher scores the whole family identically. A rank-based fusion must not convert a channel with no ordering information into an alphabetical ordering: if it does, the alphabetically early members consume the whole schema budget and the tool carrying the task's action verb is never offered. A missed tool is unrecoverable by anything the model does (docs/architecture/ROUTING_DIAG.md), so this is critical. The budget is deliberately tight so the assertion is about ranking, not about the fixture fitting in the budget at all.",
+      "task": "In the billing service, void the bill",
+      "bindings": [
+        {"mcp_id": "billing", "available_tools": ["billing__add_account", "billing__add_card", "billing__archive_bill", "billing__create_bill", "billing__delete_bill", "billing__list_bills", "billing__pay_bill", "billing__refund_bill", "billing__show_account", "billing__show_bill", "billing__update_bill", "billing__void_bill"], "allowed_tools": []}
+      ],
+      "bm25_docs": {
+        "billing__add_account": "[Tool:billing__add_account] billing add account",
+        "billing__add_card": "[Tool:billing__add_card] billing add card",
+        "billing__archive_bill": "[Tool:billing__archive_bill] billing archive bill",
+        "billing__create_bill": "[Tool:billing__create_bill] billing create bill",
+        "billing__delete_bill": "[Tool:billing__delete_bill] billing delete bill",
+        "billing__list_bills": "[Tool:billing__list_bills] billing list bills",
+        "billing__pay_bill": "[Tool:billing__pay_bill] billing pay bill",
+        "billing__refund_bill": "[Tool:billing__refund_bill] billing refund bill",
+        "billing__show_account": "[Tool:billing__show_account] billing show account",
+        "billing__show_bill": "[Tool:billing__show_bill] billing show bill",
+        "billing__update_bill": "[Tool:billing__update_bill] billing update bill",
+        "billing__void_bill": "[Tool:billing__void_bill] billing void bill"
+      },
+      "max_token_budget": 40,
+      "assertions": [
+        {"mcp_id": "billing", "must_include": ["billing__void_bill"], "severity": "critical", "note": "The only member carrying the action verb; sorts last by name."}
+      ]
+    }
+  ]
+}
