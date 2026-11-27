@@ -31,6 +31,7 @@ type Registry struct {
 	RequirePlanReview        bool
 	SwarmModeEnabled         bool
 	StepPlan                 StepPlanConfig
+	ACP                      ACPConfig
 	RoleCookbookSource       string
 	RoleCookbookSources      map[string]string
 	SkillSyncSources         map[string]string // trusted repos for periodic skill sync, e.g. {"general": "mattpocock/skills"}
@@ -91,11 +92,11 @@ func (r *Registry) SetEnvReloadHook(hook func()) {
 
 // ProviderHealth tracks the reliability of a specific provider.
 type ProviderHealth struct {
-	LastFailure     time.Time
-	FailureCount    int
-	CircuitOpened   bool
-	CooldownUntil   time.Time
-	WasCoolingDown  bool // tracks cooldown→recovery transition (admin lifecycle §3.2)
+	LastFailure    time.Time
+	FailureCount   int
+	CircuitOpened  bool
+	CooldownUntil  time.Time
+	WasCoolingDown bool // tracks cooldown→recovery transition (admin lifecycle §3.2)
 }
 
 // GetWorkspacePolicy returns the WorkspacePolicy that applies to ownerID.

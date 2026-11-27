@@ -261,6 +261,11 @@ func (r *Registry) loadLocked() error {
 	r.DefaultEmbeddingProvider = cfg.DefaultEmbeddingProvider
 	r.GlobalFallback = cfg.GlobalFallback
 	r.ExternalRuntimes = cfg.ExternalRuntimes
+	r.ACP = cfg.ACP
+	r.ACP.Dialect = strings.ToLower(strings.TrimSpace(r.ACP.Dialect))
+	if r.ACP.Dialect != "standard" && r.ACP.Dialect != "legacy" {
+		r.ACP.Dialect = "auto"
+	}
 	r.System = cfg.System
 	r.applySystemDefaults()
 

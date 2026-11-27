@@ -650,6 +650,8 @@ type SystemSettings struct {
 	ConfidenceThreshold float64 `json:"confidence_threshold"`
 	MaxDecisionOutcomes int     `json:"max_decision_outcomes"`
 	MaxContextKeep      int     `json:"max_context_keep"`
+	VerifierProvider    string  `json:"verifier_provider,omitempty"`
+	VerifierModel       string  `json:"verifier_model,omitempty"`
 	// ApprovalExpiry caps how long a human_approval_required decision stays
 	// approvable. nil ⇒ default 30m; *0 (or negative) ⇒ never expires (stays
 	// pending until approved/rejected). Seconds.
@@ -750,6 +752,15 @@ type SystemSettings struct {
 	ChatMaxTurns     int     `json:"chat_max_turns,omitempty"`
 	WakeReserve      int     `json:"wake_reserve,omitempty"`
 	WakeReserveRatio float64 `json:"wake_reserve_ratio,omitempty"`
+	// UserProfileIndexerThreshold is the number of new user messages that
+	// triggers an immediate flush of the user-profile indexer. 0 = default 10.
+	// Spec: docs/completed/2026-11-27/USER_PROFILE_INCREMENTAL_INDEXER.md §3
+	UserProfileIndexerThreshold int `json:"user_profile_indexer_threshold,omitempty"`
+	// UserProfileIndexerInterval is the fallback flush interval for the
+	// user-profile indexer (e.g. "1h", "30m"). Empty = default "1h".
+	// The timer only fires when there are pending (unprocessed) messages;
+	// zero pending → skip. Spec: docs/completed/2026-11-27/USER_PROFILE_INCREMENTAL_INDEXER.md §3
+	UserProfileIndexerInterval string `json:"user_profile_indexer_interval,omitempty"`
 	// ReadinessGateSoft softens the delegation readiness gate language from
 	// "NEVER blindly delegate" to a suggestion. Set true for weak models (≤7B)
 	// that over-apply the hard rule and ask excessive clarifying questions

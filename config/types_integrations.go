@@ -10,7 +10,7 @@ type NotificationRoute struct {
 	TriggerOn  []string `json:"trigger_on,omitempty"`   // empty = Tier 0 (task_completed + task_failed)
 	TargetURL  string   `json:"target_url"`
 	SecretEnv  string   `json:"secret_env"`
-	Enabled    bool     `json:"enabled"` // per-route on/off; default false for safety
+	Enabled    bool     `json:"enabled"`           // per-route on/off; default false for safety
 	Channel    string   `json:"channel,omitempty"` // "" | "webhook" (default) | "telegram" | …
 	ChatID     string   `json:"chat_id,omitempty"` // telegram chat ID (Channel="telegram")
 }
@@ -48,37 +48,37 @@ type ExternalRuntimes struct {
 }
 
 type Config struct {
-	DefaultProvider          string                    `json:"default_provider"`
-	DefaultEmbeddingProvider string                    `json:"default_embedding_provider,omitempty"`
+	DefaultProvider          string `json:"default_provider"`
+	DefaultEmbeddingProvider string `json:"default_embedding_provider,omitempty"`
 	// GlobalFallback is a system-wide fallback chain applied to any provider
 	// that does NOT have its own FallbackChain configured. Providers with an
 	// explicit FallbackChain are unaffected (per-provider takes precedence).
 	// Each entry is a ProviderConfig, created via the factory and wrapped with
 	// retry/rate-limit just like a normal provider. Enable by adding one or
 	// more entries here; leave empty/absent for no global fallback (default).
-	GlobalFallback []ProviderConfig `json:"global_fallback,omitempty"`
-	Providers                map[string]ProviderConfig `json:"providers"`
-	Skills                   []Skill                   `json:"skills"`
-	MCPs                     []MCPDef                  `json:"mcps"`
-	Roles                    []Role                    `json:"roles"`
-	RoleGroups               []RoleGroup               `json:"role_groups,omitempty"`
-	SOPs                     []schemas.SOP             `json:"sops,omitempty"`
-	ExternalRuntimes         ExternalRuntimes          `json:"external_runtimes"`
-	System                   SystemSettings            `json:"system"`
-	EnableDynamicRoleGen     bool                      `json:"enable_dynamic_role_gen"`
-	EnableEphemeralRoleGen   bool                      `json:"enable_ephemeral_role_gen"`
-	RequirePlanReview        bool                      `json:"require_plan_review"`
-	SwarmModeEnabled         bool                      `json:"swarm_mode_enabled"`
-	RoleCookbookSource       string                    `json:"role_cookbook_source,omitempty"`
-	RoleCookbookSources      map[string]string         `json:"role_cookbook_sources,omitempty"`
-	SkillsDir                string                    `json:"skills_dir,omitempty"`
-	RolesDir                 string                    `json:"roles_dir,omitempty"`
-	SplitLayout              *SplitLayout              `json:"_split_layout,omitempty"`
+	GlobalFallback         []ProviderConfig          `json:"global_fallback,omitempty"`
+	Providers              map[string]ProviderConfig `json:"providers"`
+	Skills                 []Skill                   `json:"skills"`
+	MCPs                   []MCPDef                  `json:"mcps"`
+	Roles                  []Role                    `json:"roles"`
+	RoleGroups             []RoleGroup               `json:"role_groups,omitempty"`
+	SOPs                   []schemas.SOP             `json:"sops,omitempty"`
+	ExternalRuntimes       ExternalRuntimes          `json:"external_runtimes"`
+	System                 SystemSettings            `json:"system"`
+	EnableDynamicRoleGen   bool                      `json:"enable_dynamic_role_gen"`
+	EnableEphemeralRoleGen bool                      `json:"enable_ephemeral_role_gen"`
+	RequirePlanReview      bool                      `json:"require_plan_review"`
+	SwarmModeEnabled       bool                      `json:"swarm_mode_enabled"`
+	RoleCookbookSource     string                    `json:"role_cookbook_source,omitempty"`
+	RoleCookbookSources    map[string]string         `json:"role_cookbook_sources,omitempty"`
+	SkillsDir              string                    `json:"skills_dir,omitempty"`
+	RolesDir               string                    `json:"roles_dir,omitempty"`
+	SplitLayout            *SplitLayout              `json:"_split_layout,omitempty"`
 	// SkillSyncSources (legacy) configures trusted GitHub repos for periodic
 	// skill sync. Automatically converted to DiscoverySources entries at load
 	// time. New configs should use system.discovery_sources instead.
 	// See docs/completed/2026-11-13/DISCOVERY_SOURCE_ARCHITECTURE_DESIGN.md §4.3.2.
-	SkillSyncSources         map[string]string         `json:"skill_sync_sources,omitempty"`
+	SkillSyncSources map[string]string `json:"skill_sync_sources,omitempty"`
 	// WALCheckpoint records the ID of the last WAL commit already reflected
 	// in this snapshot (set automatically by persistLocked whenever a WAL is
 	// active). On the next load, ReplaySince uses this to skip commits that
@@ -91,6 +91,11 @@ type Config struct {
 	// StepPlan (ADDED 2026-10-10): configures automatic step-plan mode.
 	// See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md §9.
 	StepPlan StepPlanConfig `json:"step_plan,omitempty"`
+	ACP      ACPConfig      `json:"acp,omitempty"`
+}
+
+type ACPConfig struct {
+	Dialect string `json:"dialect,omitempty"`
 }
 
 // StepPlanConfig controls automatic step-plan mode activation.
