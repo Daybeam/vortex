@@ -106,12 +106,37 @@ func writeScheduleJSON(path string, schedules []*schemas.Schedule) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+func cloneSchedule(s *schemas.Schedule) *schemas.Schedule {
+	if s == nil {
+		return nil
+	}
+	cloned := *s
+	cloned.TaskInputs = append([]schemas.StepInput(nil), s.TaskInputs...)
+	return &cloned
+}
+
+func scheduleVisible(s *schemas.Schedule, ownerID string, includeAll bool) bool {
+	return s != nil && (includeAll || s.OwnerID != "" && s.OwnerID == ownerID)
+}
+
 func (ss *ScheduleStore) List() []*schemas.Schedule {
 	ss.Mu.RLock()
 	defer ss.Mu.RUnlock()
 	var list []*schemas.Schedule
 	for _, s := range ss.Schedules {
-		list = append(list, s)
+		list = append(list, cloneSchedule(s))
+	}
+	return list
+}
+
+func (ss *ScheduleStore) ListVisible(ownerID string, includeAll bool) []*schemas.Schedule {
+	ss.Mu.RLock()
+	defer ss.Mu.RUnlock()
+	var list []*schemas.Schedule
+	for _, s := range ss.Schedules {
+		if scheduleVisible(s, ownerID, includeAll) {
+			list = append(list, cloneSchedule(s))
+		}
 	}
 	return list
 }
@@ -119,10 +144,21 @@ func (ss *ScheduleStore) List() []*schemas.Schedule {
 func (ss *ScheduleStore) Get(id string) *schemas.Schedule {
 	ss.Mu.RLock()
 	defer ss.Mu.RUnlock()
-	return ss.Schedules[id]
+	return cloneSchedule(ss.Schedules[id])
+}
+
+func (ss *ScheduleStore) GetVisible(id, ownerID string, includeAll bool) *schemas.Schedule {
+	ss.Mu.RLock()
+	defer ss.Mu.RUnlock()
+	s := ss.Schedules[id]
+	if !scheduleVisible(s, ownerID, includeAll) {
+		return nil
+	}
+	return cloneSchedule(s)
 }
 
 func (ss *ScheduleStore) Set(s *schemas.Schedule) error {
+	s = cloneSchedule(s)
 	ss.Mu.Lock()
 	previous := ss.Schedules[s.ID]
 	ss.Schedules[s.ID] = s

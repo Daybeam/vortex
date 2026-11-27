@@ -15,7 +15,7 @@ type Metadata struct {
 	// mode (supplement missing fields rather than full re-run). Set by
 	// tryBacktrack before re-executing upstream; checked by prompt_assembler
 	// to inject PreviousOutputSummary. Cleared on user-initiated retry.
-	// See docs/plan/DELTA_BACKTRACK_DESIGN.md.
+	// See docs/completed/2026-10-17/DELTA_BACKTRACK_DESIGN.md.
 	DeltaBacktrack bool `json:"delta_backtrack,omitempty"`
 }
 
@@ -51,7 +51,7 @@ type StepInput struct {
 	// here no SOP or submit body could reach Case 2.5 (register O1).
 	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
 	// Cross-Family Debate (ADDED 2026-09-14): opt-in Proposer→Critic→Synthesizer loop.
-	// See docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
+	// See docs/completed/2026-09-14/CROSS_FAMILY_DEBATE_DESIGN.md
 	EnableDebate    bool `json:"enable_debate,omitempty"`
 	MaxDebateRounds int  `json:"max_debate_rounds,omitempty"` // hard-capped at 2
 	// EnableStepPlan (ADDED 2026-10-10): see Step.EnableStepPlan.
@@ -96,12 +96,11 @@ type StepInput struct {
 	// MaxLoopRounds bounds how many times a downstream step may trigger
 	// upstream backtracking via MissingContext before the cycle breaker
 	// fuses. 0 = disabled (not recommended — weak models may loop forever).
-	// See docs/architecture/CYCLE_BREAKER_DESIGN.md.
+	// See docs/completed/2026-09-16/CYCLE_BREAKER_DESIGN.md.
 	MaxLoopRounds int `json:"max_loop_rounds,omitempty"`
 
 	// InputDir declares a directory (relative to the session WorkspaceRoot)
 	// whose contents should be auto-copied into the task workspace at start.
-	// See docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2 ③.
 	// Empty = no input seeding (backward compatible).
 	InputDir string `json:"input_dir,omitempty"`
 
@@ -197,14 +196,14 @@ type Step struct {
 	AutoRefineCount int     `json:"auto_refine_count"`
 	RiskRating      float64 `json:"risk_rating"` // Captured numeric risk score
 	// Cross-Family Debate (ADDED 2026-09-14): opt-in Proposer→Critic→Synthesizer loop.
-	// See docs/architecture/CROSS_FAMILY_DEBATE_DESIGN.md
+	// See docs/completed/2026-09-14/CROSS_FAMILY_DEBATE_DESIGN.md
 	EnableDebate    bool `json:"enable_debate,omitempty"`
 	MaxDebateRounds int  `json:"max_debate_rounds,omitempty"` // hard-capped at 2
 
 	// EnableStepPlan (ADDED 2026-10-10): forces this Step through a Planner
 	// Phase before execution. The Planner generates a markdown plan using
 	// read-only tools; the Executor then receives the plan as context.
-	// See docs/plan/STEP_PLAN_MODE_DESIGN.md.
+	// See docs/completed/2026-10-26/STEP_PLAN_MODE_DESIGN.md.
 	EnableStepPlan bool `json:"enable_step_plan,omitempty"`
 
 	// OutputContract mirrors StepInput.OutputContract — the deterministic schema
@@ -265,7 +264,7 @@ type Step struct {
 	// summary for delta-backtrack injection. Set by tryBacktrack before
 	// re-executing upstream. Cleared when the step is fully re-executed
 	// by a user-initiated retry. ADDED (2026-10-17).
-	// See docs/plan/DELTA_BACKTRACK_DESIGN.md.
+	// See docs/completed/2026-10-17/DELTA_BACKTRACK_DESIGN.md.
 	PreviousOutputSummary string `json:"previous_output_summary,omitempty"`
 
 	// Perception 2.0
@@ -531,7 +530,6 @@ type TaskGraph struct {
 	decisionMu sync.RWMutex `json:"-"`
 
 	// Session-level workspace binding (ADDED 2026-09-19).
-	// See docs/completed/2026-09-19/WORKSPACE_AND_SANDBOX_REDESIGN.md §2.2 ②.
 	// When SessionID is empty, behavior is identical to legacy (backward compatible).
 	SessionID     string `json:"session_id,omitempty"`
 	WorkspaceRoot string `json:"workspace_root,omitempty"`
@@ -555,7 +553,7 @@ type TaskGraph struct {
 	FastPath bool `json:"fastpath,omitempty"`
 
 	// Time Travel & Fork (ADDED 2026-09-14): records task lineage for
-	// counterfactual branching. See docs/architecture/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
+	// counterfactual branching. See docs/completed/2026-09-14/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
 	ParentTaskID string `json:"parent_task_id,omitempty"` // if forked, points to source task
 	ForkedAtStep string `json:"forked_at_step,omitempty"` // step ID where fork occurred
 
@@ -563,7 +561,7 @@ type TaskGraph struct {
 	// referenced by this task's steps at submission time. If a JIT tool's
 	// global TTL expires mid-task, executeStep restores it from this snapshot
 	// so the task never hits "tool not found". See
-	// docs/architecture/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
+	// docs/completed/2026-09-15/TASK_LOCAL_CLOSURE_AND_FALLBACK_DESIGN.md §2.1.
 	// Stored as map[string]any (JSON-serialized *config.MCPDef) to avoid a
 	// circular dependency with the config package — same pattern as
 	// SessionRoles/SessionSkills above.
@@ -572,19 +570,19 @@ type TaskGraph struct {
 	// CycleCounters tracks active local-loop backtracking rounds.
 	// Key = cycle signature (sorted participant step IDs joined by ":")
 	// Value = current round count. Removed on fuse.
-	// See docs/architecture/CYCLE_BREAKER_DESIGN.md.
+	// See docs/completed/2026-09-16/CYCLE_BREAKER_DESIGN.md.
 	CycleCounters map[string]int `json:"cycle_counters,omitempty"`
 
 	// Substitutions records every instance where actual execution differed from
 	// the request (role fallback, MCP degradation, etc.). Surfaced in
 	// get_task_status so drift is visible without log mining.
-	// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
+	// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P3.
 	Substitutions []Substitution `json:"substitutions,omitempty"`
 
 	// Charter captures the task's intent, non-goals, and constraints.
 	// Optional — nil means "unspecified" and behavior is identical to
 	// pre-charter tasks (backward compatible).
-	// See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P1.
+	// See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P1.
 	Charter *TaskCharter `json:"charter,omitempty"`
 
 	// substitutionMu guards Substitutions append.

@@ -33,7 +33,7 @@ func (es *ExperienceStore) RecordTaskCompletion(ctx context.Context, taskID stri
 
 	// ── Co-occurrence Tracking (ADDED 2026-09-13) ──────────────────────
 	// Track consecutive capability pairs for Compound Skill crystallization.
-	// See docs/COMPOUND_SKILLS_DESIGN.md
+	// See docs/completed/2026-09-13/COMPOUND_SKILLS_DESIGN.md
 	es.trackCooccurrencesLocked(ctx, records)
 
 	if !success && attributableFailure {
@@ -475,7 +475,7 @@ func (es *ExperienceStore) updateStatePotentialsLocked(ctx context.Context, rec 
 
 // trackCooccurrencesLocked extracts consecutive capability pairs from step
 // records and upserts them into the tool_cooccurrence table. Caller MUST hold es.Mu.
-// ADDED (2026-09-13) — see docs/COMPOUND_SKILLS_DESIGN.md
+// ADDED (2026-09-13) — see docs/completed/2026-09-13/COMPOUND_SKILLS_DESIGN.md
 func (es *ExperienceStore) trackCooccurrencesLocked(ctx context.Context, records []StepRecord) {
 	var toSave []*CooccurrenceEntry // audit P-C2: batch saves to avoid goroutine storm
 	for i := 0; i < len(records)-1; i++ {
@@ -682,7 +682,7 @@ func (es *ExperienceStore) QueryRoleAdvice(ctx context.Context, roleID string) m
 // each skill used in a step. Caller must hold es.Mu.
 // ROI = (SuccessRate * 100) / max(Cost, 0.1)
 // Cost = w1*(Tokens/1000) + w2*(Latency/1000) + w3*RetryCount
-// See docs/METABOLIC_PRUNING_DESIGN.md
+// See docs/completed/2026-09-13/METABOLIC_PRUNING_DESIGN.md
 func (es *ExperienceStore) updateSkillMetabolicCostLocked(rec *StepRecord) {
 	success := rec.Status == "ok"
 	for _, skillID := range rec.Skills {

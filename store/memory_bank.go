@@ -73,7 +73,7 @@ func (s *MemoryBankStore) SetEmbeddingClient(cli IEmbeddingClient) {
 }
 
 // Save writes all MemoryBank categories to their respective markdown files.
-// ADDED 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 2.
+// ADDED 2026-10-17. See docs/completed/2026-10-17/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 2.
 // Self-healing §4 (2026-10-26): negative assertions in SystemPatterns and
 // Decisions are bounded with a temporal anchor to prevent unbounded
 // "client does not want X" / "API does not support Y" from blocking valid
@@ -247,7 +247,7 @@ func (s *MemoryBankStore) SaveUserProfile(up UserProfile) error {
 // file on disk. Returns the count of DB rows deleted.
 //
 // Session-scoped memory is NOT touched — it's covered by the existing TTL
-// mechanism. See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md.
+// mechanism. See docs/completed/2026-10-21/SESSION_MEMORY_DELETION_DESIGN.md.
 func (s *MemoryBankStore) DeleteUserScope(ctx context.Context) (int64, error) {
 	sqlite, ok := s.backend.(*SQLiteMemoryBankBackend)
 	if !ok {

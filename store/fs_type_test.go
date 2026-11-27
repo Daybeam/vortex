@@ -12,12 +12,11 @@ import (
 // /proc/self/mountinfo table plus synthetic inputs covering the octal-escape
 // and longest-prefix-selection logic.
 func TestMountinfoFstypeParsing(t *testing.T) {
-	// Real mount table sanity: /proc/self/mountinfo must parse (Linux only).
-	if runtime.GOOS != "linux" {
-		t.Skip("mountinfoFstype requires /proc/self/mountinfo (Linux only)")
-	}
-	if fstype := mountinfoFstype("/"); fstype == "" {
-		t.Fatal("mountinfoFstype(/) returned empty — parser is broken")
+	// /proc/self/mountinfo exists only on Linux; synthetic cases still run everywhere.
+	if runtime.GOOS == "linux" {
+		if fstype := mountinfoFstype("/"); fstype == "" {
+			t.Fatal("mountinfoFstype(/) returned empty — parser is broken")
+		}
 	}
 
 	// Synthetic table: longest-prefix wins; octal escape decodes.
@@ -99,9 +98,6 @@ func TestUnescapeMountinfoOctal(t *testing.T) {
 // TestOnCrossVMFilesystem verifies the real-environment detection: /root/.hermes
 // sits on 9p (D:\) in this deployment, /root/.cache/uv on ext4.
 func TestOnCrossVMFilesystem(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("onCrossVMFilesystem requires /proc/self/mountinfo (Linux only)")
-	}
 	// These paths are environment-specific; skip when the expected fs differs.
 	if fstype := mountinfoFstype("/root/.hermes"); fstype == "9p" {
 		if !onCrossVMFilesystem("/root/.hermes/cron/jobs.json") {
@@ -119,9 +115,6 @@ func TestOnCrossVMFilesystem(t *testing.T) {
 // InitDB is called with relative paths in production ("build/bin/x.db"),
 // and without resolution the mountinfo prefix match silently fails.
 func TestOnCrossVMFilesystemRelativePath(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("onCrossVMFilesystem requires /proc/self/mountinfo (Linux only)")
-	}
 	if !onCrossVMFilesystem("/root/openclaw_workspace/") {
 		t.Skip("repo not on cross-VM fs; env-specific")
 	}
@@ -139,9 +132,6 @@ func TestOnCrossVMFilesystemRelativePath(t *testing.T) {
 // TestInitDBJournalModeSelection verifies InitDB picks DELETE on 9p and WAL on
 // a native path, by reading the actual on-disk journal mode after open.
 func TestInitDBJournalModeSelection(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("journal mode selection requires /proc/self/mountinfo (Linux only)")
-	}
 	// 9p path (this repo's runtime dir is on D:\ => 9p).
 	if !onCrossVMFilesystem("/root/openclaw_workspace/mcp-servers/orchestrator-mcp-go/") {
 		t.Skip("repo not on cross-VM fs; env-specific")

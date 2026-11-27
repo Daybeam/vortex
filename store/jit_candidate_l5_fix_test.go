@@ -5,7 +5,7 @@ import (
 )
 
 // TestUpsertTaskPatternFromReplay_Accumulation is the regression test for the
-// L5 triple-breakage fix (docs/RSI_AUTONOMY_LEVELS_ASSESSMENT.md).
+// L5 triple-breakage fix (docs/completed/2026-09-29/RSI_AUTONOMY_LEVELS_ASSESSMENT.md).
 //
 // Before the fix: replay_scheduler.go:569 called AddJITCandidate which writes
 // to JITCandidates map, but QueryJITCandidates reads from TaskPatterns map.

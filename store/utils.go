@@ -33,7 +33,7 @@ type StepRecord struct {
 	Embedding      []float32 `json:"embedding,omitempty"`
 	EmbeddingModel string    `json:"embedding_model,omitempty"`
 
-	// Metabolic cost (ADDED 2026-09-13) — see docs/METABOLIC_PRUNING_DESIGN.md
+	// Metabolic cost (ADDED 2026-09-13) — see docs/completed/2026-09-13/METABOLIC_PRUNING_DESIGN.md
 	TokenUsed int     `json:"token_used,omitempty"`
 	LatencyMs float64 `json:"latency_ms,omitempty"`
 }

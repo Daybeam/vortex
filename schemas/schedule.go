@@ -55,8 +55,9 @@ type Schedule struct {
 	OnFailure           OnFailurePolicy `json:"on_failure"` // ignore | retry_next_window | alert
 	ConsecutiveFailures int             `json:"consecutive_failures"`
 
-	Deliver DeliverTarget `json:"deliver,omitempty"`
-	OwnerID string        `json:"owner_id,omitempty"`
+	Deliver          DeliverTarget `json:"deliver,omitempty"`
+	OwnerID          string        `json:"owner_id,omitempty"`
+	SubmitterIsAdmin bool          `json:"submitter_is_admin,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 }

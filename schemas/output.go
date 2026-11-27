@@ -87,9 +87,9 @@ type SubagentOutput struct {
 	// ApprovalRequiredSkills lists skills blocked on human approval (D3,
 	// 2026-10-22 — same gate shape as ApprovalRequiredMounts).
 	ApprovalRequiredSkills []string `json:"approval_required_skills,omitempty"`
-	Capability             string   `json:"capability"`
-	SkillIDs               []string `json:"skill_ids"`
-	TokenUsed              int      `json:"token_used"`
+	Capability string `json:"capability"`
+	SkillIDs             []string             `json:"skill_ids"`
+	TokenUsed            int                  `json:"token_used"`
 
 	Usage *Usage `json:"usage,omitempty"`
 }
@@ -241,10 +241,19 @@ func isHollow(out SubagentOutput) bool {
 	if out.Confidence == 0 && out.Status == "" {
 		return true
 	}
+	if out.Status == StatusCapabilityRequired || len(out.RequiredCapabilities) > 0 {
+		return false
+	}
 	if len(out.Result) == 0 && len(out.Attachments) == 0 {
 		return true
 	}
 	return false
+}
+
+func normalizeCapabilityStatus(out *SubagentOutput) {
+	if len(out.RequiredCapabilities) > 0 {
+		out.Status = StatusCapabilityRequired
+	}
 }
 
 // parseWithFlexibleResult tries to parse JSON where the "result" field
@@ -254,16 +263,16 @@ func isHollow(out SubagentOutput) bool {
 // "result": {"key": "value"} format (live-test stall fix, 2026-10-29).
 func parseWithFlexibleResult(data, capability string) (SubagentOutput, bool) {
 	var flex struct {
-		Status               SubagentStatus `json:"status"`
-		Confidence           float64        `json:"confidence"`
+		Status               SubagentStatus  `json:"status"`
+		Confidence           float64         `json:"confidence"`
 		Result               json.RawMessage `json:"result"`
-		Attachments          []Attachment   `json:"attachments"`
-		MissingContext       []string       `json:"missing_context"`
-		Assumptions          []string       `json:"assumptions"`
-		Warnings             []string       `json:"warnings"`
-		RequiredCapabilities []string       `json:"required_capabilities"`
-		Capability           string         `json:"capability"`
-		SkillIDs             []string       `json:"skill_ids"`
+		Attachments          []Attachment    `json:"attachments"`
+		MissingContext       []string        `json:"missing_context"`
+		Assumptions          []string        `json:"assumptions"`
+		Warnings             []string        `json:"warnings"`
+		RequiredCapabilities []string        `json:"required_capabilities"`
+		Capability           string          `json:"capability"`
+		SkillIDs             []string        `json:"skill_ids"`
 	}
 	if err := json.Unmarshal([]byte(data), &flex); err != nil {
 		return SubagentOutput{}, false
@@ -290,6 +299,7 @@ func parseWithFlexibleResult(data, capability string) (SubagentOutput, bool) {
 			}
 		}
 	}
+	normalizeCapabilityStatus(&out)
 	if isHollow(out) {
 		return SubagentOutput{}, false
 	}
@@ -303,16 +313,22 @@ func ParseOutput(raw, capability string) SubagentOutput {
 
 	// 1. Direct JSON
 	var out SubagentOutput
-	if err := json.Unmarshal([]byte(trimmed), &out); err == nil && !isHollow(out) {
-		return out
+	if err := json.Unmarshal([]byte(trimmed), &out); err == nil {
+		normalizeCapabilityStatus(&out)
+		if !isHollow(out) {
+			return out
+		}
 	}
 
 	// 2. JSON inside markdown fence
 	matches := jsonFenceRe.FindAllStringSubmatch(trimmed, -1)
 	for _, m := range matches {
 		if len(m) > 1 {
-			if err := json.Unmarshal([]byte(m[1]), &out); err == nil && !isHollow(out) {
-				return out
+			if err := json.Unmarshal([]byte(m[1]), &out); err == nil {
+				normalizeCapabilityStatus(&out)
+				if !isHollow(out) {
+					return out
+				}
 			}
 		}
 	}
@@ -322,8 +338,11 @@ func ParseOutput(raw, capability string) SubagentOutput {
 	end := strings.LastIndex(trimmed, "}")
 	if start != -1 && end != -1 && end > start {
 		jsonPart := trimmed[start : end+1]
-		if err := json.Unmarshal([]byte(jsonPart), &out); err == nil && !isHollow(out) {
-			return out
+		if err := json.Unmarshal([]byte(jsonPart), &out); err == nil {
+			normalizeCapabilityStatus(&out)
+			if !isHollow(out) {
+				return out
+			}
 		}
 	}
 

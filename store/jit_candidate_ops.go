@@ -60,7 +60,7 @@ func (es *ExperienceStore) AddPromotionAuditLog(log PromotionAuditLog) {
 // "build a widget"), NOT a generic string like "rewrite mutation from replay".
 //
 // This fixes the L5 triple-breakage identified in
-// docs/RSI_AUTONOMY_LEVELS_ASSESSMENT.md: Break 1 (map divergence),
+// docs/completed/2026-09-29/RSI_AUTONOMY_LEVELS_ASSESSMENT.md: Break 1 (map divergence),
 // Break 2 (SampleCount accumulation), Break 3 (AvgConfidence gate),
 // Break 4 (BM25 SourceText mismatch).
 func (es *ExperienceStore) UpsertTaskPatternFromReplay(candidateID, sequenceKey, sourceText string, verified bool) {

@@ -23,7 +23,7 @@ func TestSQLiteChatBackend_ReplyAndForkRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().Round(time.Second)
 
-	if err := backend.SaveSession(ctx, "s1", "m1", "m3", now); err != nil {
+	if err := backend.SaveSession(ctx, "s1", "m1", "m3", "owner-a", true, now); err != nil {
 		t.Fatalf("SaveSession failed: %v", err)
 	}
 	// m1: root, no markers
@@ -39,9 +39,12 @@ func TestSQLiteChatBackend_ReplyAndForkRoundTrip(t *testing.T) {
 		t.Fatalf("SaveMessage m3 failed: %v", err)
 	}
 
-	root, leaf, msgs, err := backend.LoadSession(ctx, "s1")
+	root, leaf, owner, shared, msgs, err := backend.LoadSession(ctx, "s1")
 	if err != nil {
 		t.Fatalf("LoadSession failed: %v", err)
+	}
+	if owner != "owner-a" || !shared {
+		t.Fatalf("owner/shared lost: owner=%q shared=%v", owner, shared)
 	}
 	if root != "m1" || leaf != "m3" {
 		t.Fatalf("expected root=m1 leaf=m3, got root=%q leaf=%q", root, leaf)
@@ -77,6 +80,7 @@ func TestSQLiteChatBackend_LegacySchemaMigration(t *testing.T) {
 	legacyStmts := `
 	CREATE TABLE chat_sessions (id TEXT PRIMARY KEY, root_id TEXT, active_leaf_id TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
 	CREATE TABLE chat_messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_id TEXT, role TEXT NOT NULL, content TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+	INSERT INTO chat_sessions (id, created_at) VALUES ('old-ownerless', CURRENT_TIMESTAMP);
 	`
 	if _, err := legacy.Exec(legacyStmts); err != nil {
 		t.Fatalf("failed to create legacy schema: %v", err)
@@ -93,8 +97,12 @@ func TestSQLiteChatBackend_LegacySchemaMigration(t *testing.T) {
 
 	backend := NewSQLiteChatBackend(db)
 	ctx := context.Background()
+	rows, err := backend.ListSessions(ctx, SessionScope{All: true}, 20, 0)
+	if err != nil || len(rows) != 1 || rows[0].ID != "old-ownerless" || rows[0].OwnerID != "" || rows[0].Shared {
+		t.Fatalf("legacy ownerless row not preserved: %+v, %v", rows, err)
+	}
 	now := time.Now().Round(time.Second)
-	if err := backend.SaveSession(ctx, "s1", "m1", "m2", now); err != nil {
+	if err := backend.SaveSession(ctx, "s1", "m1", "m2", "", false, now); err != nil {
 		t.Fatalf("SaveSession failed: %v", err)
 	}
 	if err := backend.SaveMessage(ctx, &ChatMessageRow{ID: "m1", SessionID: "s1", ClientID: "c1", Role: "user", Content: "hello", CreatedAt: now}); err != nil {
@@ -103,7 +111,7 @@ func TestSQLiteChatBackend_LegacySchemaMigration(t *testing.T) {
 	if err := backend.SaveMessage(ctx, &ChatMessageRow{ID: "m2", SessionID: "s1", ParentID: "m1", ClientID: "c2", ReplyTo: "m1", ForkedFrom: "m1", Role: "user", Content: "quote+fork", CreatedAt: now}); err != nil {
 		t.Fatalf("SaveMessage m2 failed: %v", err)
 	}
-	_, _, msgs, err := backend.LoadSession(ctx, "s1")
+	_, _, _, _, msgs, err := backend.LoadSession(ctx, "s1")
 	if err != nil {
 		t.Fatalf("LoadSession failed: %v", err)
 	}
@@ -133,7 +141,7 @@ func TestSQLiteChatBackend_CreatedAtRFC3339RoundTrip(t *testing.T) {
 	now := time.Now().Round(time.Second)
 	sessionCreated := now.Add(-1 * time.Hour)
 
-	if err := backend.SaveSession(ctx, "s1", "m1", "m2", sessionCreated); err != nil {
+	if err := backend.SaveSession(ctx, "s1", "m1", "m2", "", false, sessionCreated); err != nil {
 		t.Fatalf("SaveSession failed: %v", err)
 	}
 	if err := backend.SaveMessage(ctx, &ChatMessageRow{
@@ -142,7 +150,7 @@ func TestSQLiteChatBackend_CreatedAtRFC3339RoundTrip(t *testing.T) {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
 
-	_, _, msgs, err := backend.LoadSession(ctx, "s1")
+	_, _, _, _, msgs, err := backend.LoadSession(ctx, "s1")
 	if err != nil {
 		t.Fatalf("LoadSession failed: %v", err)
 	}
@@ -158,6 +166,57 @@ func TestSQLiteChatBackend_CreatedAtRFC3339RoundTrip(t *testing.T) {
 	// with Format, but our values are already Round(time.Second)).
 	if !m.CreatedAt.Equal(now) {
 		t.Errorf("CreatedAt mismatch after round-trip: got %v, want %v", m.CreatedAt, now)
+	}
+}
+
+// TestSQLiteChatBackend_OwnerScopeBeforePagination is a regression test for
+// docs/completed/2026-11-27/OWNER_ISOLATION_SCHEDULE_SESSION_INBOX.md: foreign rows must not
+// crowd out the caller's rows before LIMIT/OFFSET, and ownerless rows stay hidden.
+func TestSQLiteChatBackend_OwnerScopeBeforePagination(t *testing.T) {
+	db, err := InitDB(filepath.Join(t.TempDir(), "chat.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	backend := NewSQLiteChatBackend(db)
+	ctx := context.Background()
+	now := time.Now().Round(time.Second)
+	for i, id := range []string{"foreign-1", "foreign-2", "foreign-3"} {
+		if err := backend.SaveSession(ctx, id, "", "", "bob", false, now.Add(-time.Duration(i+1)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, id := range []string{"alice-1", "alice-2"} {
+		if err := backend.SaveSession(ctx, id, "", "", "alice", false, now.Add(-time.Duration(i+1)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := backend.SaveSession(ctx, "legacy", "", "", "", false, now); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := backend.ListSessions(ctx, SessionScope{Owner: "alice"}, 1, 0)
+	if err != nil || len(rows) != 1 || rows[0].ID != "alice-1" {
+		t.Fatalf("first owned page = %+v, %v", rows, err)
+	}
+	rows, err = backend.ListSessions(ctx, SessionScope{Owner: "alice"}, 1, 1)
+	if err != nil || len(rows) != 1 || rows[0].ID != "alice-2" {
+		t.Fatalf("second owned page = %+v, %v", rows, err)
+	}
+	rows, err = backend.ListSessions(ctx, SessionScope{Owner: "charlie"}, 20, 0)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("exact scope fell back to other owners: %+v, %v", rows, err)
+	}
+	rows, err = backend.ListSessions(ctx, SessionScope{All: true}, 20, 0)
+	if err != nil || len(rows) != 6 {
+		t.Fatalf("admin/local all scope = %+v, %v", rows, err)
+	}
+	// Repeated saves may update sharing but may not transfer a named owner.
+	if err := backend.SaveSession(ctx, "alice-1", "", "", "bob", true, now); err != nil {
+		t.Fatal(err)
+	}
+	_, _, owner, shared, _, err := backend.LoadSession(ctx, "alice-1")
+	if err != nil || owner != "alice" || !shared {
+		t.Fatalf("owner changed or sharing lost: owner=%q shared=%v err=%v", owner, shared, err)
 	}
 }
 

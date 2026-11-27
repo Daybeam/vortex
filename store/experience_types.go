@@ -109,7 +109,7 @@ type GeneratedSkill struct {
 	Embedding      []float32 `json:"embedding,omitempty"`
 	EmbeddingModel string    `json:"embedding_model,omitempty"`
 
-	// Metabolic Pruning (ADDED 2026-09-13) — see docs/METABOLIC_PRUNING_DESIGN.md
+	// Metabolic Pruning (ADDED 2026-09-13) — see docs/completed/2026-09-13/METABOLIC_PRUNING_DESIGN.md
 	TokenCostTotal int     `json:"token_cost_total,omitempty"`
 	AvgLatencyMs   float64 `json:"avg_latency_ms,omitempty"`
 	MetabolicROI   float64 `json:"metabolic_roi,omitempty"`
@@ -155,7 +155,7 @@ type StatePotential struct {
 
 // CooccurrenceEntry tracks how often two tools/capabilities are used
 // consecutively within the same task. Used for Compound Skill auto-crystallization.
-// ADDED (2026-09-13) — see docs/COMPOUND_SKILLS_DESIGN.md
+// ADDED (2026-09-13) — see docs/completed/2026-09-13/COMPOUND_SKILLS_DESIGN.md
 type CooccurrenceEntry struct {
 	ToolA        string    `json:"tool_a"`
 	ToolB        string    `json:"tool_b"`

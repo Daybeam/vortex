@@ -30,10 +30,10 @@ var _ IChatOutbox = (*SQLiteChatOutbox)(nil)
 
 func (o *SQLiteChatOutbox) Enqueue(ctx context.Context, item OutboxItem) (bool, error) {
 	res, err := o.db.ExecContext(ctx, `
-		INSERT INTO chat_outbox (session_id, kind, dedupe_key, text, meta_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO chat_outbox (session_id, owner_id, kind, dedupe_key, text, meta_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(dedupe_key) DO NOTHING
-	`, item.SessionID, item.Kind, item.DedupeKey, item.Text, item.MetaJSON, time.Now().UTC())
+	`, item.SessionID, item.OwnerID, item.Kind, item.DedupeKey, item.Text, item.MetaJSON, time.Now().UTC())
 	if err != nil {
 		return false, err
 	}
@@ -122,6 +122,16 @@ func (o *SQLiteChatOutbox) claimPending(ctx context.Context, holder string, limi
 }
 
 func (o *SQLiteChatOutbox) ListPendingKinds(ctx context.Context, kinds []string, limit int) ([]OutboxItem, error) {
+	return o.listPendingKinds(ctx, kinds, "", true, limit)
+}
+
+// ListPendingKindsScoped filters ownership in SQL before LIMIT. An empty owner
+// selects only ownerless rows unless includeAll is true.
+func (o *SQLiteChatOutbox) ListPendingKindsScoped(ctx context.Context, kinds []string, ownerID string, includeAll bool, limit int) ([]OutboxItem, error) {
+	return o.listPendingKinds(ctx, kinds, ownerID, includeAll, limit)
+}
+
+func (o *SQLiteChatOutbox) listPendingKinds(ctx context.Context, kinds []string, ownerID string, includeAll bool, limit int) ([]OutboxItem, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -129,10 +139,15 @@ func (o *SQLiteChatOutbox) ListPendingKinds(ctx context.Context, kinds []string,
 		limit = 500
 	}
 	kindSQL, args := outboxKindFilter(kinds)
+	ownerSQL := ""
+	if !includeAll {
+		ownerSQL = " AND owner_id = ?"
+		args = append(args, ownerID)
+	}
 	args = append(args, limit)
 	rows, err := o.db.QueryContext(ctx, `
-		SELECT id, session_id, kind, dedupe_key, text, meta_json, created_at, attempts
-		FROM chat_outbox WHERE status = 'pending'`+kindSQL+`
+		SELECT id, session_id, owner_id, kind, dedupe_key, text, meta_json, created_at, attempts
+		FROM chat_outbox WHERE status = 'pending'`+kindSQL+ownerSQL+`
 		ORDER BY id LIMIT ?
 	`, args...)
 	if err != nil {
@@ -143,7 +158,7 @@ func (o *SQLiteChatOutbox) ListPendingKinds(ctx context.Context, kinds []string,
 	for rows.Next() {
 		var item OutboxItem
 		var createdAt sql.NullTime
-		if err := rows.Scan(&item.ID, &item.SessionID, &item.Kind, &item.DedupeKey,
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.OwnerID, &item.Kind, &item.DedupeKey,
 			&item.Text, &item.MetaJSON, &createdAt, &item.Attempts); err != nil {
 			return nil, err
 		}

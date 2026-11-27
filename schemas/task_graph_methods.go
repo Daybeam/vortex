@@ -269,7 +269,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 			"pending_decision_count": len(g.PendingDecisions),
 			// Substitution count: non-zero means actual execution diverged from
 			// the request (role fallback, MCP degradation, etc.). See
-			// docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
+			// docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P3.
 			"substitution_count": g.SubstitutionCount(),
 			// Charter present: non-nil means the task has an explicit intent /
 			// non-goals / constraints charter. See §P1.
@@ -281,26 +281,28 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 	steps := make(map[string]any, len(g.Steps))
 	for id, s := range g.Steps {
 		steps[id] = map[string]any{
-			"id":                s.ID,
-			"role_id":           s.RoleID,
-			"task":              s.Task,
-			"output_contract":   s.OutputContract,
-			"depends_on":        s.DependsOn,
-			"read_deps":         s.ReadDeps,
-			"additional_skills": s.AdditionalSkills,
-			"status":            string(s.Status),
-			"confidence":        s.Confidence,
-			"retry_count":       s.RetryCount,
-			"result_ref":        s.ResultRef,
-			"missing_context":   s.MissingCtx,
-			"last_error":        s.LastError,
-			"trigger_error":     s.TriggerError,
-			"last_worked_on":    s.LastWorkedOn.Format(time.RFC3339),
-			"merge_strategy":    s.MergeStrategy,
-			"target_key":        s.TargetKey,
-			"input_mapping":     s.InputMapping,
-			"isolation":         s.Isolation,
-			"failure_policy":    s.FailurePolicy,
+			"id":                   s.ID,
+			"role_id":              s.RoleID,
+			"task":                 s.Task,
+			"output_contract":      s.OutputContract,
+			"depends_on":           s.DependsOn,
+			"read_deps":            s.ReadDeps,
+			"additional_skills":    s.AdditionalSkills,
+			"status":               string(s.Status),
+			"confidence":           s.Confidence,
+			"retry_count":          s.RetryCount,
+			"result_ref":           s.ResultRef,
+			"missing_context":      s.MissingCtx,
+			"last_error":           s.LastError,
+			"trigger_error":        s.TriggerError,
+			"last_worked_on":       s.LastWorkedOn.Format(time.RFC3339),
+			"merge_strategy":       s.MergeStrategy,
+			"target_key":           s.TargetKey,
+			"input_mapping":        s.InputMapping,
+			"isolation":            s.Isolation,
+			"failure_policy":       s.FailurePolicy,
+			"exit_criteria":        s.ExitCriteria,
+			"deterministic_checks": s.DeterministicChecks,
 		}
 	}
 
@@ -448,7 +450,7 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 		"context_tree":       sanitizedTree,
 		"current_node_id":    g.CurrentNodeID,
 		// Substitution ledger: every instance where actual execution diverged
-		// from the request. See docs/plan/TASK_DRIFT_CONTROL_DESIGN.md §P3.
+		// from the request. See docs/completed/2026-10-30/TASK_DRIFT_CONTROL_DESIGN.md §P3.
 		"substitutions": g.GetSubstitutions(),
 		// Task charter: intent, non-goals, constraints. See §P1.
 		"charter": g.Charter,

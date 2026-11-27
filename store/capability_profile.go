@@ -15,7 +15,7 @@ type ModelCapabilityKey struct {
 // ModelCapabilityProfile tracks per-model per-capability execution telemetry
 // for intelligent routing, Pareto frontier selection, and IRT turn budgeting.
 //
-// See docs/architecture/MODEL_CAPABILITY_AND_INTELLIGENT_ROUTING_ROADMAP.md §2 Module A.
+// See docs/completed/2026-09-19/MODEL_CAPABILITY_AND_INTELLIGENT_ROUTING_ROADMAP.md §2 Module A.
 type ModelCapabilityProfile struct {
 	ModelID      string    `json:"model_id"`
 	Capability   string    `json:"capability"`

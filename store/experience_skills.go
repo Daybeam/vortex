@@ -942,7 +942,7 @@ func (es *ExperienceStore) QuerySkillsBySignal(ctx context.Context, signal strin
 //     removed from GeneratedSkills and archived.
 //
 // Root skills (ParentID == "") are never pruned — same protection as PruneSkills.
-// See docs/METABOLIC_PRUNING_DESIGN.md
+// See docs/completed/2026-09-13/METABOLIC_PRUNING_DESIGN.md
 func (es *ExperienceStore) PruneByMetabolicROI() []string {
 	es.Mu.Lock()
 	defer es.Mu.Unlock()
