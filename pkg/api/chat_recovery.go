@@ -10,7 +10,7 @@ package api
 //   - enqueues a chat_interrupted notice so the user is at least told
 //     "your last message was interrupted" rather than receiving silence.
 //
-// See docs/plan/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.6.
+// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.6.
 
 import (
 	"context"

@@ -1,14 +1,17 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/daybeam/vortex/pkg/chat"
+	"github.com/daybeam/vortex/tools"
 )
 
 // newArtifactTestHandler builds a ChatHandler whose OutputBase contains one
@@ -98,5 +101,83 @@ func TestArtifactHandler_RejectsSessionIDTraversal(t *testing.T) {
 	}
 	if rec.Body.String() == "secret" {
 		t.Fatal("SEC-1: session_id traversal leaked file content outside base")
+	}
+}
+
+// Regression: docs/completed/2026-11-27/OWNER_ISOLATION_SCHEDULE_SESSION_INBOX.md — artifact
+// authorization must cover the directory actually read, not merely a supplied
+// session_id. Before the fix, omitting session_id exposed global output and
+// chat/<other-session>/ files; supplying one's own session_id did not help.
+func TestArtifactOwnerIsolation_BindsReadsAndListingsToSession(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "outputs")
+	h := &ChatHandler{
+		App:     &tools.App{OwnerIsolation: true, Tier: tools.TierPublic},
+		Harness: &chat.ChatHarness{OutputBase: base},
+		Store:   chat.NewChatSessionStore(t.TempDir(), nil),
+	}
+	for id, owner := range map[string]string{"alice-session": "alice", "victim-session": "victim"} {
+		if _, err := h.Store.GetOrCreateOwned(id, owner, true, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, content := range map[string]string{
+		"global.txt":                          "global",
+		"chat/alice-session/own.txt":          "alice",
+		"chat/victim-session/secret.txt":      "victim",
+		"chat/alice-session/nested/note.txt": "alice nested",
+	} {
+		full := filepath.Join(base, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.WithValue(context.Background(), tools.AuthOwnerKey, "alice")
+	ctx = context.WithValue(ctx, tools.AuthTierKey, tools.TierPublic)
+
+	for _, tc := range []struct {
+		name, query string
+		want        int
+	}{
+		{"owned file", "session_id=alice-session&name=own.txt", http.StatusOK},
+		{"owned nested file", "session_id=alice-session&name=nested/note.txt", http.StatusOK},
+		{"global without session", "name=global.txt", http.StatusNotFound},
+		{"foreign through omitted session", "name=chat/victim-session/secret.txt", http.StatusNotFound},
+		{"foreign through own session", "session_id=alice-session&name=chat/victim-session/secret.txt", http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ArtifactHandler(rec, httptest.NewRequest(http.MethodGet, "/api/chat/artifact?"+tc.query, nil).WithContext(ctx))
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body=%q", rec.Code, tc.want, rec.Body.String())
+			}
+			if tc.want != http.StatusOK && (rec.Body.String() == "global" || rec.Body.String() == "victim") {
+				t.Fatalf("foreign artifact leaked: %q", rec.Body.String())
+			}
+		})
+	}
+
+	rec := httptest.NewRecorder()
+	h.ArtifactsHandler(rec, httptest.NewRequest(http.MethodGet, "/api/chat/artifacts?session_id=alice-session", nil).WithContext(ctx))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owned listing status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); strings.Contains(body, "global.txt") || strings.Contains(body, "victim-session") || !strings.Contains(body, "own.txt") {
+		t.Fatalf("owned listing escaped session scope: %s", body)
+	}
+	rec = httptest.NewRecorder()
+	h.ArtifactsHandler(rec, httptest.NewRequest(http.MethodGet, "/api/chat/artifacts", nil).WithContext(ctx))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("global strict-mode listing status = %d, want 404", rec.Code)
+	}
+
+	adminCtx := context.WithValue(context.Background(), tools.AuthOwnerKey, "admin")
+	adminCtx = context.WithValue(adminCtx, tools.AuthTierKey, tools.TierAdmin)
+	rec = httptest.NewRecorder()
+	h.ArtifactHandler(rec, httptest.NewRequest(http.MethodGet, "/api/chat/artifact?name=global.txt", nil).WithContext(adminCtx))
+	if rec.Code != http.StatusOK || rec.Body.String() != "global" {
+		t.Fatalf("admin positive control = %d %q", rec.Code, rec.Body.String())
 	}
 }

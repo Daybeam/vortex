@@ -71,7 +71,7 @@ func TestDirectoryRouter_BuildAndPreFilter(t *testing.T) {
 		"store/memory_bank.go",
 		"pkg/search/search.go",
 		"pkg/search/prefilter.go",
-		"docs/architecture/HYBRID_CODE_SEARCH_DESIGN.md",
+		"docs/completed/2026-09-17/HYBRID_CODE_SEARCH_DESIGN.md",
 	}
 	for _, f := range files {
 		full := filepath.Join(dir, f)

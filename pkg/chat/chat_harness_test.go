@@ -450,7 +450,7 @@ func TestChatHarnessStreamRepetitionRecovery(t *testing.T) {
 
 // Fix ④: Non-read tools that succeed should get [ACTION COMPLETED] prefix
 // so the model can distinguish write results from read results.
-// See eval-kit/docs/28-engine-path-analysis.md §2 claim ④.
+// See docs/completed/TOOL_LOOP_GUARDRAILS_PLAN.md §0.7.
 func TestChatHarness_WriteToolActionResultHasActionCompleted(t *testing.T) {
 	h := &ChatHarness{
 		Provider:   &writeCacheBugProvider{},
@@ -479,7 +479,7 @@ func TestChatHarness_WriteToolActionResultHasActionCompleted(t *testing.T) {
 
 // Fix ②: ReadinessGateSoft should soften the delegation readiness gate language.
 // Default (false) keeps the strict "NEVER blindly delegate" wording.
-// See eval-kit/docs/28-engine-path-analysis.md §2 claim ②.
+// See docs/completed/TOOL_LOOP_GUARDRAILS_PLAN.md §0.8.
 func TestChatHarness_ReadinessGateSoft_ChangesPromptLanguage(t *testing.T) {
 	h := &ChatHarness{Model: "test", OutputBase: t.TempDir()}
 

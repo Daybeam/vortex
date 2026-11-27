@@ -27,7 +27,7 @@ import (
 // mbStoreForHarness returns the MemoryBankStore when MemoryBankEnabled is
 // true, nil otherwise. This gates ChatHarness injection + ReflectionEngine
 // extraction via a single config toggle.
-// See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 1.
+// See docs/completed/2026-10-17/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 1.
 func mbStoreForHarness(app *tools.App) *store.MemoryBankStore {
 	if app.MemoryBankStore == nil {
 		return nil
@@ -82,7 +82,7 @@ type ChatHandler struct {
 	// forgetConfirmations tracks pending /forget confirmations.
 	// Key: sessionID + "|" + scope + "|" + args. Value: int64 (unix deadline).
 	// 60s window (2× /clear) because /forget is irreversible cross-session.
-	// See docs/plan/SESSION_MEMORY_DELETION_DESIGN.md.
+	// See docs/completed/2026-10-21/SESSION_MEMORY_DELETION_DESIGN.md.
 	forgetConfirmations sync.Map // "session|scope|args" → int64 (unix deadline)
 
 	// progressLast throttles round-level progress events per task.
@@ -186,7 +186,7 @@ func (h *ChatHandler) SetProcessInfoDisabled(sessionID string, disabled bool) {
 // chat gateway: the front desk model (medium, fast) classifies complexity and
 // either answers directly, asks clarifying questions, or escalates to the
 // planner (strong model) via delegate_to_orchestrator.
-// See docs/CHAT_GATEWAY_TIERS_DESIGN.md §3.
+// See docs/completed/2026-10-11/CHAT_GATEWAY_TIERS_DESIGN.md §3.
 const defaultChatFrontDeskRole = "chat_front_desk"
 
 // Shutdown waits for all in-flight chat goroutines and channel goroutines to
@@ -336,7 +336,7 @@ func chatSubmitterIsAdmin(ctx context.Context, app *tools.App, reqTier string) b
 
 // autoDetectBranchMode (Mode 3, 2026-10-24): if the user didn't explicitly
 // choose fork (parent_id) or quote (reply_to), auto-detect the best mode.
-// See docs/plan/CHAT_BRANCHING_AND_QUOTE_DESIGN.md §5-6.
+// See docs/completed/2026-10-26/CHAT_BRANCHING_AND_QUOTE_DESIGN.md §5-6.
 func (h *ChatHandler) autoDetectBranchMode(req *ChatRequest, session *chat.ChatSession) {
 	if req.ParentID != "" || req.ReplyTo != "" {
 		return // explicit mode chosen — respect it
@@ -358,9 +358,16 @@ func (h *ChatHandler) handleSlashCommandGate(req ChatRequest, session *chat.Chat
 	// Live Co-pilot /live commands need CallerID (for OwnerID), which
 	// handleSlashCommand doesn't receive. Handle /live here before falling
 	// through to the general slash command handler.
-	// See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md §2.3.
+	// See docs/completed/2026-10-30/LIVE_COPILOT_SHARED_SESSION_DESIGN.md §2.3.
 	if strings.HasPrefix(req.Content, "/live") {
-		if handled, response := h.cmdLive(req.Content, session, sessionID, req.UserTier, req.CallerID); handled {
+		liveOwner := session.GetOwnerID()
+		if liveOwner == "" {
+			liveOwner = req.OwnerID // authorized local/admin claim of an ownerless session
+		}
+		if liveOwner == "" {
+			liveOwner = req.CallerID // internal/test callers without stable auth context
+		}
+		if handled, response := h.cmdLive(req.Content, session, sessionID, req.UserTier, liveOwner); handled {
 			session.AddEvent(chat.ChatEvent{Type: "slash_command", Data: response})
 			session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: response, ClientID: "asst_" + req.MessageID}, "")
 			h.persistSession(session)
@@ -368,7 +375,7 @@ func (h *ChatHandler) handleSlashCommandGate(req ChatRequest, session *chat.Chat
 			return ChatResponse{SessionID: sessionID, MessageID: req.MessageID, SlashCommand: true}, true
 		}
 	}
-	if handled, response := h.handleSlashCommand(req.Content, session, sessionID, req.UserTier); handled {
+	if handled, response := h.handleSlashCommandForOwner(req.Content, session, sessionID, req.UserTier, req.OwnerID); handled {
 		session.AddEvent(chat.ChatEvent{Type: "slash_command", Data: response})
 		session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: response, ClientID: "asst_" + req.MessageID}, "")
 		h.persistSession(session)
@@ -388,8 +395,12 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	if sessionID == "" {
 		sessionID = uuid.New().String()
 	}
-
-	session := h.Store.GetOrCreate(sessionID)
+	req.OwnerID = chatRequestOwner(ctx, req)
+	session, turnCtx, err := h.prepareChatSession(ctx, sessionID, req.OwnerID, req.UserTier, chatIsAdmin)
+	if err != nil {
+		return ChatResponse{Error: "session not found", StatusCode: http.StatusNotFound}
+	}
+	ctx = turnCtx
 
 	// Remember the submitter's authority for follow-up turns: a delegated task
 	// that finishes after this turn ended is resumed by startFollowUpTurn,
@@ -397,16 +408,6 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	// have to guess, and a wrong guess either escalates to admin or silently
 	// loses the ability to delegate from the follow-up.
 	h.lastSubmitterAdmin.Store(sessionID, chatIsAdmin)
-
-	// Live Co-pilot: override AuthOwnerKey for guest users on shared sessions.
-	// This routes their requests through the session owner's approval pipeline
-	// (human_approval_required → checkApprovalAuthority → mount_policy).
-	// See docs/plan/LIVE_COPILOT_SHARED_SESSION_DESIGN.md §2.2.
-	if session.IsShared() && req.UserTier == TierGuest {
-		if ownerID := session.GetOwnerID(); ownerID != "" {
-			ctx = context.WithValue(ctx, tools.AuthOwnerKey, ownerID)
-		}
-	}
 
 	if resp, ok := h.handleSlashCommandGate(req, session, sessionID); ok {
 		return resp
@@ -416,7 +417,7 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 		return ChatResponse{SessionID: sessionID, MessageID: req.MessageID, AlreadyProcessed: true}
 	}
 	// Mark this turn as awaiting a reply for crash recovery.
-	// See docs/plan/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.4.
+	// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.4.
 	session.SetAwaitingReply(&chat.AwaitingReplyInfo{
 		MessageID: req.MessageID,
 		Content:   req.Content,
@@ -468,7 +469,7 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	// Three-tier gateway: default to front desk role when no role is specified
 	// and no model override is requested. The front desk model (medium, fast)
 	// classifies complexity and escalates to the planner (strong model) via
-	// delegate_to_orchestrator. See docs/CHAT_GATEWAY_TIERS_DESIGN.md §3.
+	// delegate_to_orchestrator. See docs/completed/2026-10-11/CHAT_GATEWAY_TIERS_DESIGN.md §3.
 	if (effectiveRoleID == "" || effectiveRoleID == "default") && req.ModelOverride == "" && h.App.Registry != nil {
 		h.App.Registry.Mu.RLock()
 		_, frontDeskExists := h.App.Registry.Roles[defaultChatFrontDeskRole]
@@ -670,15 +671,23 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 	hCopy.HelpProvider = func(topic string) string {
 		return core.BuildSystemManual(h.App.Registry, topic, req.UserTier)
 	}
-	// ScheduleExec is per-request: it closes over the user's tier so the
-	// subsystem's tier check enforces it correctly. Non-admin users can
-	// only list schedules; admin users can create/pause/resume/delete.
+	// ScheduleExec uses the caller's stable owner, not the session owner that
+	// prepareChatSession may substitute for shared-session approval routing.
+	scheduleOwnerID := req.OwnerID
 	hCopy.ScheduleExec = func(action string, args map[string]any) (string, error) {
 		tier := tools.TierPublic
 		if req.UserTier == tools.TierAdmin {
 			tier = tools.TierAdmin
 		}
-		ctx := context.WithValue(context.Background(), tools.AuthTierKey, tier)
+		// Lifecycle-aware context: derive from app.LifecycleCtx so the
+		// schedule callback is cancelled on shutdown (audit C-1).
+		// Falls back to Background when LifecycleCtx is not wired.
+		baseCtx := h.App.LifecycleCtx
+		if baseCtx == nil {
+			baseCtx = context.Background()
+		}
+		ctx := context.WithValue(baseCtx, tools.AuthTierKey, tier)
+		ctx = context.WithValue(ctx, tools.AuthOwnerKey, scheduleOwnerID)
 		result, err := tools.InvokeSubsystem(ctx, h.App, "schedule", action, args)
 		if err != nil {
 			return "", err
@@ -777,7 +786,7 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 			session.AppendMessage(chat.ChatMessage{Role: "assistant", Content: final, ClientID: "asst_" + req.MessageID}, "")
 
 			// Enqueue chat_reply to outbox for durable delivery (fault recovery).
-			// See docs/plan/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.3.
+			// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.3.
 			if h.Outbox != nil && final != "" {
 				// audit FIX (2026-11-21): was context.Background() with no
 				// timeout — a slow SQLite write could block the chat turn
@@ -800,7 +809,7 @@ func (h *ChatHandler) ProcessMessage(ctx context.Context, req ChatRequest) ChatR
 			}
 
 			// Clear the pending reply mark — the turn is complete.
-			// See docs/plan/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.5.
+			// See docs/completed/2026-11-21/CHAT_REPLY_FAULT_RECOVERY_PLAN.md §3.5.
 			session.ClearAwaitingReply()
 			h.persistSession(session)
 

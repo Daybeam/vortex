@@ -10,7 +10,7 @@ import (
 )
 
 // Regression test for semantic recall — long-conversation reference §4.2.
-// Plan: docs/plan/LONG_CONVERSATION_REFERENCE.md
+// Plan: docs/completed/2026-10-08/LONG_CONVERSATION_REFERENCE.md
 // Bug: chat turns were never indexed in core.ContextArchive, so SearchForest
 // (called in buildSystem) could not recall semantically related past chat
 // messages. indexTurn was the missing ~10-line method that bridges chat
@@ -115,7 +115,7 @@ func TestIndexTurn_SearchForestRecalls(t *testing.T) {
 // Integration test: Run end-to-end → defer fires indexTurn → archive has the
 // turn → SearchForest recalls it. This bridges the unit tests above with the
 // actual Run path, verifying the named-return + defer wiring works at runtime.
-// Plan: docs/plan/LONG_CONVERSATION_REFERENCE.md §5.3
+// Plan: docs/completed/2026-10-08/LONG_CONVERSATION_REFERENCE.md §5.3
 func TestRun_IndexesChatTurnForSemanticRecall(t *testing.T) {
 	tmpDir := t.TempDir()
 	archive := core.NewContextArchive(filepath.Join(tmpDir, "chat_ctx.jsonl"))

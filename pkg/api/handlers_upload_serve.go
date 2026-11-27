@@ -2,11 +2,15 @@ package api
 
 import (
 	"crypto/subtle"
+	"database/sql"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/daybeam/vortex/tools"
 )
 
 // ── Upload static file serving ─────────────────────────────────────────────
@@ -74,6 +78,45 @@ func uploadAuthOK(r *http.Request) bool {
 	return false
 }
 
+// chatUploadSessionAllowed checks durable ownership without creating a session.
+// Local mode retains compatibility for files uploaded before the first message;
+// multi-user mode requires a matching persisted record (or explicit sharing).
+// See docs/completed/2026-11-27/OWNER_ISOLATION_SCHEDULE_SESSION_INBOX.md.
+func (h *APIHandler) chatUploadSessionAllowed(r *http.Request, sessionID string) bool {
+	if !tools.OwnerIsolationEnabled(h.App) {
+		return true
+	}
+	var owner string
+	var shared bool
+	found := false
+	if h.App != nil && h.App.DB != nil {
+		err := h.App.DB.QueryRowContext(r.Context(), `SELECT owner_id, shared FROM chat_sessions WHERE id = ?`, sessionID).Scan(&owner, &shared)
+		found = err == nil
+		if err != nil && err != sql.ErrNoRows {
+			return false
+		}
+	}
+	if !found {
+		raw, err := os.ReadFile(filepath.Join("outputs", "chat", sessionID+".json"))
+		if err != nil {
+			return false
+		}
+		var data struct {
+			OwnerID string `json:"owner_id"`
+			Shared  bool   `json:"shared"`
+		}
+		if json.Unmarshal(raw, &data) != nil {
+			return false
+		}
+		owner, shared = data.OwnerID, data.Shared
+	}
+	tier := tools.EffectiveTier(r.Context(), h.App)
+	if shared && owner != "" && (tier == TierGuest || tier == tools.TierPublic) {
+		return true
+	}
+	return tools.CheckResourceOwnership(r.Context(), h.App, owner)
+}
+
 // ChatUploadServeHandler handles GET /api/uploads/{session_id}/{name} —
 // serves chat-session upload files for inline markdown images.
 func (h *APIHandler) ChatUploadServeHandler(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +124,10 @@ func (h *APIHandler) ChatUploadServeHandler(w http.ResponseWriter, r *http.Reque
 	parts := strings.Split(rest, "/")
 	if len(parts) != 2 || !validIDComponent(parts[0]) {
 		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	if !h.chatUploadSessionAllowed(r, parts[0]) {
+		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 	baseDir := filepath.Join("outputs", "chat_sessions", parts[0], "uploads")

@@ -11,7 +11,7 @@ import (
 // DirectoryRouter builds a keyword → file index from the workspace's
 // directory and file naming conventions. Zero external dependency.
 //
-// Design: docs/architecture/HYBRID_CODE_SEARCH_DESIGN.md §9.2.1
+// Design: docs/completed/2026-09-17/HYBRID_CODE_SEARCH_DESIGN.md §9.2.1
 //
 // File and directory names are natural semantic tags:
 //
@@ -163,7 +163,7 @@ var sourceExtensions = map[string]bool{
 // common regex patterns across languages. Language-agnostic, zero external
 // dependency.
 //
-// Design: docs/architecture/HYBRID_CODE_SEARCH_DESIGN.md §9.2.2b
+// Design: docs/completed/2026-09-17/HYBRID_CODE_SEARCH_DESIGN.md §9.2.2b
 //
 // Unlike SymbolTableFilter (Go AST, precise but Go-only), this uses regex
 // to match func/def/function/class/interface/type/struct/const/enum patterns

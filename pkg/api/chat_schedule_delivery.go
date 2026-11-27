@@ -6,6 +6,7 @@ import (
 
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/core/obs"
+	"github.com/daybeam/vortex/tools"
 )
 
 // Scheduled task delivery to a chat session — Phase 2 of
@@ -33,7 +34,14 @@ func (h *ChatHandler) DeliverToSession(ctx context.Context, sessionID, taskID, s
 	if session == nil {
 		return core.ErrSessionMissing
 	}
-	if expectedOwner, _ := result["delivery_owner"].(string); expectedOwner != "" && session.GetOwnerID() != "" && session.GetOwnerID() != expectedOwner {
+	// A named schedule owner must match exactly. Legacy ownerless schedules may
+	// still reach named sessions in local single-operator mode, but never when
+	// multi-user isolation is enabled.
+	// See docs/completed/2026-11-27/OWNER_ISOLATION_SCHEDULE_SESSION_INBOX.md.
+	expectedOwner, _ := result["delivery_owner"].(string)
+	sessionOwner := session.GetOwnerID()
+	if expectedOwner != "" && sessionOwner != expectedOwner ||
+		expectedOwner == "" && tools.OwnerIsolationEnabled(h.App) && sessionOwner != "" {
 		return core.ErrSessionMissing
 	}
 

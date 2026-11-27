@@ -20,7 +20,7 @@ func (h *APIHandler) SchedulesHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "schedule store not available", http.StatusServiceUnavailable)
 		return
 	}
-	schedules := h.App.SStore.List()
+	schedules := h.App.SStore.ListVisible(tools.CallerOwnerID(r.Context()), tools.ResourceScopeIsUnrestricted(r.Context(), h.App))
 	if schedules == nil {
 		schedules = []*schemas.Schedule{}
 	}
@@ -44,7 +44,7 @@ func (h *APIHandler) ScheduleInboxHandler(w http.ResponseWriter, r *http.Request
 	if err != nil || limit <= 0 {
 		limit = 100
 	}
-	entries, err := h.App.Schedule.ListPendingInbox(r.Context(), tools.CallerOwnerID(r.Context()), limit)
+	entries, err := h.App.Schedule.ListPendingInboxForScope(r.Context(), tools.CallerOwnerID(r.Context()), tools.ResourceScopeIsUnrestricted(r.Context(), h.App), limit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to read schedule inbox: %v", err), http.StatusInternalServerError)
 		return
@@ -84,11 +84,15 @@ func (h *APIHandler) ScheduleCreateHandler(w http.ResponseWriter, r *http.Reques
 	if s.Deliver.Mode == "session_current" && s.Deliver.OnMissing == "" {
 		s.Deliver.OnMissing = "inbox"
 	}
-	if s.ID == "" {
-		s.ID = "sched_" + uuid.New().String()[:8]
-	}
+	s.ID = "sched_" + uuid.New().String()[:8]
 	s.Status = schemas.ScheduleActive
-	s.OwnerID = tools.CallerOwnerID(r.Context())
+	owner, err := tools.RequireResourceOwner(r.Context(), h.App)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	s.OwnerID = owner
+	s.SubmitterIsAdmin = tools.EffectiveTier(r.Context(), h.App) == tools.TierAdmin
 	s.CreatedAt = time.Now()
 	if s.NextRun.IsZero() {
 		s.NextRun = time.Now().Add(1 * time.Minute)
@@ -123,7 +127,7 @@ func (h *APIHandler) SchedulePauseHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s := h.App.SStore.Get(req.ID)
+	s := tools.GetVisibleSchedule(r.Context(), h.App, req.ID)
 	if s == nil {
 		http.Error(w, "schedule not found", http.StatusNotFound)
 		return
@@ -163,7 +167,7 @@ func (h *APIHandler) ScheduleDeleteHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s := h.App.SStore.Get(req.ID)
+	s := tools.GetVisibleSchedule(r.Context(), h.App, req.ID)
 	if s == nil {
 		http.Error(w, "schedule not found", http.StatusNotFound)
 		return
@@ -201,7 +205,7 @@ func (h *APIHandler) ScheduleUpdateHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "schedule id is required", http.StatusBadRequest)
 		return
 	}
-	existing := h.App.SStore.Get(s.ID)
+	existing := tools.GetVisibleSchedule(r.Context(), h.App, s.ID)
 	if existing == nil {
 		http.Error(w, "schedule not found", http.StatusNotFound)
 		return
@@ -276,11 +280,9 @@ func (h *APIHandler) ScheduleRunNowHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	taskID, err := h.App.Schedule.RunNow(req.ID)
+	taskID, err := h.App.Schedule.RunNowForOwner(req.ID, tools.CallerOwnerID(r.Context()), tools.ResourceScopeIsUnrestricted(r.Context(), h.App))
 	if err != nil {
-		// Distinguish "not found" from "submission failed" so the UI can
-		// show the right message.
-		if h.App.SStore != nil && h.App.SStore.Get(req.ID) == nil {
+		if tools.GetVisibleSchedule(r.Context(), h.App, req.ID) == nil {
 			http.Error(w, "schedule not found", http.StatusNotFound)
 			return
 		}

@@ -44,6 +44,7 @@ func (h *ChatHandler) SendHandler(w http.ResponseWriter, r *http.Request) {
 		RoleID:         body.RoleID,
 		DirectTask:     body.DirectTask,
 		CallerID:       tools.CallerIdentity(r.Context()),
+		OwnerID:        tools.CallerOwnerID(r.Context()),
 		ReplyTo:        body.ReplyTo,
 		ReplyToContent: body.ReplyToContent,
 		Attachments:    body.Attachments,
@@ -76,8 +77,8 @@ func (h *ChatHandler) StreamHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session_id required", http.StatusBadRequest)
 		return
 	}
-	session := h.Store.Get(sessionID)
-	if session == nil {
+	session, allowed := h.loadAuthorizedSession(r.Context(), sessionID, "")
+	if !allowed {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}

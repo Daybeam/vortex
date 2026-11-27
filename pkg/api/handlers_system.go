@@ -11,7 +11,7 @@ import (
 // MemoryBankHandler handles GET/POST /api/memory-bank.
 // GET returns aggregated MemoryBank data.
 // POST accepts a partial patch and merges it into the existing MemoryBank.
-// ADDED POST 2026-10-17. See docs/plan/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 2.
+// ADDED POST 2026-10-17. See docs/completed/2026-10-17/MEMORYBANK_CONTROL_LAYER_DESIGN.md §change 2.
 func (h *APIHandler) MemoryBankHandler(w http.ResponseWriter, r *http.Request) {
 	if h.App.MemoryBankStore == nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -131,7 +131,7 @@ func (h *APIHandler) NotificationsHandler(w http.ResponseWriter, r *http.Request
 }
 
 // HandleEventsStream is the SSE endpoint for real-time observability.
-// Design ref: docs/architecture/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
+// Design ref: docs/completed/2026-09-14/TIME_TRAVEL_AND_OBSERVABILITY_DESIGN.md
 func (h *APIHandler) HandleEventsStream(w http.ResponseWriter, r *http.Request) {
 	if h.App.Logger == nil {
 		http.Error(w, "logger not available", http.StatusInternalServerError)

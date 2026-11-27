@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/schemas"
+	"github.com/daybeam/vortex/tools"
 )
 
 // ConfigHandler returns the current full configuration.
@@ -132,37 +134,45 @@ func (h *APIHandler) UpdateSkillHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	if sk.ID == "" {
-		http.Error(w, "Skill ID is required", http.StatusBadRequest)
+	if err := validateConfigAssetID(sk.ID); err != nil {
+		http.Error(w, "Skill "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Determine the correct skills directory
-	skillsDir := h.App.Registry.GetConfigPath()
-	skillsDir = filepath.Join(filepath.Dir(skillsDir), "workspace/skills/")
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		http.Error(w, fmt.Sprintf("failed to create skills dir: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Save skill to individual JSON file
-	safeID := filepath.Base(sk.ID)
-	skillPath := filepath.Join(skillsDir, safeID+".json")
-	skillData, err := json.MarshalIndent(sk, "", "  ")
+	value, err := json.Marshal(sk)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := os.WriteFile(skillPath, skillData, 0644); err != nil {
+	h.App.Registry.Mu.RLock()
+	_, exists := h.App.Registry.Skills[sk.ID]
+	h.App.Registry.Mu.RUnlock()
+	op := config.OpAdd
+	if exists {
+		op = config.OpReplace
+	}
+	actor := tools.CallerOwnerID(r.Context())
+	if actor == "" {
+		actor = "api_user"
+	}
+	ops := []config.PatchOp{{Op: op, Path: "/skills/" + sk.ID, Value: json.RawMessage(value)}}
+	if err := h.App.Registry.CommitOps(ops, actor, ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Update in-memory registry
-	h.App.Registry.Mu.Lock()
-	h.App.Registry.Skills[sk.ID] = &sk
-	h.App.Registry.Mu.Unlock()
+	// Keep the externally editable runtime sidecar, but only after the durable
+	// registry commit succeeds. O24-4: direct os.WriteFile bypassed WAL/restart
+	// durability; the exported config writer retains atomic replacement here.
+	sidecar, err := json.MarshalIndent(sk, "", "  ")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.writeConfigAssetSidecar("skills", sk.ID, sidecar); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
@@ -280,40 +290,76 @@ func (h *APIHandler) UpdateSOPHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	if sop.ID == "" {
-		http.Error(w, "SOP ID is required", http.StatusBadRequest)
+	if err := validateConfigAssetID(sop.ID); err != nil {
+		http.Error(w, "SOP "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Determine the correct sops directory
-	sopsDir := h.App.Registry.GetConfigPath()
-	sopsDir = filepath.Join(filepath.Dir(sopsDir), "workspace/sops/")
-	if err := os.MkdirAll(sopsDir, 0755); err != nil {
-		http.Error(w, fmt.Sprintf("failed to create sops dir: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Save SOP to individual JSON file
-	safeID := filepath.Base(sop.ID)
-	sopPath := filepath.Join(sopsDir, safeID+".json")
-	sopData, err := json.MarshalIndent(sop, "", "  ")
+	value, err := json.Marshal(sop)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := os.WriteFile(sopPath, sopData, 0644); err != nil {
+	h.App.Registry.Mu.RLock()
+	_, exists := h.App.Registry.SOPs[sop.ID]
+	h.App.Registry.Mu.RUnlock()
+	op := config.OpAdd
+	if exists {
+		op = config.OpReplace
+	}
+	actor := tools.CallerOwnerID(r.Context())
+	if actor == "" {
+		actor = "api_user"
+	}
+	ops := []config.PatchOp{{Op: op, Path: "/sops/" + sop.ID, Value: json.RawMessage(value)}}
+	if err := h.App.Registry.CommitOps(ops, actor, ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Update in-memory registry
-	h.App.Registry.Mu.Lock()
-	h.App.Registry.SOPs[sop.ID] = &sop
-	h.App.Registry.Mu.Unlock()
+	// SOPManager and split-layout users consume workspace/sops/<id>.json. Keep
+	// that sidecar atomically after the durable registry commit (O24-4).
+	sidecar, err := json.MarshalIndent(sop, "", "  ")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.writeConfigAssetSidecar("sops", sop.ID, sidecar); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// validateConfigAssetID accepts one portable filename/JSON-Pointer component.
+// filepath.Base is not validation: on its own it accepts traversal and map keys
+// that do not match the sidecar filename. O24-4 requires rejection before write.
+func validateConfigAssetID(id string) error {
+	if id == "" {
+		return fmt.Errorf("ID is required")
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		isAlphaNum := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+		if isAlphaNum || c == '_' || c == '-' || (i > 0 && c == '.') {
+			continue
+		}
+		return fmt.Errorf("ID %q must be a single component using letters, digits, '_', '-' or '.'", id)
+	}
+	return nil
+}
+
+func (h *APIHandler) writeConfigAssetSidecar(section, id string, data []byte) error {
+	dir := filepath.Join(config.ConfigDir(h.App.Registry.GetConfigPath()), "workspace", section)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create %s directory: %w", section, err)
+	}
+	if err := config.WriteConfigFileAtomic(filepath.Join(dir, id+".json"), data, 0644); err != nil {
+		return fmt.Errorf("write %s sidecar: %w", section, err)
+	}
+	return nil
 }
 
 // UpdateSystemHandler handles /api/config/update-system (POST).
@@ -429,6 +475,9 @@ func validateNamedAPIKeys(keys []config.NamedAPIKey) error {
 		case "", "admin", "public":
 		default:
 			return fmt.Errorf("api_keys[%d]: tier must be \"admin\" or \"public\", got %q", i, k.Tier)
+		}
+		if k.Tier != "admin" && strings.TrimSpace(k.OwnerID) == "" {
+			return fmt.Errorf("api_keys[%d]: owner_id is required for a public key", i)
 		}
 		if seen[k.Key] {
 			return fmt.Errorf("api_keys[%d]: duplicate key", i)
