@@ -323,6 +323,7 @@ func (gd *GroupDispatcher) expandSOP(
 			ExitCriteria:     s.ExitCriteria, // PROPAGATED (ADDED 2026-09-09)
 			// Without this line a SOP's declared checks die at the SOP→StepInput hop.
 			DeterministicChecks: s.DeterministicChecks,
+			RequireAudit:        s.RequireAudit,
 			GroupID:             group.ID,
 		}
 		inputs = append(inputs, inp)

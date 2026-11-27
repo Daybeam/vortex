@@ -100,6 +100,7 @@ type SpawnRequest struct {
 	// ProviderOverride: if set, overrides the role-level provider for this step.
 	// Must match a named provider in the registry (config.json "providers" keys).
 	ProviderOverride string
+	ModelOverride    string
 	RoutingMode      string
 	CompressionHint  string
 	// PredecessorSkillID is the RoleID of the previous completed step in the

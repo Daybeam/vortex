@@ -121,6 +121,10 @@ const (
 	EventMCPToolsChanged     EventType = "mcp_tools_changed"
 	EventSchemaRotQuarantine EventType = "schema_rot_quarantine"
 	EventMCPRestoredStale    EventType = "mcp_restored_stale"
+	EventVDACapture          EventType = "vda_capture"
+	EventVDAIncluded         EventType = "vda_included_in_next_request"
+	EventVerifierResolved    EventType = "verifier_resolved"
+	EventACPDialectDetected  EventType = "acp_dialect_detected"
 )
 
 type LogEvent struct {

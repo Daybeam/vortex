@@ -22,12 +22,14 @@ type CostTracker struct {
 
 // CostRecord is one logged LLM call's token spend.
 type CostRecord struct {
-	Timestamp    time.Time
-	Model        string
-	TaskID       string
-	StepID       string
-	InputTokens  int
-	OutputTokens int
+	Timestamp        time.Time
+	Model            string
+	TaskID           string
+	StepID           string
+	InputTokens      int
+	OutputTokens     int
+	CacheWriteTokens int
+	CacheReadTokens  int
 }
 
 // NewCostTracker creates a new CostTracker with SQLite backend.
@@ -60,19 +62,58 @@ func NewCostTracker(dbPath string) (*CostTracker, error) {
 		task_id    TEXT    NOT NULL,
 		step_id    TEXT    NOT NULL,
 		input_tokens  INTEGER NOT NULL DEFAULT 0,
-		output_tokens INTEGER NOT NULL DEFAULT 0
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens  INTEGER NOT NULL DEFAULT 0
 	)`)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("cost_tracker: create table: %w", err)
 	}
+	if err := ensureCostLedgerColumns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("cost_tracker: migrate table: %w", err)
+	}
 	return &CostTracker{db: db}, nil
+}
+
+func ensureCostLedgerColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(cost_records)`)
+	if err != nil {
+		return err
+	}
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, column := range []string{"cache_write_tokens", "cache_read_tokens"} {
+		if !columns[column] {
+			if _, err := db.Exec(`ALTER TABLE cost_records ADD COLUMN ` + column + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Record logs one LLM call's token spend. Best-effort: errors are returned
 // but callers typically ignore them (a failed cost log must not break the
 // LLM call flow).
-func (ct *CostTracker) Record(model, taskID, stepID string, inputTokens, outputTokens int) error {
+func (ct *CostTracker) Record(model, taskID, stepID string, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens int) error {
 	if ct == nil || ct.db == nil {
 		return nil
 	}
@@ -82,8 +123,8 @@ func (ct *CostTracker) Record(model, taskID, stepID string, inputTokens, outputT
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := ct.db.ExecContext(ctx,
-		`INSERT INTO cost_records (ts, model, task_id, step_id, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?)`,
-		time.Now().UTC().Format(time.RFC3339Nano), model, taskID, stepID, inputTokens, outputTokens,
+		`INSERT INTO cost_records (ts, model, task_id, step_id, input_tokens, output_tokens, cache_write_tokens, cache_read_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339Nano), model, taskID, stepID, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens,
 	)
 	return err
 }

@@ -60,6 +60,31 @@ func assertFileExistsCheck(t *testing.T, where string, checks []schemas.Determin
 
 // Hop 1+2: the SOP file's JSON must reach SOPStep, and expandSOP must carry it
 // onto the StepInput it builds for the engine.
+// Register O47 regression: SOP audit intent must survive both supported step
+// encodings and reach the engine's StepInput.
+func TestRequireAudit_SurvivesSOPParseAndExpansion(t *testing.T) {
+	for _, steps := range []string{
+		`{"s1":{"id":"s1","role":"engineer","task":"t","require_audit":true}}`,
+		`[{"id":"s1","role":"engineer","task":"t","require_audit":true}]`,
+	} {
+		raw := `{"id":"audit_probe","triggers":[],"steps":` + steps + `}`
+		var sop schemas.SOP
+		if err := json.Unmarshal([]byte(raw), &sop); err != nil {
+			t.Fatalf("unmarshal SOP: %v", err)
+		}
+		reg := &config.Registry{SOPs: map[string]*schemas.SOP{sop.ID: &sop}}
+		inputs, err := NewGroupDispatcher(nil, reg).expandSOP(&config.RoleGroup{
+			ID: "g_audit", Policy: config.GroupPolicySOP, SOPRef: sop.ID,
+		}, "run", nil)
+		if err != nil {
+			t.Fatalf("expandSOP: %v", err)
+		}
+		if !inputs[0].RequireAudit {
+			t.Fatal("SOP require_audit lost during expansion")
+		}
+	}
+}
+
 func TestDeterministicChecks_SurviveSOPParseAndExpansion(t *testing.T) {
 	engine, _ := buildSmartRoutingEngine(t, false)
 	defer engine.Stop()

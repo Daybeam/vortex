@@ -16,13 +16,13 @@ func TestCostTracker_RecordAndGetSpend(t *testing.T) {
 
 	// Record several LLM calls across two models.
 	// audit NEW2-LOW-2: assert on Record errors for clear failure messages.
-	if err := ct.Record("gpt-4", "task1", "step1", 1000, 500); err != nil {
+	if err := ct.Record("gpt-4", "task1", "step1", 1000, 500, 100, 400); err != nil {
 		t.Fatalf("Record 1 failed: %v", err)
 	}
-	if err := ct.Record("gpt-4", "task1", "step2", 800, 300); err != nil {
+	if err := ct.Record("gpt-4", "task1", "step2", 800, 300, 80, 300); err != nil {
 		t.Fatalf("Record 2 failed: %v", err)
 	}
-	if err := ct.Record("claude-3", "task2", "step1", 2000, 1000); err != nil {
+	if err := ct.Record("claude-3", "task2", "step1", 2000, 1000, 200, 800); err != nil {
 		t.Fatalf("Record 3 failed: %v", err)
 	}
 
@@ -41,7 +41,7 @@ func TestCostTracker_RecordAndGetSpend(t *testing.T) {
 func TestCostTracker_NilSafe(t *testing.T) {
 	var ct *CostTracker
 	// Should not panic.
-	if err := ct.Record("model", "task", "step", 100, 50); err != nil {
+	if err := ct.Record("model", "task", "step", 100, 50, 0, 0); err != nil {
 		t.Errorf("nil CostTracker.Record should return nil, got %v", err)
 	}
 	spend, err := ct.GetTotalSpend()
@@ -73,7 +73,7 @@ func TestCostTracker_PersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("NewCostTracker 1: %v", err)
 	}
 	// audit NEW2-LOW-2: assert on Record error for clear failure messages.
-	if err := ct1.Record("gpt-4", "task1", "step1", 1000, 500); err != nil {
+	if err := ct1.Record("gpt-4", "task1", "step1", 1000, 500, 100, 400); err != nil {
 		t.Fatalf("Record failed: %v", err)
 	}
 	ct1.Close()

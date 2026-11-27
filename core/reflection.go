@@ -154,6 +154,21 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 			skills = re.captureTraceJITSkills(ctx, capability, step.Task, trace, skills)
 		}
 
+		// P1: Set execution evidence. A step is "verified" when we have
+		// independent confirmation it actually worked — not just the
+		// scheduler's Status field. The simplest available signal is a
+		// recorded Trace (tool-call log): if we can see what tools were
+		// called and the step succeeded, that's execution evidence.
+		// Steps without Trace (e.g. pure-reasoning steps with no tool
+		// calls) are unverified — we have only the model's self-report.
+		// Spec: docs/completed/2026-11-27/MEMORY_TWO_TIER_KEY.md §5
+		verified := false
+		evidence := ""
+		if step.Status == schemas.StepOK && len(trace) > 0 {
+			verified = true
+			evidence = "trace_recorded"
+		}
+
 		records = append(records, store.StepRecord{
 			StepID:         step.ID,
 			RoleID:         step.RoleID,
@@ -171,6 +186,8 @@ func (re *ReflectionEngine) ReflectOnTask(lifecycleCtx context.Context, graph *s
 			StatesVisited:  step.StatesVisited, // PGPO (ADDED 2026-09-08)
 			Embedding:      step.Embedding,
 			EmbeddingModel: step.EmbeddingModel,
+			Verified:       verified,
+			Evidence:       evidence,
 		})
 	}
 
