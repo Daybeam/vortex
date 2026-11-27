@@ -23,4 +23,5 @@ paths = [
   '''pkg/observability/redact_nested_test\.go''',
   '''core/spawner_utils_test\.go''',
   '''tools/tools_redaction_test\.go''',
+  '''core/redact/redact_test\.go''',
 ]
