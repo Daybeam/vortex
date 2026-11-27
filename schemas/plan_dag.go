@@ -42,6 +42,7 @@ type PlanStep struct {
 	// DeterministicChecks mirrors StepInput.DeterministicChecks; without it a
 	// planner-declared check dies at the plan parse (register O1).
 	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
+	RequireAudit        bool                 `json:"require_audit,omitempty"`
 	// MCPID is the MCP server the AllowedTools belong to. Optional: when
 	// empty the parser uses singleMCP (the common case — one bound server).
 	MCPID string `json:"mcp_id,omitempty"`
@@ -264,6 +265,7 @@ func ParsePlanDAG(raw string, opt PlanParseOptions) ([]StepInput, error) {
 			Task:                ps.Task,
 			DependsOn:           append([]string(nil), ps.DependsOn...),
 			DeterministicChecks: append([]DeterministicCheck(nil), ps.DeterministicChecks...),
+			RequireAudit:        ps.RequireAudit,
 		}
 		if mcpID != "" {
 			inp.AdditionalMCPs = []string{mcpID}

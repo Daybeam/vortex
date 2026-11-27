@@ -87,17 +87,55 @@ type SubagentOutput struct {
 	// ApprovalRequiredSkills lists skills blocked on human approval (D3,
 	// 2026-10-22 — same gate shape as ApprovalRequiredMounts).
 	ApprovalRequiredSkills []string `json:"approval_required_skills,omitempty"`
-	Capability string `json:"capability"`
+	// ConfirmationRequired carries tool-level confirmation context when a
+	// tool call was blocked pending human approval (MCP confirmation gate).
+	// Set only with Status == StatusApprovalRequired. See
+	// docs/plan/mcp-confirmation-ui-design.md §3 L0.
+	ConfirmationRequired *ConfirmationContext `json:"confirmation_required,omitempty"`
+	Capability           string               `json:"capability"`
 	SkillIDs             []string             `json:"skill_ids"`
 	TokenUsed            int                  `json:"token_used"`
 
 	Usage *Usage `json:"usage,omitempty"`
 }
 
+// ConfirmationEffect describes one side-effect of the operation.
+type ConfirmationEffect struct {
+	Kind      string `json:"kind"`           // delete|create|modify|send|grant
+	Target    string `json:"target"`         // JSONPath into $.arguments
+	CountFrom string `json:"count_from,omitempty"` // JSONPath into $.preview
+}
+
+// ConfirmationContext carries the information needed to render a confirmation
+// card when a tool call is blocked pending human approval. The host renders
+// the card from the descriptor + real arguments — never from MCP free text.
+type ConfirmationContext struct {
+	ToolName   string                     `json:"tool_name"`
+	MCPID      string                     `json:"mcp_id"`
+	ArgsHash   string                     `json:"args_hash"`
+	Template   string                     `json:"template"`
+	Risk       string                     `json:"risk"`
+	Subject    string                     `json:"subject,omitempty"`
+	Effects    []ConfirmationEffect       `json:"effects,omitempty"`
+	Reversible bool                       `json:"reversible,omitempty"`
+	Arguments  map[string]any             `json:"arguments"`
+	Preview    *ConfirmationPreviewResult `json:"preview,omitempty"`
+}
+
+// ConfirmationPreviewResult holds the output of a dry-run/preview tool call
+// executed before confirmation, so the host can show a before/after diff.
+// See docs/plan/mcp-confirmation-ui-design.md §3 L0 preview.
+type ConfirmationPreviewResult struct {
+	Tool   string         `json:"tool"`
+	Result map[string]any `json:"result"`
+}
+
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
 }
 
 // ─── Capability-specific result schemas ───────────────────────────────────

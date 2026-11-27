@@ -64,6 +64,18 @@ func TestParsePlanDAG_CarriesDeclaredChecks(t *testing.T) {
 
 // The copied slice must not alias the parsed PlanStep, so mutating a plan's
 // checks later cannot rewrite a step already handed to the engine.
+// Register O47 regression: PlanStep.RequireAudit must survive the same parse hop.
+func TestParsePlanDAG_CarriesAuditIntent(t *testing.T) {
+	raw := `{"steps":[{"id":"s1","role_id":"appworld_agent","task":"t","allowed_tools":["phone__login"],"require_audit":true}]}`
+	steps, err := ParsePlanDAG(raw, testPlanOptions())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !steps[0].RequireAudit {
+		t.Fatal("planner-declared require_audit lost at plan parse")
+	}
+}
+
 func TestParsePlanDAG_ChecksAreNotAliased(t *testing.T) {
 	raw := `{
 	  "steps": [

@@ -45,6 +45,7 @@ type StepInput struct {
 	// Optimization & Audit
 	ExitCriteria  string  `json:"exit_criteria,omitempty"`
 	VerifierModel string  `json:"verifier_model,omitempty"`
+	RequireAudit  bool    `json:"require_audit,omitempty"`
 	MaxAutoRefine int     `json:"max_auto_refine,omitempty"`
 	RiskRating    float64 `json:"risk_rating,omitempty"` // Numeric risk score (0.0-1.0)
 	// DeterministicChecks mirrors Step.DeterministicChecks below; until it existed
@@ -190,11 +191,13 @@ type Step struct {
 	RoutingMode      string `json:"routing_mode,omitempty"` // legacy | manifest
 
 	// Optimization & Audit state
-	ExitCriteria    string  `json:"exit_criteria,omitempty"`
-	VerifierModel   string  `json:"verifier_model,omitempty"`
-	MaxAutoRefine   int     `json:"max_auto_refine,omitempty"`
-	AutoRefineCount int     `json:"auto_refine_count"`
-	RiskRating      float64 `json:"risk_rating"` // Captured numeric risk score
+	ExitCriteria     string  `json:"exit_criteria,omitempty"`
+	VerifierModel    string  `json:"verifier_model,omitempty"`
+	VerifierProvider string  `json:"verifier_provider,omitempty"`
+	RequireAudit     bool    `json:"require_audit,omitempty"`
+	MaxAutoRefine    int     `json:"max_auto_refine,omitempty"`
+	AutoRefineCount  int     `json:"auto_refine_count"`
+	RiskRating       float64 `json:"risk_rating"` // Captured numeric risk score
 	// Cross-Family Debate (ADDED 2026-09-14): opt-in Proposer→Critic→Synthesizer loop.
 	// See docs/completed/2026-09-14/CROSS_FAMILY_DEBATE_DESIGN.md
 	EnableDebate    bool `json:"enable_debate,omitempty"`
@@ -478,6 +481,8 @@ type TaskGraph struct {
 	OutputFiles         []OutputFile               `json:"output_files"`
 	Artifacts           []ArtifactContract         `json:"artifacts,omitempty"`
 	OverallConfidence   *float64                   `json:"overall_confidence,omitempty"`
+	FailureClass        string                     `json:"failure_class,omitempty"`
+	RootCause           string                     `json:"root_cause,omitempty"`
 	CreatedAt           time.Time                  `json:"created_at"`
 	CompletedAt         *time.Time                 `json:"completed_at,omitempty"`
 

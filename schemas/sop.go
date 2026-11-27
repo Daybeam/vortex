@@ -41,9 +41,27 @@ type SOPStep struct {
 	ExitCriteria string `json:"exit_criteria,omitempty"`
 	// DeterministicChecks mirrors Step.DeterministicChecks; absent here it is dropped at parse time (O1).
 	DeterministicChecks []DeterministicCheck `json:"deterministic_checks,omitempty"`
+	RequireAudit        bool                 `json:"require_audit,omitempty"`
 	ConditionExpr       string               `json:"condition_expr,omitempty"` // Optional branching expression
 	OnSuccess           string               `json:"on_success,omitempty"`     // Explicit success jump
 	OnFailure           string               `json:"on_failure,omitempty"`     // Explicit failure jump (fallback)
+}
+
+// SOPStepFromStep promotes workflow intent without persisting resolved verifier
+// deployment policy (VerifierModel/VerifierProvider).
+func SOPStepFromStep(step *Step) SOPStep {
+	return SOPStep{
+		ID:                  step.ID,
+		Role:                step.RoleID,
+		Task:                step.Task,
+		Skills:              step.AdditionalSkills,
+		MCPs:                step.AdditionalMCPs,
+		Provider:            step.ProviderOverride,
+		DependsOn:           step.DependsOn,
+		ExitCriteria:        step.ExitCriteria,
+		DeterministicChecks: step.DeterministicChecks,
+		RequireAudit:        step.RequireAudit,
+	}
 }
 
 // UnmarshalJSON implements custom unmarshaling for SOP to support legacy formats

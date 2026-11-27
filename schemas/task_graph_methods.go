@@ -430,6 +430,8 @@ func (g *TaskGraph) ToStatusDictView(view string) map[string]any {
 		"task_id":             g.TaskID,
 		"status":              string(g.Status),
 		"overall_confidence":  g.OverallConfidence,
+		"failure_class":       g.FailureClass,
+		"root_cause":          g.RootCause,
 		"skipped_steps_count": skippedStepsCount,
 		"steps":               steps,
 		"pending_decisions":   decisions,
