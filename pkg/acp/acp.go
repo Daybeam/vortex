@@ -68,7 +68,15 @@ type cancelParams struct {
 //
 // Methods: initialize, ping, run_task, cancel.
 // Notifications (server→client): task_completed, task_failed.
+type ServeACPOptions struct {
+	Dialect string
+}
+
 func ServeACP(engine Engine, stdin io.Reader, stdout io.Writer) error {
+	return ServeACPWithOptions(engine, stdin, stdout, ServeACPOptions{})
+}
+
+func ServeACPWithOptions(engine Engine, stdin io.Reader, stdout io.Writer, opts ServeACPOptions) error {
 	scanner := bufio.NewScanner(stdin)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024) // 4 MB max line
 
@@ -88,10 +96,27 @@ func ServeACP(engine Engine, stdin io.Reader, stdout io.Writer) error {
 	var promptWg sync.WaitGroup
 	done := make(chan struct{})
 	var stdMode atomic.Bool
-
-	// VORTEX_ACP_DIALECT env: "standard" forces standard mode, "legacy" forces
-	// legacy mode, "auto" (default) detects via protocolVersion in initialize.
-	dialectOverride := os.Getenv("VORTEX_ACP_DIALECT")
+	dialectResolved := false
+	lockDialect := func(decision dialectDecision, source string) {
+		if dialectResolved {
+			return
+		}
+		dialectResolved = true
+		stdMode.Store(decision.dialect == "standard")
+		payload := map[string]any{
+			"dialect": decision.dialect,
+			"layer":   decision.layer,
+			"signal":  decision.signal,
+		}
+		if source != "" {
+			payload["source"] = source
+		}
+		obs.DefaultBus.Publish(obs.NewAgentEvent("", "", string(obs.EventACPDialectDetected), payload))
+	}
+	dialectMode, dialectSource := resolveDialectMode(os.Getenv("VORTEX_ACP_DIALECT"), opts.Dialect)
+	if dialectMode == "standard" || dialectMode == "legacy" {
+		lockDialect(dialectDecision{dialectMode, "override", dialectMode}, dialectSource)
+	}
 
 	// Event bridge: forward task terminal events as ACP notifications.
 	// Suppressed in standard mode — the standardServer handles terminal
@@ -124,30 +149,27 @@ func ServeACP(engine Engine, stdin io.Reader, stdout io.Writer) error {
 			continue
 		}
 
-		// Standard ACP dialect detection.
-		// VORTEX_ACP_DIALECT=standard forces standard; =legacy forces legacy;
-		// auto/empty detects via protocolVersion in initialize params.
-		useStandard := false
-		if req.Method == "initialize" {
-			switch dialectOverride {
-			case "standard":
-				useStandard = true
-			case "legacy":
-				useStandard = false
-			default: // "auto" or empty
-				useStandard = hasProtocolVersion(req.Params)
+		if !dialectResolved {
+			if req.Method == "initialize" {
+				if decision, ok := detectDialect(req.Params); ok {
+					lockDialect(decision, "")
+				}
+			} else if decision, ok := detectDialectMethod(req.Method); ok {
+				lockDialect(decision, "")
 			}
 		}
+		useStandard := dialectResolved && stdMode.Load()
 
 		if useStandard {
-			stdMode.Store(true)
 			if stdServer == nil {
 				stdServer = newStandardServer(engine, writeJSON, done)
 				defer stdServer.close()
 			}
-			clientVersion := extractProtocolVersion(req.Params)
-			writeJSON(Response{JSONRPC: "2.0", ID: req.ID, Result: stdServer.handleInitialize(clientVersion)})
-			continue
+			if req.Method == "initialize" {
+				clientVersion := extractProtocolVersion(req.Params)
+				writeJSON(Response{JSONRPC: "2.0", ID: req.ID, Result: stdServer.handleInitialize(clientVersion)})
+				continue
+			}
 		}
 
 		// Standard ACP method routing.
