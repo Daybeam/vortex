@@ -114,8 +114,10 @@ func registerProxySubsystem(app *App) {
 						record.Task = fmt.Sprintf("Direct tool call: %s", toolName)
 					}
 
-					shadowTaskID := "shadow_" + uuid.New().String()[:8]
-					_ = app.ExpStore.RecordTaskCompletion(shadowCtx, shadowTaskID, []store.StepRecord{record}, 1.0, nil, err == nil, false)
+				shadowTaskID := "shadow_" + uuid.New().String()[:8]
+				if err := app.ExpStore.RecordTaskCompletion(shadowCtx, shadowTaskID, []store.StepRecord{record}, 1.0, nil, err == nil, false); err != nil {
+					fmt.Fprintf(os.Stderr, "WARN: shadow learning: RecordTaskCompletion failed: %v\n", err)
+				}
 				}()
 			}
 

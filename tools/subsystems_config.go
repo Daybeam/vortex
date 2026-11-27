@@ -292,7 +292,7 @@ func registerConfigSubsystem(app *App) {
 
 	s.Actions["promote_to_sop"] = Action{
 		Name:        "promote_to_sop",
-		Description: "Promote a completed task's step sequence into a reusable SOP. Pulls step definitions (role, task, skills, MCPs, dependencies) from the task graph and saves via SOPManager with DAG validation.",
+		Description: "Promote a completed task's step sequence into a reusable SOP. Pulls workflow intent (role, task, skills, MCPs, dependencies, exit criteria, deterministic checks, require_audit) from the task graph and saves via SOPManager with DAG validation. Resolved verifier provider/model deployment policy is intentionally not persisted.",
 		Parameters: map[string]any{
 			"task_id":     "string (required) - ID of the completed task to promote",
 			"sop_id":      "string (required) - unique SOP identifier for the new SOP",
@@ -323,17 +323,7 @@ func registerConfigSubsystem(app *App) {
 					if step == nil {
 						continue
 					}
-					steps[id] = schemas.SOPStep{
-						ID:                  step.ID,
-						Role:                step.RoleID,
-						Task:                step.Task,
-						Skills:              step.AdditionalSkills,
-						MCPs:                step.AdditionalMCPs,
-						Provider:            step.ProviderOverride,
-						DependsOn:           step.DependsOn,
-						ExitCriteria:        step.ExitCriteria,
-						DeterministicChecks: step.DeterministicChecks,
-					}
+					steps[id] = schemas.SOPStepFromStep(step)
 				}
 			})
 			if !found {
