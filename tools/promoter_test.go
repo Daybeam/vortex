@@ -117,8 +117,8 @@ func TestPromoter_EvictLRU_AtCapacity(t *testing.T) {
 		t.Fatalf("expected 2 promoted at capacity, got %d", len(p.promoted))
 	}
 
-	time.Sleep(10 * time.Millisecond)
-
+	// Regression for Windows clock-resolution ties: rapid calls must still
+	// evict the invocation that actually happened first.
 	p.Record("config", "list_mcps", *act3)
 	if len(p.promoted) != 2 {
 		t.Fatalf("expected 2 promoted after LRU eviction, got %d", len(p.promoted))

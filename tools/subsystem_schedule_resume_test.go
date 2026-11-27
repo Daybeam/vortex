@@ -179,22 +179,34 @@ func TestScheduleResume_MissingAndUnknownID(t *testing.T) {
 	}
 }
 
-// TestScheduleResume_IsAdminOnly mirrors schedule.pause: only `list` is Tier1.
-func TestScheduleResume_IsAdminOnly(t *testing.T) {
+// TestScheduleResume_IsOwnerScoped replaces the old blanket admin gate: ordinary
+// named users may resume their own schedules, never another owner's or an
+// ownerless row in multi-user mode.
+func TestScheduleResume_IsOwnerScoped(t *testing.T) {
 	app := newResumeTestApp(t)
-	putPausedSchedule(t, app, &schemas.Schedule{
-		ID:       "sch_public_try",
-		Type:     schemas.ScheduleInterval,
-		Interval: "1h",
-		Status:   schemas.SchedulePaused,
-		NextRun:  time.Now().Add(-time.Hour),
-	})
+	app.OwnerIsolation = true
+	for _, sch := range []*schemas.Schedule{
+		{ID: "sch_alice", OwnerID: "alice", Type: schemas.ScheduleInterval, Interval: "1h", Status: schemas.SchedulePaused, NextRun: time.Now().Add(-time.Hour)},
+		{ID: "sch_bob", OwnerID: "bob", Type: schemas.ScheduleInterval, Interval: "1h", Status: schemas.SchedulePaused, NextRun: time.Now().Add(-time.Hour)},
+		{ID: "sch_ownerless", Type: schemas.ScheduleInterval, Interval: "1h", Status: schemas.SchedulePaused, NextRun: time.Now().Add(-time.Hour)},
+	} {
+		putPausedSchedule(t, app, sch)
+	}
 
 	ctx := context.WithValue(context.Background(), AuthTierKey, TierPublic)
-	if _, err := registry.Invoke(ctx, app, "schedule", "resume", map[string]any{"schedule_id": "sch_public_try"}); err == nil {
-		t.Error("resume must require Tier2 (Admin), like pause")
+	ctx = context.WithValue(ctx, AuthOwnerKey, "alice")
+	if _, err := registry.Invoke(ctx, app, "schedule", "resume", map[string]any{"schedule_id": "sch_alice"}); err != nil {
+		t.Fatalf("owner resume: %v", err)
 	}
-	if got := app.SStore.Get("sch_public_try"); got != nil && got.Status == schemas.ScheduleActive {
-		t.Error("the tier gate must reject before the handler runs — the row was activated")
+	if got := app.SStore.Get("sch_alice"); got.Status != schemas.ScheduleActive {
+		t.Fatalf("owner schedule status = %q, want active", got.Status)
+	}
+	for _, id := range []string{"sch_bob", "sch_ownerless"} {
+		if _, err := registry.Invoke(ctx, app, "schedule", "resume", map[string]any{"schedule_id": id}); err == nil {
+			t.Errorf("cross-scope resume %q succeeded", id)
+		}
+		if got := app.SStore.Get(id); got.Status != schemas.SchedulePaused {
+			t.Errorf("cross-scope resume mutated %s to %q", id, got.Status)
+		}
 	}
 }

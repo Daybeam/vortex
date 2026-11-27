@@ -9,7 +9,7 @@ import (
 
 // subsystems_discovery.go — Register the `discover` MCP tool.
 //
-// Implements docs/plan/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md §4.3.
+// Implements docs/completed/2026-10-30/TWO_LAYER_SCOPED_DISCOVERY_DESIGN.md §4.3.
 //
 // The `discover` tool is the unified front-end for tool, role, and MCP
 // discovery with scope enforcement. It replaces the need for separate

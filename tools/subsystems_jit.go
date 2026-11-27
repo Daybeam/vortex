@@ -16,19 +16,24 @@ func registerJitSubsystem(app *App) {
 		Actions:     make(map[string]Action),
 	}
 
+	manualTTL := app.Registry.System.DefaultJITTTL
+	if manualTTL == 0 {
+		manualTTL = 3600
+	}
+
 	s.Actions["create"] = Action{
 		Name:        "create",
 		Description: "Create a temporary JIT tool. Sandboxed by default (256MB memory limit, 30s CPU limit). Embedded langs (js, lua) run in-process via goja/gopher-lua — no host runtime required. Managed langs (python, node, bun, lua-via-host) spawn a sandboxed host process.",
 		Parameters: map[string]any{
 			"script":    "string (required)",
 			"language":  "string (required) - js|lua|python|node|bun (js/lua use embedded engine; python/node/bun use host binary)",
-			"ttl":       fmt.Sprintf("number (optional, default %d)", app.Registry.System.DefaultJITTTL),
+			"ttl":       fmt.Sprintf("number (optional, default %d)", manualTTL),
 			"sandboxed": "boolean (optional, default true)",
 		},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			script := strArg(args, "script")
 			lang := strArg(args, "language")
-			ttl := intArg(args, "ttl", app.Registry.System.DefaultJITTTL)
+			ttl := intArg(args, "ttl", manualTTL)
 
 			sandboxed := true
 			if EffectiveTier(ctx, app) == TierPublic {
@@ -122,7 +127,7 @@ func registerJitSubsystem(app *App) {
 	// step_id), so variables/imports genuinely survive between calls.
 	//
 	// As of the embedded-runtime + preflight architecture
-	// (docs/architecture/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md), eval also
+	// (docs/completed/2026-09-15/EMBEDDED_JIT_AND_PREFLIGHT_DESIGN.md), eval also
 	// serves as the inline execution path for embedded langs (js, lua):
 	// those run in-process via goja/gopher-lua with NO session state (a
 	// fresh VM per call), since the embedded engines are cheap to construct
@@ -205,4 +210,4 @@ func registerJitSubsystem(app *App) {
 }
 
 // registerCapabilitySubsystem wires the Unified Capability Driver actions.
-// See docs/architecture/UNIFIED_CAPABILITY_DISCOVERY_DESIGN.md.
+// See docs/completed/2026-09-15/UNIFIED_CAPABILITY_DISCOVERY_DESIGN.md.

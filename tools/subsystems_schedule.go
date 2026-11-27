@@ -22,7 +22,7 @@ func registerScheduleSubsystem(app *App) {
 		Name:        "list",
 		Description: "List all schedules.",
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
-			return app.SStore.List(), nil
+			return app.SStore.ListVisible(CallerOwnerID(ctx), ResourceScopeIsUnrestricted(ctx, app)), nil
 		},
 	}
 
@@ -70,20 +70,25 @@ func registerScheduleSubsystem(app *App) {
 				req.Deliver.OnMissing = "inbox"
 			}
 
+			owner, err := RequireResourceOwner(ctx, app)
+			if err != nil {
+				return nil, err
+			}
 			sch := &schemas.Schedule{
-				ID:         fmt.Sprintf("sch_%s", uuid.New().String()[:6]),
-				Name:       req.Name,
-				Type:       req.Type,
-				RunAt:      req.RunAt,
-				Interval:   req.Interval,
-				CronExpr:   req.CronExpr,
-				TaskInputs: req.TaskInputs,
-				Status:     schemas.ScheduleActive,
-				MaxRuns:    req.MaxRuns,
-				OnFailure:  req.OnFailure,
-				Deliver:    req.Deliver,
-				OwnerID:    CallerOwnerID(ctx),
-				CreatedAt:  time.Now(),
+				ID:               fmt.Sprintf("sch_%s", uuid.New().String()[:6]),
+				Name:             req.Name,
+				Type:             req.Type,
+				RunAt:            req.RunAt,
+				Interval:         req.Interval,
+				CronExpr:         req.CronExpr,
+				TaskInputs:       req.TaskInputs,
+				Status:           schemas.ScheduleActive,
+				MaxRuns:          req.MaxRuns,
+				OnFailure:        req.OnFailure,
+				Deliver:          req.Deliver,
+				OwnerID:          owner,
+				SubmitterIsAdmin: EffectiveTier(ctx, app) == TierAdmin,
+				CreatedAt:        time.Now(),
 			}
 
 			// Initial NextRun is left for ScheduleManager.scan to settle. The
@@ -109,7 +114,7 @@ func registerScheduleSubsystem(app *App) {
 		Parameters:  map[string]any{"schedule_id": "string"},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			id := strArg(args, "schedule_id")
-			sch := app.SStore.Get(id)
+			sch := GetVisibleSchedule(ctx, app, id)
 			if sch == nil {
 				return nil, fmt.Errorf("not found")
 			}
@@ -132,6 +137,9 @@ func registerScheduleSubsystem(app *App) {
 		Parameters:  map[string]any{"schedule_id": "string"},
 		Handler: func(ctx context.Context, app *App, args map[string]any) (any, error) {
 			id := strArg(args, "schedule_id")
+			if GetVisibleSchedule(ctx, app, id) == nil {
+				return nil, fmt.Errorf("not found")
+			}
 			if err := app.SStore.Delete(id); err != nil {
 				return nil, err
 			}

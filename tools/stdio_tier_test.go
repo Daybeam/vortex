@@ -7,8 +7,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// Regression for docs/53-appworld-transport-fix-20261018.md §4:
-// stdio connections don't go through HTTP auth middleware, so AuthTierKey
+// Regression: stdio connections don't go through HTTP auth middleware, so AuthTierKey
 // is never set in the context. This causes cross_owner_denied because
 // CheckTaskOwnership sees tier="" (not admin) and the caller identity
 // doesn't match the task owner.

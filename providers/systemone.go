@@ -26,7 +26,7 @@ import (
 //
 // This provider implements the /v1/systemone wire protocol — the de facto
 // standard shared by Jev (TypeSafe), Laya (Convai), stuntd, laya-serve, and
-// Cloudflare Workers AI (typesafe/jev). See docs/systemone-provider-design.md
+// Cloudflare Workers AI (typesafe/jev). See docs/completed/2026-10-11/systemone-provider-design.md
 // §0.4 for the protocol reconciliation and §0.4.4 for the wire format spec.
 
 // SystemOneProvider connects to any /v1/systemone-compatible backend via HTTP.

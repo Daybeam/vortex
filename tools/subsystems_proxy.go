@@ -131,7 +131,7 @@ func registerProxySubsystem(app *App) {
 
 // resolveRolelessMCP finds the MCP that owns toolName without a role binding.
 // It scans all registry MCPs, applies disambiguation rules, and checks the
-// mount policy gate. See docs/plan/PROXY_CALL_ROLELESS_RESOLUTION_DESIGN.md.
+// mount policy gate. See docs/completed/2026-11-12/PROXY_CALL_ROLELESS_RESOLUTION_DESIGN.md.
 func resolveRolelessMCP(ctx context.Context, app *App, hub *core.ContextHub, spawner *core.Spawner, toolName, mcpIDArg string) (string, error) {
 	// mcp_id provided: direct locate, still check toolEnabled + ToolFilter + gate
 	if mcpIDArg != "" {

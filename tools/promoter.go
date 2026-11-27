@@ -25,7 +25,8 @@ type Promoter struct {
 	mu          sync.Mutex
 	counters    map[string]int       // "subsystem.action" -> hit count
 	promoted    map[string]time.Time // "subsystem.action" -> promotion timestamp (TTL)
-	lastUsed    map[string]time.Time // "subsystem.action" -> last invocation timestamp (LRU)
+	lastUsed    map[string]uint64    // "subsystem.action" -> monotonic invocation sequence (LRU)
+	usageSeq    uint64
 	threshold   int
 	maxPromoted int               // Maximum capacity (e.g. 20)
 	ttl         time.Duration     // Time-to-live before eviction if idle
@@ -47,7 +48,7 @@ func NewPromoter(s *server.MCPServer, app *App, threshold int, maxPromoted int, 
 	return &Promoter{
 		counters:    make(map[string]int),
 		promoted:    make(map[string]time.Time),
-		lastUsed:    make(map[string]time.Time),
+		lastUsed:    make(map[string]uint64),
 		threshold:   threshold,
 		maxPromoted: maxPromoted,
 		ttl:         ttl,
@@ -64,11 +65,11 @@ func (p *Promoter) Record(subsystem, action string, act Action) {
 	}
 
 	key := subsystem + "." + action
-	now := time.Now()
 
 	p.mu.Lock()
 	p.counters[key]++
-	p.lastUsed[key] = now
+	p.usageSeq++
+	p.lastUsed[key] = p.usageSeq
 
 	// Check if already promoted
 	if _, exists := p.promoted[key]; exists {
@@ -87,7 +88,7 @@ func (p *Promoter) Record(subsystem, action string, act Action) {
 		p.evictLRULocked()
 	}
 
-	p.promoted[key] = now
+	p.promoted[key] = time.Now()
 	p.mu.Unlock()
 
 	// Register volatile top-level tool
@@ -104,9 +105,10 @@ func (p *Promoter) Record(subsystem, action string, act Action) {
 	promotedTool := mcp.NewTool(toolName, append([]mcp.ToolOption{mcp.WithDescription(desc)}, opts...)...)
 
 	handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Update LRU timestamp on use
+		// Update LRU sequence on use
 		p.mu.Lock()
-		p.lastUsed[key] = time.Now()
+		p.usageSeq++
+		p.lastUsed[key] = p.usageSeq
 		p.mu.Unlock()
 
 		// Runtime tier enforcement
@@ -149,13 +151,13 @@ func (p *Promoter) Record(subsystem, action string, act Action) {
 // in the server map while freeing capacity for active hot spots.
 func (p *Promoter) evictLRULocked() {
 	var oldestKey string
-	var oldestTime time.Time
+	var oldestSeq uint64
 
 	for k := range p.promoted {
-		t := p.lastUsed[k]
-		if oldestKey == "" || t.Before(oldestTime) {
+		seq := p.lastUsed[k]
+		if oldestKey == "" || seq < oldestSeq {
 			oldestKey = k
-			oldestTime = t
+			oldestSeq = seq
 		}
 	}
 
@@ -172,7 +174,8 @@ func (p *Promoter) Reset() {
 	defer p.mu.Unlock()
 	p.counters = make(map[string]int)
 	p.promoted = make(map[string]time.Time)
-	p.lastUsed = make(map[string]time.Time)
+	p.lastUsed = make(map[string]uint64)
+	p.usageSeq = 0
 }
 
 // Stats returns a snapshot of the volatile cache for telemetry.
