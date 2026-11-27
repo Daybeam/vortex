@@ -673,15 +673,16 @@ func (s *DirectedEngine) evictTerminalGraphs(ctx context.Context) {
 		}
 
 		now := time.Now()
+
 		var toEvict []string
+		var toStamp []string
 		s.Mu.RLock()
 		for taskID, graph := range s.graphs {
 			if !isTerminalStatus(graph.Status) {
 				continue
 			}
 			if graph.CompletedAt == nil {
-				ts := now
-				graph.CompletedAt = &ts
+				toStamp = append(toStamp, taskID)
 				continue
 			}
 			if now.Sub(*graph.CompletedAt) >= evictTTL {
@@ -689,6 +690,17 @@ func (s *DirectedEngine) evictTerminalGraphs(ctx context.Context) {
 			}
 		}
 		s.Mu.RUnlock()
+
+		if len(toStamp) > 0 {
+			s.Mu.Lock()
+			for _, taskID := range toStamp {
+				if graph := s.graphs[taskID]; graph != nil && graph.CompletedAt == nil {
+					ts := now
+					graph.CompletedAt = &ts
+				}
+			}
+			s.Mu.Unlock()
+		}
 
 		if len(toEvict) == 0 {
 			continue
