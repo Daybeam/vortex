@@ -407,8 +407,8 @@ Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA`, step.Task, step.ExitC
 		})
 		if err == nil {
 			auditText := semanticAuditOutputText(auditRes.Output.Result)
-			upperText := strings.ToUpper(auditText)
-			if strings.HasPrefix(upperText, "PASS") {
+			upperText := strings.ToUpper(strings.TrimSpace(auditText))
+			if upperText == "PASS" || strings.HasPrefix(upperText, "PASS ") || strings.HasPrefix(upperText, "PASS\n") {
 				return true, "", schemas.FailureNone
 			}
 
@@ -426,6 +426,10 @@ Categories: TIMEOUT, PERMISSION, CONFLICT, LOGIC, SCHEMA`, step.Task, step.ExitC
 
 			return false, auditText, failType
 		}
+		s.logger.Log("EventAutoAuditError", graph.TaskID, step.ID, map[string]any{
+			"error": err.Error(),
+		})
+		return false, fmt.Sprintf("audit spawn failed: %v", err), schemas.FailureLogicError
 	}
 
 	// Case 4: JSON validation — the meaning of "json" is in verifyJSONCriterion.

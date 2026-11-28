@@ -506,9 +506,12 @@ func (s *DirectedEngine) SubmitWithSessionIR(inputs []schemas.StepInput, roles [
 					finalResult = result
 					finalErr = err
 
-					// Audit gate. Only runs when the step completed OK and declared criteria.
-					if err == nil && result != nil && step.ExitCriteria != "" &&
-						(result.Output.Status == schemas.StatusOK || result.Output.Status == schemas.StatusPartial) {
+				// Audit gate. Runs when the step completed OK and either declared
+				// exit criteria or requested audit (O47 P1 FIX: require_audit=true
+				// must trigger the gate even when ExitCriteria is empty).
+				if err == nil && result != nil &&
+					(step.ExitCriteria != "" || step.RequireAudit || step.VerifierModel != "") &&
+					(result.Output.Status == schemas.StatusOK || result.Output.Status == schemas.StatusPartial) {
 						if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
 							if step.AutoRefineCount < step.MaxAutoRefine {
 								s.Mu.Lock() // audit C-3: protect field writes — persistGraph reads under RLock.
