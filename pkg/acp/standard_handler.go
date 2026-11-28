@@ -14,7 +14,7 @@ import (
 // mapping, streams obs events as session/update notifications, and blocks
 // session/prompt until the task reaches a terminal state.
 //
-// See docs/plan/STANDARD_ACP_SERVER_SUPPORT_DESIGN.md for the full design.
+// See docs/completed/2026-11-12/STANDARD_ACP_SERVER_SUPPORT_DESIGN.md for the full design.
 type standardServer struct {
 	engine    Engine
 	writeJSON func(any)
@@ -33,13 +33,17 @@ type standardServer struct {
 	unsubTerminal func() // unsubscribes terminal event handlers
 }
 
+type taskResultResolver interface {
+	ResolveTaskResult(taskID string) string
+}
+
 // sessionInfo tracks one ACP session and its associated task.
 type sessionInfo struct {
-	id        string
-	cwd       string
-	taskID    string // set once after engine.Submit; protected by sessionsMu
-	cancelCh  chan struct{}
-	cancelled bool
+	id            string
+	cwd           string
+	taskID        string // set once after engine.Submit; protected by sessionsMu
+	cancelCh      chan struct{}
+	cancelPending bool
 }
 
 func newStandardServer(engine Engine, writeJSON func(any), done chan struct{}) *standardServer {
@@ -109,7 +113,7 @@ func (s *standardServer) handleNewSession(params json.RawMessage) (NewSessionRes
 	}
 	sid := uuid.New().String()
 	s.sessionsMu.Lock()
-	s.sessions[sid] = &sessionInfo{id: sid, cwd: p.Cwd, cancelCh: make(chan struct{})}
+	s.sessions[sid] = &sessionInfo{id: sid, cwd: p.Cwd}
 	s.sessionsMu.Unlock()
 	return NewSessionResult{SessionID: sid}, nil
 }
@@ -124,8 +128,18 @@ func (s *standardServer) handlePrompt(params json.RawMessage, reqID json.RawMess
 		return
 	}
 
+	var cancelCh chan struct{}
 	s.sessionsMu.Lock()
 	session, ok := s.sessions[p.SessionID]
+	if ok {
+		session.cancelCh = make(chan struct{})
+		cancelCh = session.cancelCh
+		// session/cancel can arrive before the prompt goroutine starts.
+		if session.cancelPending {
+			close(cancelCh)
+			session.cancelPending = false
+		}
+	}
 	s.sessionsMu.Unlock()
 	if !ok {
 		s.writeJSON(Response{JSONRPC: "2.0", ID: reqID, Error: &rpcError{
@@ -183,7 +197,10 @@ func (s *standardServer) handlePrompt(params json.RawMessage, reqID json.RawMess
 		s.terminalMu.Unlock()
 		s.emitFinalChunk(p.SessionID, ev)
 		s.writeJSON(Response{JSONRPC: "2.0", ID: reqID, Result: PromptResult{StopReason: StopReasonEndTurn}})
-	case <-session.cancelCh:
+	case <-cancelCh:
+		s.terminalMu.Lock()
+		delete(s.waitChs, taskID)
+		s.terminalMu.Unlock()
 		s.engine.CancelTask(taskID)
 		s.writeJSON(Response{JSONRPC: "2.0", ID: reqID, Result: PromptResult{StopReason: StopReasonCancelled}})
 	case <-s.done:
@@ -214,13 +231,14 @@ func (s *standardServer) subscribeStreamEvent(evType obs.EventType, session *ses
 
 // emitFinalChunk sends the terminal agent_message_chunk with the result text.
 func (s *standardServer) emitFinalChunk(sessionID string, ev obs.AgentEvent) {
-	text := ""
-	if ev.Payload != nil {
-		if msg, ok := ev.Payload["message"].(string); ok {
-			text = msg
-		} else if status, ok := ev.Payload["status"].(string); ok {
-			text = status
+	text := terminalEventText(ev)
+	if text == "" {
+		if resolver, ok := s.engine.(taskResultResolver); ok {
+			text = resolver.ResolveTaskResult(ev.TaskID)
 		}
+	}
+	if text == "" && ev.Payload != nil {
+		text, _ = ev.Payload["status"].(string)
 	}
 	s.writeJSON(notification{
 		JSONRPC: "2.0",
@@ -235,6 +253,19 @@ func (s *standardServer) emitFinalChunk(sessionID string, ev obs.AgentEvent) {
 	})
 }
 
+func terminalEventText(ev obs.AgentEvent) string {
+	if ev.Payload == nil {
+		return ""
+	}
+	if result, ok := ev.Payload["result"].(string); ok {
+		return result
+	}
+	if msg, ok := ev.Payload["message"].(string); ok {
+		return msg
+	}
+	return ""
+}
+
 // handleCancel processes a session/cancel notification (no response expected).
 func (s *standardServer) handleCancel(params json.RawMessage) {
 	var p StandardCancelParams
@@ -243,9 +274,13 @@ func (s *standardServer) handleCancel(params json.RawMessage) {
 	}
 	s.sessionsMu.Lock()
 	session, ok := s.sessions[p.SessionID]
-	if ok && !session.cancelled {
-		session.cancelled = true
-		close(session.cancelCh)
+	if ok {
+		if session.cancelCh != nil {
+			close(session.cancelCh)
+			session.cancelCh = nil
+		} else {
+			session.cancelPending = true
+		}
 	}
 	s.sessionsMu.Unlock()
 }

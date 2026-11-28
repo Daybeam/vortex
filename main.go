@@ -1,4 +1,4 @@
-//go:build !web && !dev && !desktop
+//go:build !web && !dev && !desktop && !android
 
 package main
 
@@ -570,7 +570,7 @@ func runHub(reg *config.Registry, logger *obs.Logger, root, outputBase, tmpBase,
 		serveSSE(mcpServer, rootCancel) // audit L4: pass rootCancel so background goroutines stop on shutdown
 	case "acp":
 		fmt.Fprintln(os.Stderr, "[orchestrator] ACP transport mode (Agent Client Protocol over stdio)")
-		if err := acp.ServeACP(scheduler, os.Stdin, os.Stdout); err != nil {
+		if err := acp.ServeACPWithOptions(scheduler, os.Stdin, os.Stdout, acp.ServeACPOptions{Dialect: app.Registry.ACP.Dialect}); err != nil {
 			log.Printf("[acp] server error: %v", err)
 		}
 	default:

@@ -70,6 +70,37 @@ func (m *eventMockEngine) CancelTask(taskID string) error {
 	return m.cancelErr
 }
 
+type reusableSessionEngine struct {
+	mu        sync.Mutex
+	next      int
+	cancelled []string
+	submitted chan string
+}
+
+func (m *reusableSessionEngine) Submit(inputs []schemas.StepInput) (string, error) {
+	m.mu.Lock()
+	m.next++
+	n := m.next
+	m.mu.Unlock()
+	taskID := fmt.Sprintf("reuse-task-%d", n)
+	m.submitted <- taskID
+	if n == 2 {
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			obs.DefaultBus.Publish(obs.NewAgentEvent(taskID, "", string(obs.EventTaskCompleted),
+				map[string]any{"result": "second prompt completed"}))
+		}()
+	}
+	return taskID, nil
+}
+
+func (m *reusableSessionEngine) CancelTask(taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cancelled = append(m.cancelled, taskID)
+	return nil
+}
+
 // parseAllLines parses all newline-delimited JSON from output into a slice
 // of generic maps (works for both responses and notifications).
 func parseAllLines(t *testing.T, out string) []map[string]any {
@@ -404,6 +435,129 @@ func TestACP_StandardDialect_PingInStandardMode(t *testing.T) {
 	result := resp["result"].(map[string]any)
 	if result["pong"] != true {
 		t.Errorf("expected pong=true, got %v", result["pong"])
+	}
+}
+
+// Regression for docs/plan/O47_O35_Q3_ADJUSTMENT_PLAN.md §3.5: the engine's
+// terminal answer is payload.result, not payload.status.
+func TestACP_StandardDialect_FinalResultPayload(t *testing.T) {
+	var out safeBuffer
+	srv := newStandardServer(nil, func(v any) {
+		data, _ := json.Marshal(v)
+		out.Write(append(data, '\n'))
+	}, make(chan struct{}))
+	defer srv.close()
+
+	srv.emitFinalChunk("session-1", obs.NewAgentEvent("task-1", "", string(obs.EventTaskCompleted),
+		map[string]any{"result": "final answer", "status": "completed"}))
+
+	updates := findNotifications(parseAllLines(t, out.String()), "session/update")
+	if len(updates) != 1 {
+		t.Fatalf("expected one final update, got %d", len(updates))
+	}
+	params := updates[0]["params"].(map[string]any)
+	update := params["update"].(map[string]any)
+	content := update["content"].(map[string]any)
+	if content["text"] != "final answer" {
+		t.Fatalf("final chunk text = %v, want final answer", content["text"])
+	}
+}
+
+type resolvingEventEngine struct {
+	eventMockEngine
+	result string
+}
+
+func (m *resolvingEventEngine) ResolveTaskResult(string) string { return m.result }
+
+// Regression for docs/plan/O47_O35_Q3_ADJUSTMENT_PLAN.md §3.5: successful
+// tasks can reach the terminal event without an inline result. QwenPaw's real
+// ACP client then receives an empty agent_message_chunk unless the server
+// resolves the persisted step result.
+func TestACP_StandardDialect_FinalResultFromEngine(t *testing.T) {
+	engine := &resolvingEventEngine{result: "persisted final answer"}
+	var out safeBuffer
+	srv := newStandardServer(engine, func(v any) {
+		data, _ := json.Marshal(v)
+		out.Write(append(data, '\n'))
+	}, make(chan struct{}))
+	defer srv.close()
+
+	srv.emitFinalChunk("session-1", obs.NewAgentEvent("task-1", "", string(obs.EventTaskCompleted),
+		map[string]any{"status": "completed"}))
+
+	updates := findNotifications(parseAllLines(t, out.String()), "session/update")
+	if len(updates) != 1 {
+		t.Fatalf("expected one final update, got %d", len(updates))
+	}
+	params := updates[0]["params"].(map[string]any)
+	update := params["update"].(map[string]any)
+	content := update["content"].(map[string]any)
+	if content["text"] != "persisted final answer" {
+		t.Fatalf("final chunk text = %v, want persisted final answer", content["text"])
+	}
+}
+
+// Regression for docs/plan/O47_O35_Q3_ADJUSTMENT_PLAN.md §3.5: cancellation
+// belongs to one prompt turn and must not poison later prompts in the session.
+func TestACP_StandardDialect_SessionReusableAfterCancel(t *testing.T) {
+	engine := &reusableSessionEngine{submitted: make(chan string, 2)}
+	var out safeBuffer
+	srv := newStandardServer(engine, func(v any) {
+		data, _ := json.Marshal(v)
+		out.Write(append(data, '\n'))
+	}, make(chan struct{}))
+	defer srv.close()
+
+	newResult, rpcErr := srv.handleNewSession(json.RawMessage(`{"cwd":"/tmp"}`))
+	if rpcErr != nil {
+		t.Fatalf("session/new failed: %+v", rpcErr)
+	}
+	sessionID := newResult.SessionID
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		srv.handlePrompt(json.RawMessage(fmt.Sprintf(
+			`{"sessionId":%q,"prompt":[{"type":"text","text":"first"}]}`, sessionID)), json.RawMessage(`1`))
+	}()
+	select {
+	case <-engine.submitted:
+	case <-time.After(time.Second):
+		t.Fatal("first prompt was not submitted")
+	}
+	srv.handleCancel(json.RawMessage(fmt.Sprintf(`{"sessionId":%q}`, sessionID)))
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled first prompt did not return")
+	}
+
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		srv.handlePrompt(json.RawMessage(fmt.Sprintf(
+			`{"sessionId":%q,"prompt":[{"type":"text","text":"second"}]}`, sessionID)), json.RawMessage(`2`))
+	}()
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("second prompt did not complete after cancellation")
+	}
+
+	msgs := parseAllLines(t, out.String())
+	first := findResponseByID(t, msgs, "1")["result"].(map[string]any)
+	if first["stopReason"] != string(StopReasonCancelled) {
+		t.Fatalf("first stopReason = %v, want cancelled", first["stopReason"])
+	}
+	second := findResponseByID(t, msgs, "2")["result"].(map[string]any)
+	if second["stopReason"] != string(StopReasonEndTurn) {
+		t.Fatalf("second stopReason = %v, want end_turn", second["stopReason"])
+	}
+	engine.mu.Lock()
+	cancelled := append([]string(nil), engine.cancelled...)
+	engine.mu.Unlock()
+	if len(cancelled) != 1 || cancelled[0] != "reuse-task-1" {
+		t.Fatalf("cancelled tasks = %v, want only reuse-task-1", cancelled)
 	}
 }
 
