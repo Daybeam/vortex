@@ -7,8 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
+
 	"time"
 
 	"github.com/daybeam/vortex/pkg/bootmetrics"
@@ -50,19 +49,25 @@ func WaitForServerOrSignal(serverDone <-chan error, sigCh <-chan os.Signal, root
 // desktop window-quit path) trigger graceful shutdown without relying on
 // OS signals. A nil shutdown channel is a no-op (never selected).
 func WaitForHTTPSignal(srv *http.Server, rootCancel context.CancelFunc, shutdown <-chan struct{}) {
+	WaitForHTTPSignalWithLifecycle(srv, rootCancel, shutdown, NewSignalLifecycleController())
+}
+
+// WaitForHTTPSignalWithLifecycle is the platform-agnostic version that accepts
+// a LifecycleController. Android builds pass an HTTPLifecycleController;
+// desktop/web builds use the default SignalLifecycleController via WaitForHTTPSignal.
+func WaitForHTTPSignalWithLifecycle(srv *http.Server, rootCancel context.CancelFunc, shutdown <-chan struct{}, lc LifecycleController) {
+	defer lc.Stop()
+
 	bootmetrics.Mark("listen")
 	log.Printf("[startup] %s", bootmetrics.Summary())
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
 
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.ListenAndServe()
 	}()
 
-	gracefulShutdown := func() {
+	gracefulShutdown := func(reason string) {
+		fmt.Fprintf(os.Stderr, "[orchestrator] shutdown (%s), cleaning up...\n", reason)
 		rootCancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -70,12 +75,10 @@ func WaitForHTTPSignal(srv *http.Server, rootCancel context.CancelFunc, shutdown
 	}
 
 	select {
-	case <-sigCh:
-		fmt.Fprintln(os.Stderr, "[orchestrator] shutdown signal received, cleaning up...")
-		gracefulShutdown()
+	case reason := <-lc.ShutdownCh():
+		gracefulShutdown(reason)
 	case <-shutdown:
-		fmt.Fprintln(os.Stderr, "[orchestrator] external shutdown requested, cleaning up...")
-		gracefulShutdown()
+		gracefulShutdown("external")
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "[orchestrator] HTTP server error: %v\n", err)
