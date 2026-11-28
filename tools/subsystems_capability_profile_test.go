@@ -150,7 +150,7 @@ func TestCapabilityProfile_QueryShapes(t *testing.T) {
 		}
 	})
 
-	// Regression for B10-F1 (docs/plan/O_BATCH_REMEDIATION_2026-11-04.md, batch B10;
+	// Regression for B10-F1 (docs/completed/2026-11-27/O_BATCH_REMEDIATION_2026-11-04.md, batch B10;
 	// found by the code_review_cycle SOP, 2026-11-05). Before the fix a capability-only
 	// query fell through the switch to GetAllProfiles, so the answer contained every
 	// model while the action's Description promised the filter narrows -- silently,

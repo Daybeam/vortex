@@ -12,6 +12,7 @@ import (
 	"github.com/daybeam/vortex/config"
 	"github.com/daybeam/vortex/core"
 	"github.com/daybeam/vortex/core/jit"
+	"github.com/daybeam/vortex/core/skeleton"
 	"github.com/daybeam/vortex/schemas"
 	"github.com/daybeam/vortex/store"
 )
@@ -179,6 +180,27 @@ func executionHintForTier(tier string) *core.ExecutionHint {
 	}
 }
 
+// submitTaskKnownFields is the whitelist of top-level keys accepted by
+// orchestrator_submit_task. Any key not in this set is silently ignored by
+// the MCP framework, causing delayed failures (O61). mcp_bindings is an
+// alias for additional_mcps (accepted for backward compatibility).
+var submitTaskKnownFields = map[string]bool{
+	"steps":            true,
+	"group_id":         true,
+	"task":             true,
+	"context_refs":     true,
+	"additional_mcps":  true,
+	"mcp_bindings":     true, // alias for additional_mcps
+	"session_roles":    true,
+	"session_skills":   true,
+	"session_id":       true,
+	"workspace_root":   true,
+	"timeout":          true,
+	"token_budget":     true,
+	"charter":          true,
+	"host_capabilities": true,
+}
+
 func registerTaskList(s *server.MCPServer, app *App) {
 	submitDesc := `Delegates complex or specialized tasks to a supervised execution engine.
 Plans multi-step work and coordinates across specialized professional roles.
@@ -213,6 +235,19 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		mcp.WithAny("host_capabilities", mcp.Description("Host execution capabilities. Array of strings. Recognized values: \"subagent_dispatch\" (host can spawn subagents), \"local_fs\" (host has filesystem access via orchestrator_run_command), \"acp\" (host can forward to ACP endpoint), \"broker\" (admin-only: host can call tools through orchestrator_invoke with subsystem=\"proxy\", action=\"call\"). When provided, the delegation envelope's execution_hint.mode is selected based on these capabilities instead of the caller's tier; non-admin hosts never receive the broker path.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, _ := req.Params.Arguments.(map[string]any)
+
+		// O61: Warn on unknown top-level fields to prevent silent drops.
+		// submit_task's schema only accepts these keys; any other key is
+		// silently ignored by the MCP framework, causing delayed failures
+		// (e.g., top-level role_id gets eaten → "role \"\" not found" at spawn).
+		for k := range args {
+			if !submitTaskKnownFields[k] {
+				app.Logger.Log("warn_submit_task_unknown_field", "", "", map[string]any{
+					"field": k,
+					"hint":  fmt.Sprintf("field %q is not recognized by submit_task; check schema. role_id belongs inside steps[].role_id, not at top level", k),
+				})
+			}
+		}
 
 		// P0-3 (DELEGATION_HANDOVER_REDESIGN.md §12.3): delegation mode hands the
 		// step's execution to the CALLER. The public tier has no execution path —
@@ -626,10 +661,14 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		// get_task_status(view="full") round-trip. In delegation mode the
 		// graph status stays "running" (never "blocked"), so the host would
 		// otherwise have no signal to switch views.
+		// O63: also set waiting_for_decision=true so the caller can
+		// distinguish "task is genuinely running" from "task is blocked
+		// waiting for a decision" without a second get_task_status call.
 		if pdc, _ := status["pending_decision_count"].(int); pdc > 0 {
 			if full, ok := app.Scheduler.GetStatus(id, "full"); ok {
 				status = full
 			}
+			status["waiting_for_decision"] = true
 		}
 		return jsonOK(status)
 	})
@@ -666,21 +705,25 @@ orchestrator_submit_task(steps:[{"id":"s1","role_id":"software_engineer","task":
 		sub := strArg(req.Params.Arguments, "subsystem")
 		if intent != "" {
 			if intent == "menu" {
-				return mcp.NewToolResultText(app.Navigator.GenerateDynamicMenu(app.Registry)), nil
+				text := app.Navigator.GenerateDynamicMenu(app.Registry)
+				return mcp.NewToolResultText(string(skeleton.AdaptiveOutputResult([]byte(text), "discover", "orchestrator"))), nil
 			}
-			return mcp.NewToolResultText(app.Navigator.ExploreIntent(intent)), nil
+			text := app.Navigator.ExploreIntent(intent)
+			return mcp.NewToolResultText(string(skeleton.AdaptiveOutputResult([]byte(text), "discover", "orchestrator"))), nil
 		}
 		if query != "" {
-			return mcp.NewToolResultText(app.Navigator.Search(ctx, query)), nil
+			text := app.Navigator.Search(ctx, query)
+			return mcp.NewToolResultText(string(skeleton.AdaptiveOutputResult([]byte(text), "discover", "orchestrator"))), nil
 		}
 		if sub != "" {
 			doc, err := registry.discoverActions(sub, EffectiveTier(ctx, app))
 			if err != nil {
 				return errResult(err.Error())
 			}
-			return mcp.NewToolResultText(doc), nil
+			return mcp.NewToolResultText(string(skeleton.AdaptiveOutputResult([]byte(doc), "discover", "orchestrator"))), nil
 		}
-		return mcp.NewToolResultText(app.Navigator.GetOverview()), nil
+		text := app.Navigator.GetOverview()
+		return mcp.NewToolResultText(string(skeleton.AdaptiveOutputResult([]byte(text), "discover", "orchestrator"))), nil
 	})
 
 	if app.Archive != nil {
