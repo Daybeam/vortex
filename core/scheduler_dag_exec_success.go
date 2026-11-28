@@ -66,7 +66,10 @@ func (s *DirectedEngine) finishSuccessfulStep(ctx context.Context, graph *schema
 	}
 	s.transitionContextTree(graph, step, result)
 
-	if step.Status == schemas.StepOK && step.ExitCriteria != "" {
+	// O47 P1 FIX: require_audit=true or VerifierModel set must trigger the
+	// gate even when ExitCriteria is empty.
+	if step.Status == schemas.StepOK &&
+		(step.ExitCriteria != "" || step.RequireAudit || step.VerifierModel != "") {
 		if ok, reason, failType := s.verifyExitCriteria(ctx, graph, step, result); !ok {
 			if step.AutoRefineCount < step.MaxAutoRefine {
 				step.AutoRefineCount++

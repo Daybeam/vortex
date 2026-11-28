@@ -496,6 +496,10 @@ func (s *DirectedEngine) FulfillStep(taskID, decisionID, outputJSON string) erro
 	step.Status = schemas.StepOK
 	step.LastError = ""
 
+	if output.Usage != nil && output.Usage.TotalTokens > 0 {
+		graph.TokensUsed += int64(output.Usage.TotalTokens)
+	}
+
 	// Clear the decision
 	graph.PendingDecisions = append(graph.PendingDecisions[:decIdx], graph.PendingDecisions[decIdx+1:]...)
 
