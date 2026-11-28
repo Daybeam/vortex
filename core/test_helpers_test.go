@@ -68,7 +68,7 @@ func mustNewExperienceStore(
 
 // injectTestGraph inserts a task graph into the scheduler's internal map
 // under the proper mutex. Use this instead of directly accessing s.graphs
-// to avoid 搬龙门 (test-coupled-to-implementation) patterns.
+// to avoid test-coupled-to-implementation patterns.
 //
 // Usage:
 //

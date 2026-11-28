@@ -10,7 +10,7 @@ package core
 // only possible if it read the manifest the other process had been writing.
 //
 // operator chose the epoch/fence shape over an ownership lock, with the reasoning
-// recorded verbatim in docs/plan/O_BATCH_REMEDIATION_2026-11-04.md: same dir and
+// recorded verbatim in docs/completed/2026-11-27/O_BATCH_REMEDIATION_2026-11-04.md: same dir and
 // same DB means the data is already single-writer-by-overwrite, so what is needed
 // is not arbitration over "who may adopt" but a way for the one that loses to
 // stop. That also removes the Windows OpenProcess dependency entirely.

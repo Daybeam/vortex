@@ -501,11 +501,13 @@ func (e *ControlledExecutor) RunViaTempScript(ctx context.Context, shellType, bo
 		return nil, err
 	}
 	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
 
 	if _, err := tmpFile.WriteString(body); err != nil {
+		tmpFile.Close()
 		return nil, err
 	}
+	// Close before invoking the interpreter so the file is not locked
+	// on Windows. The file path is still valid for the subprocess.
 	tmpFile.Close()
 
 	var cmd string

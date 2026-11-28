@@ -9,7 +9,7 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-// Regression tests for Q4-5 (docs/plan/O_BATCH_REMEDIATION_2026-11-04.md,
+// Regression tests for Q4-5 (docs/completed/2026-11-27/O_BATCH_REMEDIATION_2026-11-04.md,
 // answer landed 2026-11-05): submit_decision must be able to route by the
 // decision's own type instead of by whether the caller happened to attach a
 // payload. That routing needs a read of the parked decision's type, which is

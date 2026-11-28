@@ -62,3 +62,47 @@ func TestFulfillStep_UsageReachesCostTracker(t *testing.T) {
 		t.Fatalf("O56 still open: host-reported usage never reached the cost ledger, total=%d by model=%v (want 1540)", total, spend)
 	}
 }
+
+// O56 resolve (2026-11-27): the operator ruled "statistics yes, enforcement no"
+// for host-reported usage on the fulfill path — the actual spend happens in
+// the host, so the engine must account it but must not gate on it. This pins
+// both halves: graph.TokensUsed advances (visible in internal graph state),
+// and BudgetPaused stays false even when the reported spend blows past a tiny
+// TokenBudget — because DeductBudget's park would surface a
+// DecisionBudgetExhausted whose "resume" choice is not implemented, leaving an
+// honest host with "abort the task" as the only answer.
+func TestFulfillStep_UsageAdvancesTokensUsedWithoutParking(t *testing.T) {
+	engine := newDelegationTestEngine(t)
+
+	taskID, err := engine.Submit([]schemas.StepInput{{
+		ID:     "step_1",
+		RoleID: "worker",
+		Task:   "Reply with the single word HELLO.",
+	}})
+	if err != nil {
+		t.Fatalf("Submit failed: %v", err)
+	}
+
+	// Directly set a tiny TokenBudget on the graph to test no-parking
+	graphs := engine.GetGraphs()
+	g := graphs[taskID]
+	if g == nil {
+		t.Fatalf("graph not found for %s", taskID)
+	}
+	g.TokenBudget = 5000
+
+	dec := waitForDelegationDecision(t, engine, taskID)
+	payload := `{"status":"ok","confidence":0.9,` +
+		`"result":{"answer":"HELLO"},"capability":"text",` +
+		`"usage":{"prompt_tokens":1200,"completion_tokens":340,"total_tokens":1540}}`
+	if err := engine.FulfillStep(taskID, dec.ID, payload); err != nil {
+		t.Fatalf("FulfillStep failed: %v", err)
+	}
+
+	if g.TokensUsed != 1540 {
+		t.Fatalf("O56 statistics half: tokens_used = %d (want 1540)", g.TokensUsed)
+	}
+	if g.BudgetPaused {
+		t.Fatalf("O56 enforcement half: budget_paused = true — the fulfill path must not park on host-reported usage (resume is not implemented)")
+	}
+}

@@ -172,6 +172,12 @@ func resolveCheckPath(workdir, p string) (string, error) {
 	candidate := filepath.Join(root, p)
 	resolved, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
+		// File does not exist — that's not a security issue. Return the
+		// candidate path so the caller's os.Stat/ReadFile can report a
+		// clear "file not found" instead of a confusing "cannot resolve".
+		if os.IsNotExist(err) {
+			return candidate, nil
+		}
 		return "", fmt.Errorf("cannot resolve task-relative path %s: %w", p, err)
 	}
 	rel, err := filepath.Rel(root, resolved)

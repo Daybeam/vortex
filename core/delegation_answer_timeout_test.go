@@ -10,7 +10,7 @@ import (
 	"github.com/daybeam/vortex/schemas"
 )
 
-// Regression tests for Q4-6 (register O20, docs/plan/O_BATCH_REMEDIATION_2026-11-04.md).
+// Regression tests for Q4-6 (register O20, docs/completed/2026-11-27/O_BATCH_REMEDIATION_2026-11-04.md).
 //
 // O20 measured the silence this closes: a delegation envelope was handed to a
 // host, the host's second submission never came back within 12 minutes, and
