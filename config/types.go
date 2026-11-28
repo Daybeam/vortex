@@ -559,6 +559,8 @@ type SandboxConfig struct {
 	AllowedWorkspaces []string `json:"allowed_workspaces,omitempty"`
 	DockerImage       string   `json:"docker_image,omitempty"`   // image for docker mode (default: python:3.12-slim)
 	DockerNetwork     string   `json:"docker_network,omitempty"` // "none" (default) | "host" | custom
+	RemoteURL         string   `json:"remote_url,omitempty"`     // URL of remote sandbox service (mode: remote)
+	RemoteToken       string   `json:"remote_token,omitempty"`   // Bearer token for remote sandbox auth
 }
 
 // RetentionSettings controls dual-mode (headless vs GUI) storage compaction
