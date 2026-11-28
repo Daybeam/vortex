@@ -30,9 +30,11 @@ func SelectSandboxProvider(reg *config.Registry, outputBase string) SandboxProvi
 	case "docker":
 		return NewDockerProvider(outputBase, image, network)
 	case "remote":
-		// RemoteProvider not implemented yet, fallback to local with warning
-		fmt.Fprintf(os.Stderr, "[sandbox] WARNING: RemoteProvider not implemented, falling back to local\n")
-		return NewLocalProvider(outputBase)
+		if reg.System.Sandbox.RemoteURL == "" {
+			fmt.Fprintf(os.Stderr, "[sandbox] WARNING: remote mode requires sandbox.remote_url, falling back to local\n")
+			return NewLocalProvider(outputBase)
+		}
+		return NewRemoteProvider(reg.System.Sandbox.RemoteURL, reg.System.Sandbox.RemoteToken)
 	default:
 		return NewLocalProvider(outputBase)
 	}
